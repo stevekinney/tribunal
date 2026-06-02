@@ -1,0 +1,7 @@
+interface:
+  display_name: "Execute Plan"
+  short_description: "Help with Execute Plan tasks"
+  default_prompt: "Use $execute-plan to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

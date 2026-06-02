@@ -1,0 +1,7 @@
+interface:
+  display_name: "Database Operations"
+  short_description: "Help with Database Operations tasks"
+  default_prompt: "Use $database-operations to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

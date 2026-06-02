@@ -1,0 +1,2 @@
+CREATE INDEX "user_api_key_user_id_revoked_at_idx" ON "user_api_key" USING btree ("user_id","revoked_at");--> statement-breakpoint
+CREATE INDEX "user_api_key_user_id_id_idx" ON "user_api_key" USING btree ("user_id","id");

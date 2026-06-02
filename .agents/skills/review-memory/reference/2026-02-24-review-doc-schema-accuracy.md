@@ -1,0 +1,3 @@
+- Documentation SQL examples must match real table schemas (column names, required fields, and value types), especially for migration metadata tables.
+- When referencing repository paths in rules, use workspace-accurate paths (for example `applications/web/src/params`) to avoid non-existent guidance.
+- Constraint and index catalog checks need different schema filters (`connamespace` for constraints, `to_regclass` or `pg_class`+`pg_namespace` for indexes).

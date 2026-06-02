@@ -1,0 +1,7 @@
+interface:
+  display_name: "Create PR"
+  short_description: "Help with Create PR tasks"
+  default_prompt: "Use $create-pr to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

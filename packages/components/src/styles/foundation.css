@@ -1,0 +1,370 @@
+/**
+ * Foundation Styles
+ *
+ * Combined reset and base styles for the design system.
+ * Uses :where() for zero-specificity defaults that components can easily override.
+ *
+ * This file establishes:
+ * 1. Box model and browser normalization (reset)
+ * 2. Accessible element defaults (base)
+ * 3. Motion and focus accessibility
+ */
+
+@layer foundation {
+  /* ========================================
+	 * Reduced Motion (apply early)
+	 * Respects user preference for reduced motion
+	 * ======================================== */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* ========================================
+	 * Box Model & Universal Reset
+	 * ======================================== */
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  * {
+    margin: 0;
+  }
+
+  /* Ensure hidden attribute works */
+  [hidden] {
+    display: none !important;
+  }
+
+  /* ========================================
+	 * Document & Root
+	 * ======================================== */
+  html {
+    /* Text sizing and rendering */
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: var(--leading-normal);
+    font-weight: var(--font-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings:
+      'kern' 1,
+      'liga' 1,
+      'calt' 1;
+
+    /* Browser normalization */
+    hanging-punctuation: first last;
+    -webkit-text-size-adjust: none;
+    text-size-adjust: none;
+
+    /* color-scheme is set in tokens.css with theme support */
+  }
+
+  html:focus-within {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--bg);
+    color: var(--text);
+    font-size: var(--text-base);
+  }
+
+  /* ========================================
+	 * Focus Management (Accessibility)
+	 * Global focus styles as safety net
+	 * ======================================== */
+  :focus-visible {
+    outline: var(--ring-width) solid var(--ring-color);
+    outline-offset: var(--ring-offset);
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* ========================================
+	 * Selection
+	 * ======================================== */
+  ::selection {
+    background: color-mix(in oklch, var(--accent), transparent 70%);
+    color: var(--text);
+  }
+
+  /* ========================================
+	 * Typography - Headings
+	 * Using :where() for zero specificity
+	 * ======================================== */
+  :where(h1, h2, h3, h4, h5, h6) {
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+    overflow-wrap: break-word;
+    text-wrap: balance;
+  }
+
+  :where(h1) {
+    font-size: var(--text-4xl);
+  }
+  :where(h2) {
+    font-size: var(--text-3xl);
+  }
+  :where(h3) {
+    font-size: var(--text-2xl);
+  }
+  :where(h4) {
+    font-size: var(--text-xl);
+  }
+  :where(h5) {
+    font-size: var(--text-lg);
+  }
+  :where(h6) {
+    font-size: var(--text-base);
+    font-weight: var(--font-medium);
+  }
+
+  /* ========================================
+	 * Typography - Paragraphs & Text
+	 * ======================================== */
+  :where(p) {
+    overflow-wrap: break-word;
+    text-wrap: pretty;
+  }
+
+  :where(small) {
+    letter-spacing: var(--tracking-wide);
+  }
+
+  :where(strong, b) {
+    font-weight: var(--font-semibold);
+  }
+
+  /* ========================================
+	 * Links (Accessible by Default)
+	 * WCAG 1.4.1: Links distinguishable by more than color
+	 * ======================================== */
+
+  /* Base reset for all links */
+  :where(a) {
+    color: inherit;
+    text-decoration-skip-ink: auto;
+  }
+
+  /* Styled defaults for links without a class (plain HTML links) */
+  :where(a:not([class])) {
+    color: var(--link);
+    text-decoration: underline;
+    text-decoration-thickness: max(1px, 0.0625em);
+    text-underline-offset: 0.15em;
+    transition: color var(--duration-fast) var(--ease-standard);
+  }
+
+  :where(a:not([class])):hover {
+    color: var(--accent-hover);
+  }
+
+  :where(a:not([class])):focus-visible {
+    outline: var(--ring-width) solid var(--ring-color);
+    outline-offset: var(--ring-offset);
+    border-radius: var(--radius-sm);
+  }
+
+  /* ========================================
+	 * Code & Preformatted Text
+	 * ======================================== */
+  :where(code, kbd, samp, pre) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+
+  :where(code) {
+    padding: 0.125em 0.25em;
+    background: var(--surface-inset);
+    border-radius: var(--radius-sm);
+  }
+
+  :where(pre) {
+    overflow-x: auto;
+    padding: var(--space-4);
+    background: var(--surface-inset);
+    border-radius: var(--radius-md);
+  }
+
+  :where(pre code) {
+    padding: 0;
+    background: transparent;
+    border-radius: 0;
+  }
+
+  /* ========================================
+	 * Lists
+	 * ======================================== */
+  :where(ul, ol) {
+    padding-left: var(--space-6);
+  }
+
+  :where(li) {
+    margin-bottom: var(--space-1);
+  }
+
+  :where(li)::marker {
+    color: var(--text-subtle);
+  }
+
+  /* Remove list styles when role="list" is set (common for nav) */
+  :where(ul[role='list'], ol[role='list']) {
+    list-style: none;
+    padding: 0;
+  }
+
+  /* Definition lists */
+  :where(dt) {
+    font-weight: var(--font-semibold);
+  }
+
+  :where(dd) {
+    margin-left: var(--space-4);
+    margin-bottom: var(--space-2);
+  }
+
+  /* ========================================
+	 * Block Elements
+	 * ======================================== */
+  :where(hr) {
+    border: none;
+    border-top: 1px solid var(--divider);
+    margin: var(--space-6) 0;
+  }
+
+  :where(blockquote) {
+    padding-left: var(--space-4);
+    border-left: 3px solid var(--border);
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* ========================================
+	 * Tables
+	 * ======================================== */
+  :where(table) {
+    border-collapse: collapse;
+    border-spacing: 0;
+  }
+
+  :where(th) {
+    text-align: left;
+    font-weight: var(--font-semibold);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 2px solid var(--border);
+  }
+
+  :where(td) {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--divider);
+  }
+
+  /* ========================================
+	 * Form Elements - Resets Only
+	 * Layout handled by components
+	 * ======================================== */
+  :where(input, button, textarea, select) {
+    font: inherit;
+    color: inherit;
+  }
+
+  :where(button) {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  :where(textarea) {
+    resize: vertical;
+  }
+
+  :where(fieldset) {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+
+  :where(legend) {
+    padding: 0;
+  }
+
+  /* Labels - typography only, layout in components */
+  :where(label) {
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text);
+  }
+
+  /* ========================================
+	 * Media Elements
+	 * ======================================== */
+  :where(img, picture, video, canvas, svg) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    vertical-align: middle;
+  }
+
+  /* ========================================
+	 * Interactive Elements
+	 * ======================================== */
+  :where(summary) {
+    cursor: pointer;
+  }
+
+  :where(dialog) {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+  }
+
+  :where(dialog)::backdrop {
+    background: transparent;
+  }
+
+  /* ========================================
+	 * Semantic Text Elements
+	 * ======================================== */
+  :where(mark) {
+    background: color-mix(in oklch, var(--warning), transparent 70%);
+    padding: 0.125em 0.25em;
+    border-radius: var(--radius-sm);
+  }
+
+  :where(abbr[title]) {
+    text-decoration: underline dotted;
+    cursor: help;
+  }
+
+  :where(address) {
+    font-style: normal;
+  }
+
+  :where(figure) {
+    margin: 0;
+  }
+
+  :where(figcaption) {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin-top: var(--space-2);
+  }
+}

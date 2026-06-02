@@ -1,0 +1,7 @@
+interface:
+  display_name: "Lint"
+  short_description: "Help with Lint tasks"
+  default_prompt: "Use $lint to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

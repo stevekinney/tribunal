@@ -1,0 +1,55 @@
+test-results
+coverage
+node_modules
+
+# Package manager - this project uses bun (bun.lock), not npm
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Output
+dist/
+.output
+.vercel
+/.svelte-kit
+/build
+**/.svelte-kit
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# TypeScript incremental build cache
+.tsbuildinfo
+
+# SQLite
+*.db
+*.sqlite
+
+# Tooling
+/.playwright-mcp
+.tmp/
+tmp/
+
+# Agent session tracking files
+.claude-session
+.claude-artifacts.json
+/PLAN.md
+/PROMPT.md
+
+# Migration consistency check temp config
+packages/database/.drizzle-consistency-check.config.ts
+
+# Turborepo
+.turbo
+
+.env*.local

@@ -1,0 +1,12 @@
+interface:
+  display_name: "Component Standards"
+  short_description: "Help with Component Standards tasks"
+  default_prompt: "Use $component-standards to handle this task with the skill workflow."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "svelte"
+      description: "Svelte documentation MCP server"
+      transport: "streamable_http"
+      url: "https://mcp.svelte.dev/mcp"

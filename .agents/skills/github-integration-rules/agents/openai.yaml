@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Integration Rules"
+  short_description: "Help with GitHub Integration Rules tasks"
+  default_prompt: "Use $github-integration-rules to handle this task with the skill workflow."

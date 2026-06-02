@@ -1,0 +1,2 @@
+- In long-running worker helpers, start recurring heartbeat timers only after all prerequisite async resource acquisition succeeds, or place acquisition inside the same `try` guarded by timer cleanup.
+- For activity helpers that manage intervals, add a failure-path test where setup throws before command execution to prevent silent interval leaks.

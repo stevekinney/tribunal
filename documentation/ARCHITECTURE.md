@@ -1,0 +1,236 @@
+# Architecture
+
+## System Overview
+
+Tribunal is a SvelteKit web application that lets a developer log in with GitHub, install the
+Tribunal GitHub App on their accounts and organizations, and browse the open pull requests for the
+repositories that install grants access to. The data model is deliberately flat and the only
+integration is GitHub.
+
+Core technologies:
+
+- SvelteKit + Svelte 5: https://svelte.dev/docs/kit
+- Drizzle ORM: https://orm.drizzle.team/docs/overview
+- PostgreSQL (Neon in production): https://neon.com/docs
+- Bun (tooling/runtime): https://bun.sh/docs
+- Turborepo (task orchestration): https://turbo.build/repo/docs
+
+There is a single deployable application (`applications/web`, deployed to Vercel). There are no
+background workers and no separate workflow engine.
+
+## Request Flow Diagram
+
+```mermaid
+flowchart LR
+  Browser[Browser] -->|HTTP| SvelteKit[SvelteKit app]
+  SvelteKit --> Services[Server load functions and services]
+  Services -->|SQL| Drizzle[Drizzle ORM]
+  Drizzle --> Neon[(PostgreSQL Neon)]
+
+  Services -->|REST / App tokens| GitHub[GitHub API]
+  GitHub -->|Webhook deliveries| Webhook["/api/webhooks/github"]
+  Webhook --> Drizzle
+```
+
+Pull requests are read live from the GitHub API at render time (see
+`applications/web/src/routes/(authenticated)/repositories/[repositoryId=int]/pull-requests/+page.server.ts`);
+they are not stored in the database.
+
+## Directory Structure
+
+```text
+.
+├─ applications/
+│  └─ web/                 SvelteKit application (deployed to Vercel)
+│     ├─ src/
+│     │  ├─ lib/           shared modules and server logic
+│     │  │  ├─ api-keys/   user API key helpers
+│     │  │  ├─ components/ app-specific Svelte components
+│     │  │  ├─ constants/  shared constants
+│     │  │  ├─ server/     server-only code (DB, auth, GitHub, rate limit)
+│     │  │  └─ utilities/  shared utilities
+│     │  ├─ routes/        pages and API endpoints
+│     │  └─ params/        route param matchers
+│     ├─ test/             test harnesses and fixtures
+│     └─ static/           static assets served as-is
+├─ packages/
+│  ├─ components/          @tribunal/components — shared Svelte components and design tokens
+│  ├─ database/            @tribunal/database — schema, connection factory, operators, queries, validation
+│  ├─ github/              @tribunal/github — GitHub integration domain logic, cache, error taxonomy
+│  ├─ markdown/            @tribunal/markdown — markdown rendering utilities
+│  ├─ test/                @tribunal/test — shared test utilities
+│  └─ typescript/          @tribunal/typescript — shared TypeScript configuration
+├─ documentation/          long-form docs and guides
+├─ scripts/                repo automation and tooling
+└─ .claude/ .codex/        agent rules, skills, and automation
+```
+
+## Workspace Packages
+
+The repository uses Bun workspaces with Turborepo for task orchestration. All packages are installed
+from the root with a single `bun install`, and `@tribunal/*` names resolve directly to the workspace
+packages — there is no TypeScript `paths` mapping for them.
+
+**`@tribunal/github`** (`packages/github/`) — GitHub integration domain logic with no framework
+dependency. Functions take a `GithubServiceContext` (database, cache, GitHub App) as their first
+argument. Covers installations, repositories, pull requests, issues, and webhook parsing/routing.
+Also exports the Redis cache utilities (`@tribunal/github/cache`, `@tribunal/github/cache/keys`) and
+the retry-aware error taxonomy (`@tribunal/github/error-taxonomy`, distinguishing retryable from
+non-retryable failures such as `ValidationError` and `RateLimitError`).
+
+**`@tribunal/database`** (`packages/database/`) — Database schema, connection factory, Drizzle
+operators, query helpers, and Zod validation schemas (`@tribunal/database/validation/user-api-key`).
+Depends on Drizzle ORM and `@neondatabase/serverless`. This is the single source of truth for all
+table definitions.
+
+**`@tribunal/components`** (`packages/components/`) — Shared Svelte component library and design
+tokens.
+
+Additional supporting packages: **`@tribunal/markdown`** (markdown rendering),
+**`@tribunal/test`** (test utilities), and **`@tribunal/typescript`** (shared TypeScript config).
+
+## Path Aliases
+
+| Alias        | Available in | Points to                    | Purpose                                                        |
+| ------------ | ------------ | ---------------------------- | -------------------------------------------------------------- |
+| `$lib/*`     | Web app only | `applications/web/src/lib/*` | SvelteKit built-in convention                                  |
+| `$testing/*` | Web app only | `applications/web/test/*`    | Test utilities and fixtures (configured in `svelte.config.js`) |
+
+`$lib` is provided by SvelteKit; `$testing` is the only custom alias configured. `@tribunal/*`
+imports resolve through Bun workspaces, not aliases.
+
+## Key Boundaries
+
+1. `applications/web/src/lib/server/` is server-only. Do not import it from browser components.
+2. `@tribunal/github` must remain free of framework dependencies. SvelteKit wiring lives in
+   `applications/web/src/lib/server/github-context.ts`, which builds the `GithubServiceContext`
+   (database, Redis cache, GitHub App) that package functions expect.
+3. `@tribunal/database` owns all schema definitions. Other packages import from it; they never
+   define their own tables.
+4. The database connection in `packages/database/src/connection.ts` uses an `AsyncLocalStorage`
+   override (`runWithDatabase`) so E2E tests can route queries to a per-worker PGlite instance.
+   Production uses Neon over HTTP.
+
+## Data Model
+
+The model is flat: a user connects one or more GitHub App installations, each installation grants
+access to a set of repositories, and pull requests are read live from GitHub for those repositories.
+
+```mermaid
+erDiagram
+  USER ||--o{ AUTH_ACCOUNT : "logs in with"
+  USER ||--o{ OAUTH_CONNECTION : "holds API tokens"
+  USER ||--o{ SESSION : "has"
+  USER ||--o{ USER_API_KEY : "owns"
+  USER ||--o{ GITHUB_INSTALLATION : "connects"
+  GITHUB_INSTALLATION ||--o{ GITHUB_INSTALLATION_REPOSITORY : "grants access to"
+  REPOSITORY ||--o{ GITHUB_INSTALLATION_REPOSITORY : "linked through"
+  REPOSITORY ||--o{ WEBHOOK_EVENT : "receives"
+```
+
+Notes:
+
+- `auth_account` tracks login identity (who the user signed in as). `oauth_connection` stores the
+  encrypted access/refresh tokens used to call the GitHub API on the user's behalf.
+- `session` and `session_event` back cookie-based authentication and audit the session lifecycle.
+- `repository` stores repo identity (GitHub repo ID, owner, name, default branch, latest commit).
+  `github_installation_repository` records which repositories are reachable through which
+  installation.
+- Pull requests are not stored. They are fetched from the GitHub API when a page loads.
+- `webhook_event` stores received GitHub webhook payloads; `github_webhook_delivery` records
+  processed delivery GUIDs for idempotency.
+
+### Dormant tables
+
+The schema in `packages/database/src/schema/` also still declares tables left over from an earlier,
+larger system: `pull_request_state`, `pull_request_trigger`, `workflow_config`, `workflow_run`, and
+`workflow_issue_reference`. **No live user flow writes to or reads from these.** They are not part of
+the flat model above and should be treated as scheduled for removal, not as features. Do not build on
+them without first deciding whether they should exist at all.
+
+## Authentication and Installation Flow
+
+Login establishes identity; installing the GitHub App grants repository access. They are separate
+steps backed by separate tables (`auth_account` for login, `oauth_connection` plus
+`github_installation` for API access).
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant B as Browser
+  participant SK as SvelteKit
+  participant GH as GitHub
+  participant DB as PostgreSQL
+
+  U->>B: Click "Sign in with GitHub"
+  B->>SK: GET /login/github
+  SK->>GH: Redirect to OAuth authorize
+  GH-->>B: Redirect with code
+  B->>SK: GET /login/github/callback?code=...
+  SK->>GH: Exchange code for token
+  SK->>DB: Upsert user + auth_account + oauth_connection
+  SK-->>B: Set session cookie + redirect
+
+  U->>B: Install the GitHub App
+  B->>SK: GET /connect/github (then GitHub install flow)
+  GH-->>B: Redirect to /connect/github/callback
+  SK->>DB: Upsert github_installation + installation repositories
+```
+
+## GitHub Webhook Flow
+
+GitHub delivers webhooks to `POST /api/webhooks/github`
+(`applications/web/src/routes/api/webhooks/github/+server.ts`). The endpoint:
+
+1. Verifies the HMAC signature against the configured secret (the security gate runs first).
+2. Claims the delivery by GUID (`github_webhook_delivery`) so re-deliveries are idempotent.
+3. Stores the raw event (`webhook_event`) for any delivery that carries a repository.
+4. Routes the payload through a typed router (`createGithubWebhookRouter`, imported from the external
+   `github-webhook-schemas/registry` package) that validates against the `github-webhook-schemas`
+   Zod schemas and dispatches to the matching handler in
+   `applications/web/src/routes/api/webhooks/github/handlers/`. Two event types without router
+   schemas — `issue_comment` and `pull_request_review_thread` — run through a manual fallback path in
+   the same endpoint.
+
+Installation and repository lifecycle handlers (`installation-lifecycle.server.ts`,
+`installation-repositories-lifecycle.server.ts`, `installation-target-lifecycle.server.ts`,
+`authorization-lifecycle.server.ts`, `push-lifecycle.server.ts`) keep the `github_installation` and
+`github_installation_repository` tables in sync and invalidate the relevant GitHub access/resource
+caches.
+
+Pull-request-related handlers (`pull-request.server.ts`, `pull-request-review.server.ts`,
+`pull-request-review-comment.server.ts`, `review-thread.server.ts`, `issue-comment.server.ts`,
+`check-completed-dispatch.server.ts`, etc.) call `signalPullRequestEvent` /
+`signalPullRequestClosed` from `@tribunal/github/pull-requests/state/workflow-signals`. **These
+signal functions are stubs**: the dispatch they once performed has been removed, so they
+`console.log` the signal that would have been sent and return success. The endpoint likewise only
+logs the pull-request-review dispatch it would otherwise have triggered. There is no background
+processing — the app runs no workflow engine and no worker — so these handlers exist to accept,
+verify, and record deliveries, not to drive downstream automation.
+
+The same endpoint also exposes a `GET` method that returns the GitHub App's registered webhooks for
+authenticated users (via `getRegisteredWebhooks`).
+
+## Layer References
+
+- Frontend routes: [`applications/web/src/routes/`](../applications/web/src/routes/)
+- Server domain logic: [`applications/web/src/lib/server/`](../applications/web/src/lib/server/)
+- Database schema: [`packages/database/src/schema/`](../packages/database/src/schema/)
+- GitHub domain logic: [`packages/github/src/`](../packages/github/src/)
+- GitHub webhook endpoint:
+  [`applications/web/src/routes/api/webhooks/github/`](../applications/web/src/routes/api/webhooks/github/)
+
+## Common Commands
+
+```bash
+bun install        # Install all workspace dependencies
+bun run dev        # Start the SvelteKit dev server (via Turbo)
+bun run check      # Type-check and svelte-check
+bun run lint       # Lint
+bun run test       # Run unit tests (via Turbo)
+bun run db:generate  # Generate a Drizzle migration from schema changes
+bun run db:migrate   # Apply migrations
+```
+
+See [`documentation/TESTING.md`](./TESTING.md) for the full testing workflow and
+[`documentation/GETTING_STARTED.md`](./GETTING_STARTED.md) for local setup.

@@ -1,0 +1,24 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Build output
+dist/
+**/.svelte-kit/
+**/.vercel/
+**/.tmp/
+
+# Miscellaneous
+/applications/web/static/
+/applications/web/drizzle/
+
+# AI tool configurations (contain code examples with placeholders)
+/.claude/
+/.codex/
+/.cursor/
+
+# Test results
+test-results/

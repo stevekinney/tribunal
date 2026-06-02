@@ -1,0 +1,14 @@
+version = 1
+name = "tribunal"
+
+[setup]
+script = '''
+COMMON_GIT_DIRECTORY=$(git rev-parse --git-common-dir)
+MAIN_WORKTREE=$(cd "$COMMON_GIT_DIRECTORY/.." && pwd)
+if [ -f "$MAIN_WORKTREE/.env" ]; then
+  set -a
+  . "$MAIN_WORKTREE/.env"
+  set +a
+fi
+bun install
+'''

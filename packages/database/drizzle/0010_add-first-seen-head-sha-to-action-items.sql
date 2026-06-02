@@ -1,0 +1,1 @@
+ALTER TABLE "pull_request_action_item" ADD COLUMN "first_seen_head_sha" text;

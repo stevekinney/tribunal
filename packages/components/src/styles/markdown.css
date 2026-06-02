@@ -1,0 +1,268 @@
+/**
+ * Shared Markdown Typography Styles
+ *
+ * This file provides the `.prose` class for rendering markdown content with
+ * consistent typography. Uses :where() selectors for zero specificity, allowing
+ * component-specific overrides without specificity wars.
+ *
+ * Used by:
+ * - MarkdownPreview: Static HTML rendered from markdown
+ * - MarkdownEditor: Rich text editor (ProseMirror) content
+ *
+ * The tight heading scale (1.5rem -> 1rem) is optimized for reviewing
+ * LLM-generated plans, avoiding dramatic visual jumps while maintaining
+ * clear hierarchy through weight and color variations.
+ *
+ * Pattern follows .surface and .control in components.css.
+ */
+
+@layer components {
+  /* ========================================
+   * BASE TYPOGRAPHY
+   * ======================================== */
+  :where(.prose) {
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    color: var(--text);
+  }
+
+  /* Remove top margin from first element */
+  :where(.prose) > :first-child {
+    margin-top: 0;
+  }
+
+  /* ========================================
+   * PARAGRAPHS
+   * ======================================== */
+  :where(.prose) p {
+    margin: 0 0 var(--space-3);
+  }
+
+  :where(.prose) p:last-child {
+    margin-bottom: 0;
+  }
+
+  /* ========================================
+   * HEADINGS
+   *
+   * Tight, linear scale (1.5rem -> 1rem) optimized for reviewing
+   * LLM-generated plans. Avoids dramatic visual jumps while
+   * maintaining clear hierarchy through weight and color variations.
+   * ======================================== */
+  :where(.prose) h1 {
+    font-size: 1.5rem;
+    font-weight: var(--font-bold);
+    margin: 0 0 var(--space-4);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+
+  :where(.prose) h2 {
+    font-size: 1.375rem;
+    font-weight: var(--font-semibold);
+    margin: var(--space-4) 0 var(--space-3);
+    line-height: 1.25;
+    letter-spacing: -0.005em;
+  }
+
+  :where(.prose) h3 {
+    font-size: 1.25rem;
+    font-weight: var(--font-semibold);
+    margin: var(--space-4) 0 var(--space-2);
+    line-height: 1.3;
+  }
+
+  :where(.prose) h4 {
+    font-size: 1.125rem;
+    font-weight: var(--font-semibold);
+    margin: var(--space-3) 0 var(--space-2);
+    line-height: 1.35;
+  }
+
+  :where(.prose) h5 {
+    font-size: 1.0625rem;
+    font-weight: var(--font-medium);
+    margin: var(--space-3) 0 var(--space-2);
+    line-height: 1.4;
+    color: var(--text-muted);
+  }
+
+  :where(.prose) h6 {
+    font-size: 1rem;
+    font-weight: var(--font-medium);
+    margin: var(--space-2) 0 var(--space-2);
+    line-height: 1.4;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  /* ========================================
+   * LISTS
+   * ======================================== */
+  :where(.prose) ul,
+  :where(.prose) ol {
+    margin: 0 0 var(--space-3);
+    padding-left: var(--space-6);
+  }
+
+  :where(.prose) li {
+    margin: 0 0 var(--space-1);
+  }
+
+  /* Remove paragraph margin inside list items for tight spacing.
+     Both renderers (HTML and ProseMirror) may wrap li content in p. */
+  :where(.prose) li > p {
+    margin: 0;
+  }
+
+  /* ========================================
+   * INLINE CODE
+   * ======================================== */
+  :where(.prose) code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--surface-inset);
+    padding: 0.1em 0.3em;
+    border-radius: var(--radius-sm);
+  }
+
+  /* ========================================
+   * CODE BLOCKS
+   * ======================================== */
+  :where(.prose) pre {
+    background: var(--surface-inset);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    margin: 0 0 var(--space-3);
+    overflow-x: auto;
+  }
+
+  /* Reset inline code styles inside pre blocks */
+  :where(.prose) pre code {
+    background: transparent;
+    padding: 0;
+    font-size: var(--text-sm);
+  }
+
+  /* ========================================
+   * BLOCKQUOTES
+   * ======================================== */
+  :where(.prose) blockquote {
+    border-left: 3px solid var(--border);
+    margin: 0 0 var(--space-3);
+    padding-left: var(--space-4);
+    color: var(--text-muted);
+  }
+
+  /* ========================================
+   * LINKS
+   * ======================================== */
+  :where(.prose) a {
+    color: var(--link);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }
+
+  :where(.prose) a:hover {
+    color: var(--link-hover);
+  }
+
+  /* ========================================
+   * STRONG
+   * ======================================== */
+  :where(.prose) strong {
+    font-weight: var(--font-semibold);
+  }
+
+  /* ========================================
+   * HORIZONTAL RULE
+   * ======================================== */
+  :where(.prose) hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: var(--space-6) 0;
+  }
+
+  /* ========================================
+   * GFM TABLES
+   * ======================================== */
+  :where(.prose) table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0 0 var(--space-3);
+  }
+
+  :where(.prose) th,
+  :where(.prose) td {
+    border: 1px solid var(--border);
+    padding: var(--space-2) var(--space-3);
+    text-align: left;
+  }
+
+  :where(.prose) th {
+    background: var(--surface-raised);
+    font-weight: var(--font-semibold);
+  }
+
+  /* ========================================
+   * GFM TASK LISTS
+   *
+   * Handles both:
+   * - CSS :has() for MarkdownPreview (rehype output)
+   * - data-task-list-item attribute for MarkdownEditor (ProseMirror)
+   * ======================================== */
+  :where(.prose) li:has(> input[type='checkbox']),
+  :where(.prose) li[data-task-list-item] {
+    list-style: none;
+    margin-left: calc(-1 * var(--space-6));
+    padding-left: var(--space-6);
+  }
+
+  :where(.prose) li > input[type='checkbox'],
+  :where(.prose) li[data-task-list-item] > input {
+    margin-right: var(--space-2);
+  }
+
+  /* ========================================
+   * GFM STRIKETHROUGH
+   * ======================================== */
+  :where(.prose) s,
+  :where(.prose) del {
+    text-decoration: line-through;
+    color: var(--text-muted);
+  }
+
+  /* ========================================
+   * IMAGES
+   * ======================================== */
+  :where(.prose) img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-md);
+  }
+
+  /* ========================================
+   * COMPONENT-SPECIFIC OVERRIDES
+   *
+   * These target specific component contexts that need behavior
+   * beyond the base .prose styles.
+   * ======================================== */
+
+  /* Preview: table horizontal scroll on narrow screens */
+  .markdown-preview table {
+    overflow-x: auto;
+    display: block;
+  }
+
+  /* Preview: position relative for copy button overlay */
+  .markdown-preview pre {
+    position: relative;
+  }
+
+  /* Preview: checkboxes are display-only */
+  .markdown-preview input[type='checkbox'] {
+    pointer-events: none;
+  }
+}

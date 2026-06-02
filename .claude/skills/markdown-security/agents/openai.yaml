@@ -1,0 +1,4 @@
+interface:
+  display_name: "Markdown Security"
+  short_description: "Help with Markdown Security tasks"
+  default_prompt: "Use $markdown-security to handle this task with the skill workflow."

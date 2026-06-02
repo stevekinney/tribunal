@@ -1,0 +1,62 @@
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 8
+
+[agents.default]
+description = "General-purpose repository engineer for implementation, debugging, and review."
+config_file = "agents/default.toml"
+
+[agents.worker]
+description = "Implementation specialist for writing code, tests, and fixes with strong verification."
+config_file = "agents/worker.toml"
+
+[agents.explorer]
+description = "Fast, read-only codebase exploration specialist for discovery and analysis tasks."
+config_file = "agents/explorer.toml"
+
+[agents."scrum-lord"]
+description = "Read-only scoping specialist for producing high-quality Linear tickets with concrete implementation detail."
+config_file = "agents/scrum-lord.toml"
+
+[agents."database-architect"]
+description = "PostgreSQL and Drizzle specialist for schema design, migrations, indexing, and query performance."
+config_file = "agents/database-architect.toml"
+
+[agents."github-integration-expert"]
+description = "GitHub integrations specialist for Apps, OAuth, webhooks, and robust Octokit usage."
+config_file = "agents/github-integration-expert.toml"
+
+[agents."temporal-expert"]
+description = "Temporal workflow specialist focused on determinism, reliability, cleanup safety, and operations."
+config_file = "agents/temporal-expert.toml"
+
+[agents."svelte-expert"]
+description = "Svelte 5 and SvelteKit specialist for routes, components, runes, forms, and frontend correctness."
+config_file = "agents/svelte-expert.toml"
+
+[agents."ux-designer"]
+description = "UX and accessibility review specialist for interaction quality, clarity, and consistency."
+config_file = "agents/ux-designer.toml"
+
+[agents."git-ninja"]
+description = "Git workflow specialist for branch hygiene, commit strategy, pull requests, and safe conflict resolution."
+config_file = "agents/git-ninja.toml"
+
+[agents."testing-expert"]
+description = "Testing specialist for unit, integration, and end-to-end test quality, reliability, and flakiness reduction."
+config_file = "agents/testing-expert.toml"
+
+[agents."simplicity-engineer"]
+description = "Design and review specialist focused on reducing unnecessary complexity and keeping implementations minimal."
+config_file = "agents/simplicity-engineer.toml"
+
+[agents."ci-deployment-engineer"]
+description = "CI and deployment specialist for workflow failures, migration gates, and production deployment verification."
+config_file = "agents/ci-deployment-engineer.toml"

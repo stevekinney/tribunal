@@ -1,0 +1,2 @@
+- In provider-switched flows, resolve effective defaults from provider + configured value together; do not let a required Claude default silently override Codex mode.
+- Reuse shared boolean flag parsers for environment-variable truthiness checks across entrypoints to prevent behavior drift.

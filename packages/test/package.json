@@ -1,0 +1,35 @@
+{
+  "name": "@tribunal/test",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    "./database": "./src/database.ts",
+    "./context": "./src/context.ts",
+    "./factories": "./src/factories/index.ts",
+    "./port": "./src/port.ts",
+    "./accessibility": "./src/accessibility.ts",
+    "./suppress-milkdown": "./src/suppress-milkdown.ts"
+  },
+  "scripts": {
+    "test": "vitest run -c vitest.configuration.ts",
+    "check": "tsc --noEmit",
+    "lint": "oxlint . && eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@tribunal/database": "workspace:*",
+    "@electric-sql/pglite": "^0.3.14",
+    "@oslojs/encoding": "^1.1.0",
+    "axe-core": "^4.11.0",
+    "bcryptjs": "^2.4.3",
+    "drizzle-orm": "^0.45.1"
+  },
+  "devDependencies": {
+    "@tribunal/typescript": "workspace:*",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^25",
+    "vitest": "^4.0.16"
+  }
+}

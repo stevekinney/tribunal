@@ -1,0 +1,171 @@
+# ============================================================
+# Tribunal project execution policy rules
+#
+# Goal: mirror .claude/settings.json shell behavior with concise,
+# reusable prefix patterns.
+#
+# Notes about limits of prefix_rule:
+# - Matching is exact by argv prefix token, with optional unions.
+# - Substring wildcards (for example *HUSKY=0*) are not supported.
+# - Tool-level Read/Write/Grep/Glob path restrictions are enforced by
+#   tool permissions, not by this shell prefix rules file.
+# ============================================================
+
+
+# --- Section 1: Base allows ---------------------------------
+# Keep allows broad and let explicit forbids take precedence.
+
+prefix_rule(
+    pattern = ["gh"],
+    decision = "allow",
+    justification = "GitHub CLI is allowed for PR and repository operations.",
+)
+
+prefix_rule(
+    pattern = ["git"],
+    decision = "allow",
+    justification = "Git is allowed; destructive/bypass operations are blocked by explicit forbidden rules.",
+)
+
+prefix_rule(
+    pattern = [["bun", "bunx", "npm", "npx", "pnpm", "yarn"]],
+    decision = "allow",
+    justification = "Package manager and script runner commands are allowed.",
+)
+
+prefix_rule(
+    pattern = [["turbo", "node", "tsc", "vitest", "prettier", "eslint", "oxlint", "lefthook"]],
+    decision = "allow",
+    justification = "Build, test, lint, and runtime tool commands are allowed.",
+)
+
+prefix_rule(
+    pattern = [[
+        "mkdir", "ls", "rm", "cat", "cp", "mv", "wc", "head", "tail", "sort", "uniq", "diff", "find", "grep", "rg", "sed", "awk", "xargs", "touch", "chmod", "dirname", "basename", "realpath", "pwd", "curl", "jq", "which", "echo", "printf", "env", "true", "false", "test", "["
+    ]],
+    decision = "allow",
+    justification = "General shell utility commands are allowed.",
+)
+
+
+# --- Section 2: Forbidden Git operations --------------------
+# Mirrors .claude/settings.json Bash deny patterns.
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "Hard reset is destructive and disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "checkout", "--"],
+    decision = "forbidden",
+    justification = "Discarding local changes with checkout -- is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "clean", ["-f", "-d", "-fd", "-df", "-xdf", "--force"]],
+    decision = "forbidden",
+    justification = "Destructive git clean operations are disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "commit", "--no-verify"],
+    decision = "forbidden",
+    justification = "Bypassing commit hooks with --no-verify is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "commit", "-n"],
+    decision = "forbidden",
+    justification = "Bypassing commit hooks with -n is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--no-verify"],
+    decision = "forbidden",
+    justification = "Bypassing push hooks with --no-verify is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-n"],
+    decision = "forbidden",
+    justification = "Bypassing push hooks with -n is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force"],
+    decision = "forbidden",
+    justification = "Force push with --force is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-f"],
+    decision = "forbidden",
+    justification = "Force push with -f is disallowed.",
+)
+
+
+# --- Section 3: Best-effort secret protections --------------
+# These complement, but do not replace, tool-level path denies.
+# Wildcards like Read(./.env.*) are not representable here.
+
+prefix_rule(
+    pattern = ["cat", ".env"],
+    decision = "forbidden",
+    justification = "Reading .env directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", "./.env"],
+    decision = "forbidden",
+    justification = "Reading .env directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", ".env.local"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", "./.env.local"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", ".env.development"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", "./.env.development"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", ".env.production"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", "./.env.production"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", ".env.test"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)
+
+prefix_rule(
+    pattern = ["cat", "./.env.test"],
+    decision = "forbidden",
+    justification = "Reading .env.* files directly is disallowed.",
+)

@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "codex": {
+      "type": "stdio",
+      "command": "codex",
+      "args": ["mcp-server"],
+      "tools": ["*"]
+    },
+    "svelte": {
+      "type": "http",
+      "url": "https://mcp.svelte.dev/mcp",
+      "tools": ["*"]
+    },
+    "storybook": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "storybook-mcp"],
+      "env": {
+        "STORYBOOK_URL": "http://localhost:6006/index.json"
+      },
+      "tools": ["*"],
+      "disabled": true
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "tools": ["*"]
+    },
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["chrome-devtools-mcp@latest"],
+      "tools": ["*"]
+    },
+    "linear": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      "tools": ["*"]
+    }
+  }
+}

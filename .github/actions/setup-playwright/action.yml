@@ -1,0 +1,28 @@
+name: 'Setup Playwright'
+description: 'Install and cache Playwright Chromium. Requires bun install to have run first so node_modules/playwright exists.'
+runs:
+  using: 'composite'
+  steps:
+    - name: Get Playwright version
+      id: playwright-version
+      shell: bash
+      run: echo "version=$(jq -r .version node_modules/playwright/package.json)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Playwright browsers
+      id: playwright-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+    - name: Install Playwright Chromium and dependencies
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: applications/web
+      run: bunx playwright install chromium --with-deps
+
+    - name: Ensure Playwright Chromium is available
+      if: steps.playwright-cache.outputs.cache-hit == 'true'
+      shell: bash
+      working-directory: applications/web
+      run: bunx playwright install chromium

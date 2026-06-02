@@ -1,0 +1,2 @@
+- In codex mode, budget-ignore warnings should trigger only when budget values are explicitly overridden from defaults; do not infer intent from a value merely being finite.
+- Defensive budget warning formatting must guard non-finite numbers (`Infinity`, `NaN`) before numeric formatting to avoid misleading output and warning noise.

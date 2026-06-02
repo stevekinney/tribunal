@@ -1,0 +1,4 @@
+- In long-lived CLI runner modes, lifecycle failure callbacks must trigger a runner abort path immediately instead of waiting for future edge-triggered dispatch attempts.
+- Signal handlers in polling loops must wake the sleep interval and request an orderly abort to avoid hanging after SIGINT/SIGTERM.
+- Process-manager errors should expose structured reason codes (not message parsing) so executor abort classification remains stable as error text evolves.
+- Shutdown APIs for interactive subprocess managers should be idempotent after completion to prevent duplicate shutdown side effects.

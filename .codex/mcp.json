@@ -1,0 +1,10 @@
+{
+	"mcpServers": {
+		"tribunal-codex": {
+			"command": "codex",
+			"args": ["mcp-server"],
+			"env": {},
+			"allowedTools": ["read_file", "list_directory", "search_files"]
+		}
+	}
+}

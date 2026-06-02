@@ -1,0 +1,73 @@
+{
+  "name": "@tribunal/components",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    "./alert": "./src/alert/index.ts",
+    "./avatar": "./src/avatar/index.ts",
+    "./badge": "./src/badge/index.ts",
+    "./breadcrumbs": "./src/breadcrumbs/index.ts",
+    "./button": "./src/button/index.ts",
+    "./card": "./src/card/index.ts",
+    "./copy-button": "./src/copy-button/index.ts",
+    "./data-list": "./src/data-list/index.ts",
+    "./dropdown": "./src/dropdown/index.ts",
+    "./empty-state": "./src/empty-state/index.ts",
+    "./form": "./src/form/index.ts",
+    "./icon-container": "./src/icon-container/index.ts",
+    "./input": "./src/input/index.ts",
+    "./label": "./src/label/index.ts",
+    "./link": "./src/link/index.ts",
+    "./modal": "./src/modal/index.ts",
+    "./navigation": "./src/navigation/index.ts",
+    "./overlay": "./src/overlay/index.ts",
+    "./page": "./src/page/index.ts",
+    "./skip-links": "./src/skip-links/index.ts",
+    "./user-menu": "./src/user-menu/index.ts",
+    "./styles": "./src/styles/index.css",
+    "./styles/tokens": "./src/styles/tokens.css",
+    "./utilities/cn": "./src/utilities/cn.ts",
+    "./utilities/clipboard": "./src/utilities/clipboard.ts",
+    "./utilities/use-clipboard": "./src/utilities/use-clipboard.svelte.ts",
+    "./utilities/use-announcer": "./src/utilities/use-announcer.svelte.ts",
+    "./utilities/use-form-keyboard": "./src/utilities/use-form-keyboard.svelte.ts",
+    "./utilities/use-form-navigation": "./src/utilities/use-form-navigation.svelte.ts",
+    "./utilities/attachments": "./src/utilities/attachments.ts",
+    "./utilities/resolve-href": "./src/utilities/resolve-href.ts",
+    "./utilities/format-date": "./src/utilities/format-date.ts",
+    "./utilities/format-duration": "./src/utilities/format-duration.ts",
+    "./utilities/truncate": "./src/utilities/truncate.ts",
+    "./utilities/stringify": "./src/utilities/stringify.ts"
+  },
+  "scripts": {
+    "test": "vitest run --project server",
+    "test:client": "vitest run --project client",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "oxlint . && eslint .",
+    "format": "prettier --write --ignore-path ../../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
+  },
+  "dependencies": {
+    "@tribunal/github": "workspace:*",
+    "clsx": "^2.1.1",
+    "lucide-svelte": "^0.561.0",
+    "mermaid": "^11.12.2"
+  },
+  "peerDependencies": {
+    "@sveltejs/kit": "^2.0.0",
+    "svelte": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tribunal/database": "workspace:*",
+    "@tribunal/test": "workspace:*",
+    "@tribunal/typescript": "workspace:*",
+    "@types/node": "^25",
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@vitest/browser-playwright": "^4.0.16",
+    "svelte": "^5.46.0",
+    "svelte-check": "^4.3.4",
+    "vitest": "^4.0.16",
+    "vitest-browser-svelte": "^2.0.1"
+  }
+}

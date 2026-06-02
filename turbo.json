@@ -1,0 +1,27 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalEnv": ["DATABASE_URL", "NODE_ENV"],
+  "globalPassThroughEnv": ["CI", "NODE_OPTIONS"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "check": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"],
+      "env": ["CI"],
+      "passThroughEnv": ["VITEST_*"]
+    },
+    "lint": {},
+    "format": {},
+    "format:check": {},
+    "dev": {
+      "persistent": true,
+      "cache": false
+    }
+  }
+}

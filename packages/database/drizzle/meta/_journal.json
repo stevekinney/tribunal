@@ -1,0 +1,160 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1771287686832,
+      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1771287837934,
+      "tag": "0001_remove-free-form-question-type",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1771358638206,
+      "tag": "0002_fancy_miss_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1771360360941,
+      "tag": "0003_clumsy_forgotten_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1771364093527,
+      "tag": "0004_hard_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1771450000000,
+      "tag": "0005_enforce_workflow_correlation",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771450000001,
+      "tag": "0006_add-workflow-type-to-sandbox-lifecycle-tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771525712681,
+      "tag": "0007_add-pr-review-enabled-to-workflow-config",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771531440820,
+      "tag": "0008_add-pull-request-action-items",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771535599780,
+      "tag": "0009_add-repository-sandbox-session-tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771543912343,
+      "tag": "0010_add-first-seen-head-sha-to-action-items",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771595773739,
+      "tag": "0011_add-question-answer-project-handle",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1771803342383,
+      "tag": "0012_add-user-api-key-composite-indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1771802681716,
+      "tag": "0013_add-placeholder-schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1771803406368,
+      "tag": "0014_replace-invitation-with-invite-link",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1771803500000,
+      "tag": "0015_dep-636-rename-placeholder-to-template",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1771804800000,
+      "tag": "0016_add-templates-reserved-project-handle",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1771948383000,
+      "tag": "0017_add-project-review-agent-schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1771950000000,
+      "tag": "0018_create-agent-definitions-table",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1772006400000,
+      "tag": "0019_add-missing-foreign-key-indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1772121600000,
+      "tag": "0020_add-agents-reserved-project-handle",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1772208000000,
+      "tag": "0021_add-sandbox-session-lifecycle-fields",
+      "breakpoints": true
+    }
+  ]
+}

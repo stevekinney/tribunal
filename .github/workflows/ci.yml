@@ -1,0 +1,335 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+  TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+  TURBO_SCM_HEAD: ${{ github.event_name == 'pull_request' && github.sha || '' }}
+
+jobs:
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: ./.github/actions/setup
+      - name: Type check
+        run: bunx turbo run check ${{ github.event_name == 'pull_request' && '--affected' || '' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+  lint-format:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: ./.github/actions/setup
+      - name: Format check
+        run: bun run format:check
+      - name: Lint
+        run: bunx turbo run lint ${{ github.event_name == 'pull_request' && '--affected' || '' }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Run package tests
+        shell: bash
+        run: |
+          set -o pipefail
+          bunx turbo run test --filter='!@tribunal/web' 2>&1 | tee "$RUNNER_TEMP/test-packages.log"
+      - name: Run unit tests (server)
+        shell: bash
+        run: |
+          set -o pipefail
+          bun run --cwd applications/web test:unit:server -- --run 2>&1 | tee "$RUNNER_TEMP/test-server.log"
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+      - name: Scan test output for timeout signatures
+        if: failure()
+        shell: bash
+        run: |
+          echo "::group::Timeout signature scan"
+
+          TIMEOUT_PATTERNS='Hook timed out|timed out|ETIMEDOUT|setTimeout.*exceeded|hookTimeout'
+          FOUND_SIGNATURES=0
+
+          for logfile in "$RUNNER_TEMP"/test-packages.log "$RUNNER_TEMP"/test-server.log; do
+            if [ ! -f "$logfile" ]; then
+              echo "[TRIBUNAL-CI-SCAN] Log file not found: $logfile (step may not have run)"
+              continue
+            fi
+
+            matches=$(grep -icE "$TIMEOUT_PATTERNS" "$logfile" || true)
+            if [ "$matches" -gt 0 ]; then
+              FOUND_SIGNATURES=1
+              echo ""
+              echo "[TRIBUNAL-CI-SCAN] timeout-signature-detected in $(basename "$logfile") ($matches match(es)):"
+              grep -inE "$TIMEOUT_PATTERNS" "$logfile" || true
+            fi
+          done
+
+          echo ""
+          if [ "$FOUND_SIGNATURES" -eq 1 ]; then
+            echo "[TRIBUNAL-CI-SCAN] RESULT: timeout-signature-detected"
+            echo "[TRIBUNAL-CI-SCAN] The failure likely involves a timeout. See packages/test/src/database.ts for PGlite timing diagnostics."
+          else
+            echo "[TRIBUNAL-CI-SCAN] RESULT: timeout-signature-not-detected"
+            echo "[TRIBUNAL-CI-SCAN] No timeout patterns found in test output. The failure is likely a genuine test assertion error."
+          fi
+
+          echo ""
+          echo "[TRIBUNAL-CI-TIMEOUT-HINT] If the scan missed a pattern, check the raw logs above for 'Hook timed out' or 'timed out'."
+          echo "[TRIBUNAL-CI-TIMEOUT-HINT] See packages/test/src/database.ts for the timing diagnostic and packages/test/src/database-timing.test.ts for the soft-assert timing test."
+
+          echo "::endgroup::"
+
+  test-browser:
+    name: Browser Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for browser-testable changes
+        id: browser-changes
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD -- \
+              'applications/web/src/**' \
+              'applications/web/test/**' \
+              'packages/components/src/**' \
+              'packages/components/test/**' \
+              '**/*.svelte' \
+              '.github/workflows/ci.yml' \
+              '.github/actions/setup-playwright/**' || true)
+            if [ -n "$CHANGED" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - uses: ./.github/actions/setup
+        if: steps.browser-changes.outputs.changed == 'true'
+      - uses: ./.github/actions/setup-playwright
+        if: steps.browser-changes.outputs.changed == 'true'
+
+      - name: Run unit tests (browser)
+        if: steps.browser-changes.outputs.changed == 'true'
+        run: bun run --cwd applications/web test:unit:client -- --run
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: Run components browser tests
+        if: steps.browser-changes.outputs.changed == 'true'
+        working-directory: packages/components
+        run: bun run test:client
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: ./.github/actions/setup
+      - name: Build
+        run: bunx turbo run build ${{ github.event_name == 'pull_request' && '--affected' || '' }}
+        env:
+          DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
+
+  migration:
+    name: Migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: tribunal_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: test
+      PGPASSWORD: test
+      PGDATABASE: tribunal_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Check migration consistency
+        run: bun run db:check
+      - name: Apply migrations
+        run: |
+          for f in packages/database/drizzle/[0-9]*.sql; do
+            echo "Applying $f..."
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Verify rename migration compatibility with pre-renamed template tables
+        run: |
+          set -euo pipefail
+
+          # Reproduce a production failure mode where the table had already
+          # been renamed to "template" before migration 0015 ran through
+          # drizzle-kit migrate.
+          compatibility_database_name="tribunal_migration_compatibility"
+          compatibility_database_url="postgres://test:test@localhost:5432/${compatibility_database_name}"
+
+          psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS ${compatibility_database_name};"
+          psql -v ON_ERROR_STOP=1 -d postgres -c "CREATE DATABASE ${compatibility_database_name};"
+
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            if [ "$(basename "$migration_file")" = "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              break
+            fi
+            psql "$compatibility_database_url" -v ON_ERROR_STOP=1 -f "$migration_file"
+          done
+
+          psql "$compatibility_database_url" -v ON_ERROR_STOP=1 <<'SQL'
+            ALTER TABLE "placeholder" RENAME TO "template";
+            ALTER TABLE "template" RENAME CONSTRAINT "placeholder_pkey" TO "template_pkey";
+            ALTER TABLE "template" RENAME CONSTRAINT "placeholder_workspace_id_workspace_id_fk" TO "template_workspace_id_workspace_id_fk";
+            ALTER INDEX "placeholder_workspace_idx" RENAME TO "template_workspace_idx";
+
+            CREATE SCHEMA IF NOT EXISTS drizzle;
+            CREATE TABLE IF NOT EXISTS drizzle."__drizzle_migrations" (
+              id SERIAL PRIMARY KEY,
+              hash text NOT NULL,
+              created_at bigint
+            );
+          SQL
+
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            if [ "$(basename "$migration_file")" = "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              break
+            fi
+            migration_hash=$(sha256sum "$migration_file" | awk '{print $1}')
+            psql "$compatibility_database_url" -v ON_ERROR_STOP=1 -c \
+              "INSERT INTO drizzle.\"__drizzle_migrations\" (hash, created_at) VALUES ('${migration_hash}', (EXTRACT(EPOCH FROM NOW()) * 1000)::bigint);"
+          done
+
+          # Apply remaining migrations directly with psql (drizzle-kit migrate doesn't work with local postgres)
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            migration_name=$(basename "$migration_file")
+            if [ "$migration_name" \< "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              continue
+            fi
+            echo "Applying remaining migration: $migration_name"
+            psql "$compatibility_database_url" -v ON_ERROR_STOP=1 -f "$migration_file"
+          done
+
+          # Reproduce a second production failure mode:
+          # migration history says 0014 is applied, but neither table exists.
+          missing_table_database_name="tribunal_migration_missing_template"
+          missing_table_database_url="postgres://test:test@localhost:5432/${missing_table_database_name}"
+
+          psql -v ON_ERROR_STOP=1 -d postgres -c "DROP DATABASE IF EXISTS ${missing_table_database_name};"
+          psql -v ON_ERROR_STOP=1 -d postgres -c "CREATE DATABASE ${missing_table_database_name};"
+
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            if [ "$(basename "$migration_file")" = "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              break
+            fi
+            psql "$missing_table_database_url" -v ON_ERROR_STOP=1 -f "$migration_file"
+          done
+
+          psql "$missing_table_database_url" -v ON_ERROR_STOP=1 <<'SQL'
+            DROP TABLE IF EXISTS "placeholder" CASCADE;
+            DROP TABLE IF EXISTS "template" CASCADE;
+
+            CREATE SCHEMA IF NOT EXISTS drizzle;
+            CREATE TABLE IF NOT EXISTS drizzle."__drizzle_migrations" (
+              id SERIAL PRIMARY KEY,
+              hash text NOT NULL,
+              created_at bigint
+            );
+          SQL
+
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            if [ "$(basename "$migration_file")" = "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              break
+            fi
+            migration_hash=$(sha256sum "$migration_file" | awk '{print $1}')
+            psql "$missing_table_database_url" -v ON_ERROR_STOP=1 -c \
+              "INSERT INTO drizzle.\"__drizzle_migrations\" (hash, created_at) VALUES ('${migration_hash}', (EXTRACT(EPOCH FROM NOW()) * 1000)::bigint);"
+          done
+
+          # Apply remaining migrations directly with psql (drizzle-kit migrate doesn't work with local postgres)
+          for migration_file in packages/database/drizzle/[0-9]*.sql; do
+            migration_name=$(basename "$migration_file")
+            if [ "$migration_name" \< "0015_dep-636-rename-placeholder-to-template.sql" ]; then
+              continue
+            fi
+            echo "Applying remaining migration: $migration_name"
+            psql "$missing_table_database_url" -v ON_ERROR_STOP=1 -f "$migration_file"
+          done
+      - name: Verify schema structure
+        run: |
+          TABLE_COUNT=$(psql -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'")
+          echo "Tables found: $TABLE_COUNT"
+          if [ "$TABLE_COUNT" -lt 10 ]; then
+            echo "::error::Expected at least 10 tables, found $TABLE_COUNT"
+            exit 1
+          fi
+
+          # Count SQL files applied by the psql loop above and compare against the
+          # journal. We do not query drizzle.__drizzle_migrations here because that
+          # table is only populated by drizzle-kit migrate, not by raw psql execution.
+          APPLIED_COUNT=$(ls packages/database/drizzle/[0-9]*.sql 2>/dev/null | wc -l | tr -d ' ')
+          EXPECTED_COUNT=$(jq '.entries | length' packages/database/drizzle/meta/_journal.json)
+          echo "SQL files applied: $APPLIED_COUNT / $EXPECTED_COUNT expected"
+          if [ "$APPLIED_COUNT" != "$EXPECTED_COUNT" ]; then
+            echo "::error::Migration file count mismatch: applied $APPLIED_COUNT SQL files, journal has $EXPECTED_COUNT entries"
+            exit 1
+          fi
+      - name: Check for uncommitted schema drift
+        run: bun run --cwd packages/database check:migrations
+
+  ci-status:
+    name: CI Status
+    if: always()
+    needs: [type-check, lint-format, test-unit, test-browser, build, migration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

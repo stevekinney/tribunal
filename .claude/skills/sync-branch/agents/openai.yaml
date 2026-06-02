@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sync Branch"
+  short_description: "Help with Sync Branch tasks"
+  default_prompt: "Use $sync-branch to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": [".svelte-kit/**", ".vercel/**"],
+      "passThroughEnv": [
+        "VERCEL_*",
+        "ENCRYPTION_KEY",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "LINEAR_*",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_*",
+        "TEMPORAL_*",
+        "NOTION_*",
+        "RESEND_API_KEY",
+        "SLACK_*",
+        "E2B_API_KEY",
+        "AWS_*"
+      ]
+    }
+  }
+}

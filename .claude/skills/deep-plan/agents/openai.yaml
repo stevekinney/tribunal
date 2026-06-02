@@ -1,0 +1,7 @@
+interface:
+  display_name: "Deep Plan"
+  short_description: "Deep codebase analysis and comprehensive implementation planning for Linear tickets"
+  default_prompt: "Use $deep-plan to analyze Linear tickets and write implementation plans into their descriptions."
+
+policy:
+  allow_implicit_invocation: false

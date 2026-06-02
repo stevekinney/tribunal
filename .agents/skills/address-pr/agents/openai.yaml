@@ -1,0 +1,7 @@
+interface:
+  display_name: "Address PR"
+  short_description: "Help with Address PR tasks"
+  default_prompt: "Use $address-pr to handle this task with the skill workflow."
+
+policy:
+  allow_implicit_invocation: false

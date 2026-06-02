@@ -1,0 +1,161 @@
+@layer components {
+  /* ========================================
+   * SURFACE
+   * ======================================== */
+  :where(.surface) {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  :where(.surface[data-tone='raised']) {
+    background: var(--surface-raised);
+    border-color: var(--border-muted);
+  }
+
+  :where(.surface[data-tone='inset']) {
+    background: var(--surface-inset);
+  }
+
+  /* ========================================
+   * SHARED CONTROL BASE
+   * Used by Input, Textarea, Select
+   * ======================================== */
+  :where(.control) {
+    display: block;
+    width: 100%;
+    min-height: var(--control-height);
+    padding: var(--control-padding-y) var(--control-padding-x);
+    font-size: var(--control-font-size);
+    line-height: var(--leading-normal);
+    color: var(--control-text);
+    background-color: var(--control-bg);
+    border: 1px solid var(--control-border);
+    border-radius: var(--control-radius);
+    transition:
+      border-color var(--duration-fast) var(--ease-standard),
+      box-shadow var(--duration-fast) var(--ease-standard);
+    appearance: none;
+  }
+
+  :where(.control)::placeholder {
+    color: var(--control-placeholder);
+  }
+
+  :where(.control):hover:not(:disabled) {
+    border-color: var(--control-border-hover);
+  }
+
+  :where(.control):focus-visible {
+    outline: 2px solid transparent; /* Forced colors fallback */
+    outline-offset: var(--ring-offset);
+    box-shadow:
+      0 0 0 var(--ring-offset) var(--ring-offset-color),
+      0 0 0 calc(var(--ring-offset) + var(--ring-width)) var(--control-ring-color);
+  }
+
+  :where(.control):disabled {
+    background: var(--control-bg-disabled);
+    border-color: var(--control-border-disabled);
+    color: var(--control-text-disabled);
+    cursor: not-allowed;
+  }
+
+  :where(.control)[aria-invalid='true'] {
+    --control-border: var(--control-border-error);
+    --control-ring-color: var(--control-ring-color-error);
+  }
+
+  /* ========================================
+   * MARKDOWN EDITOR
+   * ======================================== */
+  :where(.markdown-editor-wrapper[data-has-toolbar]:focus-within) {
+    border-radius: var(--radius-md);
+    box-shadow:
+      0 0 0 var(--ring-offset) var(--ring-offset-color),
+      0 0 0 calc(var(--ring-offset) + var(--ring-width)) var(--control-ring-color);
+  }
+
+  :where(.markdown-editor-wrapper:focus-within) :where(.editor-toolbar, .markdown-editor) {
+    border-color: var(--accent);
+  }
+
+  :where(.markdown-editor) :where(.ProseMirror:focus-visible) {
+    outline: none;
+  }
+
+  @media (forced-colors: active) {
+    :where(.control):focus-visible {
+      outline: 2px solid CanvasText;
+    }
+  }
+
+  /* ========================================
+   * FORM FIELD WRAPPER
+   * ======================================== */
+  :where(.form-field) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--field-gap);
+  }
+
+  :where(.field-label) {
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text);
+  }
+
+  :where(.field-description) {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  :where(.field-error) {
+    font-size: var(--text-sm);
+    color: var(--field-error-color);
+  }
+
+  :where(.required-indicator) {
+    color: var(--field-error-color);
+    margin-inline-start: var(--space-1);
+  }
+
+  /* ========================================
+   * OVERLAY CLOSE BUTTON
+   * Used by Modal, Sheet
+   * ======================================== */
+  :where(.overlay-close) {
+    position: absolute;
+    right: var(--space-3);
+    top: var(--space-3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-1-5);
+    border-radius: var(--radius-md);
+    border: none;
+    background: transparent;
+    color: var(--text-subtle);
+    cursor: pointer;
+    transition:
+      color var(--duration-fast) var(--ease-standard),
+      background-color var(--duration-fast) var(--ease-standard);
+  }
+
+  :where(.overlay-close):hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+
+  :where(.overlay-close):focus-visible {
+    outline: 2px solid transparent;
+    box-shadow:
+      0 0 0 var(--ring-offset) var(--ring-offset-color),
+      0 0 0 calc(var(--ring-offset) + var(--ring-width)) var(--control-ring-color);
+  }
+
+  :where(.overlay-close-icon) {
+    width: 1rem;
+    height: 1rem;
+  }
+}

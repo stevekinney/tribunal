@@ -1,0 +1,18 @@
+/**
+ * Global Layout Styles
+ *
+ * This file imports the design system and adds any global styles
+ * specific to the app layout.
+ */
+
+@import '@tribunal/components/styles';
+
+/* KaTeX math rendering — required for $...$ and $$...$$ display in chat */
+@import 'katex/dist/katex.min.css';
+
+/* Prose heading anchor links - hide separate anchor elements */
+.prose :is(h1, h2, h3, h4, h5, h6) + a[href^='#'],
+.prose a.anchor,
+.prose a[aria-hidden='true'] {
+  display: none;
+}

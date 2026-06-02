@@ -1,0 +1,7 @@
+interface:
+  display_name: "Analyze Project"
+  short_description: "Build project context and planning prompts"
+  default_prompt: "Use $analyze-project to generate or refresh project analysis artifacts."
+
+policy:
+  allow_implicit_invocation: false

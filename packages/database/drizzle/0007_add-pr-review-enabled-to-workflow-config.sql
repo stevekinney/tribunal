@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_config" ADD COLUMN "pr_review_enabled" boolean DEFAULT true NOT NULL;

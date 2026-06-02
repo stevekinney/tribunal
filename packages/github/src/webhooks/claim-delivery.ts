@@ -1,0 +1,38 @@
+/**
+ * Webhook delivery idempotency.
+ *
+ * Atomically claims webhook deliveries to prevent duplicate processing
+ * when GitHub retries or when multiple instances receive the same event.
+ */
+
+import { githubWebhookDelivery } from '@tribunal/database/schema';
+import type { GithubServiceContext } from '../context.js';
+
+/**
+ * Atomically try to claim a webhook delivery for processing.
+ * Returns true if this caller should process the webhook (first to claim).
+ * Returns false if another request already claimed it (duplicate).
+ *
+ * This avoids the race condition in check-then-record pattern by using
+ * INSERT ... ON CONFLICT DO NOTHING and checking if a row was inserted.
+ */
+export async function claimWebhookDelivery(
+  context: GithubServiceContext,
+  deliveryId: string,
+  eventType: string,
+  installationId?: number,
+): Promise<boolean> {
+  // Try to insert. If conflict (already exists), no rows returned.
+  const inserted = await context.db
+    .insert(githubWebhookDelivery)
+    .values({
+      deliveryId,
+      eventType,
+      installationId,
+    })
+    .onConflictDoNothing()
+    .returning({ id: githubWebhookDelivery.id });
+
+  // If we got a row back, we successfully claimed this delivery
+  return inserted.length > 0;
+}

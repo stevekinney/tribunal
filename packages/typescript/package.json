@@ -1,0 +1,9 @@
+{
+  "name": "@tribunal/typescript",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  }
+}

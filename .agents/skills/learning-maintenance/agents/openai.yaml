@@ -1,0 +1,7 @@
+interface:
+  display_name: "Learning Maintenance"
+  short_description: "Promote and prune review learnings"
+  default_prompt: "Use $learning-maintenance to promote review learnings into project docs and prune processed files."
+
+policy:
+  allow_implicit_invocation: false

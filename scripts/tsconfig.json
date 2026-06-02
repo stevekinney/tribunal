@@ -1,0 +1,14 @@
+{
+  "extends": "../packages/typescript/base.json",
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["bun-types"],
+    "paths": {
+      "$lib/*": ["../applications/web/src/lib/*"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

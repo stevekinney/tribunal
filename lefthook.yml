@@ -1,0 +1,32 @@
+pre-commit:
+  parallel: false
+  commands:
+    format:
+      glob: '*.{js,ts,svelte,json,md,css,html}'
+      run: bunx lint-staged
+    lint-changed:
+      glob: '*.{cjs,js,jsx,mjs,svelte,ts,tsx,cts,mts}'
+      # HEAD-guard: lint only changed packages when HEAD resolves,
+      # otherwise (initial/orphan commit) lint all packages.
+      run: |
+        if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+          bunx turbo run lint --filter='...[HEAD]' --continue -- --max-warnings 0
+        else
+          bunx turbo run lint --continue -- --max-warnings 0
+        fi
+    migration-consistency:
+      glob: 'packages/database/src/schema/*'
+      run: bun run packages/database/scripts/check-migration-consistency.ts
+
+pre-push:
+  parallel: false
+  commands:
+    strict-check:
+      # CI-duplicated checks remain opt-in via the HOOKS_STRICT gate.
+      run: |
+        if [ "${HOOKS_STRICT:-0}" = "1" ]; then
+          if git rev-parse --verify @{u} >/dev/null 2>&1; then ref="@{u}"; else ref="HEAD~1"; fi
+          bunx turbo run check --filter="...[$ref...HEAD]" && bunx turbo run build --filter="...[$ref...HEAD]"
+        else
+          echo 'Skipping CI-duplicated checks (type check, build). Use HOOKS_STRICT=1 or bun run verify for full validation.'
+        fi
