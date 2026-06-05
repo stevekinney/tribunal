@@ -268,6 +268,8 @@ export const POST: RequestHandler = async (event) => {
 
   // 7. Pull request review dispatch would have happened here. The workflow
   // runtime has been removed, so we log what would have been dispatched.
+  // TODO(weft): Dispatch this pull request review workflow through ../weft once
+  // durable webhook orchestration is restored.
   console.log('[webhook] would dispatch pull-request-review workflow', {
     eventType,
     action: action ?? undefined,

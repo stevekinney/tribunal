@@ -1,8 +1,6 @@
 import { redirect } from '@sveltejs/kit';
-import {
-  isDevTokenLoginEnabled,
-  bootstrapSessionFromGitHubToken,
-} from '$lib/server/auth/development-login';
+import { env as privateEnv } from '$env/dynamic/private';
+import { env as publicEnv } from '$env/dynamic/public';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
@@ -10,12 +8,7 @@ export const load: PageServerLoad = async (event) => {
     redirect(302, '/');
   }
 
-  if (isDevTokenLoginEnabled()) {
-    const success = await bootstrapSessionFromGitHubToken(event);
-    if (success) {
-      redirect(302, '/');
-    }
-  }
-
-  return {};
+  return {
+    neonAuthConfigured: Boolean(publicEnv.PUBLIC_NEON_AUTH_URL && privateEnv.NEON_AUTH_BASE_URL),
+  };
 };

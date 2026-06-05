@@ -89,7 +89,7 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
 ```
 
 `createTestDatabase()` spins up a PGlite client with the current Drizzle schema applied. The factories in
-`@tribunal/test/factories` mirror the flat data model — `user`, `session`, `oauthConnection`,
+`@tribunal/test/factories` mirror the flat data model — `user`, `oauthConnection`,
 `githubInstallation`, `repository`, `pullRequest`, `webhookDelivery`, and `userApiKey`. Call
 `resetIdCounter()` per test to keep generated IDs deterministic. See
 `applications/web/src/lib/server/api-keys/user-api-key-service.test.ts` for a worked example.

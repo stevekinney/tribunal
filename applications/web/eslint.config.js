@@ -9,7 +9,14 @@ import oxlint from 'eslint-plugin-oxlint';
 
 export default defineConfig(
   {
-    ignores: ['drizzle/**', 'static/**', 'node_modules/**', '.svelte-kit/**', '.vercel/**'],
+    ignores: [
+      'build/**',
+      'drizzle/**',
+      'static/**',
+      'node_modules/**',
+      '.svelte-kit/**',
+      '.vercel/**',
+    ],
   },
   js.configs.recommended,
   ...ts.configs.recommended,

@@ -26,6 +26,9 @@ export interface CheckCompletedDispatchOptions {
 /**
  * Dispatch orchestrator signals for all PRs associated with a completed check run or suite.
  * Throws if any signal fails, so the outer handler can return a 500 for GitHub to retry.
+ *
+ * TODO(weft): Route these check-completed signals into a ../weft pull request
+ * orchestrator workflow instead of the current workflow-signals stub.
  */
 export async function dispatchCheckCompletedSignals(
   options: CheckCompletedDispatchOptions,

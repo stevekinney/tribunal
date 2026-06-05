@@ -16,6 +16,9 @@ import {
  * Orchestrator-trigger actions (opened, reopened) throw on dispatch failure for 500 retry.
  * The synchronize action is not dispatched to the orchestrator (matches pre-refactor behavior).
  * Claiming is performed at the +server.ts level for all orchestrator events.
+ *
+ * TODO(weft): Route pull request open/reopen/close signals into a ../weft pull
+ * request orchestrator workflow instead of the current workflow-signals stub.
  */
 export async function handlePullRequestEvent(
   payload: PullRequestEvent,

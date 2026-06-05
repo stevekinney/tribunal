@@ -41,7 +41,7 @@ describe('validate-invariants', () => {
         'pull_request_state',
         'workflow_run',
         'github_installation',
-        'session',
+        'oauth_connection',
       ];
       for (const table of criticalTables) {
         expect(EXPECTED_TABLES).toContain(table);
@@ -49,13 +49,7 @@ describe('validate-invariants', () => {
     });
 
     it('contains auxiliary tables across the flat data model', () => {
-      const parityTables = [
-        'auth_account',
-        'oauth_connection',
-        'user_api_key',
-        'github_webhook_delivery',
-        'webhook_event',
-      ];
+      const parityTables = ['user_api_key', 'github_webhook_delivery', 'webhook_event'];
       for (const table of parityTables) {
         expect(EXPECTED_TABLES).toContain(table);
       }

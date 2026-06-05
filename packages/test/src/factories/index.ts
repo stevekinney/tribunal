@@ -20,21 +20,13 @@
 // Core utilities
 export { generateId, resetIdCounter, type Database } from './core';
 
-// User & Session
+// User
 export { createUserFactory, type UserFactory, type UserFactoryInput } from './user';
-export { createSessionFactory, type SessionFactory, type SessionFactoryInput } from './session';
 export {
   createUserApiKeyFactory,
   type UserApiKeyFactory,
   type UserApiKeyFactoryInput,
 } from './user-api-key';
-
-// Auth
-export {
-  createAuthenticationAccountFactory,
-  type AuthenticationAccountFactory,
-  type AuthenticationAccountFactoryInput,
-} from './auth-account';
 
 // GitHub
 export {
@@ -73,11 +65,6 @@ export {
 
 import type { Database } from './core';
 import { createUserFactory, type UserFactory } from './user';
-import { createSessionFactory, type SessionFactory } from './session';
-import {
-  createAuthenticationAccountFactory,
-  type AuthenticationAccountFactory,
-} from './auth-account';
 import {
   createGitHubInstallationFactory,
   type GitHubInstallationFactory,
@@ -90,8 +77,6 @@ import { createOAuthConnectionFactory, type OAuthConnectionFactory } from './oau
 
 export interface AllFactories {
   user: UserFactory;
-  session: SessionFactory;
-  authAccount: AuthenticationAccountFactory;
   githubInstallation: GitHubInstallationFactory;
   webhookDelivery: WebhookDeliveryFactory;
   repository: RepositoryFactory;
@@ -106,8 +91,6 @@ export interface AllFactories {
 export function createFactories(db: Database): AllFactories {
   return {
     user: createUserFactory(db),
-    session: createSessionFactory(db),
-    authAccount: createAuthenticationAccountFactory(db),
     githubInstallation: createGitHubInstallationFactory(db),
     webhookDelivery: createWebhookDeliveryFactory(db),
     repository: createRepositoryFactory(db),

@@ -2,11 +2,10 @@ import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { env } from '$env/dynamic/private';
 import {
-  sessionCookieName,
-  setSessionTokenCookie,
-  deleteSessionTokenCookie,
-  validateSessionToken,
-} from '$lib/server/auth/authentication';
+  createNeonSessionFromToken,
+  deleteNeonAuthTokenCookie,
+  neonAuthTokenCookieName,
+} from '$lib/server/auth/neon-session';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 
@@ -35,35 +34,34 @@ const correlationHandle: Handle = async ({ event, resolve }) => {
 
 /**
  * Production authentication handle.
- * Validates session cookies and sets user/session on locals.
+ * Validates Neon Auth bridge cookies and sets user/neonSession on locals.
  *
- * In E2E mode, e2eHandle already handles session validation against
+ * In E2E mode, e2eHandle already handles auth token validation against
  * per-worker databases, so this handle skips to avoid re-validating
  * against the production db proxy (which requires AsyncLocalStorage context).
  */
-const authHandle: Handle = async ({ event, resolve }) => {
+export const authHandle: Handle = async ({ event, resolve }) => {
   if (env.E2E_TEST_MODE === '1') {
     return resolve(event);
   }
 
-  const sessionToken = event.cookies.get(sessionCookieName);
+  const neonAuthToken = event.cookies.get(neonAuthTokenCookieName);
 
-  if (!sessionToken) {
+  if (!neonAuthToken) {
     event.locals.user = null;
-    event.locals.session = null;
+    event.locals.neonSession = null;
     return resolve(event);
   }
 
-  const { session, user } = await validateSessionToken(sessionToken);
-
-  if (session) {
-    setSessionTokenCookie(event, sessionToken, session.expiresAt);
-  } else {
-    deleteSessionTokenCookie(event);
+  try {
+    const { user, neonSession } = await createNeonSessionFromToken(neonAuthToken);
+    event.locals.user = user;
+    event.locals.neonSession = neonSession;
+  } catch {
+    deleteNeonAuthTokenCookie(event);
+    event.locals.user = null;
+    event.locals.neonSession = null;
   }
-
-  event.locals.user = user;
-  event.locals.session = session;
 
   return resolve(event);
 };
@@ -77,7 +75,7 @@ const authHandle: Handle = async ({ event, resolve }) => {
  *   /__e2e__/* endpoints and handles per-worker session validation.
  * - apiJsonHandle: Wraps /api/** routes so all error responses are JSON.
  *   Placed before authHandle so it catches auth-related errors too.
- * - authHandle: Validates session cookies and sets user/session on locals.
+ * - authHandle: Validates Neon Auth bridge cookies and sets user/neonSession on locals.
  */
 export const handle = sequence(
   correlationHandle,

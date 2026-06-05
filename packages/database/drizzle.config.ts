@@ -1,10 +1,13 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config as loadEnvironment } from 'dotenv';
 import { defineConfig } from 'drizzle-kit';
 
 // Resolve schema path relative to this config file so drizzle-kit always
 // finds it, even if invoked from the repo root via --config.
 const configDir = dirname(fileURLToPath(import.meta.url));
+loadEnvironment({ path: resolve(configDir, '../../.env') });
+
 const schemaPath = resolve(configDir, 'src/schema/index.ts');
 
 // Note: `out` must be a relative path because drizzle-kit prepends './' internally.

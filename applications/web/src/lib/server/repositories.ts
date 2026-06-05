@@ -35,11 +35,17 @@ export interface UserRepository {
   };
 }
 
+export interface UserRepositoryInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountAvatarUrl: string | null;
+}
+
 /** Why repository resolution could not produce a list. */
 export type UserRepositoriesError = 'no_github_token' | 'github_unavailable';
 
 export type UserRepositoriesResult =
-  | { ok: true; repositories: UserRepository[] }
+  | { ok: true; repositories: UserRepository[]; installations: UserRepositoryInstallation[] }
   | { ok: false; error: UserRepositoriesError; message: string };
 
 /**
@@ -77,8 +83,27 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   }
 
   if (installationIds.length === 0) {
-    return { ok: true, repositories: [] };
+    return { ok: true, repositories: [], installations: [] };
   }
+
+  const installationRows = await db
+    .select({
+      installationId: githubInstallation.installationId,
+      accountLogin: githubInstallation.accountLogin,
+      accountAvatarUrl: githubInstallation.accountAvatarUrl,
+    })
+    .from(githubInstallation)
+    .where(
+      and(
+        inArray(githubInstallation.installationId, installationIds),
+        eq(githubInstallation.status, 'active'),
+      ),
+    );
+
+  const installations = installationRows.sort((a, b) => {
+    if (a.accountLogin === b.accountLogin) return 0;
+    return a.accountLogin < b.accountLogin ? -1 : 1;
+  });
 
   // Join our flat model: active installation -> active link -> repository.
   const rows = await db
@@ -128,7 +153,7 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
     return a.repository.name < b.repository.name ? -1 : 1;
   });
 
-  return { ok: true, repositories };
+  return { ok: true, repositories, installations };
 }
 
 /**

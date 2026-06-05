@@ -2,8 +2,11 @@
  * Installation token error types and classification.
  *
  * Provides structured error types for GitHub installation token failures,
- * enabling proper retry behavior in Temporal workflows and actionable
+ * enabling proper retry behavior in durable workflows and actionable
  * error messages in the UI.
+ *
+ * TODO(weft): Map these retryability classifications into ../weft activity
+ * retry policy configuration when GitHub workflows are reintroduced.
  */
 
 import type { Octokit } from 'octokit';
@@ -55,7 +58,7 @@ export interface InstallationTokenError {
  * Result type for scoped Octokit acquisition.
  *
  * Using discriminated union to preserve error context for both
- * UI display and Temporal retry logic.
+ * UI display and workflow retry logic.
  */
 export type ScopedOctokitResult =
   | { ok: true; octokit: Octokit; installationId: number }
@@ -198,9 +201,9 @@ export function isRetryableTokenError(code: InstallationTokenErrorCode): boolean
 }
 
 /**
- * Non-retryable error codes for Temporal retry policy configuration.
+ * Non-retryable error codes for workflow retry policy configuration.
  *
- * Add these to proxyActivities.retry.nonRetryableErrorTypes.
+ * TODO(weft): Add these to the ../weft GitHub activity retry policy.
  */
 export const NON_RETRYABLE_TOKEN_ERROR_CODES: readonly InstallationTokenErrorCode[] = [
   'suspended',

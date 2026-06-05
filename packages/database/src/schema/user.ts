@@ -6,6 +6,7 @@ export const user = pgTable(
   {
     id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
     username: text('username').notNull(), // Handle for user profile URLs
+    neonAuthUserId: text('neon_auth_user_id'), // Managed Neon Auth user id
     email: text('email'), // Primary email for notifications/invitations
     name: text('name'),
     avatarUrl: text('avatar_url'),
@@ -16,6 +17,9 @@ export const user = pgTable(
     uniqueIndex('user_email_lower_idx')
       .on(sql`lower(${table.email})`)
       .where(sql`${table.email} IS NOT NULL`),
+    uniqueIndex('user_neon_auth_user_id_idx')
+      .on(table.neonAuthUserId)
+      .where(sql`${table.neonAuthUserId} IS NOT NULL`),
     // Case-insensitive unique index on username
     uniqueIndex('user_username_lower_idx').on(sql`lower(${table.username})`),
     // Username format: 3-39 chars, alphanumeric and hyphens, no leading/trailing hyphen

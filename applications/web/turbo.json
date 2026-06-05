@@ -9,6 +9,8 @@
         "ENCRYPTION_KEY",
         "DATABASE_URL",
         "REDIS_URL",
+        "PUBLIC_NEON_AUTH_URL",
+        "NEON_AUTH_BASE_URL",
         "LINEAR_*",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",

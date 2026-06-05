@@ -1,11 +1,8 @@
 import { relations } from 'drizzle-orm';
 
-// Import all tables
-import { authAccount } from './auth-account';
 import { githubInstallation } from './github-installation';
 import { githubInstallationRepository } from './github-installation-repository';
 import { repository } from './repository';
-import { session } from './session';
 import { user } from './user';
 import { userApiKey } from './user-api-key';
 import { webhookEvent } from './webhook-event';
@@ -16,18 +13,12 @@ import { workflowRun } from './workflow-run';
 // ============================================================================
 
 export const userRelations = relations(user, ({ many }) => ({
-  sessions: many(session),
-  authAccounts: many(authAccount),
   apiKeys: many(userApiKey),
   githubInstallations: many(githubInstallation),
 }));
 
 export const userApiKeyRelations = relations(userApiKey, ({ one }) => ({
   user: one(user, { fields: [userApiKey.userId], references: [user.id] }),
-}));
-
-export const sessionRelations = relations(session, ({ one }) => ({
-  user: one(user, { fields: [session.userId], references: [user.id] }),
 }));
 
 export const repositoryRelations = relations(repository, ({ many }) => ({
@@ -59,10 +50,6 @@ export const githubInstallationRepositoryRelations = relations(
 
 export const webhookEventRelations = relations(webhookEvent, ({ one }) => ({
   repository: one(repository, { fields: [webhookEvent.repositoryId], references: [repository.id] }),
-}));
-
-export const authAccountRelations = relations(authAccount, ({ one }) => ({
-  user: one(user, { fields: [authAccount.userId], references: [user.id] }),
 }));
 
 export const workflowRunRelations = relations(workflowRun, ({ one }) => ({

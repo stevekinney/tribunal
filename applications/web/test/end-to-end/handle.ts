@@ -13,10 +13,10 @@ import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { building, dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import {
-  sessionCookieName,
-  setSessionTokenCookie,
-  deleteSessionTokenCookie,
-} from '$lib/server/auth/authentication';
+  deleteNeonAuthTokenCookie,
+  neonAuthTokenCookieName,
+  setNeonAuthTokenCookie,
+} from '$lib/server/auth/neon-session';
 import { runWithDatabase, type Database } from '$lib/server/database';
 
 // ---------------------------------------------------------------------------
@@ -105,13 +105,13 @@ function getWorkerIdFromCookie(cookieValue: string | undefined): string | undefi
 }
 
 /**
- * Create a Set-Cookie header value for the session token.
+ * Create a Set-Cookie header value for the test-only bridge token.
  * Used when returning a custom Response (which bypasses SvelteKit's cookie API).
  */
-function createSessionCookieHeader(token: string, expiresAt: Date): string {
+function createAuthCookieHeader(token: string, expiresAt: Date): string {
   const isE2E = env.E2E_TEST_MODE === '1';
   const parts = [
-    `${sessionCookieName}=${token}`,
+    `${neonAuthTokenCookieName}=${token}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
@@ -163,17 +163,13 @@ function validateE2ERequest(request: Request): Response | null {
 }
 
 /**
- * Validate a session token against the per-worker E2E database.
- *
- * Mirrors the production validateSessionToken logic but queries the
- * per-worker PGlite database instead. See the original comment block
- * in the old hooks.server.ts for the full rationale.
+ * Validate a test-only bridge token against the per-worker E2E database.
  */
-async function validateE2ESessionToken(
+async function validateE2EAuthToken(
   token: string,
   workerId: string,
 ): Promise<{
-  session: import('@tribunal/database/schema').Session | null;
+  neonSession: { neonAuthUserId: string; expiresAt: Date } | null;
   user: {
     id: number;
     username: string;
@@ -189,58 +185,40 @@ async function validateE2ESessionToken(
     const schema = await import('@tribunal/database/schema');
 
     const db = await getE2EDatabase(workerId);
-
-    // Hash the token (same algorithm as production)
-    const data = new TextEncoder().encode(token);
-    const digest = await crypto.subtle.digest('SHA-256', data);
-    const bytes = new Uint8Array(digest);
-    let sessionId = '';
-    for (const byte of bytes) {
-      sessionId += byte.toString(16).padStart(2, '0');
+    const [, tokenWorkerId, userIdValue] = token.split(':');
+    const userId = Number(userIdValue);
+    if (!token.startsWith('e2e:') || tokenWorkerId !== workerId || !Number.isInteger(userId)) {
+      return { neonSession: null, user: null };
     }
 
     const [result] = await db
       .select({
-        user: {
-          id: schema.user.id,
-          username: schema.user.username,
-          name: schema.user.name,
-          avatarUrl: schema.user.avatarUrl,
-          email: schema.user.email,
-          isPlatformAdministrator: schema.user.isPlatformAdministrator,
-        },
-        session: schema.session,
+        id: schema.user.id,
+        username: schema.user.username,
+        neonAuthUserId: schema.user.neonAuthUserId,
+        name: schema.user.name,
+        avatarUrl: schema.user.avatarUrl,
+        email: schema.user.email,
+        isPlatformAdministrator: schema.user.isPlatformAdministrator,
       })
-      .from(schema.session)
-      .innerJoin(schema.user, eq(schema.session.userId, schema.user.id))
-      .where(eq(schema.session.id, sessionId));
+      .from(schema.user)
+      .where(eq(schema.user.id, userId));
 
-    if (!result) {
-      return { session: null, user: null };
+    if (!result || !result.neonAuthUserId) {
+      return { neonSession: null, user: null };
     }
 
-    const { session, user } = result;
-
-    const sessionExpired = Date.now() >= session.expiresAt.getTime();
-    if (sessionExpired) {
-      await db.delete(schema.session).where(eq(schema.session.id, session.id));
-      return { session: null, user: null };
-    }
-
-    const DAY_IN_MS = 1000 * 60 * 60 * 24;
-    const renewSession = Date.now() >= session.expiresAt.getTime() - DAY_IN_MS * 15;
-    if (renewSession) {
-      session.expiresAt = new Date(Date.now() + DAY_IN_MS * 30);
-      await db
-        .update(schema.session)
-        .set({ expiresAt: session.expiresAt })
-        .where(eq(schema.session.id, session.id));
-    }
-
-    return { session, user };
+    const { neonAuthUserId, ...user } = result;
+    return {
+      neonSession: {
+        neonAuthUserId,
+        expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
+      },
+      user,
+    };
   } catch (error) {
-    console.error('[E2E Session Validation] Error:', error);
-    return { session: null, user: null };
+    console.error('[E2E Auth Validation] Error:', error);
+    return { neonSession: null, user: null };
   }
 }
 
@@ -278,7 +256,7 @@ async function handleE2ELogin(event: RequestEvent): Promise<Response> {
     }
 
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
-    const sessionCookieHeader = createSessionCookieHeader(token, expiresAt);
+    const sessionCookieHeader = createAuthCookieHeader(token, expiresAt);
 
     const headers = new Headers();
     headers.set('content-type', 'application/json');
@@ -437,38 +415,38 @@ export const e2eHandle: Handle = async ({ event, resolve }) => {
     }
   }
 
-  // For non-endpoint requests in E2E mode, handle per-worker session validation
-  const sessionToken = event.cookies.get(sessionCookieName);
+  // For non-endpoint requests in E2E mode, handle per-worker auth validation.
+  const neonAuthToken = event.cookies.get(neonAuthTokenCookieName);
   const e2eWorkerId = getWorkerIdFromCookie(event.cookies.get(E2E_WORKER_ID_COOKIE));
 
-  if (!sessionToken) {
+  if (!neonAuthToken) {
     event.locals.user = null;
-    event.locals.session = null;
+    event.locals.neonSession = null;
     return wrapResolveWithDatabase(event, resolve, e2eWorkerId);
   }
 
-  let session, user;
+  let neonSession, user;
 
   if (e2eWorkerId) {
-    const result = await validateE2ESessionToken(sessionToken, e2eWorkerId);
-    session = result.session;
+    const result = await validateE2EAuthToken(neonAuthToken, e2eWorkerId);
+    neonSession = result.neonSession;
     user = result.user;
   } else {
     console.warn(
-      '[E2E] Session token present but worker ID cookie missing/invalid. Treating as invalid session.',
+      '[E2E] Auth token present but worker ID cookie missing/invalid. Treating as invalid session.',
     );
-    session = null;
+    neonSession = null;
     user = null;
   }
 
-  if (session) {
-    setSessionTokenCookie(event, sessionToken, session.expiresAt);
+  if (neonSession) {
+    setNeonAuthTokenCookie(event, neonAuthToken, neonSession.expiresAt);
   } else {
-    deleteSessionTokenCookie(event);
+    deleteNeonAuthTokenCookie(event);
   }
 
   event.locals.user = user;
-  event.locals.session = session;
+  event.locals.neonSession = neonSession;
 
   return wrapResolveWithDatabase(event, resolve, e2eWorkerId);
 };

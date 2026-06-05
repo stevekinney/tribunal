@@ -101,6 +101,13 @@ vi.mock('@tribunal/github/installations/user-bindings', () => ({
   connectInstallationToUser: vi.fn().mockResolvedValue({ success: true }),
 }));
 
+vi.mock('@tribunal/github/repositories/service', () => ({
+  refreshInstallationRepositories: vi.fn().mockResolvedValue({
+    repositoryCount: 2,
+    deactivatedRepositoryCount: 0,
+  }),
+}));
+
 // Mock authentication module
 vi.mock('$lib/server/auth/authentication', () => ({
   refreshGitHubTokenIfNeeded: vi
@@ -118,6 +125,7 @@ vi.mock('@tribunal/github/errors', async () => {
 import { GET } from './+server';
 import { upsertInstallation } from '@tribunal/github/installations/records';
 import { connectInstallationToUser } from '@tribunal/github/installations/user-bindings';
+import { refreshInstallationRepositories } from '@tribunal/github/repositories/service';
 import { deleteOAuthConnection } from '$lib/server/auth/authentication';
 
 describe('GET /connect/github/callback', () => {
@@ -166,13 +174,15 @@ describe('GET /connect/github/callback', () => {
         get user() {
           return mockUser.value;
         },
-        session: mockUser.value ? { id: 'session-1' } : null,
+        neonSession: mockUser.value
+          ? { neonAuthUserId: 'neon-user-1', expiresAt: new Date() }
+          : null,
       },
     } as unknown as Parameters<typeof GET>[0];
   };
 
   describe('Authentication requirements', () => {
-    it('redirects unauthenticated users to /login/github', async () => {
+    it('redirects unauthenticated users to /login with returnTo', async () => {
       expect.assertions(2);
 
       mockUser.value = null;
@@ -186,7 +196,7 @@ describe('GET /connect/github/callback', () => {
       } catch (e) {
         const redirectData = e as { status: number; location: string; type: string };
         expect(redirectData.type).toBe('redirect');
-        expect(redirectData.location).toBe('/login/github');
+        expect(redirectData.location).toBe('/login?returnTo=%2Fconnect%2Fgithub');
       }
     });
   });
@@ -261,8 +271,8 @@ describe('GET /connect/github/callback', () => {
   });
 
   describe('Update flow without state', () => {
-    it('redirects to repositories for update without state cookie', async () => {
-      expect.assertions(1);
+    it('accepts update callbacks without state after verifying installation access', async () => {
+      expect.assertions(3);
 
       const request = createRequest(
         {
@@ -275,8 +285,10 @@ describe('GET /connect/github/callback', () => {
       try {
         await GET(request);
       } catch (e) {
-        const redirectData = e as { location: string };
-        expect(redirectData.location).toBe('/repositories');
+        const redirectData = e as { location: string; type: string };
+        expect(redirectData.type).toBe('redirect');
+        expect(redirectData.location).toBe('/repositories?github=connected');
+        expect(refreshInstallationRepositories).toHaveBeenCalledWith(expect.anything(), 12345);
       }
     });
   });
@@ -372,7 +384,7 @@ describe('GET /connect/github/callback', () => {
       } catch (e) {
         const redirectData = e as { location: string; type: string };
         expect(redirectData.type).toBe('redirect');
-        expect(redirectData.location).toContain('/repositories?error=github_link_required');
+        expect(redirectData.location).toBe('/connect/github/account?returnTo=/connect/github');
       }
     });
   });
@@ -572,6 +584,23 @@ describe('GET /connect/github/callback', () => {
       }
 
       expect(mockCookieDelete).toHaveBeenCalledWith('github_app_state', { path: '/' });
+    });
+
+    it('refreshes repositories for the installation before redirecting', async () => {
+      expect.assertions(1);
+
+      const request = createRequest({
+        installation_id: '12345',
+        state: 'valid-nonce-123',
+      });
+
+      try {
+        await GET(request);
+      } catch {
+        // Expected redirect
+      }
+
+      expect(refreshInstallationRepositories).toHaveBeenCalledWith(expect.anything(), 12345);
     });
 
     it('redirects to repositories with success flag', async () => {

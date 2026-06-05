@@ -9,11 +9,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Use vi.hoisted() to ensure mock state is available when mocks are hoisted
-const { mockDev, mockState, mockEnv, mockUser } = vi.hoisted(() => ({
+const {
+  mockDev,
+  mockState,
+  mockEnv,
+  mockUser,
+  mockOAuthConnection,
+  mockGithubRequest,
+  mockUserInstallations,
+} = vi.hoisted(() => ({
   mockDev: { value: true },
   mockState: { value: 'mock-nonce-12345' },
-  mockEnv: { GITHUB_APP_NAME: 'test-github-app' },
+  mockEnv: { GITHUB_APP_NAME: 'test-github-app', E2E_TEST_MODE: '0' },
   mockUser: { value: null as { id: number; username: string } | null },
+  mockOAuthConnection: { value: { id: 1 } as { id: number } | null },
+  mockGithubRequest: vi.fn(),
+  mockUserInstallations: { value: [] as Array<{ app_slug: string; html_url: string; id: number }> },
 }));
 
 // Mock arctic (used for state generation)
@@ -45,6 +56,22 @@ vi.mock('$env/dynamic/private', () => ({
   },
 }));
 
+vi.mock('$lib/server/auth/authentication', () => ({
+  getOAuthConnection: vi.fn(() => Promise.resolve(mockOAuthConnection.value)),
+}));
+
+vi.mock('$lib/server/github/user-oauth', () => ({
+  getUserOctokit: vi.fn(() =>
+    Promise.resolve({
+      ok: true,
+      octokit: {
+        request: mockGithubRequest,
+      },
+      scopes: {},
+    }),
+  ),
+}));
+
 // Import after mocks
 import { GET } from './+server';
 
@@ -58,6 +85,14 @@ describe('GET /connect/github', () => {
     mockState.value = 'mock-nonce-12345';
     mockEnv.GITHUB_APP_NAME = 'test-github-app';
     mockUser.value = { id: 1, username: 'testuser' };
+    mockOAuthConnection.value = { id: 1 };
+    mockUserInstallations.value = [];
+    mockGithubRequest.mockImplementation(async (endpoint: string) => {
+      if (endpoint === 'GET /user/installations') {
+        return { data: { installations: mockUserInstallations.value } };
+      }
+      throw new Error(`Unexpected GitHub endpoint: ${endpoint}`);
+    });
     mockCookies = new Map();
     mockSet = vi.fn((name: string, value: string, options: Record<string, unknown>) => {
       mockCookies.set(name, { value, options });
@@ -79,7 +114,9 @@ describe('GET /connect/github', () => {
         get user() {
           return mockUser.value;
         },
-        session: mockUser.value ? { id: 'session-1' } : null,
+        neonSession: mockUser.value
+          ? { neonAuthUserId: 'neon-user-1', expiresAt: new Date() }
+          : null,
       },
     } as unknown as Parameters<typeof GET>[0];
   };
@@ -95,7 +132,7 @@ describe('GET /connect/github', () => {
   };
 
   describe('Authentication requirements', () => {
-    it('redirects unauthenticated users to /login/github', async () => {
+    it('redirects unauthenticated users to /login with returnTo', async () => {
       expect.assertions(2);
 
       mockUser.value = null;
@@ -106,7 +143,22 @@ describe('GET /connect/github', () => {
       } catch (e) {
         const redirectData = e as { status: number; location: string; type: string };
         expect(redirectData.type).toBe('redirect');
-        expect(redirectData.location).toBe('/login/github');
+        expect(redirectData.location).toBe('/login?returnTo=%2Fconnect%2Fgithub');
+      }
+    });
+
+    it('redirects users without an active GitHub connection to account connection', async () => {
+      expect.assertions(2);
+
+      mockOAuthConnection.value = null;
+      const request = createRequest();
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const redirectData = e as { status: number; location: string; type: string };
+        expect(redirectData.type).toBe('redirect');
+        expect(redirectData.location).toBe('/connect/github/account?returnTo=/connect/github');
       }
     });
 
@@ -243,6 +295,56 @@ describe('GET /connect/github', () => {
         await GET(request);
       } catch (e) {
         const redirectData = e as { location: string };
+        expect(redirectData.location).toContain(
+          'https://github.com/apps/test-github-app/installations/new',
+        );
+      }
+    });
+
+    it('redirects to the existing installation configuration URL when exactly one install exists', async () => {
+      expect.assertions(3);
+      mockUserInstallations.value = [
+        {
+          id: 12345,
+          app_slug: 'test-github-app',
+          html_url: 'https://github.com/settings/installations/12345',
+        },
+      ];
+
+      const request = createRequest();
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const redirectData = e as { location: string; status: number; type: string };
+        expect(redirectData.type).toBe('redirect');
+        expect(redirectData.location).toBe('https://github.com/settings/installations/12345');
+        expect(mockSet).not.toHaveBeenCalled();
+      }
+    });
+
+    it('keeps the GitHub target selector when multiple matching installs exist', async () => {
+      expect.assertions(2);
+      mockUserInstallations.value = [
+        {
+          id: 12345,
+          app_slug: 'test-github-app',
+          html_url: 'https://github.com/settings/installations/12345',
+        },
+        {
+          id: 67890,
+          app_slug: 'test-github-app',
+          html_url: 'https://github.com/organizations/example/settings/installations/67890',
+        },
+      ];
+
+      const request = createRequest();
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const redirectData = e as { location: string; type: string };
+        expect(redirectData.type).toBe('redirect');
         expect(redirectData.location).toContain(
           'https://github.com/apps/test-github-app/installations/new',
         );

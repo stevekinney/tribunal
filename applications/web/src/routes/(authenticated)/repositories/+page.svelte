@@ -12,6 +12,22 @@
   let { data } = $props();
 
   const repositories = $derived(data.repositories);
+  const hasInstallations = $derived(data.installations.length > 0);
+  const emptyStateTitle = $derived.by(() => {
+    if (data.needsConnect) return 'Connect GitHub to get started';
+    if (hasInstallations) return 'No repositories selected';
+    return 'Install the GitHub App';
+  });
+  const emptyStateDescription = $derived.by(() => {
+    if (data.needsConnect) return 'Connect GitHub before installing the GitHub App.';
+    if (hasInstallations) return 'Manage repository access in GitHub, then return to Tribunal.';
+    return 'Install the GitHub App on a repository, then it will show up here.';
+  });
+  const emptyStateActionLabel = $derived.by(() => {
+    if (data.needsConnect) return 'Connect GitHub';
+    if (hasInstallations) return 'Manage repository access';
+    return 'Install GitHub App';
+  });
 </script>
 
 <Page title="Repositories" subtitle="Repositories from your GitHub App installations">
@@ -21,16 +37,10 @@
 
   {#if repositories.length === 0}
     <Card flush>
-      <EmptyState
-        icon={FolderGit2}
-        title={data.needsConnect ? 'Connect GitHub to get started' : 'No repositories yet'}
-        description={data.needsConnect
-          ? 'Install the GitHub App to give Tribunal access to your repositories.'
-          : 'Install the GitHub App on a repository, then it will show up here.'}
-      >
+      <EmptyState icon={FolderGit2} title={emptyStateTitle} description={emptyStateDescription}>
         {#snippet action()}
           <Button href="/connect/github" variant="primary" icon={GithubIcon}>
-            {data.needsConnect ? 'Connect GitHub' : 'Add repositories'}
+            {emptyStateActionLabel}
           </Button>
         {/snippet}
       </EmptyState>

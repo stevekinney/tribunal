@@ -2,20 +2,19 @@
  * Test context utilities for creating authenticated test scenarios.
  *
  * Provides a high-level API for common test patterns:
- * - Creating users with sessions
+ * - Creating users with Neon Auth profile mappings
  * - Setting up workspaces with members
  * - Mocking authenticated requests
  */
 import { createTestDatabase, type TestDatabase } from './database';
 import { createFactories, resetIdCounter, type AllFactories } from './factories';
-import type { User, Session, OAuthConnection } from '@tribunal/database/schema';
+import type { User, OAuthConnection } from '@tribunal/database/schema';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import type * as schema from '@tribunal/database/schema';
 
 export type AuthenticatedUser = {
   user: User;
-  session: Session;
-  token: string;
+  neonAuthUserId: string;
   oauthConnection?: OAuthConnection;
 };
 
@@ -31,11 +30,12 @@ export type TestContext = {
   /**
    * Create a fully authenticated user with:
    * - User record
-   * - Valid session
+   * - Neon Auth profile mapping
    * - Optional OAuth connection
    */
   createAuthenticatedUser: (options?: {
     username?: string;
+    neonAuthUserId?: string;
     withOAuth?: boolean;
     oauthScopes?: string;
   }) => Promise<AuthenticatedUser>;
@@ -65,9 +65,9 @@ export type TestContext = {
  *   });
  *
  *   it('works with authenticated user', async () => {
- *     const { user, session, token } = await ctx.createAuthenticatedUser();
+ *     const { user, neonAuthUserId } = await ctx.createAuthenticatedUser();
  *
- *     // User is fully set up with session
+ *     // User is fully set up with a Neon Auth mapping.
  *     expect(user.username).toBeDefined();
  *   });
  * });
@@ -89,17 +89,22 @@ export async function createTestContext(): Promise<TestContext> {
   const createAuthenticatedUser = async (
     options: {
       username?: string;
+      neonAuthUserId?: string;
       withOAuth?: boolean;
       oauthScopes?: string;
     } = {},
   ): Promise<AuthenticatedUser> => {
-    const { username, withOAuth = false, oauthScopes = 'read:user,repo' } = options;
+    const {
+      username,
+      neonAuthUserId = `neon-user-${crypto.randomUUID()}`,
+      withOAuth = false,
+      oauthScopes = 'read:user,repo',
+    } = options;
 
-    // Create user
-    const user = await factories.user.create(username ? { username } : undefined);
-
-    // Create session
-    const { session, token } = await factories.session.create({ userId: user.id });
+    const user = await factories.user.create({
+      ...(username ? { username } : {}),
+      neonAuthUserId,
+    });
 
     // Optionally create OAuth connection
     let oauthConnection: OAuthConnection | undefined;
@@ -114,8 +119,7 @@ export async function createTestContext(): Promise<TestContext> {
 
     return {
       user,
-      session,
-      token,
+      neonAuthUserId,
       oauthConnection,
     };
   };

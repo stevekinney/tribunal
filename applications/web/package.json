@@ -19,14 +19,16 @@
     "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
+    "@neondatabase/neon-js": "^0.6.1-beta",
+    "@neondatabase/serverless": "^1.0.2",
     "@tribunal/components": "workspace:*",
     "@tribunal/database": "workspace:*",
     "@tribunal/github": "workspace:*",
-    "@neondatabase/serverless": "^1.0.2",
     "arctic": "^3.7.0",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
     "github-webhook-schemas": "1.1.0",
+    "jose": "^6.2.3",
     "lucide-svelte": "^0.561.0",
     "octokit": "^5.0.5"
   },
@@ -36,7 +38,7 @@
     "@tribunal/test": "workspace:*",
     "@octokit/types": "^16.0.0",
     "@playwright/test": "^1.57.0",
-    "@sveltejs/adapter-vercel": "^6.2.0",
+    "@sveltejs/adapter-node": "^5.5.4",
     "@sveltejs/kit": "^2.49.2",
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
     "@types/bcryptjs": "^2.4.6",

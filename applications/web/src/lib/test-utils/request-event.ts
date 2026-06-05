@@ -32,7 +32,7 @@ export interface MockRequestEventOptions {
   body?: FormData | Record<string, string | number>;
   /**
    * Mocked locals object.
-   * Note: In production, App.Locals has nullable user/session fields.
+   * Note: In production, App.Locals has nullable user/neonSession fields.
    * This helper accepts any shape to support various test scenarios.
    */
   locals?: Record<string, unknown>;

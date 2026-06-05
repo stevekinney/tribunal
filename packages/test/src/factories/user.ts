@@ -8,6 +8,7 @@ import { generateId } from './core';
 
 export type UserFactoryInput = Partial<{
   username: string;
+  neonAuthUserId: string | null;
   name: string | null;
   avatarUrl: string | null;
   email: string | null;
@@ -29,6 +30,7 @@ export function createUserFactory(db: Database): UserFactory {
         .insert(userTable)
         .values({
           username: input.username ?? `testuser${id}`,
+          neonAuthUserId: input.neonAuthUserId ?? null,
           name: input.name ?? `Test User ${id}`,
           avatarUrl: input.avatarUrl ?? `https://avatars.githubusercontent.com/u/${id}`,
           email: input.email ?? null,

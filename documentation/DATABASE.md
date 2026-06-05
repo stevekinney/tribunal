@@ -15,16 +15,19 @@ only integration is GitHub. The surviving product flow is flat:
 user → github_installation → github_installation_repository → repository → pull_request_state
 ```
 
-A user logs in with GitHub, installs the GitHub App on one or more accounts, and
-sees the open pull requests for the repositories that install grants access to.
+A user signs in through managed Neon Auth, connects a GitHub account for
+repository API authorization, installs the GitHub App on one or more accounts,
+and sees the open pull requests for the repositories that install grants access
+to.
 
 ### Tables the schema barrel exports
 
 These groupings reflect exactly what `schema/index.ts` re-exports today:
 
-- **Identity**: `user`, `session` (login sessions), `auth_account` (GitHub login
-  identity), `oauth_connection` (encrypted GitHub API access tokens),
-  `user_api_key` (hashed, customer-facing API keys).
+- **Identity and authorization**: `user` (Tribunal profile with
+  `neon_auth_user_id` mapping), `oauth_connection` (encrypted GitHub API access
+  tokens), `user_api_key` (hashed, customer-facing API keys). Neon Auth owns
+  identity and sessions outside Tribunal's schema.
 - **GitHub installation**: `github_installation` (a GitHub App install bound to a
   user), `github_installation_repository` (which repositories an install can
   reach).
@@ -33,9 +36,10 @@ These groupings reflect exactly what `schema/index.ts` re-exports today:
 - **Webhooks**: `github_webhook_delivery` (delivery idempotency),
   `webhook_event` (stored raw events per repository).
 
-> [!NOTE] About the `auth_provider` and `oauth_provider` enums
-> Both enums currently contain a single value, `github`. GitHub is the only
-> supported provider for both login identity and API access.
+> [!NOTE] About provider enums
+> `oauth_provider` contains `github`, the only app-owned API access provider.
+> The historical `auth_provider` enum may still exist in migration history, but
+> Tribunal no longer exports an `auth_account` table.
 
 ### Vestigial tables still defined in the barrel
 
@@ -68,8 +72,6 @@ omitted intentionally.)
 
 ```mermaid
 erDiagram
-  USER ||--o{ SESSION : has
-  USER ||--o{ AUTH_ACCOUNT : "logs in via"
   USER ||--o{ OAUTH_CONNECTION : "holds tokens for"
   USER ||--o{ USER_API_KEY : owns
   USER ||--o{ GITHUB_INSTALLATION : connected
@@ -89,19 +91,17 @@ Notes:
 
 ## Key tables reference
 
-| Table                            | Purpose                                                                     | Key relations                                                           |
-| -------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `user`                           | User accounts (GitHub identity, profile, platform-admin flag)               | `session`, `auth_account`, `oauth_connection`, `github_installation`    |
-| `session`                        | Login sessions with expiry tracking                                         | `user` (cascade)                                                        |
-| `auth_account`                   | Login identity per provider (currently GitHub only)                         | `user` (cascade)                                                        |
-| `oauth_connection`               | Encrypted GitHub API access/refresh tokens                                  | `user` (cascade)                                                        |
-| `user_api_key`                   | Hashed customer-facing API keys with prefix lookup                          | `user` (cascade)                                                        |
-| `github_installation`            | A GitHub App install bound to a user, keyed by GitHub's installation ID     | `user` (cascade), `github_installation_repository`                      |
-| `github_installation_repository` | Join table: which repositories an installation can reach                    | `github_installation` (cascade), `repository` (cascade)                 |
-| `repository`                     | Repository identity (owner, name, default branch); PK is the GitHub repo ID | `pull_request_state`, `webhook_event`, `github_installation_repository` |
-| `pull_request_state`             | Per-PR CI/review/merge snapshot, unique per `(repository_id, pr_number)`    | `repository` (cascade)                                                  |
-| `github_webhook_delivery`        | Idempotency tracking keyed by GitHub delivery GUID + event type             | none (idempotency ledger)                                               |
-| `webhook_event`                  | Stored raw webhook events per repository                                    | `repository` (cascade)                                                  |
+| Table                            | Purpose                                                                          | Key relations                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `user`                           | Tribunal application profile, integer ID, Neon Auth mapping, platform-admin flag | `oauth_connection`, `github_installation`                               |
+| `oauth_connection`               | Encrypted GitHub API access/refresh tokens                                       | `user` (cascade)                                                        |
+| `user_api_key`                   | Hashed customer-facing API keys with prefix lookup                               | `user` (cascade)                                                        |
+| `github_installation`            | A GitHub App install bound to a user, keyed by GitHub's installation ID          | `user` (cascade), `github_installation_repository`                      |
+| `github_installation_repository` | Join table: which repositories an installation can reach                         | `github_installation` (cascade), `repository` (cascade)                 |
+| `repository`                     | Repository identity (owner, name, default branch); PK is the GitHub repo ID      | `pull_request_state`, `webhook_event`, `github_installation_repository` |
+| `pull_request_state`             | Per-PR CI/review/merge snapshot, unique per `(repository_id, pr_number)`         | `repository` (cascade)                                                  |
+| `github_webhook_delivery`        | Idempotency tracking keyed by GitHub delivery GUID + event type                  | none (idempotency ledger)                                               |
+| `webhook_event`                  | Stored raw webhook events per repository                                         | `repository` (cascade)                                                  |
 
 > [!WARNING] Legacy migration history
 > The committed migration history under `packages/database/drizzle/` predates the

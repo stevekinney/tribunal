@@ -5,9 +5,9 @@ import { user } from './user';
 /**
  * OAuth API access tokens linking users to providers.
  *
- * Separate from auth_account (which tracks login identity). This table stores
- * the encrypted access/refresh tokens used to call provider APIs on behalf of
- * the user (for example, listing the repositories a user can reach on GitHub).
+ * Separate from managed Neon Auth identity. This table stores the encrypted
+ * access/refresh tokens used to call provider APIs on behalf of the user (for
+ * example, listing the repositories a user can reach on GitHub).
  *
  * Tokens are stored encrypted at rest; callers are responsible for
  * encryption/decryption.

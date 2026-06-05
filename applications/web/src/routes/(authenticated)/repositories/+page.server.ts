@@ -20,6 +20,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     // connect prompt instead of a hard error so the user has an obvious next step.
     return {
       repositories: [],
+      installations: [],
       needsConnect: result.error === 'no_github_token',
       loadError: result.error === 'github_unavailable' ? result.message : null,
     };
@@ -34,6 +35,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       accountLogin: entry.installation.accountLogin,
       accountAvatarUrl: entry.installation.accountAvatarUrl,
     })),
+    installations: result.installations,
     needsConnect: false,
     loadError: null,
   };

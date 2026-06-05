@@ -18,17 +18,21 @@ import type { CommitInfo, ResolutionArtifact, WorkflowRunArtifacts } from './typ
 import { user } from './user';
 
 /**
- * Workflow runs track Temporal workflow executions for observability.
+ * Workflow runs track durable workflow executions for observability.
  * Each run represents a single execution of a workflow (analysis, remediation, etc.).
+ *
+ * TODO(weft): Reconcile this schema with ../weft execution identifiers before
+ * re-enabling workflow producers. These columns were originally modeled around
+ * Temporal workflow and run IDs.
  */
 export const workflowRun = pgTable(
   'workflow_run',
   {
     id: uuid('id').primaryKey().defaultRandom(),
 
-    // Temporal identifiers
-    workflowId: text('workflow_id').notNull(), // Temporal workflow ID (unique)
-    runId: text('run_id'), // Temporal run ID (nullable, changes on continueAsNew)
+    // Durable workflow identifiers.
+    workflowId: text('workflow_id').notNull(), // Workflow ID (unique)
+    runId: text('run_id'), // Engine run ID when the workflow backend exposes one.
 
     // Scope
     workspaceId: integer('workspace_id').notNull(),

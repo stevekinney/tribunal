@@ -12,6 +12,9 @@ import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/wor
  * Handle pull_request_review webhook events.
  * Orchestrator-trigger actions throw on dispatch failure for 500 retry.
  * Claiming is performed at the +server.ts level for all orchestrator events.
+ *
+ * TODO(weft): Route review signals into a ../weft pull request orchestrator
+ * workflow instead of the current workflow-signals stub.
  */
 export async function handlePullRequestReview(
   payload: PullRequestReviewEvent,

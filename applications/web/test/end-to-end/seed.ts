@@ -11,15 +11,9 @@
  */
 
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
-import { encodeBase64url } from '@oslojs/encoding';
-import {
-  user,
-  session as sessionTable,
-  authAccount,
-  repository as repositoryTable,
-} from '@tribunal/database/schema';
+import { user, repository as repositoryTable } from '@tribunal/database/schema';
 import type * as schema from '@tribunal/database/schema';
-import type { User, Session, Repository } from '@tribunal/database/schema';
+import type { User, Repository } from '@tribunal/database/schema';
 
 type E2EDatabase = PgliteDatabase<typeof schema>;
 
@@ -28,11 +22,11 @@ export interface SeedUserOptions {
   name?: string;
   email?: string;
   avatarUrl?: string;
+  neonAuthUserId?: string;
 }
 
 export interface SeededUser {
   user: User;
-  session: Session;
   token: string;
 }
 
@@ -46,51 +40,6 @@ export interface SeedRepositoryOptions {
 
 export interface SeededRepository {
   repository: Repository;
-}
-
-/**
- * Generates a secure session token (same format as production)
- * Uses encodeBase64url from @oslojs/encoding for consistency with authentication.ts
- */
-function generateSessionToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(18));
-  return encodeBase64url(bytes);
-}
-
-/**
- * Hashes a token using SHA-256 to hex (same as production authentication.ts)
- */
-async function hashTokenHex(token: string): Promise<string> {
-  const data = new TextEncoder().encode(token);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const bytes = new Uint8Array(digest);
-  let hex = '';
-  for (const byte of bytes) {
-    hex += byte.toString(16).padStart(2, '0');
-  }
-  return hex;
-}
-
-/**
- * Creates a session using the same logic as production.
- * Uses SHA-256 hex hashing (matching authentication.ts createSession).
- */
-async function createE2ESession(db: E2EDatabase, token: string, userId: number): Promise<Session> {
-  const sessionId = await hashTokenHex(token);
-  const now = new Date();
-  const DAY_IN_MS = 1000 * 60 * 60 * 24;
-
-  const [session] = await db
-    .insert(sessionTable)
-    .values({
-      id: sessionId,
-      userId,
-      expiresAt: new Date(Date.now() + DAY_IN_MS * 30),
-      lastAuthAt: now,
-    })
-    .returning();
-
-  return session;
 }
 
 // Per-worker counters for unique ID generation within a test run
@@ -117,17 +66,17 @@ export function resetSeedCounter(workerId?: string): void {
 }
 
 /**
- * Seeds a test user with a valid session.
+ * Seeds a test user with a valid test-only Neon Auth bridge token.
  *
  * This creates:
  * - A user record in the database
- * - A session record using production-compatible token hashing
- * - Returns the raw token for cookie setting
+ * - A Neon Auth user mapping
+ * - Returns the raw E2E token for cookie setting
  *
  * @param db - The E2E database instance
  * @param options - Optional overrides for user properties
  * @param workerId - Worker ID for per-worker seed counter isolation
- * @returns The created user, session, and raw token
+ * @returns The created user and raw token
  */
 export async function seedE2EUser(
   db: E2EDatabase,
@@ -137,30 +86,22 @@ export async function seedE2EUser(
   const id = getNextSeedId(workerId);
 
   // Create user
+  const neonAuthUserId =
+    options.neonAuthUserId ?? `e2e-neon-user-${workerId ?? DEFAULT_WORKER_ID}-${id}`;
   const [createdUser] = await db
     .insert(user)
     .values({
       username: options.username ?? `e2e-user-${id}`,
+      neonAuthUserId,
       name: options.name ?? `E2E Test User ${id}`,
       email: options.email ?? `e2e-user-${id}@test.local`,
       avatarUrl: options.avatarUrl ?? `https://api.dicebear.com/7.x/identicon/svg?seed=e2e-${id}`,
     })
     .returning();
 
-  // Generate token and create session using production-compatible method
-  const token = generateSessionToken();
-  const session = await createE2ESession(db, token, createdUser.id);
+  const token = `e2e:${workerId ?? DEFAULT_WORKER_ID}:${createdUser.id}:${crypto.randomUUID()}`;
 
-  // Create a GitHub auth account for the user (for compatibility with auth checks)
-  await db.insert(authAccount).values({
-    userId: createdUser.id,
-    provider: 'github',
-    providerUserId: `e2e-github-${id}`,
-    providerUsername: createdUser.username,
-    email: createdUser.email,
-  });
-
-  return { user: createdUser, session, token };
+  return { user: createdUser, token };
 }
 
 /**

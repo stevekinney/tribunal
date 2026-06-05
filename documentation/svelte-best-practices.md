@@ -226,7 +226,7 @@ is logged but does not fail the webhook response.
 ### Auth checks without waterfalls
 
 Request-scoped identity is set in `applications/web/src/hooks.server.ts` and
-exposed on `event.locals.user` / `event.locals.session`. Reject unauthorized
+exposed on `event.locals.user` / `event.locals.neonSession`. Reject unauthorized
 requests early in each load. Avoid forcing child loads to `await parent()` just
 to discover auth, unless they truly need parent data.
 
@@ -637,32 +637,26 @@ helper from `@sveltejs/kit/hooks`:
 - `correlationHandle`: sets `correlationId` and `requestId` on `event.locals`
   and copies them onto response headers.
 - `e2eHandle`: a pass-through in production; in E2E mode it intercepts
-  `/__e2e__/*` and validates sessions against per-worker databases.
+  `/__e2e__/*` and validates test-only bridge tokens against per-worker databases.
 - `respondWithJsonForApiEndpoints`: ensures `/api/**` errors return JSON.
-- `authHandle`: validates the session cookie and sets `event.locals.user` and
-  `event.locals.session`.
+- `authHandle`: validates the Neon Auth bridge cookie and sets
+  `event.locals.user` and `event.locals.neonSession`.
 
-Example (session validation in `authHandle`):
+Example (bridge cookie validation in `authHandle`):
 `applications/web/src/hooks.server.ts`
 
 ```ts
-const sessionToken = event.cookies.get(sessionCookieName);
+const neonAuthToken = event.cookies.get(neonAuthTokenCookieName);
 
-if (!sessionToken) {
+if (!neonAuthToken) {
   event.locals.user = null;
-  event.locals.session = null;
+  event.locals.neonSession = null;
   return resolve(event);
 }
 
-const { session, user } = await validateSessionToken(sessionToken);
-if (session) {
-  setSessionTokenCookie(event, sessionToken, session.expiresAt);
-} else {
-  deleteSessionTokenCookie(event);
-}
-
+const { user, neonSession } = await createNeonSessionFromToken(neonAuthToken);
 event.locals.user = user;
-event.locals.session = session;
+event.locals.neonSession = neonSession;
 ```
 
 When returning a custom `Response` from `handle`, SvelteKit does not apply

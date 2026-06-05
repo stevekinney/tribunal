@@ -4,10 +4,10 @@ This guide gets you from clone to a running local app. For system context, see
 [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 Tribunal is a SvelteKit web application (`applications/web`) backed by shared
-packages (`packages/*`). GitHub is the only integration: you log in with GitHub
-OAuth, install the Tribunal GitHub App into your organizations, and the app shows
-you the repositories and open pull requests it can see. There is intentionally no
-other surface — no background workers, no chat, no AI.
+packages (`packages/*`). Neon Auth owns identity and sessions, with GitHub as the
+only sign-in provider. Tribunal separately stores an encrypted GitHub OAuth
+connection for repository authorization, then binds GitHub App installations to
+the signed-in Tribunal user.
 
 ## Prerequisites
 
@@ -40,25 +40,36 @@ Alternatively, fill in the required environment variables in `.env`:
 | ---------------------- | ---------------------------------------------- | ------------------------------------ |
 | `DATABASE_URL`         | PostgreSQL connection string                   | Neon or local Postgres               |
 | `ENCRYPTION_KEY`       | 32-byte (64 hex char) key for token encryption | Generate with `openssl rand -hex 32` |
-| `GITHUB_CLIENT_ID`     | GitHub OAuth client ID                         | User login (identity)                |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret                     | User login (identity)                |
+| `PUBLIC_NEON_AUTH_URL` | Browser-facing Neon Auth URL                   | Managed Neon Auth service URL        |
+| `NEON_AUTH_BASE_URL`   | Server-facing Neon Auth base URL               | Used for JWT issuer, audience, JWKS  |
 
-GitHub OAuth is the login. The GitHub App is what grants Tribunal access to your
-repositories and delivers webhooks. The variables below configure that app:
+Configure Neon Auth outside this repository:
 
-| Variable                    | Description                   | Notes                                                            |
-| --------------------------- | ----------------------------- | ---------------------------------------------------------------- |
-| `GITHUB_REDIRECT_URI`       | GitHub OAuth redirect URI     | Defaults to `http://localhost:5173/login/github/callback` in dev |
-| `GITHUB_APP_NAME`           | GitHub App name               | Repository access                                                |
-| `GITHUB_APP_ID`             | GitHub App ID                 | Repository access                                                |
-| `GITHUB_APP_PRIVATE_KEY`    | GitHub App private key (PEM)  | Signs installation token requests                                |
-| `GITHUB_APP_WEBHOOK_SECRET` | GitHub App webhook secret     | Verifies incoming webhook signatures                             |
-| `VITE_PORT`                 | Vite dev server port override | Optional                                                         |
-| `VITE_PREVIEW_PORT`         | Vite preview port override    | Optional                                                         |
-| `SB_PORT`                   | Storybook port override       | Optional                                                         |
-| `PW_PORT`                   | Playwright port override      | Optional                                                         |
-| `SB_BASE_URL`               | Storybook base URL override   | Optional                                                         |
-| `PW_BASE_URL`               | Playwright base URL override  | Optional                                                         |
+- Enable Neon Auth on the database branch.
+- Configure GitHub OAuth in Neon Auth.
+- Set the GitHub OAuth callback URL to `{NEON_AUTH_BASE_URL}/callback/github`.
+- Add trusted domains for `http://localhost:5173` and production.
+
+GitHub OAuth in Tribunal is not login identity. It is the app-owned repository
+authorization connection stored in `oauth_connection`. The GitHub App is what
+grants installation access and delivers webhooks. The variables below configure
+those GitHub surfaces:
+
+| Variable                    | Description                   | Notes                                                                      |
+| --------------------------- | ----------------------------- | -------------------------------------------------------------------------- |
+| `GITHUB_CLIENT_ID`          | GitHub OAuth client ID        | App-owned repository access connection                                     |
+| `GITHUB_CLIENT_SECRET`      | GitHub OAuth client secret    | App-owned repository access connection                                     |
+| `GITHUB_REDIRECT_URI`       | GitHub OAuth redirect URI     | Defaults to `http://localhost:5173/connect/github/account/callback` in dev |
+| `GITHUB_APP_NAME`           | GitHub App name               | Repository access                                                          |
+| `GITHUB_APP_ID`             | GitHub App ID                 | Repository access                                                          |
+| `GITHUB_APP_PRIVATE_KEY`    | GitHub App private key (PEM)  | Signs installation token requests                                          |
+| `GITHUB_APP_WEBHOOK_SECRET` | GitHub App webhook secret     | Verifies incoming webhook signatures                                       |
+| `VITE_PORT`                 | Vite dev server port override | Optional                                                                   |
+| `VITE_PREVIEW_PORT`         | Vite preview port override    | Optional                                                                   |
+| `SB_PORT`                   | Storybook port override       | Optional                                                                   |
+| `PW_PORT`                   | Playwright port override      | Optional                                                                   |
+| `SB_BASE_URL`               | Storybook base URL override   | Optional                                                                   |
+| `PW_BASE_URL`               | Playwright base URL override  | Optional                                                                   |
 
 Install all dependencies (Bun workspaces handles every package automatically):
 

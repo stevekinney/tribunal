@@ -13,6 +13,9 @@ import type { PullRequestEventType } from '@tribunal/github/pull-requests/state/
  * Handle pull_request_review_comment webhook events.
  * Orchestrator-trigger actions throw on dispatch failure for 500 retry.
  * Claiming is performed at the +server.ts level for all orchestrator events.
+ *
+ * TODO(weft): Route review-comment signals into a ../weft pull request
+ * orchestrator workflow instead of the current workflow-signals stub.
  */
 export async function handlePullRequestReviewComment(
   payload: PullRequestReviewCommentEvent,
