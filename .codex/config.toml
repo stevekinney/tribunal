@@ -1,3 +1,4 @@
+personality = "friendly"
 sandbox_mode = "workspace-write"
 
 [sandbox_workspace_write]
@@ -21,42 +22,72 @@ config_file = "agents/worker.toml"
 description = "Fast, read-only codebase exploration specialist for discovery and analysis tasks."
 config_file = "agents/explorer.toml"
 
-[agents."scrum-lord"]
+[agents.scrum-lord]
 description = "Read-only scoping specialist for producing high-quality Linear tickets with concrete implementation detail."
 config_file = "agents/scrum-lord.toml"
 
-[agents."database-architect"]
+[agents.database-architect]
 description = "PostgreSQL and Drizzle specialist for schema design, migrations, indexing, and query performance."
 config_file = "agents/database-architect.toml"
 
-[agents."github-integration-expert"]
+[agents.github-integration-expert]
 description = "GitHub integrations specialist for Apps, OAuth, webhooks, and robust Octokit usage."
 config_file = "agents/github-integration-expert.toml"
 
-[agents."temporal-expert"]
+[agents.temporal-expert]
 description = "Temporal workflow specialist focused on determinism, reliability, cleanup safety, and operations."
 config_file = "agents/temporal-expert.toml"
 
-[agents."svelte-expert"]
+[agents.svelte-expert]
 description = "Svelte 5 and SvelteKit specialist for routes, components, runes, forms, and frontend correctness."
 config_file = "agents/svelte-expert.toml"
 
-[agents."ux-designer"]
+[agents.ux-designer]
 description = "UX and accessibility review specialist for interaction quality, clarity, and consistency."
 config_file = "agents/ux-designer.toml"
 
-[agents."git-ninja"]
+[agents.git-ninja]
 description = "Git workflow specialist for branch hygiene, commit strategy, pull requests, and safe conflict resolution."
 config_file = "agents/git-ninja.toml"
 
-[agents."testing-expert"]
+[agents.testing-expert]
 description = "Testing specialist for unit, integration, and end-to-end test quality, reliability, and flakiness reduction."
 config_file = "agents/testing-expert.toml"
 
-[agents."simplicity-engineer"]
+[agents.simplicity-engineer]
 description = "Design and review specialist focused on reducing unnecessary complexity and keeping implementations minimal."
 config_file = "agents/simplicity-engineer.toml"
 
-[agents."ci-deployment-engineer"]
+[agents.ci-deployment-engineer]
 description = "CI and deployment specialist for workflow failures, migration gates, and production deployment verification."
 config_file = "agents/ci-deployment-engineer.toml"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+ENABLE_LSP_TOOLS = "1"
+CLAUDE_CODE_DISABLE_AUTO_MEMORY = "0"
+CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR = "1"
+CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD = "1"
+CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1"
+ENABLE_TOOL_SEARCH = "1"
+CLAUDE_CODE_DISABLE_TELEMETRY = "1"
+
+[mcp_servers.codex]
+enabled = false
+command = "codex"
+args = ["mcp-server"]
+
+[mcp_servers.svelte]
+url = "https://mcp.svelte.dev/mcp"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+[mcp_servers.chrome-devtools]
+enabled = false
+command = "npx"
+args = ["chrome-devtools-mcp@latest"]
