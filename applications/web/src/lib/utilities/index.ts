@@ -1,26 +1,19 @@
 /**
  * Utility functions barrel export.
  * Re-exports all utilities for convenient importing via $lib/utilities.
- *
- * Utilities that moved to @tribunal/components are re-exported from there
- * to maintain backward compatibility for route-level consumers.
  */
 
-// Date formatting (from @tribunal/components)
-export {
-  formatRelativeDate,
-  formatRelativeTime,
-  formatTimestamp,
-} from '@tribunal/components/utilities/format-date';
+// Date formatting
+export { formatRelativeDate, formatRelativeTime, formatTimestamp } from './format-date';
 
-// Duration formatting (from @tribunal/components)
-export { formatDuration } from '@tribunal/components/utilities/format-duration';
+// Duration formatting
+export { formatDuration } from './format-duration';
 
 // String slugification
 export { slugify } from './slugify';
 
-// JSON stringification with fallbacks (from @tribunal/components)
-export { stringify, stringifyOrNull } from '@tribunal/components/utilities/stringify';
+// JSON stringification with fallbacks
+export { stringify, stringifyOrNull } from './stringify';
 
-// String truncation (from @tribunal/components)
-export { truncate } from '@tribunal/components/utilities/truncate';
+// String truncation
+export { truncate } from './truncate';

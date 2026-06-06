@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { Page } from '@tribunal/components/page';
-  import { Card } from '@tribunal/components/card';
-  import { Link } from '@tribunal/components/link';
-  import { Badge } from '@tribunal/components/badge';
-  import { Button } from '@tribunal/components/button';
-  import { EmptyState } from '@tribunal/components/empty-state';
+  import Page from '$lib/components/page.svelte';
+  import { Card } from '@lostgradient/cinder/card';
+  import { Link } from '@lostgradient/cinder/link';
+  import { Badge } from '@lostgradient/cinder/badge';
+  import { Button } from '@lostgradient/cinder/button';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { FolderGit2 } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
-  import { Alert } from '@tribunal/components/alert';
+  import { Alert } from '@lostgradient/cinder/alert';
 
   let { data } = $props();
 
@@ -32,15 +32,17 @@
 
 <Page title="Repositories" subtitle="Repositories from your GitHub App installations">
   {#if data.loadError}
-    <Alert variant="danger">{data.loadError}</Alert>
+    <Alert variant="error">{data.loadError}</Alert>
   {/if}
 
   {#if repositories.length === 0}
-    <Card flush>
-      <EmptyState icon={FolderGit2} title={emptyStateTitle} description={emptyStateDescription}>
+    <Card class="card--flush">
+      <EmptyState title={emptyStateTitle} description={emptyStateDescription}>
+        {#snippet icon()}<FolderGit2 size={48} />{/snippet}
         {#snippet action()}
-          <Button href="/connect/github" variant="primary" icon={GithubIcon}>
+          <Button href="/connect/github" variant="primary" size="sm">
             {emptyStateActionLabel}
+            {#snippet leadingIcon()}<GithubIcon size={14} aria-hidden="true" />{/snippet}
           </Button>
         {/snippet}
       </EmptyState>
@@ -58,7 +60,7 @@
                   <span class="repository-name">{repository.name}</span>
                 </Link>
                 {#if repository.defaultBranch}
-                  <Badge size="sm" code label={repository.defaultBranch} />
+                  <Badge size="sm">{repository.defaultBranch}</Badge>
                 {/if}
               </div>
               <div class="repository-meta">

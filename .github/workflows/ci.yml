@@ -127,8 +127,6 @@ jobs:
             CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD -- \
               'applications/web/src/**' \
               'applications/web/test/**' \
-              'packages/components/src/**' \
-              'packages/components/test/**' \
               '**/*.svelte' \
               '.github/workflows/ci.yml' \
               '.github/actions/setup-playwright/**' || true)
@@ -150,10 +148,33 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
 
-      - name: Run components browser tests
+      - name: Verify dev server starts without esbuild parse errors
         if: steps.browser-changes.outputs.changed == 'true'
-        working-directory: packages/components
-        run: bun run test:client
+        working-directory: applications/web
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run dev &
+          DEV_PID=$!
+          # Poll for the server to be ready (max 30s)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173/ >/dev/null 2>&1; then
+              echo "Dev server is up after ${i}s"
+              kill "$DEV_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          kill "$DEV_PID" 2>/dev/null || true
+          echo "Dev server did not start within 30 seconds"
+          exit 1
+        env:
+          DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
+          GITHUB_APP_ID: "1"
+          GITHUB_APP_PRIVATE_KEY: "placeholder"
+          GITHUB_OAUTH_CLIENT_ID: "placeholder"
+          GITHUB_OAUTH_CLIENT_SECRET: "placeholder"
+          SESSION_SECRET: "placeholder-secret-at-least-32-chars-long"
 
   build:
     name: Build

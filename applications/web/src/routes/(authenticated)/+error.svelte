@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { Button } from '@tribunal/components/button';
-  import { Card } from '@tribunal/components/card';
+  import { Button } from '@lostgradient/cinder/button';
+  import { Card } from '@lostgradient/cinder/card';
   import { ShieldAlert } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
 
@@ -52,14 +52,14 @@
   <Card class="error-actions-card">
     <div class="error-actions">
       {#if isGitHubError}
-        <Button href="/connect/github" variant="primary">
-          <GithubIcon class="icon-sm" />
+        <Button href="/connect/github" variant="primary" size="sm">
           Connect GitHub
+          {#snippet leadingIcon()}<GithubIcon class="icon-sm" aria-hidden="true" />{/snippet}
         </Button>
-        <Button href="/repositories" variant="ghost" label="Go to repositories" />
+        <Button href="/repositories" variant="ghost" size="sm" label="Go to repositories" />
       {:else}
-        <Button href="/repositories" variant="primary" label="Go to repositories" />
-        <Button href="/" variant="ghost" label="Home" />
+        <Button href="/repositories" variant="primary" size="sm" label="Go to repositories" />
+        <Button href="/" variant="ghost" size="sm" label="Home" />
       {/if}
     </div>
   </Card>

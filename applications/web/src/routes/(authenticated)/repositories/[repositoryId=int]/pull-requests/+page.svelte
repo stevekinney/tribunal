@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { Page } from '@tribunal/components/page';
-  import { Card } from '@tribunal/components/card';
-  import { Link } from '@tribunal/components/link';
-  import { Badge } from '@tribunal/components/badge';
-  import { EmptyState } from '@tribunal/components/empty-state';
+  import Page from '$lib/components/page.svelte';
+  import { Card } from '@lostgradient/cinder/card';
+  import { Link } from '@lostgradient/cinder/link';
+  import { Badge } from '@lostgradient/cinder/badge';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { GitPullRequest } from 'lucide-svelte';
 
   let { data } = $props();
@@ -17,12 +17,13 @@
 
 <Page title="Open pull requests" subtitle={repositoryName} {breadcrumbs}>
   {#if data.pullRequests.length === 0}
-    <Card flush>
+    <Card class="card--flush">
       <EmptyState
-        icon={GitPullRequest}
         title="No open pull requests"
         description="When this repository has open pull requests, they will appear here."
-      />
+      >
+        {#snippet icon()}<GitPullRequest size={48} />{/snippet}
+      </EmptyState>
     </Card>
   {:else}
     <ul class="pull-request-list">
@@ -45,9 +46,9 @@
                 </div>
               </div>
               {#if pullRequest.draft}
-                <Badge size="sm" variant="default" label="Draft" />
+                <Badge size="sm" variant="neutral">Draft</Badge>
               {:else}
-                <Badge size="sm" variant="success" label="Open" />
+                <Badge size="sm" variant="success">Open</Badge>
               {/if}
             </div>
           </Card>

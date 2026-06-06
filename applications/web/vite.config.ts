@@ -46,7 +46,17 @@ export default defineConfig({
     },
   },
   ssr: {
-    noExternal: [/^@tribunal\/.*/, 'github-webhook-schemas'],
+    // @lostgradient/cinder ships uncompiled Svelte via its `svelte` export
+    // condition, so it must be bundled-and-compiled for SSR rather than treated
+    // as an external dependency (same reason as the @tribunal/* packages).
+    noExternal: [/^@tribunal\/.*/, '@lostgradient/cinder', 'github-webhook-schemas'],
+  },
+  optimizeDeps: {
+    // Exclude Cinder from esbuild dependency pre-bundling: its uncompiled
+    // `.svelte`/`.svelte.ts` sources use Svelte 5 rune syntax that esbuild
+    // cannot parse. Excluding it lets vite-plugin-svelte compile it instead,
+    // which is what fixes the dev-server `js_parse_error` during optimization.
+    exclude: ['@lostgradient/cinder'],
   },
   build: {
     sourcemap: enableCoverageSourcemaps,

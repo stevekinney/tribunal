@@ -2,14 +2,14 @@
   import { page } from '$app/state';
   import { Cat } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
-  import { Button } from '@tribunal/components/button';
-  import { Alert } from '@tribunal/components/alert';
+  import { Button } from '@lostgradient/cinder/button';
+  import { Alert } from '@lostgradient/cinder/alert';
   import { LOGIN_ERROR_MESSAGES } from '$lib/constants/authorization-providers';
 
   const errorParam = $derived(page.url.searchParams.get('error'));
   const errorMessage = $derived(errorParam ? LOGIN_ERROR_MESSAGES[errorParam] : null);
-  // User cancellations (*_denied) should be info, actual errors should be danger
-  const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'danger');
+  // User cancellations (*_denied) should be info, actual errors should be error
+  const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'error');
 </script>
 
 <main class="landing-page">
@@ -23,8 +23,9 @@
   </div>
   <h1 class="title">Welcome to Tribunal</h1>
   <div class="actions">
-    <Button href="/login" variant="secondary" size="lg" icon={GithubIcon}>
+    <Button href="/login" variant="secondary" size="lg">
       Sign in with GitHub
+      {#snippet leadingIcon()}<GithubIcon aria-hidden="true" />{/snippet}
     </Button>
   </div>
 </main>

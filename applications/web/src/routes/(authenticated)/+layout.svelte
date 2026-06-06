@@ -1,27 +1,30 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { Navigation, NavigationItem } from '@tribunal/components/navigation';
-  import { SkipLinks } from '@tribunal/components/skip-links';
-  import { Avatar } from '@tribunal/components/avatar';
-  import { UserMenu } from '@tribunal/components/user-menu';
-  import { LogOut, FolderGit2, Cat } from 'lucide-svelte';
+  import { page } from '$app/state';
+  import { NavigationBar } from '@lostgradient/cinder/navigation-bar';
+  import type { NavigationBarToggleAttributes } from '@lostgradient/cinder/navigation-bar';
+  import { NavigationItem } from '@lostgradient/cinder/navigation-item';
+  import { Avatar } from '@lostgradient/cinder/avatar';
+  import SkipLinks from '$lib/components/skip-links.svelte';
+  import UserMenu from '$lib/components/user-menu.svelte';
+  import { LogOut, FolderGit2, Cat, Menu, X } from 'lucide-svelte';
 
   let { data, children } = $props();
 
-  let hydrated = $state(false);
+  let mobileMenuOpen = $state(false);
 
-  onMount(() => {
-    hydrated = true;
-  });
+  // NavigationItem owns the active styling; the app owns the routing match.
+  const repositoriesActive = $derived(
+    page.url.pathname === '/repositories' || page.url.pathname.startsWith('/repositories/'),
+  );
 </script>
 
 <SkipLinks />
 
-<div class="app-layout" data-ready={hydrated && data.user ? true : undefined}>
+<div class="app-layout">
   <header class="app-header" data-theme="dark">
     <div class="header-content">
-      <Navigation>
-        {#snippet start()}
+      <NavigationBar bind:mobileMenuOpen>
+        {#snippet brand()}
           <a href="/repositories" class="brand-link">
             <div class="brand-icon">
               <Cat class="brand-logo" />
@@ -30,38 +33,52 @@
           </a>
         {/snippet}
 
-        <NavigationItem href="/repositories">Repositories</NavigationItem>
+        {#snippet items({ variant })}
+          {#if variant === 'mobile'}
+            <NavigationItem href="/repositories" variant="vertical" active={repositoriesActive}>
+              <FolderGit2 class="icon-md" aria-hidden="true" />
+              Repositories
+            </NavigationItem>
 
-        {#snippet end()}
+            <div class="drawer-footer">
+              {#if data.user}
+                <div class="drawer-user">
+                  <Avatar src={data.user.avatarUrl ?? undefined} alt={data.user.username} />
+                  <div class="drawer-user-info">
+                    <span class="drawer-username">{data.user.username}</span>
+                  </div>
+                </div>
+              {/if}
+              <form method="POST" action="/logout">
+                <button type="submit" class="sign-out-button">
+                  <LogOut class="sign-out-icon" />
+                  Sign out
+                </button>
+              </form>
+            </div>
+          {:else}
+            <NavigationItem href="/repositories" active={repositoriesActive}>
+              Repositories
+            </NavigationItem>
+          {/if}
+        {/snippet}
+
+        {#snippet menuToggle(attrs: NavigationBarToggleAttributes)}
+          <button type="button" {...attrs} aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}>
+            {#if mobileMenuOpen}
+              <X aria-hidden="true" />
+            {:else}
+              <Menu aria-hidden="true" />
+            {/if}
+          </button>
+        {/snippet}
+
+        {#snippet actions()}
           {#if data.user}
             <UserMenu id="header-user-menu" user={data.user} />
           {/if}
         {/snippet}
-
-        {#snippet drawer()}
-          <NavigationItem href="/repositories" layout="vertical">
-            <FolderGit2 class="icon-md" aria-hidden="true" />
-            Repositories
-          </NavigationItem>
-
-          <div class="drawer-footer">
-            {#if data.user}
-              <div class="drawer-user">
-                <Avatar src={data.user.avatarUrl} alt={data.user.username} />
-                <div class="drawer-user-info">
-                  <span class="drawer-username">{data.user.username}</span>
-                </div>
-              </div>
-            {/if}
-            <form method="POST" action="/logout">
-              <button type="submit" class="sign-out-button">
-                <LogOut class="sign-out-icon" />
-                Sign out
-              </button>
-            </form>
-          </div>
-        {/snippet}
-      </Navigation>
+      </NavigationBar>
     </div>
   </header>
 
@@ -71,6 +88,24 @@
 </div>
 
 <style>
+  /*
+   * Dark-header nav text colors.
+   *
+   * The header is themed dark via `data-theme="dark"`, but Cinder's
+   * NavigationItem resolves its `light-dark()` color tokens against the root
+   * color-scheme (light), not this nested dark subtree — so labels render
+   * dark-on-dark and disappear.
+   *
+   * Overriding the Cinder CSS custom properties at this scope is the correct
+   * fix: they cascade through the subtree and survive any Cinder class rename.
+   * Tribunal's `--text`/`--text-muted` do resolve correctly against a
+   * `data-theme` element, keeping the colors themeable rather than hard-coded.
+   */
+  .app-header[data-theme='dark'] {
+    --cinder-text-muted: var(--text-muted);
+    --cinder-text: var(--text);
+  }
+
   .app-layout {
     display: flex;
     flex-direction: column;

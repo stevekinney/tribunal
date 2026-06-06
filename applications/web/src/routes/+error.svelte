@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { Button } from '@tribunal/components/button';
+  import { Button } from '@lostgradient/cinder/button';
 
   const status = $derived(page.status);
   const title = $derived(status === 404 ? 'Page Not Found' : 'Error');
