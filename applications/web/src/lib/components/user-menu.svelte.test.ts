@@ -22,16 +22,16 @@ describe('UserMenu', () => {
     // Open the dropdown
     await page.getByRole('button', { name: 'User menu' }).click();
 
-    // The sign-out item should be visible
-    const signOutButton = page.getByRole('button', { name: /sign out/i });
-    await expect.element(signOutButton).toBeInTheDocument();
+    // Dropdown.Item renders with role="menuitem", not role="button"
+    const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
+    await expect.element(signOutItem).toBeInTheDocument();
 
     // Spy on form submission
     const submitSpy = vi.fn((e: Event) => e.preventDefault());
     const form = document.querySelector<HTMLFormElement>('form[action="/logout"]')!;
     form.addEventListener('submit', submitSpy);
 
-    await signOutButton.click();
+    await signOutItem.click();
 
     expect(submitSpy).toHaveBeenCalledTimes(1);
   });
@@ -39,6 +39,9 @@ describe('UserMenu', () => {
   it('displays the username in the dropdown label', async () => {
     render(UserMenu, { props: { id: 'test-menu', user: TEST_USER } });
     await page.getByRole('button', { name: 'User menu' }).click();
-    await expect.element(page.getByText('testuser')).toBeInTheDocument();
+    // Use exact class to scope away from the Avatar alt text match
+    const usernameLabel = document.querySelector<HTMLElement>('.user-menu-username');
+    expect(usernameLabel).not.toBeNull();
+    expect(usernameLabel!.textContent).toBe('testuser');
   });
 });
