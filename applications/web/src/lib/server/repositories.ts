@@ -16,6 +16,7 @@
  * repositories here.
  */
 import { and, eq, inArray } from 'drizzle-orm';
+import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 import {
   githubInstallation,
@@ -40,6 +41,15 @@ export interface UserRepositoryInstallation {
   installationId: number;
   accountLogin: string;
   accountAvatarUrl: string | null;
+}
+
+type LiveUserInstallation = Awaited<ReturnType<typeof listUserInstallations>>[number];
+
+function getLiveInstallationAccountLogin(installation: LiveUserInstallation): string {
+  const { account } = installation;
+  if (!account) return `installation-${installation.id}`;
+  if ('login' in account) return account.login;
+  return account.slug ?? account.name ?? `installation-${installation.id}`;
 }
 
 /** Why repository resolution could not produce a list. */
@@ -69,9 +79,20 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   }
 
   let installationIds: number[];
+  let liveInstallations: UserRepositoryInstallation[];
   try {
     const installations = await listUserInstallations(octokitResult.octokit);
-    installationIds = installations.map((installation) => installation.id);
+    const applicationSlug = env.GITHUB_APP_NAME;
+    const applicationInstallations = applicationSlug
+      ? installations.filter((installation) => installation.app_slug === applicationSlug)
+      : [];
+
+    installationIds = applicationInstallations.map((installation) => installation.id);
+    liveInstallations = applicationInstallations.map((installation) => ({
+      installationId: installation.id,
+      accountLogin: getLiveInstallationAccountLogin(installation),
+      accountAvatarUrl: installation.account?.avatar_url ?? null,
+    }));
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
     return {
@@ -99,7 +120,16 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
       ),
     );
 
-  const installations = installationRows.sort((a, b) => {
+  const installationsById = new Map<number, UserRepositoryInstallation>();
+  for (const installation of liveInstallations) {
+    installationsById.set(installation.installationId, installation);
+  }
+
+  for (const installation of installationRows) {
+    installationsById.set(installation.installationId, installation);
+  }
+
+  const installations = Array.from(installationsById.values()).sort((a, b) => {
     if (a.accountLogin === b.accountLogin) return 0;
     return a.accountLogin < b.accountLogin ? -1 : 1;
   });
