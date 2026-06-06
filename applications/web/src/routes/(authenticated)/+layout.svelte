@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { NavigationBar } from '@lostgradient/cinder/navigation-bar';
   import type { NavigationBarToggleAttributes } from '@lostgradient/cinder/navigation-bar';
@@ -11,22 +10,17 @@
 
   let { data, children } = $props();
 
-  let hydrated = $state(false);
   let mobileMenuOpen = $state(false);
 
   // NavigationItem owns the active styling; the app owns the routing match.
   const repositoriesActive = $derived(
     page.url.pathname === '/repositories' || page.url.pathname.startsWith('/repositories/'),
   );
-
-  onMount(() => {
-    hydrated = true;
-  });
 </script>
 
 <SkipLinks />
 
-<div class="app-layout" data-ready={hydrated && data.user ? true : undefined}>
+<div class="app-layout">
   <header class="app-header" data-theme="dark">
     <div class="header-content">
       <NavigationBar bind:mobileMenuOpen>
