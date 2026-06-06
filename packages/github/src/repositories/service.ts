@@ -1,5 +1,5 @@
 import type { Endpoints } from '@octokit/types';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import type { Repository } from '@tribunal/database/schema';
 import {
   repository,
@@ -343,41 +343,48 @@ export async function refreshInstallationRepositories(
   }
 
   const activeRepositoryIds = new Set<number>();
+  const now = new Date();
 
-  for (const gitHubRepository of repositories) {
-    const owner = gitHubRepository.owner.login;
-    activeRepositoryIds.add(gitHubRepository.id);
-
+  if (repositories.length > 0) {
     await context.db
       .insert(repository)
-      .values({
-        id: gitHubRepository.id,
-        owner,
-        name: gitHubRepository.name,
-        uri: computeRepositoryUri(owner, gitHubRepository.name),
-        defaultBranch: gitHubRepository.default_branch,
-        installationId,
-      })
+      .values(
+        repositories.map((gitHubRepository) => {
+          const owner = gitHubRepository.owner.login;
+          activeRepositoryIds.add(gitHubRepository.id);
+
+          return {
+            id: gitHubRepository.id,
+            owner,
+            name: gitHubRepository.name,
+            uri: computeRepositoryUri(owner, gitHubRepository.name),
+            defaultBranch: gitHubRepository.default_branch,
+            installationId,
+          };
+        }),
+      )
       .onConflictDoUpdate({
         target: repository.id,
         set: {
-          owner,
-          name: gitHubRepository.name,
-          uri: computeRepositoryUri(owner, gitHubRepository.name),
-          defaultBranch: gitHubRepository.default_branch,
-          installationId,
-          updatedAt: new Date(),
+          owner: sql`excluded.owner`,
+          name: sql`excluded.name`,
+          uri: sql`excluded.uri`,
+          defaultBranch: sql`excluded.default_branch`,
+          installationId: sql`excluded.installation_id`,
+          updatedAt: now,
         },
       });
 
     await context.db
       .insert(githubInstallationRepository)
-      .values({
-        installationId,
-        repositoryId: gitHubRepository.id,
-        isActive: true,
-        removedAt: null,
-      })
+      .values(
+        repositories.map((gitHubRepository) => ({
+          installationId,
+          repositoryId: gitHubRepository.id,
+          isActive: true,
+          removedAt: null,
+        })),
+      )
       .onConflictDoUpdate({
         target: [
           githubInstallationRepository.installationId,
@@ -400,12 +407,23 @@ export async function refreshInstallationRepositories(
       ),
     );
 
-  let deactivatedRepositoryCount = 0;
-  for (const link of activeLinks) {
-    if (activeRepositoryIds.has(link.repositoryId)) continue;
+  const repositoryIdsToDeactivate = activeLinks
+    .filter((link) => !activeRepositoryIds.has(link.repositoryId))
+    .map((link) => link.repositoryId);
 
-    await markInstallationRepositoryInactive(context, installationId, link.repositoryId);
-    deactivatedRepositoryCount += 1;
+  if (repositoryIdsToDeactivate.length > 0) {
+    await context.db
+      .update(githubInstallationRepository)
+      .set({
+        isActive: false,
+        removedAt: now,
+      })
+      .where(
+        and(
+          eq(githubInstallationRepository.installationId, installationId),
+          inArray(githubInstallationRepository.repositoryId, repositoryIdsToDeactivate),
+        ),
+      );
   }
 
   await context.db
@@ -420,7 +438,7 @@ export async function refreshInstallationRepositories(
 
   return {
     repositoryCount: repositories.length,
-    deactivatedRepositoryCount,
+    deactivatedRepositoryCount: repositoryIdsToDeactivate.length,
   };
 }
 

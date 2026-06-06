@@ -87,9 +87,13 @@ describe('GET /connect/github', () => {
     mockUser.value = { id: 1, username: 'testuser' };
     mockOAuthConnection.value = { id: 1 };
     mockUserInstallations.value = [];
-    mockGithubRequest.mockImplementation(async (endpoint: string) => {
+    mockGithubRequest.mockImplementation(async (endpoint: string, options?: { page?: number }) => {
       if (endpoint === 'GET /user/installations') {
-        return { data: { installations: mockUserInstallations.value } };
+        return {
+          data: {
+            installations: (options?.page ?? 1) === 1 ? mockUserInstallations.value : [],
+          },
+        };
       }
       throw new Error(`Unexpected GitHub endpoint: ${endpoint}`);
     });
@@ -320,6 +324,56 @@ describe('GET /connect/github', () => {
         expect(redirectData.type).toBe('redirect');
         expect(redirectData.location).toBe('https://github.com/settings/installations/12345');
         expect(mockSet).not.toHaveBeenCalled();
+      }
+    });
+
+    it('paginates GitHub installations before deciding whether an install already exists', async () => {
+      expect.assertions(3);
+      mockGithubRequest.mockImplementation(
+        async (endpoint: string, options?: { page?: number }) => {
+          if (endpoint !== 'GET /user/installations') {
+            throw new Error(`Unexpected GitHub endpoint: ${endpoint}`);
+          }
+
+          const page = options?.page ?? 1;
+          if (page === 1) {
+            return {
+              data: {
+                installations: Array.from({ length: 100 }, (_, index) => ({
+                  id: index + 1,
+                  app_slug: 'other-app',
+                  html_url: `https://github.com/settings/installations/${index + 1}`,
+                })),
+              },
+            };
+          }
+
+          return {
+            data: {
+              installations: [
+                {
+                  id: 12345,
+                  app_slug: 'test-github-app',
+                  html_url: 'https://github.com/settings/installations/12345',
+                },
+              ],
+            },
+          };
+        },
+      );
+
+      const request = createRequest();
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const redirectData = e as { location: string; type: string };
+        expect(redirectData.type).toBe('redirect');
+        expect(redirectData.location).toBe('https://github.com/settings/installations/12345');
+        expect(mockGithubRequest).toHaveBeenLastCalledWith('GET /user/installations', {
+          per_page: 100,
+          page: 2,
+        });
       }
     });
 

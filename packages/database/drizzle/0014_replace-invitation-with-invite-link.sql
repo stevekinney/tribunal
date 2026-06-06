@@ -31,7 +31,6 @@ CREATE INDEX IF NOT EXISTS "workspace_invite_link_workspace_idx" ON "workspace_i
 CREATE INDEX IF NOT EXISTS "workspace_invite_link_created_by_idx" ON "workspace_invite_link" USING btree ("created_by_user_id");
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workspace_invite_link_active_workspace_idx" ON "workspace_invite_link" USING btree ("workspace_id","is_active") WHERE "is_active" = true;
---> statement-breakpoint
 
 -- Step 2: Create workspace_invite_link_use table
 CREATE TABLE IF NOT EXISTS "workspace_invite_link_use" (
@@ -50,11 +49,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "workspace_invite_link_use_unique_idx" ON "wor
 CREATE INDEX IF NOT EXISTS "workspace_invite_link_use_invite_link_idx" ON "workspace_invite_link_use" USING btree ("invite_link_id");
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workspace_invite_link_use_user_idx" ON "workspace_invite_link_use" USING btree ("user_id");
---> statement-breakpoint
 
 -- Step 3: Drop old workspace_invitation table (no data migration - intentional clean break)
 DROP TABLE IF EXISTS "workspace_invitation";
---> statement-breakpoint
 
 -- Step 4: Drop invitation_status enum (no longer needed)
 DROP TYPE IF EXISTS "invitation_status";

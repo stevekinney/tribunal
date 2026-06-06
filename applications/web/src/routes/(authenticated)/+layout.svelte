@@ -53,7 +53,7 @@
                 </div>
               </div>
             {/if}
-            <form method="GET" action="/logout">
+            <form method="POST" action="/logout">
               <button type="submit" class="sign-out-button">
                 <LogOut class="sign-out-icon" />
                 Sign out

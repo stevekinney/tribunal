@@ -9,6 +9,7 @@ import {
   createNeonSessionFromToken,
   resetNeonAuthJwksCacheForTests,
   upsertApplicationUserFromNeonToken,
+  validateNeonSessionFromToken,
   verifyNeonAuthToken,
   type VerifiedNeonToken,
 } from './neon-session';
@@ -256,5 +257,52 @@ describe('Neon Auth profile upsert', () => {
     });
     expect(neonSession.neonAuthUserId).toBe('neon-created-user');
     expect.assertions(2);
+  });
+
+  it('validates mapped Neon sessions without updating profile fields', async () => {
+    const existingUser = await userFactory.create({
+      username: 'mapped-user',
+      neonAuthUserId: 'neon-read-only-user',
+      email: 'old@example.com',
+      name: 'Old Name',
+      avatarUrl: 'https://example.test/old.png',
+      isPlatformAdministrator: true,
+    });
+    const token = await createToken({
+      subject: 'neon-read-only-user',
+      email: 'new@example.com',
+      name: 'New Name',
+      picture: 'https://example.test/new.png',
+    });
+
+    const { user } = await withTestDatabase(() =>
+      validateNeonSessionFromToken(token, tokenVerificationOptions()),
+    );
+
+    const [storedUser] = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.id, existingUser.id));
+
+    expect(user).toMatchObject({
+      id: existingUser.id,
+      email: 'old@example.com',
+      name: 'Old Name',
+      avatarUrl: 'https://example.test/old.png',
+      isPlatformAdministrator: true,
+    });
+    expect(storedUser.email).toBe('old@example.com');
+    expect(storedUser.name).toBe('Old Name');
+    expect(storedUser.avatarUrl).toBe('https://example.test/old.png');
+    expect.assertions(4);
+  });
+
+  it('rejects a valid Neon token that is not linked to a Tribunal user', async () => {
+    const token = await createToken({ subject: 'neon-unlinked-user' });
+
+    await expect(
+      withTestDatabase(() => validateNeonSessionFromToken(token, tokenVerificationOptions())),
+    ).rejects.toMatchObject({ status: 401 });
+    expect.assertions(1);
   });
 });

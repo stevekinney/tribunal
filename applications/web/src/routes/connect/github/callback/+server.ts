@@ -14,6 +14,10 @@ import { refreshInstallationRepositories } from '@tribunal/github/repositories/s
 import { refreshGitHubTokenIfNeeded, deleteOAuthConnection } from '$lib/server/auth/authentication';
 import { githubContext } from '$lib/server/github-context';
 import { isUnauthorizedError } from '@tribunal/github/errors';
+import {
+  listUserInstallations,
+  userHasInstallationAccess,
+} from '$lib/server/github/user-installations';
 import type { GitHubAccountType, RepositorySelection } from '@tribunal/database/schema';
 import type { RequestHandler } from './$types';
 
@@ -84,9 +88,8 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 
   const userOctokit = new Octokit({ auth: userAccessToken });
   try {
-    const { data: userInstallations } = await userOctokit.request('GET /user/installations');
-    const hasAccess = userInstallations.installations.some((i) => i.id === installationIdNum);
-    if (!hasAccess) {
+    const userInstallations = await listUserInstallations(userOctokit);
+    if (!userHasInstallationAccess(userInstallations, installationIdNum)) {
       error(403, 'You do not have access to this GitHub installation');
     }
   } catch (e) {
@@ -150,17 +153,31 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
       installationId: installation.id,
     });
 
-    // TODO(weft): Replace this direct refresh with an installation sync workflow
-    // backed by ../weft. Depict's old Temporal path used signalWithStart here
-    // so repeated setup/update callbacks coalesced into one durable sync.
-    const refreshResult = await refreshInstallationRepositories(githubContext, installation.id);
-    console.log(
-      `[connect] Installation ${installation.id} bound to user ${locals.user.id}; refreshed ${refreshResult.repositoryCount} repositories.`,
-    );
+    let repositoryRefreshFailed = false;
+    try {
+      // TODO(weft): Replace this direct refresh with an installation sync workflow
+      // backed by ../weft. Depict's old Temporal path used signalWithStart here
+      // so repeated setup/update callbacks coalesced into one durable sync.
+      const refreshResult = await refreshInstallationRepositories(githubContext, installation.id);
+      console.log(
+        `[connect] Installation ${installation.id} bound to user ${locals.user.id}; refreshed ${refreshResult.repositoryCount} repositories.`,
+      );
+    } catch (refreshError) {
+      repositoryRefreshFailed = true;
+      console.error(
+        `[connect] Installation ${installation.id} was bound to user ${locals.user.id}, but repository refresh failed.`,
+        refreshError,
+      );
+    }
 
     cookies.delete('github_app_state', { path: '/' });
 
-    redirect(302, '/repositories?github=connected');
+    redirect(
+      302,
+      repositoryRefreshFailed
+        ? '/repositories?github=connected&error=github_installation_refresh_failed'
+        : '/repositories?github=connected',
+    );
   } catch (e) {
     // Re-throw SvelteKit's redirect and error objects
     if (isRedirect(e) || isHttpError(e)) {

@@ -348,6 +348,27 @@ export async function createNeonSessionFromToken(
   const verifiedToken = await verifyNeonAuthToken(token, options);
   const user = await upsertApplicationUserFromNeonToken(verifiedToken);
 
+  return createSessionValidationResult(verifiedToken, user);
+}
+
+export async function validateNeonSessionFromToken(
+  token: string,
+  options?: NeonTokenVerificationOptions,
+): Promise<NeonSessionValidationResult> {
+  const verifiedToken = await verifyNeonAuthToken(token, options);
+  const user = await findMappedUser(verifiedToken.neonAuthUserId);
+
+  if (!user) {
+    error(401, 'Neon Auth user is not linked to a Tribunal user');
+  }
+
+  return createSessionValidationResult(verifiedToken, user);
+}
+
+function createSessionValidationResult(
+  verifiedToken: VerifiedNeonToken,
+  user: AuthenticatedApplicationUser,
+): NeonSessionValidationResult {
   return {
     user,
     neonSession: {

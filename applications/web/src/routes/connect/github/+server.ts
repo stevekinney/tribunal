@@ -10,6 +10,10 @@ import { env } from '$env/dynamic/private';
 import { dev } from '$app/environment';
 import { getOAuthConnection } from '$lib/server/auth/authentication';
 import { getUserOctokit } from '$lib/server/github/user-oauth';
+import {
+  getSingleInstallationConfigurationUrl,
+  listUserInstallations,
+} from '$lib/server/github/user-installations';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, cookies, url }) => {
@@ -31,16 +35,11 @@ export const GET: RequestHandler = async ({ locals, cookies, url }) => {
   let existingInstallationConfigurationUrl: string | null = null;
   if (octokitResult.ok) {
     try {
-      const { data } = await octokitResult.octokit.request('GET /user/installations', {
-        per_page: 100,
-      });
-      const matchingInstallations = data.installations.filter(
-        (installation) => installation.app_slug === appName,
+      const installations = await listUserInstallations(octokitResult.octokit);
+      existingInstallationConfigurationUrl = getSingleInstallationConfigurationUrl(
+        installations,
+        appName,
       );
-
-      if (matchingInstallations.length === 1 && matchingInstallations[0].html_url) {
-        existingInstallationConfigurationUrl = matchingInstallations[0].html_url;
-      }
     } catch (error) {
       console.warn('Could not list GitHub installations before starting install flow', error);
     }

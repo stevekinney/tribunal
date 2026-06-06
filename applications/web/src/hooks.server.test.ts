@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockRequestEvent } from '$lib/test-utils/request-event';
 
-const mockCreateNeonSessionFromToken = vi.hoisted(() => vi.fn());
+const mockValidateNeonSessionFromToken = vi.hoisted(() => vi.fn());
 const mockDeleteNeonAuthTokenCookie = vi.hoisted(() => vi.fn());
 
 vi.mock('$env/dynamic/private', () => ({
@@ -22,7 +22,7 @@ vi.mock('$testing/end-to-end/handle', () => ({
 
 vi.mock('$lib/server/auth/neon-session', () => ({
   neonAuthTokenCookieName: 'tribunal-neon-auth-token',
-  createNeonSessionFromToken: mockCreateNeonSessionFromToken,
+  validateNeonSessionFromToken: mockValidateNeonSessionFromToken,
   deleteNeonAuthTokenCookie: mockDeleteNeonAuthTokenCookie,
 }));
 
@@ -44,7 +44,7 @@ describe('hooks auth handle', () => {
       neonAuthUserId: 'neon-user-1',
       expiresAt: new Date(Date.now() + 60_000),
     };
-    mockCreateNeonSessionFromToken.mockResolvedValueOnce({ user, neonSession });
+    mockValidateNeonSessionFromToken.mockResolvedValueOnce({ user, neonSession });
 
     const event = createMockRequestEvent();
     event.cookies.get = vi.fn((name) =>
@@ -60,12 +60,12 @@ describe('hooks auth handle', () => {
     expect(response.status).toBe(200);
     expect(event.locals.user).toEqual(user);
     expect(event.locals.neonSession).toEqual(neonSession);
-    expect(mockCreateNeonSessionFromToken).toHaveBeenCalledWith('valid-token');
+    expect(mockValidateNeonSessionFromToken).toHaveBeenCalledWith('valid-token');
     expect.assertions(4);
   });
 
   it('clears invalid Neon Auth bridge cookies', async () => {
-    mockCreateNeonSessionFromToken.mockRejectedValueOnce(new Error('invalid token'));
+    mockValidateNeonSessionFromToken.mockRejectedValueOnce(new Error('invalid token'));
 
     const event = createMockRequestEvent();
     event.cookies.get = vi.fn((name) =>

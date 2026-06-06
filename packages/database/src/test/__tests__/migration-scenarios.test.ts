@@ -90,6 +90,16 @@ function detectMissingPrimaryKeys(
   return details;
 }
 
+function expectedTablesForScenario(count: number): string[] {
+  const tableNames = EXPECTED_TABLES.slice(0, count);
+
+  if (tableNames.length !== count) {
+    throw new Error(`Expected at least ${count} schema table(s) for migration scenario tests`);
+  }
+
+  return tableNames;
+}
+
 /**
  * Build a complete drift report from the individual detection functions.
  */
@@ -243,14 +253,17 @@ describe('drift detection logic', () => {
     });
 
     it('flags a table without a primary key as critical', () => {
+      const [tableMissingPrimaryKey] = expectedTablesForScenario(1);
       const existingTables = new Set(EXPECTED_TABLES);
-      const tablesWithPrimaryKey = new Set(EXPECTED_TABLES.filter((t) => t !== 'session'));
+      const tablesWithPrimaryKey = new Set(
+        EXPECTED_TABLES.filter((table) => table !== tableMissingPrimaryKey),
+      );
       const details = detectMissingPrimaryKeys(existingTables, tablesWithPrimaryKey);
 
       expect(details).toHaveLength(1);
       expect(details[0].type).toBe('CONSTRAINT_MISSING');
       expect(details[0].severity).toBe('critical');
-      expect(details[0].message).toContain('session');
+      expect(details[0].message).toContain(tableMissingPrimaryKey);
       expect(details[0].message).toContain('PRIMARY KEY');
     });
 
@@ -264,9 +277,9 @@ describe('drift detection logic', () => {
 
     it('flags multiple tables without primary keys', () => {
       const existingTables = new Set(EXPECTED_TABLES);
-      const missingPrimaryKeyTables = ['user', 'session', 'repository'];
+      const missingPrimaryKeyTables = expectedTablesForScenario(3);
       const tablesWithPrimaryKey = new Set(
-        EXPECTED_TABLES.filter((t) => !missingPrimaryKeyTables.includes(t)),
+        EXPECTED_TABLES.filter((table) => !missingPrimaryKeyTables.includes(table)),
       );
       const details = detectMissingPrimaryKeys(existingTables, tablesWithPrimaryKey);
 
@@ -311,9 +324,12 @@ describe('drift detection logic', () => {
     });
 
     it('includes critical count and warning count in summary', () => {
+      const [tableMissingPrimaryKey] = expectedTablesForScenario(1);
       const existingTables = new Set([...EXPECTED_TABLES, 'extra_table']);
       const tablesWithColumns = new Set(EXPECTED_TABLES);
-      const tablesWithPrimaryKey = new Set(EXPECTED_TABLES.filter((t) => t !== 'session'));
+      const tablesWithPrimaryKey = new Set(
+        EXPECTED_TABLES.filter((table) => table !== tableMissingPrimaryKey),
+      );
 
       const report = buildDriftReport(existingTables, tablesWithColumns, tablesWithPrimaryKey);
 

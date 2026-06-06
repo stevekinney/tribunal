@@ -5,7 +5,7 @@ import {
   sanitizeReturnTo,
   setOAuthStateCookie,
 } from '$lib/server/auth/authentication';
-import { getProviderClient } from '$lib/server/auth/providers';
+import { getGithubRedirectUri, getProviderClient } from '$lib/server/auth/providers';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, url, cookies }) => {
@@ -19,6 +19,13 @@ export const GET: RequestHandler = async ({ locals, url, cookies }) => {
     redirect(
       302,
       `/repositories?error=github_oauth_not_configured&returnTo=${encodeURIComponent(returnTo)}`,
+    );
+  }
+
+  if (!getGithubRedirectUri()) {
+    redirect(
+      302,
+      `/repositories?error=github_redirect_uri_not_configured&returnTo=${encodeURIComponent(returnTo)}`,
     );
   }
 

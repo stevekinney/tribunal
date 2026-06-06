@@ -4,6 +4,7 @@ const { mockEnv, mockUser, mockCreateAuthorizationUrl } = vi.hoisted(() => ({
   mockEnv: {
     GITHUB_CLIENT_ID: 'github-client-id',
     GITHUB_CLIENT_SECRET: 'github-client-secret',
+    GITHUB_REDIRECT_URI: 'https://tribunal.example.test/connect/github/account/callback',
     E2E_TEST_MODE: '0',
   },
   mockUser: { value: { id: 1, username: 'test-user' } as { id: number; username: string } | null },
@@ -32,6 +33,7 @@ vi.mock('$lib/server/auth/authentication', () => ({
 }));
 
 vi.mock('$lib/server/auth/providers', () => ({
+  getGithubRedirectUri: () => mockEnv.GITHUB_REDIRECT_URI || null,
   getProviderClient: () => ({
     createAuthorizationURL: mockCreateAuthorizationUrl,
   }),
@@ -46,6 +48,7 @@ describe('GET /connect/github/account', () => {
     mockUser.value = { id: 1, username: 'test-user' };
     mockEnv.GITHUB_CLIENT_ID = 'github-client-id';
     mockEnv.GITHUB_CLIENT_SECRET = 'github-client-secret';
+    mockEnv.GITHUB_REDIRECT_URI = 'https://tribunal.example.test/connect/github/account/callback';
   });
 
   function createRequest(search = '?returnTo=/connect/github') {
@@ -94,5 +97,28 @@ describe('GET /connect/github/account', () => {
     );
     expect(mockCreateAuthorizationUrl).toHaveBeenCalledWith('oauth-state', ['repo', 'user:email']);
     expect.assertions(3);
+  });
+
+  it('redirects with a visible error when GitHub OAuth credentials are not configured', async () => {
+    mockEnv.GITHUB_CLIENT_SECRET = '';
+
+    await expect(GET(createRequest())).rejects.toMatchObject({
+      status: 302,
+      location: '/repositories?error=github_oauth_not_configured&returnTo=%2Fconnect%2Fgithub',
+    });
+    expect(setOAuthStateCookie).not.toHaveBeenCalled();
+    expect.assertions(2);
+  });
+
+  it('redirects with a visible error when GitHub OAuth redirect URI is not configured', async () => {
+    mockEnv.GITHUB_REDIRECT_URI = '';
+
+    await expect(GET(createRequest())).rejects.toMatchObject({
+      status: 302,
+      location:
+        '/repositories?error=github_redirect_uri_not_configured&returnTo=%2Fconnect%2Fgithub',
+    });
+    expect(setOAuthStateCookie).not.toHaveBeenCalled();
+    expect.assertions(2);
   });
 });

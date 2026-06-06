@@ -2,9 +2,9 @@ import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { env } from '$env/dynamic/private';
 import {
-  createNeonSessionFromToken,
   deleteNeonAuthTokenCookie,
   neonAuthTokenCookieName,
+  validateNeonSessionFromToken,
 } from '$lib/server/auth/neon-session';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
@@ -54,7 +54,7 @@ export const authHandle: Handle = async ({ event, resolve }) => {
   }
 
   try {
-    const { user, neonSession } = await createNeonSessionFromToken(neonAuthToken);
+    const { user, neonSession } = await validateNeonSessionFromToken(neonAuthToken);
     event.locals.user = user;
     event.locals.neonSession = neonSession;
   } catch {

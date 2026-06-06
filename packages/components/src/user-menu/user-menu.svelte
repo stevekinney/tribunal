@@ -41,7 +41,7 @@
       {@render children()}
       <DropdownSeparator />
     {/if}
-    <form method="GET" action="/logout" class="user-menu-form">
+    <form method="POST" action="/logout" class="user-menu-form">
       <DropdownItem
         variant="danger"
         onclick={(e) => {

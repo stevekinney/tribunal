@@ -24,6 +24,7 @@ import {
   type Repository,
 } from '@tribunal/database/schema';
 import { getUserOctokit } from '$lib/server/github/user-oauth';
+import { listUserInstallations } from '$lib/server/github/user-installations';
 
 /** A repository the user can access, paired with its resolving installation. */
 export interface UserRepository {
@@ -69,10 +70,8 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
 
   let installationIds: number[];
   try {
-    const { data } = await octokitResult.octokit.request('GET /user/installations', {
-      per_page: 100,
-    });
-    installationIds = data.installations.map((installation) => installation.id);
+    const installations = await listUserInstallations(octokitResult.octokit);
+    installationIds = installations.map((installation) => installation.id);
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
     return {

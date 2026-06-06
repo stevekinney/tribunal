@@ -8,9 +8,12 @@
       const authClient = getNeonAuthClient();
       await authClient.signOut();
     } catch {
-      // The server-side bridge cookie is cleared by the logout load/action even
-      // if the managed Neon Auth service is unreachable.
+      // Continue clearing Tribunal's bridge cookie even if Neon Auth is unreachable.
     } finally {
+      await fetch('/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
       await goto('/');
     }
   });
