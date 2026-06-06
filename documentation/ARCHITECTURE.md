@@ -118,9 +118,7 @@ access to a set of repositories, and pull requests are read live from GitHub for
 
 ```mermaid
 erDiagram
-  USER ||--o{ AUTH_ACCOUNT : "logs in with"
   USER ||--o{ OAUTH_CONNECTION : "holds API tokens"
-  USER ||--o{ SESSION : "has"
   USER ||--o{ USER_API_KEY : "owns"
   USER ||--o{ GITHUB_INSTALLATION : "connects"
   GITHUB_INSTALLATION ||--o{ GITHUB_INSTALLATION_REPOSITORY : "grants access to"
@@ -130,9 +128,11 @@ erDiagram
 
 Notes:
 
-- `auth_account` tracks login identity (who the user signed in as). `oauth_connection` stores the
-  encrypted access/refresh tokens used to call the GitHub API on the user's behalf.
-- `session` and `session_event` back cookie-based authentication and audit the session lifecycle.
+- Managed Neon Auth tracks login identity and sessions. `user.neon_auth_user_id`
+  maps the Neon Auth user to Tribunal's integer application user ID.
+- `oauth_connection` stores encrypted access/refresh tokens used to call the
+  GitHub API on the user's behalf. It is repository authorization, not login
+  identity.
 - `repository` stores repo identity (GitHub repo ID, owner, name, default branch, latest commit).
   `github_installation_repository` records which repositories are reachable through which
   installation.
@@ -150,9 +150,11 @@ them without first deciding whether they should exist at all.
 
 ## Authentication and Installation Flow
 
-Login establishes identity; installing the GitHub App grants repository access. They are separate
-steps backed by separate tables (`auth_account` for login, `oauth_connection` plus
-`github_installation` for API access).
+Neon Auth establishes identity; a separate GitHub OAuth connection grants
+Tribunal user-to-GitHub API authorization; installing the GitHub App grants
+repository access. These are separate steps backed by separate state:
+`user.neon_auth_user_id` for identity mapping, `oauth_connection` for encrypted
+GitHub API tokens, and `github_installation` for installation access.
 
 ```mermaid
 sequenceDiagram
@@ -163,13 +165,18 @@ sequenceDiagram
   participant DB as PostgreSQL
 
   U->>B: Click "Sign in with GitHub"
-  B->>SK: GET /login/github
-  SK->>GH: Redirect to OAuth authorize
-  GH-->>B: Redirect with code
-  B->>SK: GET /login/github/callback?code=...
-  SK->>GH: Exchange code for token
-  SK->>DB: Upsert user + auth_account + oauth_connection
-  SK-->>B: Set session cookie + redirect
+  B->>GH: Neon Auth GitHub OAuth
+  GH-->>B: Redirect to /auth/callback
+  B->>SK: POST /api/auth/neon-session with Neon JWT
+  SK->>GH: Verify JWT through Neon Auth JWKS
+  SK->>DB: Upsert user.neon_auth_user_id mapping
+  SK-->>B: Set tribunal-neon-auth-token bridge cookie
+
+  U->>B: Connect GitHub account
+  B->>SK: GET /connect/github/account
+  SK->>GH: GitHub OAuth for repo,user:email
+  GH-->>B: Redirect to /connect/github/account/callback
+  SK->>DB: Store encrypted oauth_connection
 
   U->>B: Install the GitHub App
   B->>SK: GET /connect/github (then GitHub install flow)

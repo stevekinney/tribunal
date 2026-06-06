@@ -35,6 +35,8 @@ export async function handleInstallationRepositories(
       }
 
       // Trigger sync to update repository list
+      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
+      // installation sync workflow.
       void enqueueInstallationSync(githubContext, {
         installationId,
         reason: `webhook:installation_repositories.${action}`,
@@ -60,6 +62,8 @@ export async function handleInstallationRepositories(
       }
 
       // Trigger sync to update repository list
+      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
+      // installation sync workflow.
       void enqueueInstallationSync(githubContext, {
         installationId,
         reason: `webhook:installation_repositories.${action}`,

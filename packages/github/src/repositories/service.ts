@@ -1,7 +1,11 @@
 import type { Endpoints } from '@octokit/types';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import type { Repository } from '@tribunal/database/schema';
-import { repository, githubInstallationRepository } from '@tribunal/database/schema';
+import {
+  repository,
+  githubInstallation,
+  githubInstallationRepository,
+} from '@tribunal/database/schema';
 import { computeRepositoryUri } from '@tribunal/github';
 import type { GithubServiceContext } from '../context.js';
 import { getInstallationById } from '../installations/records.js';
@@ -24,6 +28,11 @@ export interface RepositoryMetadata {
 
 type InstallationRepository =
   Endpoints['GET /installation/repositories']['response']['data']['repositories'][number];
+
+export interface RefreshInstallationRepositoriesResult {
+  repositoryCount: number;
+  deactivatedRepositoryCount: number;
+}
 
 export type RepositorySortField =
   | 'name'
@@ -300,6 +309,137 @@ export async function getOrCreateRepository(
     .returning();
 
   return repo;
+}
+
+/**
+ * Refresh local repository rows and installation links from GitHub.
+ *
+ * TODO(weft): Move this into an installation sync workflow backed by ../weft.
+ * The web request path calls it directly only so the GitHub setup callback has
+ * an immediately visible result while the durable workflow runtime is absent.
+ */
+export async function refreshInstallationRepositories(
+  context: GithubServiceContext,
+  installationId: number,
+): Promise<RefreshInstallationRepositoriesResult> {
+  const octokit = await context.getInstallationOctokit(installationId);
+  if (!octokit) {
+    throw new Error(`Could not create GitHub client for installation ${installationId}`);
+  }
+
+  const repositories: InstallationRepository[] = [];
+  let page = 1;
+
+  while (true) {
+    const { data } = await octokit.request('GET /installation/repositories', {
+      per_page: 100,
+      page,
+    });
+
+    repositories.push(...data.repositories);
+
+    if (data.repositories.length < 100) break;
+    page += 1;
+  }
+
+  const activeRepositoryIds = new Set<number>();
+  const now = new Date();
+
+  if (repositories.length > 0) {
+    await context.db
+      .insert(repository)
+      .values(
+        repositories.map((gitHubRepository) => {
+          const owner = gitHubRepository.owner.login;
+          activeRepositoryIds.add(gitHubRepository.id);
+
+          return {
+            id: gitHubRepository.id,
+            owner,
+            name: gitHubRepository.name,
+            uri: computeRepositoryUri(owner, gitHubRepository.name),
+            defaultBranch: gitHubRepository.default_branch,
+            installationId,
+          };
+        }),
+      )
+      .onConflictDoUpdate({
+        target: repository.id,
+        set: {
+          owner: sql`excluded.owner`,
+          name: sql`excluded.name`,
+          uri: sql`excluded.uri`,
+          defaultBranch: sql`excluded.default_branch`,
+          installationId: sql`excluded.installation_id`,
+          updatedAt: now,
+        },
+      });
+
+    await context.db
+      .insert(githubInstallationRepository)
+      .values(
+        repositories.map((gitHubRepository) => ({
+          installationId,
+          repositoryId: gitHubRepository.id,
+          isActive: true,
+          removedAt: null,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [
+          githubInstallationRepository.installationId,
+          githubInstallationRepository.repositoryId,
+        ],
+        set: {
+          isActive: true,
+          removedAt: null,
+        },
+      });
+  }
+
+  const activeLinks = await context.db
+    .select({ repositoryId: githubInstallationRepository.repositoryId })
+    .from(githubInstallationRepository)
+    .where(
+      and(
+        eq(githubInstallationRepository.installationId, installationId),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    );
+
+  const repositoryIdsToDeactivate = activeLinks
+    .filter((link) => !activeRepositoryIds.has(link.repositoryId))
+    .map((link) => link.repositoryId);
+
+  if (repositoryIdsToDeactivate.length > 0) {
+    await context.db
+      .update(githubInstallationRepository)
+      .set({
+        isActive: false,
+        removedAt: now,
+      })
+      .where(
+        and(
+          eq(githubInstallationRepository.installationId, installationId),
+          inArray(githubInstallationRepository.repositoryId, repositoryIdsToDeactivate),
+        ),
+      );
+  }
+
+  await context.db
+    .update(githubInstallation)
+    .set({
+      lastSyncedAt: new Date(),
+      syncStatus: 'idle',
+      syncError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(githubInstallation.installationId, installationId));
+
+  return {
+    repositoryCount: repositories.length,
+    deactivatedRepositoryCount: repositoryIdsToDeactivate.length,
+  };
 }
 
 /**

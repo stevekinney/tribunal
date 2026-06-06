@@ -1,8 +1,8 @@
 /**
  * OAuth Provider Registry - Single Source of Truth
  *
- * This module defines all supported authentication providers and their
- * OAuth client configurations.
+ * This module defines application-owned OAuth connections used for provider
+ * API access. Neon Auth owns login identity.
  */
 import { GitHub } from 'arctic';
 import { env } from '$env/dynamic/private';
@@ -13,6 +13,15 @@ import type { AuthProvider } from '$lib/constants/authorization-providers';
 // Re-export type for convenience
 export type { AuthProvider };
 
+const localGithubRedirectUri = 'http://localhost:5173/connect/github/account/callback';
+
+export function getGithubRedirectUri(): string | null {
+  const configuredRedirectUri = env.GITHUB_REDIRECT_URI?.trim();
+  if (configuredRedirectUri) return configuredRedirectUri;
+
+  return dev ? localGithubRedirectUri : null;
+}
+
 /**
  * Provider configuration registry
  */
@@ -21,11 +30,7 @@ export const AUTH_PROVIDERS = {
     name: 'GitHub',
     icon: 'github',
     client: () =>
-      new GitHub(
-        env.GITHUB_CLIENT_ID!,
-        env.GITHUB_CLIENT_SECRET!,
-        env.GITHUB_REDIRECT_URI ?? (dev ? 'http://localhost:5173/login/github/callback' : null),
-      ),
+      new GitHub(env.GITHUB_CLIENT_ID!, env.GITHUB_CLIENT_SECRET!, getGithubRedirectUri()),
   },
 } as const satisfies Record<AuthProvider, { name: string; icon: string; client: () => unknown }>;
 

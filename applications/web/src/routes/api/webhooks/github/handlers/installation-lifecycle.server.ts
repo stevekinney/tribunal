@@ -65,6 +65,8 @@ export async function handleInstallation(
         });
 
         // Trigger sync to fetch repositories (fire-and-forget)
+        // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
+        // installation sync workflow.
         const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
         void enqueueInstallationSync(githubContext, {
           installationId,
@@ -85,6 +87,8 @@ export async function handleInstallation(
       await updateInstallationStatus(githubContext, installationId, 'active');
 
       // Trigger sync in case new permissions grant access to more repos
+      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
+      // installation sync workflow.
       const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
       void enqueueInstallationSync(githubContext, {
         installationId,

@@ -1,7 +1,7 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 
-import type { SessionValidationResult } from '$lib/server/auth/authentication';
+import type { AuthenticatedApplicationUser, NeonSession } from '$lib/server/auth/neon-session';
 
 declare global {
   namespace App {
@@ -15,8 +15,8 @@ declare global {
     }
 
     interface Locals {
-      user: SessionValidationResult['user'];
-      session: SessionValidationResult['session'];
+      user: AuthenticatedApplicationUser | null;
+      neonSession: NeonSession | null;
       /**
        * Correlation ID for tracing across route, workflow, and sandbox layers.
        * Injected via X-Correlation-Id header or generated if missing.

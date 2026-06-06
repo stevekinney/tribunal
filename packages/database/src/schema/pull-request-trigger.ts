@@ -79,6 +79,8 @@ export const pullRequestTrigger = pgTable(
 
     // Processing state
     status: pullRequestTriggerStatusEnum('status').notNull().default('pending'),
+    // TODO(weft): Store ../weft orchestrator and child workflow IDs here once
+    // pull request automation is wired back to a durable workflow runtime.
     orchestratorWorkflowId: text('orchestrator_workflow_id'),
     childWorkflowId: text('child_workflow_id'), // The remediation workflow if started
 

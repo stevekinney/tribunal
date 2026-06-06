@@ -15,6 +15,7 @@
     "**/node_modules/**",
     "**/.svelte-kit/**",
     "**/.vercel/**",
+    "**/build/**",
     "**/dist/**",
     "**/__fixtures__/**"
   ],

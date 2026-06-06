@@ -3,8 +3,11 @@
  *
  * Tracks rate limit state per installation to enable:
  * - Preemptive rate limit checking before API calls
- * - Proper retry timing in Temporal workflows
+ * - Proper retry timing in durable workflows
  * - Visibility into rate limit state across requests
+ *
+ * TODO(weft): Feed this state into ../weft GitHub activity retry/backoff once
+ * installation and pull request workflows are restored.
  *
  * Design decisions:
  * - Fail open: If Redis unavailable, return { limited: false } to allow requests

@@ -10,20 +10,23 @@ actually runs today.
 
 This is the entire surviving product experience:
 
-1. **Log in with GitHub.** The OAuth identity flow lives under
-   `applications/web/src/routes/login/github/` (with `callback/`). This establishes who
-   you are.
-2. **Install the GitHub App.** The install/authorization flow lives under
+1. **Sign in with GitHub through Neon Auth.** The sign-in page lives at
+   `applications/web/src/routes/login/` and bridges the Neon JWT through
+   `applications/web/src/routes/auth/callback/`.
+2. **Connect the GitHub account for repository authorization.** The app-owned
+   OAuth connection lives under `applications/web/src/routes/connect/github/account/`.
+3. **Install the GitHub App.** The install/authorization flow lives under
    `applications/web/src/routes/connect/github/` (with `callback/`). Installing the app
    in an organization grants Tribunal repository access and registers webhooks.
-3. **Browse your repositories.** Authenticated routes under
+4. **Browse your repositories.** Authenticated routes under
    `applications/web/src/routes/(authenticated)/repositories/` list the repositories the
    install grants access to.
-4. **Browse open pull requests.** Drill into a repository
+5. **Browse open pull requests.** Drill into a repository
    (`repositories/[repositoryId]/pull-requests/`) to see its open pull requests, and into
    `.../pull-requests/[number]` for a single one.
 
-That is the product: identity via OAuth, access via the App install, and a read view of
+That is the product: identity via managed Neon Auth, GitHub API authorization via
+an encrypted OAuth connection, access via the App install, and a read view of
 repositories and their pull requests.
 
 ## GitHub webhook processing

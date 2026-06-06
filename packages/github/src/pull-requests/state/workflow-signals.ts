@@ -8,6 +8,10 @@
  * The workflow dispatch that previously drove these has been removed. The
  * functions retain their signatures so existing callers keep compiling, and
  * log the signal that would have been sent.
+ *
+ * TODO(weft): Rebuild this as a ../weft pull request orchestrator workflow.
+ * Depict's Temporal version used signalWithStart for webhook coalescing and
+ * signal-only close events for already-running orchestrators.
  */
 
 import type { GithubServiceContext } from '../../context.js';

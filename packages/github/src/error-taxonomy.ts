@@ -1,12 +1,12 @@
 /**
- * Error taxonomy for Temporal workflow integration.
+ * Error taxonomy for durable workflow integration.
  *
  * These error classes provide semantic meaning for retry behavior:
  * - NonRetryableError: Permanent failures that should not be retried
  * - RetryableError: Transient failures that may succeed on retry
  *
- * Workers convert these to Temporal's ApplicationFailure for proper
- * retry handling by the Temporal server.
+ * TODO(weft): Convert these classifications into ../weft activity failure
+ * metadata once workflow execution is wired back in.
  */
 
 /**
@@ -95,10 +95,10 @@ export class ConflictError extends NonRetryableError {
  * Non-retryable because:
  * - The original requester is no longer waiting for the result
  * - Retrying would waste resources on work nobody wants
- * - Temporal has native cancellation handling (CancelledFailure) for workflow-initiated cancellations
+ * - Workflow engines have native cancellation handling for workflow-initiated cancellations
  *
  * This error is for client-initiated cancellations (CLIENT_CLOSED_REQUEST, HTTP disconnects)
- * not Temporal workflow cancellations (use isCancellation() for those).
+ * not workflow-engine cancellations.
  */
 export class CancellationError extends NonRetryableError {
   constructor(operation: string, reason?: string) {

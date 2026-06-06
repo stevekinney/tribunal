@@ -16,6 +16,7 @@
  * repositories here.
  */
 import { and, eq, inArray } from 'drizzle-orm';
+import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 import {
   githubInstallation,
@@ -24,6 +25,7 @@ import {
   type Repository,
 } from '@tribunal/database/schema';
 import { getUserOctokit } from '$lib/server/github/user-oauth';
+import { listUserInstallations } from '$lib/server/github/user-installations';
 
 /** A repository the user can access, paired with its resolving installation. */
 export interface UserRepository {
@@ -35,11 +37,26 @@ export interface UserRepository {
   };
 }
 
+export interface UserRepositoryInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountAvatarUrl: string | null;
+}
+
+type LiveUserInstallation = Awaited<ReturnType<typeof listUserInstallations>>[number];
+
+function getLiveInstallationAccountLogin(installation: LiveUserInstallation): string {
+  const { account } = installation;
+  if (!account) return `installation-${installation.id}`;
+  if ('login' in account) return account.login;
+  return account.slug ?? account.name ?? `installation-${installation.id}`;
+}
+
 /** Why repository resolution could not produce a list. */
 export type UserRepositoriesError = 'no_github_token' | 'github_unavailable';
 
 export type UserRepositoriesResult =
-  | { ok: true; repositories: UserRepository[] }
+  | { ok: true; repositories: UserRepository[]; installations: UserRepositoryInstallation[] }
   | { ok: false; error: UserRepositoriesError; message: string };
 
 /**
@@ -62,11 +79,20 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   }
 
   let installationIds: number[];
+  let liveInstallations: UserRepositoryInstallation[];
   try {
-    const { data } = await octokitResult.octokit.request('GET /user/installations', {
-      per_page: 100,
-    });
-    installationIds = data.installations.map((installation) => installation.id);
+    const installations = await listUserInstallations(octokitResult.octokit);
+    const applicationSlug = env.GITHUB_APP_NAME;
+    const applicationInstallations = applicationSlug
+      ? installations.filter((installation) => installation.app_slug === applicationSlug)
+      : [];
+
+    installationIds = applicationInstallations.map((installation) => installation.id);
+    liveInstallations = applicationInstallations.map((installation) => ({
+      installationId: installation.id,
+      accountLogin: getLiveInstallationAccountLogin(installation),
+      accountAvatarUrl: installation.account?.avatar_url ?? null,
+    }));
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
     return {
@@ -77,8 +103,36 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   }
 
   if (installationIds.length === 0) {
-    return { ok: true, repositories: [] };
+    return { ok: true, repositories: [], installations: [] };
   }
+
+  const installationRows = await db
+    .select({
+      installationId: githubInstallation.installationId,
+      accountLogin: githubInstallation.accountLogin,
+      accountAvatarUrl: githubInstallation.accountAvatarUrl,
+    })
+    .from(githubInstallation)
+    .where(
+      and(
+        inArray(githubInstallation.installationId, installationIds),
+        eq(githubInstallation.status, 'active'),
+      ),
+    );
+
+  const installationsById = new Map<number, UserRepositoryInstallation>();
+  for (const installation of liveInstallations) {
+    installationsById.set(installation.installationId, installation);
+  }
+
+  for (const installation of installationRows) {
+    installationsById.set(installation.installationId, installation);
+  }
+
+  const installations = Array.from(installationsById.values()).sort((a, b) => {
+    if (a.accountLogin === b.accountLogin) return 0;
+    return a.accountLogin < b.accountLogin ? -1 : 1;
+  });
 
   // Join our flat model: active installation -> active link -> repository.
   const rows = await db
@@ -128,7 +182,7 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
     return a.repository.name < b.repository.name ? -1 : 1;
   });
 
-  return { ok: true, repositories };
+  return { ok: true, repositories, installations };
 }
 
 /**

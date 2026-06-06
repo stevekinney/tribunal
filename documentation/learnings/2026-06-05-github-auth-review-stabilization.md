@@ -1,0 +1,4 @@
+- Repository connection errors redirected to `/repositories?error=...` must be rendered by the repositories page; otherwise users re-enter the same connect flow without seeing the configuration failure.
+- GitHub `GET /user/installations` is paginated. Any authorization or existing-installation decision based on that endpoint must read all pages before deciding access or routing.
+- GitHub App installation persistence and repository refresh are separate outcomes. Once the installation and user binding are stored, refresh failures should surface as a visible repository-sync problem rather than making the whole connect callback fail.
+- Neon Auth token validation in request hooks should be read-only. Profile synchronization belongs in the explicit session bridge path, not every authenticated page load.

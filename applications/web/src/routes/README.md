@@ -4,20 +4,22 @@ This directory contains all SvelteKit pages and endpoints for the Tribunal web a
 Routes are grouped by access level so public, authenticated, and GitHub integration
 flows stay separate.
 
-Tribunal is intentionally minimal: log in with GitHub, install the GitHub App in your
-orgs, then browse your repositories and their open pull requests. There are no
+Tribunal is intentionally minimal: sign in through managed Neon Auth with GitHub,
+connect GitHub for repository authorization, install the GitHub App in your orgs,
+then browse your repositories and their open pull requests. There are no
 workspaces, projects, or non-GitHub integrations.
 
 ## Top-Level Structure
 
-| Path               | Purpose                            | Notes                                     |
-| ------------------ | ---------------------------------- | ----------------------------------------- |
-| `(public)/`        | Public legal pages                 | No auth required; prerendered             |
-| `(authenticated)/` | Signed-in experiences              | Auth required; redirects to `/login`      |
-| `api/`             | API endpoints                      | API-key check + GitHub webhook receiver   |
-| `connect/`         | GitHub App installation flow       | GitHub only                               |
-| `login/`           | GitHub OAuth login + account flows | Login, account linking, re-authentication |
-| `logout/`          | Session termination                | Clears auth cookies                       |
+| Path               | Purpose                            | Notes                                  |
+| ------------------ | ---------------------------------- | -------------------------------------- |
+| `(public)/`        | Public legal pages                 | No auth required; prerendered          |
+| `(authenticated)/` | Signed-in experiences              | Auth required; redirects to `/login`   |
+| `api/`             | API endpoints                      | Neon bridge + GitHub webhook receiver  |
+| `auth/`            | Neon Auth browser callback         | Bridges Neon JWT into SvelteKit SSR    |
+| `connect/`         | GitHub account + App install flows | GitHub repository authorization        |
+| `login/`           | Managed Neon Auth sign-in page     | GitHub is the only Neon Auth provider  |
+| `logout/`          | Session termination                | Neon sign-out + bridge cookie clearing |
 
 ### Route Structure Diagram
 
@@ -33,14 +35,15 @@ src/routes/
 │   ├── api-keys/                   # API key management
 │   └── profile/                    # User profile and account settings
 ├── api/
-│   ├── api-keys/check/             # API key validation endpoint
+│   ├── auth/neon-session/          # Neon JWT verification + bridge cookie
 │   └── webhooks/github/            # GitHub webhook receiver + handlers
+├── auth/
+│   └── callback/                   # Neon Auth browser callback bridge
 ├── connect/
 │   └── github/                     # GitHub App install initiation + callback
+│       └── account/                # App-owned GitHub OAuth connection
 ├── login/
-│   ├── github/                     # GitHub OAuth login + callback
-│   ├── link/[provider=provider]/   # Link a provider to the account
-│   └── reauthenticate/             # Re-auth for sensitive actions
+│   └── +page.svelte                # Neon Auth GitHub sign-in button
 └── logout/
 ```
 

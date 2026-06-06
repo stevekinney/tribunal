@@ -30,13 +30,14 @@ user → github_installation → github_installation_repository → repository
 
 Supporting tables:
 
-- **Auth/identity**: `session`, `auth_account`, `oauth_connection`,
-  `user_api_key`, `session_event`.
+- **Auth/identity**: Neon Auth owns identity and sessions. Tribunal exports
+  `user` with `neon_auth_user_id`, plus `oauth_connection` for encrypted GitHub
+  API tokens and `user_api_key`.
 - **Webhooks**: `webhook_event` (references `repository`) and
   `github_webhook_delivery` for delivery-claim/idempotency.
 - **Workflow tables**: `workflow_run`, `workflow_config`, and
   `workflow_issue_reference` exist in the schema and still carry a
-  `workspaceId` column and Temporal-oriented comments. They are residual: there
+  `workspaceId` column and workflow identifier fields. They are residual: there
   is no workers/Temporal runtime in this repository, and webhook handlers
   currently log rather than dispatch any workflow. Treat them as inert storage
   until a producer is wired up.

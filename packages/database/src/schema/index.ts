@@ -11,7 +11,6 @@ export * from './types';
 export * from './enums';
 
 // Tables (alphabetical)
-export * from './auth-account';
 export * from './github-installation';
 export * from './github-installation-repository';
 export * from './github-webhook-delivery';
@@ -19,7 +18,6 @@ export * from './oauth-connection';
 export * from './pull-request-state';
 export * from './pull-request-trigger';
 export * from './repository';
-export * from './session';
 export * from './user';
 export * from './user-api-key';
 export * from './webhook-event';

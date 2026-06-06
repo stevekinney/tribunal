@@ -16,8 +16,8 @@ export interface EnqueueInstallationSyncResult {
    * - 'started': Workflow was started or signaled (signalWithStart doesn't distinguish)
    * - 'error': Failed to enqueue the workflow
    *
-   * Note: signalWithStart is atomic and doesn't tell us whether it started a new
-   * workflow or signaled an existing one, so we always return 'started'.
+   * TODO(weft): Preserve this start-or-signal result shape when the enqueue
+   * layer is backed by ../weft instead of the current log-only shim.
    */
   status: 'started' | 'error';
   error?: string;

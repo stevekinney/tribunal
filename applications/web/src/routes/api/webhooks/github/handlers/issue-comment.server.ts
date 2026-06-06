@@ -54,6 +54,8 @@ async function signalIssueComment(
   eventType: PullRequestEventType,
   action: string | null,
 ): Promise<void> {
+  // TODO(weft): Route issue-comment signals into a ../weft pull request
+  // orchestrator workflow instead of the current workflow-signals stub.
   const { installationId, repositoryId, logger } = context;
 
   // Only handle PR comments (issue_comment events fire for both issues and PRs)

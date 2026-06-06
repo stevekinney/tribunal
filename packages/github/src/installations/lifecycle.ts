@@ -240,6 +240,9 @@ export async function cancelWorkflowsForRepositories(
  * The workflow runtime that previously received cancel signals has been
  * removed; this logs the workflows that would have been cancelled and still
  * updates the database to prevent stuck records.
+ *
+ * TODO(weft): Send cancellation signals to ../weft workflow handles before
+ * marking local workflow rows cancelled.
  */
 async function cancelWorkflows(
   context: GithubServiceContext,

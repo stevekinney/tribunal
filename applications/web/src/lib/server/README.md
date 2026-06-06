@@ -9,7 +9,7 @@ modules. Importing any of it from client code breaks the build.
 ```
 server/
 ├── api-keys/       # Per-user API key creation, hashing, and auth
-├── auth/           # GitHub OAuth login, sessions, account providers
+├── auth/           # Neon Auth token verification and user mapping
 ├── database/       # Drizzle connection (re-exports @tribunal/database)
 ├── github/         # GitHub App, OAuth access checks, webhooks
 ├── rate-limit/     # Rate limit bucket policies
@@ -41,9 +41,9 @@ A user "has" a repository when they can access the GitHub App installation
 `github_installation_repository` joins that installation to a `repository`
 record. See `repositories.ts` for the resolution logic.
 
-GitHub is the only integration. Authentication is GitHub OAuth (identity), and
-repository access plus webhooks come from a GitHub App installation. Webhook
-verification and event handling live in `github/webhooks/`.
+GitHub is the only integration. Managed Neon Auth owns login identity and
+browser sessions, while repository access plus webhooks come from a GitHub App
+installation. Webhook verification and event handling live in `github/webhooks/`.
 
 ## Import rules
 

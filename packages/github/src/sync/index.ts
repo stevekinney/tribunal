@@ -5,6 +5,10 @@
  * The workflow runtime that previously executed the sync has been removed, so
  * these functions log the work that would have been enqueued and report a
  * started status. Callers remain fire-and-forget.
+ *
+ * TODO(weft): Replace this log-only shim with a ../weft-backed installation
+ * sync workflow using the same start-or-signal shape that Depict used with
+ * Temporal's signalWithStart.
  */
 
 import type { GithubServiceContext } from '../context.js';

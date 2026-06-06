@@ -1,10 +1,10 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 
 // ============================================================================
-// AUTH ENUMS
+// AUTHORIZATION ENUMS
 // ============================================================================
 
-/** Supported authentication providers for auth_account (login identity) */
+/** Historical login-provider enum retained for existing database type continuity. */
 export const authProviderEnum = pgEnum('auth_provider', ['github']);
 
 /** Supported OAuth providers for oauth_connection (API access tokens) */
@@ -74,7 +74,6 @@ export const errorCategoryEnum = pgEnum('error_category', [
 // DERIVED TYPESCRIPT TYPES
 // ============================================================================
 
-// Auth types
 export type AuthProvider = (typeof authProviderEnum.enumValues)[number];
 export type OAuthProvider = (typeof oauthProviderEnum.enumValues)[number];
 export type OAuthConnectionStatus = (typeof oauthConnectionStatusEnum.enumValues)[number];

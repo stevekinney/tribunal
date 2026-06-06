@@ -23,7 +23,7 @@
   </div>
   <h1 class="title">Welcome to Tribunal</h1>
   <div class="actions">
-    <Button href="/login/github" variant="secondary" size="lg" icon={GithubIcon}>
+    <Button href="/login" variant="secondary" size="lg" icon={GithubIcon}>
       Sign in with GitHub
     </Button>
   </div>

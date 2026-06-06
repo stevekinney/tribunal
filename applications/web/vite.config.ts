@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config as loadDotenv } from 'dotenv';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import devtoolsJson from 'vite-plugin-devtools-json';
@@ -16,6 +17,13 @@ const webhookRegistryFile = 'node_modules/github-webhook-schemas/dist/registry.j
 const localPath = resolve(__configDir, webhookRegistryFile);
 const rootPath = resolve(__configDir, '../..', webhookRegistryFile);
 const webhookRegistryPath = existsSync(localPath) ? localPath : rootPath;
+const repositoryRoot = resolve(__configDir, '../..');
+const preferRootEnvironment =
+  process.env.CI !== 'true' &&
+  process.env.VERCEL !== '1' &&
+  process.env.TRIBUNAL_PREFER_SHELL_ENV !== '1';
+
+loadDotenv({ path: resolve(repositoryRoot, '.env'), override: preferRootEnvironment });
 
 const enableCoverageSourcemaps = process.env.COVERAGE === '1' || process.env.COVERAGE === 'true';
 
@@ -25,6 +33,7 @@ const previewPort = getPortWithEnvOverride('VITE_PREVIEW_PORT', BASE_PORTS.viteP
 const vitestBrowserPort = getPortWithEnvOverride('VITEST_BROWSER_PORT', BASE_PORTS.vitestBrowser);
 
 export default defineConfig({
+  envDir: repositoryRoot,
   plugins: [sveltekit(), devtoolsJson()],
   server: {
     port: devPort,
@@ -37,7 +46,7 @@ export default defineConfig({
     },
   },
   ssr: {
-    noExternal: ['github-webhook-schemas'],
+    noExternal: [/^@tribunal\/.*/, 'github-webhook-schemas'],
   },
   build: {
     sourcemap: enableCoverageSourcemaps,
