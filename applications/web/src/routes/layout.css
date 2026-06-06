@@ -41,9 +41,6 @@
 @import '../lib/styles/utilities.css';
 @import '../lib/styles/markdown.css';
 
-/* KaTeX math rendering — required for $...$ and $$...$$ display in chat */
-@import 'katex/dist/katex.min.css';
-
 /* Prose heading anchor links - hide separate anchor elements */
 .prose :is(h1, h2, h3, h4, h5, h6) + a[href^='#'],
 .prose a.anchor,

@@ -9,13 +9,13 @@
     avatarUrl: string | null;
   };
 
-  interface Props {
+  type Props = {
     /** Required unique ID for SSR stability and aria-controls wiring. */
     id: string;
     user: User;
     class?: string;
     children?: Snippet;
-  }
+  };
 
   let { id, user, class: className, children }: Props = $props();
 </script>
@@ -38,7 +38,7 @@
         variant="danger"
         onclick={(e) => {
           e.preventDefault();
-          const form = (e.currentTarget as HTMLButtonElement).closest('form');
+          const form = e.currentTarget.closest('form');
           form?.requestSubmit();
         }}
       >

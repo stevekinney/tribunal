@@ -98,21 +98,18 @@
    * Dark-header nav text colors.
    *
    * The header is themed dark via `data-theme="dark"`, but Cinder's
-   * NavigationItem sets `color: var(--cinder-text)` in its own cascade layer.
-   * That `light-dark()` token resolves against the layer's root color-scheme
-   * (light) rather than this nested dark subtree, so the label would render
-   * dark-on-dark and disappear. Setting `color` directly here wins (the var
-   * override does not — the color is computed before our override applies).
-   * We use Tribunal's `--text`/`--text-muted`, which DO flip correctly on a
-   * `data-theme` element, so this stays themeable rather than hard-coded.
+   * NavigationItem resolves its `light-dark()` color tokens against the root
+   * color-scheme (light), not this nested dark subtree — so labels render
+   * dark-on-dark and disappear.
+   *
+   * Overriding the Cinder CSS custom properties at this scope is the correct
+   * fix: they cascade through the subtree and survive any Cinder class rename.
+   * Tribunal's `--text`/`--text-muted` do resolve correctly against a
+   * `data-theme` element, keeping the colors themeable rather than hard-coded.
    */
-  .app-header[data-theme='dark'] :global(.cinder-navigation-item) {
-    color: var(--text-muted);
-  }
-
-  .app-header[data-theme='dark'] :global(.cinder-navigation-item[data-active='true']),
-  .app-header[data-theme='dark'] :global(.cinder-navigation-item:hover) {
-    color: var(--text);
+  .app-header[data-theme='dark'] {
+    --cinder-text-muted: var(--text-muted);
+    --cinder-text: var(--text);
   }
 
   .app-layout {

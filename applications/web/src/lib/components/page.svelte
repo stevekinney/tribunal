@@ -73,9 +73,9 @@
   </div>
 </header>
 
-<main class="page-content">
+<div class="page-content">
   {@render children()}
-</main>
+</div>
 
 <style>
   .page-header {
