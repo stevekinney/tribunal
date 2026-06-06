@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Page } from '@tribunal/components/page';
+  import Page from '$lib/components/page.svelte';
 
   const updatedAt = 'January 15, 2026';
 </script>

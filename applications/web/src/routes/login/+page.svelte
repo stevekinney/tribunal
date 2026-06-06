@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { Button } from '@tribunal/components/button';
-  import { Alert } from '@tribunal/components/alert';
+  import { Button } from '@lostgradient/cinder/button';
+  import { Alert } from '@lostgradient/cinder/alert';
   import { LOGIN_ERROR_MESSAGES } from '$lib/constants/authorization-providers';
   import { getNeonAuthClient } from '$lib/auth/neon-client';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
@@ -62,7 +62,7 @@
     </div>
 
     {#if errorMessage}
-      <Alert variant="danger">
+      <Alert variant="error">
         {errorMessage}
       </Alert>
     {/if}
@@ -70,12 +70,13 @@
     <div class="providers">
       <Button
         variant="secondary"
+        size="sm"
         class="provider-button"
         onclick={startGithubSignIn}
         disabled={loading}
       >
-        <GithubIcon class="icon-md" />
         {loading ? 'Redirecting...' : 'Continue with GitHub'}
+        {#snippet leadingIcon()}<GithubIcon width="20" height="20" aria-hidden="true" />{/snippet}
       </Button>
     </div>
 

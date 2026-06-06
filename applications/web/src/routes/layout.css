@@ -5,7 +5,41 @@
  * specific to the app layout.
  */
 
-@import '@tribunal/components/styles';
+/*
+ * Explicit @layer precedence (lowest priority first; later = wins).
+ *
+ * Cinder and the relocated Tribunal stylesheets each declare their own cascade
+ * layers (`cinder.*` vs. bare `tokens`/`foundation`/`utilities`/`components`).
+ * Relying on import order does NOT work: Tribunal's layers are created
+ * implicitly by their first `@layer {}` block, and implicit layers always sort
+ * AFTER explicitly-declared ones — so Tribunal's generic `foundation` resets
+ * would otherwise beat Cinder's component styles (e.g. a global `:focus-visible`
+ * outline stacking on top of Cinder's own focus ring).
+ *
+ * This statement interleaves them deliberately:
+ *   - Tribunal `tokens` is LAST → its `--surface`/`--space-*`/`--text-*` custom
+ *     properties win, which every route <style> block depends on.
+ *   - Tribunal `foundation` sits BEFORE `cinder.components` → Cinder's component
+ *     styling (focus rings, etc.) wins over Tribunal's generic element resets.
+ */
+@layer cinder.tokens, cinder.foundation, foundation, cinder.components,
+  cinder.utilities, utilities, components, tokens;
+
+/* Cinder design system base (populates the cinder.* layers above). */
+@import '@lostgradient/cinder/styles';
+
+/*
+ * Relocated Tribunal design system styles. The app's route markup and wrappers
+ * depend on these — Cinder defines none of them:
+ *   - tokens/foundation: the `--surface`, `--space-*`, `--text-*` ... custom props
+ *     read by every route <style> block.
+ *   - utilities: `.icon-sm/.icon-md/.icon-lg`, `.sr-only`, `.truncate`.
+ *   - markdown: `.prose` typography for the public policy pages.
+ */
+@import '../lib/styles/tokens.css';
+@import '../lib/styles/foundation.css';
+@import '../lib/styles/utilities.css';
+@import '../lib/styles/markdown.css';
 
 /* KaTeX math rendering — required for $...$ and $$...$$ display in chat */
 @import 'katex/dist/katex.min.css';
@@ -15,4 +49,13 @@
 .prose a.anchor,
 .prose a[aria-hidden='true'] {
   display: none;
+}
+
+/*
+ * Flush card variant — removes Cinder Card body padding.
+ * Replaces the old @tribunal/components `flush` boolean prop. Unlayered so it
+ * wins over Cinder's layered `.cinder-card__body` padding.
+ */
+.card--flush .cinder-card__body {
+  padding: 0;
 }

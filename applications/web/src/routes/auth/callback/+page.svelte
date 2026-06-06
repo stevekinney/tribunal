@@ -2,7 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
-  import { Alert } from '@tribunal/components/alert';
+  import { Alert } from '@lostgradient/cinder/alert';
   import { getNeonAuthClient } from '$lib/auth/neon-client';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
 
@@ -68,7 +68,7 @@
 
 <main class="auth-callback-page">
   {#if status === 'error'}
-    <Alert variant="danger">Sign in failed. Redirecting...</Alert>
+    <Alert variant="error">Sign in failed. Redirecting...</Alert>
   {:else}
     <p class="status">Completing sign in...</p>
   {/if}

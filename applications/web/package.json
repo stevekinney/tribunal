@@ -19,9 +19,9 @@
     "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
+    "@lostgradient/cinder": "^0.1.1",
     "@neondatabase/neon-js": "^0.6.1-beta",
     "@neondatabase/serverless": "^1.0.2",
-    "@tribunal/components": "workspace:*",
     "@tribunal/database": "workspace:*",
     "@tribunal/github": "workspace:*",
     "arctic": "^3.7.0",
