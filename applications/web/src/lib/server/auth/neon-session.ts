@@ -243,11 +243,21 @@ function profileUpdatesForExistingUser(
   verifiedToken: VerifiedNeonToken,
   includeEmail: boolean,
 ): Partial<typeof userTable.$inferInsert> {
-  return {
-    name: verifiedToken.name,
-    avatarUrl: verifiedToken.avatarUrl,
-    ...(includeEmail && verifiedToken.email ? { email: verifiedToken.email } : {}),
-  };
+  const updates: Partial<typeof userTable.$inferInsert> = {};
+
+  if (verifiedToken.name !== null) {
+    updates.name = verifiedToken.name;
+  }
+
+  if (verifiedToken.avatarUrl !== null) {
+    updates.avatarUrl = verifiedToken.avatarUrl;
+  }
+
+  if (includeEmail && verifiedToken.email) {
+    updates.email = verifiedToken.email;
+  }
+
+  return updates;
 }
 
 export async function upsertApplicationUserFromNeonToken(
@@ -260,10 +270,15 @@ export async function upsertApplicationUserFromNeonToken(
       ? mappedUser.email?.toLowerCase() === verifiedToken.email ||
         !(await emailBelongsToAnotherUser(verifiedToken.email, mappedUser.id))
       : false;
+    const updates = profileUpdatesForExistingUser(verifiedToken, canUpdateEmail);
+
+    if (Object.keys(updates).length === 0) {
+      return mappedUser;
+    }
 
     const [updatedUser] = await db
       .update(userTable)
-      .set(profileUpdatesForExistingUser(verifiedToken, canUpdateEmail))
+      .set(updates)
       .where(eq(userTable.id, mappedUser.id))
       .returning({
         id: userTable.id,
@@ -302,8 +317,7 @@ export async function upsertApplicationUserFromNeonToken(
         .update(userTable)
         .set({
           neonAuthUserId: verifiedToken.neonAuthUserId,
-          name: verifiedToken.name,
-          avatarUrl: verifiedToken.avatarUrl,
+          ...profileUpdatesForExistingUser(verifiedToken, false),
         })
         .where(eq(userTable.id, existing.id))
         .returning({
