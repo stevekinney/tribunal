@@ -1,7 +1,25 @@
+/**
+ * Formats a date as a coarse, day-level relative string ("today", "3d ago", "2mo ago").
+ *
+ * @param dateStr - ISO 8601 date string
+ * @returns Relative string, '-' for an unparseable date, or a formatted date for future dates
+ *
+ * @example
+ * formatRelativeDate('2024-06-12T12:00:00Z') // "3d ago"
+ * formatRelativeDate('not-a-date')           // "-"
+ */
 export function formatRelativeDate(dateStr: string): string {
   const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '-';
+
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
+
+  // Future dates have no "ago" form; show the calendar date instead.
+  if (diffMs < 0) {
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
   if (diffDays === 0) return 'today';

@@ -36,6 +36,17 @@ describe('formatRelativeDate', () => {
   it('returns "Xy ago" for one year or more', () => {
     expect(formatRelativeDate('2023-06-15T12:00:00Z')).toBe('1y ago');
   });
+
+  it('returns "-" for an invalid date string (no "NaNy ago")', () => {
+    expect(formatRelativeDate('not-a-date')).toBe('-');
+  });
+
+  it('returns a formatted date for future dates (no negative "-Xd ago")', () => {
+    const result = formatRelativeDate('2024-06-20T12:00:00Z');
+    expect(result).not.toMatch(/ago|today|yesterday/);
+    expect(result).not.toContain('-');
+    expect(result.length).toBeGreaterThan(2);
+  });
 });
 
 describe('formatRelativeTime', () => {

@@ -13,7 +13,6 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test:unit:server": "vitest run --project server",
     "test:unit:client": "vitest run --project client --passWithNoTests",
-    "test:accessibility:smoke": "vitest --run -t \"a11y smoke\" ../../packages/components/src",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write --ignore-path ../../.prettierignore .",
     "format:check": "prettier --check --ignore-path ../../.prettierignore ."
