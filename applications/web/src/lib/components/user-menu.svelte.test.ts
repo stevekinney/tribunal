@@ -11,13 +11,13 @@ describe('UserMenu', () => {
   });
 
   it('renders the user avatar trigger button', async () => {
-    render(UserMenu, { props: { id: 'test-menu', user: TEST_USER } });
+    render(UserMenu, { id: 'test-menu', user: TEST_USER });
     const trigger = page.getByRole('button', { name: 'User menu' });
     await expect.element(trigger).toBeInTheDocument();
   });
 
   it('submits the logout form when Sign out is clicked', async () => {
-    render(UserMenu, { props: { id: 'test-menu', user: TEST_USER } });
+    render(UserMenu, { id: 'test-menu', user: TEST_USER });
 
     // Open the dropdown
     await page.getByRole('button', { name: 'User menu' }).click();
@@ -37,7 +37,7 @@ describe('UserMenu', () => {
   });
 
   it('displays the username in the dropdown label', async () => {
-    render(UserMenu, { props: { id: 'test-menu', user: TEST_USER } });
+    render(UserMenu, { id: 'test-menu', user: TEST_USER });
     await page.getByRole('button', { name: 'User menu' }).click();
     // Use exact class to scope away from the Avatar alt text match
     const usernameLabel = document.querySelector<HTMLElement>('.user-menu-username');
