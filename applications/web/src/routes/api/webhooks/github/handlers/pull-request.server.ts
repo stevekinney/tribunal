@@ -40,6 +40,9 @@ export async function handlePullRequestEvent(
         repo: payload.repository.name,
         eventType: 'pr_opened',
         actorLogin: payload.sender?.login,
+        // GitHub delivery GUID -> Weft signalId, so a 500-and-retry of this
+        // delivery dedups to one signal instead of minting a fresh UUID.
+        eventId: context.deliveryId,
       });
 
       if (!result.ok) {

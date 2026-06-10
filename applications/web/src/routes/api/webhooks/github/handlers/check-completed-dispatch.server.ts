@@ -53,6 +53,10 @@ export async function dispatchCheckCompletedSignals(
         repo,
         eventType: 'check_completed',
         actorLogin,
+        // GitHub delivery GUID -> Weft signalId for retry dedup. One delivery can
+        // fan out to several PRs, but each targets a distinct orchestrator
+        // workflow id, so the shared GUID cannot collide across PRs.
+        eventId: context.deliveryId,
       }),
     ),
   );

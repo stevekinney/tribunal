@@ -140,10 +140,12 @@ table.
 
 `packages/github/src/pull-requests/state/workflow-signals.ts` —
 `signalPullRequestEvent` now `startOrSignal`s `pull-request-orchestrator` with id
-`pull-request-orchestrator:{repo}:{pr}` and a per-event `signalId` (the GitHub
-delivery GUID `eventId`, or a fresh UUID for `manual`); `signalPullRequestClosed`
-`signal`s the running run and treats `WorkflowNotFoundError` as success. Webhook
-handlers already call these — no handler changes needed for dispatch.
+`pull-request-orchestrator:{repo}:{pr}` and a per-event `signalId` derived from
+the GitHub delivery GUID. All six PR webhook handlers thread `context.deliveryId`
+as `eventId`, so a 500-and-retry of a delivery dedups to one signal (orchestrator
+deliveries are claimed only after a successful handler, so the retry path
+matters). `signalPullRequestClosed` `signal`s the running run and treats
+`WorkflowNotFoundError` as success.
 
 **Still to port:** the orchestrator _workflow definition_ (sliding debounce,
 supersede-on-new-event, idle timeout). Blocked on `ctx.race(sleep|waitForSignal)`

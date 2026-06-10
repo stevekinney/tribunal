@@ -62,6 +62,8 @@ export async function handlePullRequestReviewComment(
     repo: payload.repository.name,
     eventType,
     actorLogin: payload.sender?.login,
+    // GitHub delivery GUID -> Weft signalId for retry dedup.
+    eventId: context.deliveryId,
   });
 
   if (!result.ok) {
