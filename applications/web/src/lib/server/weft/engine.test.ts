@@ -10,77 +10,127 @@ vi.mock('$env/dynamic/private', () => ({
   },
 }));
 
-import { createEngine, getEngine, getWeftClient, resolveDurableStorage } from './engine';
-import { getWeftConfiguration } from './configuration';
+// Mocked at the dependency boundary (NeonStorage / Engine.create), not the module
+// under test — so the real getWeftClient wiring + memoization runs.
+const { neonStorageInstances, engineCreate } = vi.hoisted(() => ({
+  neonStorageInstances: [] as Array<{ url: string }>,
+  engineCreate: vi.fn(),
+}));
+
+vi.mock('@lostgradient/weft/storage/neon', () => ({
+  NeonStorage: class {
+    url: string;
+    constructor(options: { url: string }) {
+      this.url = options.url;
+      neonStorageInstances.push(this);
+    }
+  },
+}));
+
+vi.mock('@lostgradient/weft/storage/interface', () => ({
+  assertDurableStorageForRecovery: vi.fn(),
+}));
+
+vi.mock('@lostgradient/weft', () => ({
+  Engine: { create: engineCreate },
+}));
+
+import {
+  createEngine,
+  getWeftClient,
+  resetWeftClientForTests,
+  resolveDurableStorage,
+} from './engine';
 
 beforeEach(() => {
   for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+  neonStorageInstances.length = 0;
+  engineCreate.mockReset();
+  resetWeftClientForTests();
+});
+
+afterEach(() => {
+  resetWeftClientForTests();
 });
 
 describe('resolveDurableStorage', () => {
   it('returns null in non-production when no WEFT_DATABASE_URL is set', () => {
     mockEnv.NODE_ENV = 'development';
-    expect(resolveDurableStorage(getWeftConfiguration())).toBeNull();
+    expect(resolveDurableStorage()).toBeNull();
   });
 
   it('throws in production when no WEFT_DATABASE_URL is set', () => {
     mockEnv.NODE_ENV = 'production';
-    expect(() => resolveDurableStorage(getWeftConfiguration())).toThrow(
-      /WEFT_DATABASE_URL is required/,
-    );
+    expect(() => resolveDurableStorage()).toThrow(/WEFT_DATABASE_URL is required/);
   });
 
-  it('builds a NeonStorage when WEFT_DATABASE_URL is set', () => {
+  it('builds a NeonStorage over WEFT_DATABASE_URL (not DATABASE_URL)', () => {
     mockEnv.NODE_ENV = 'production';
-    mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@example.neon.tech/weft?sslmode=require';
-    // NeonStorage constructs a pool lazily; building it must not throw.
-    const storage = resolveDurableStorage(getWeftConfiguration());
+    mockEnv.DATABASE_URL = 'postgresql://app/should-not-be-used';
+    mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
+    const storage = resolveDurableStorage();
     expect(storage).not.toBeNull();
-    expect(storage).toHaveProperty('get');
-    expect(storage).toHaveProperty('batch');
+    expect(neonStorageInstances).toHaveLength(1);
+    expect(neonStorageInstances[0].url).toBe(mockEnv.WEFT_DATABASE_URL);
   });
 });
 
-describe('getEngine / getWeftClient (the functions github-context loads)', () => {
-  it('return null in non-production when no durable store is configured', async () => {
-    // This is the path production loads today: no WEFT_DATABASE_URL -> the web
-    // context wires a null client and producers run log-only.
+describe('getWeftClient', () => {
+  it('returns null when no durable store is configured', async () => {
     mockEnv.NODE_ENV = 'development';
-    expect(await getEngine()).toBeNull();
     expect(await getWeftClient()).toBeNull();
+    // No engine built when there is nothing to build over.
+    expect(engineCreate).not.toHaveBeenCalled();
+  });
+
+  it('builds one client over the configured store and memoizes it', async () => {
+    mockEnv.NODE_ENV = 'production';
+    mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
+    engineCreate.mockResolvedValue({ id: 'engine' });
+
+    const first = await getWeftClient();
+    const second = await getWeftClient();
+
+    expect(first).toBeInstanceOf(LocalClient);
+    expect(second).toBe(first); // same memoized instance
+    expect(engineCreate).toHaveBeenCalledTimes(1); // built exactly once
+  });
+
+  it('shares one build across concurrent first callers', async () => {
+    mockEnv.NODE_ENV = 'production';
+    mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
+    engineCreate.mockResolvedValue({ id: 'engine' });
+
+    const [a, b] = await Promise.all([getWeftClient(), getWeftClient()]);
+
+    expect(a).toBe(b);
+    expect(engineCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT cache a rejected build — a later call retries', async () => {
+    // The bug this guards: a transient storage failure on the first dispatch must
+    // not poison every later dispatch for the lifetime of the process.
+    mockEnv.NODE_ENV = 'production';
+    mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
+    engineCreate.mockRejectedValueOnce(new Error('neon unreachable'));
+    engineCreate.mockResolvedValueOnce({ id: 'engine' });
+
+    await expect(getWeftClient()).rejects.toThrow('neon unreachable');
+
+    // Second call retries cleanly rather than reusing the rejected promise.
+    const client = await getWeftClient();
+    expect(client).toBeInstanceOf(LocalClient);
+    expect(engineCreate).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('createEngine + LocalClient (real engine over memory storage)', () => {
-  let dispose: (() => Promise<void>) | undefined;
-
-  afterEach(async () => {
-    await dispose?.();
-    dispose = undefined;
-  });
-
-  it('builds an engine and a working LocalClient that dispatches', async () => {
-    // Exercises the same createEngine + LocalClient path the production factory
-    // uses, with an injected backend (the prod factory chooses NeonStorage).
-    const engine = await createEngine(new MemoryStorage());
-    dispose = async () => {
-      await (engine as unknown as { [Symbol.asyncDispose]?: () => Promise<void> })[
-        Symbol.asyncDispose
-      ]?.();
-    };
-    const client = new LocalClient(engine);
-    expect(client).toBeInstanceOf(LocalClient);
-
-    // An empty registry means no workflow is registered. A producer-style
-    // dispatch must surface WorkflowNotRegisteredError (which the producers
-    // translate into a no-op success) rather than silently succeeding.
-    await expect(
-      client.startOrSignal(
-        'pull-request-orchestrator',
-        {},
-        { name: 'pull_request_event', payload: {}, signalId: 'x' },
-        { id: 'pull-request-orchestrator:1:1' },
-      ),
-    ).rejects.toMatchObject({ code: 'WorkflowNotRegisteredError' });
+describe('createEngine', () => {
+  it('enables the second-instance detector (single-replica backstop)', async () => {
+    engineCreate.mockResolvedValue({ id: 'engine' });
+    const storage = new MemoryStorage();
+    await createEngine(storage);
+    expect(engineCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ storage, detectSecondInstance: true }),
+    );
   });
 });

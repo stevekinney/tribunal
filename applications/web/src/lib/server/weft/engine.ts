@@ -7,10 +7,12 @@
  * producers call the engine in-process via a {@link LocalClient}.
  *
  * Topology invariant: run the web app as a SINGLE replica. Two engines on one
- * durable store can double-resume a workflow. Horizontal scaling of the web tier
- * requires moving the engine to a dedicated service (swap LocalClient for
- * HttpClient + serve()); the producer call sites do not change because they
- * depend only on the `WeftClient` interface.
+ * durable store can double-resume a workflow. `detectSecondInstance` below is a
+ * best-effort runtime smoke alarm (warn-only — it does NOT fence), so the hard
+ * guarantee must still come from the deployment: one replica + a `Recreate`-style
+ * rollout. Horizontal scaling requires moving the engine to a dedicated service
+ * (swap `LocalClient` for `HttpClient` + `serve()`); the producer call sites do
+ * not change because they depend only on the `WeftClient` interface.
  */
 import { Engine } from '@lostgradient/weft';
 import type { WeftClient } from '@lostgradient/weft/client';
@@ -18,20 +20,38 @@ import { LocalClient } from '@lostgradient/weft/client/local';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import { assertDurableStorageForRecovery } from '@lostgradient/weft/storage/interface';
 import type { Storage } from '@lostgradient/weft/storage/interface';
+import { env } from '$env/dynamic/private';
 
-import { getWeftConfiguration, type WeftConfiguration } from './configuration';
+/**
+ * Storage isolation: Weft's `NeonStorage` owns a single `kv` table in whatever
+ * database its URL points at. It MUST NOT share a database/schema with
+ * Tribunal's Drizzle tables — drift detection would flag `kv` (red CI) and a
+ * `drizzle-kit push` could drop it (destroying live workflow state). So we read
+ * a dedicated `WEFT_DATABASE_URL`, never `DATABASE_URL`.
+ */
+function getDatabaseUrl(): string | undefined {
+  return env.WEFT_DATABASE_URL || undefined;
+}
+
+function isProduction(): boolean {
+  return env.NODE_ENV === 'production';
+}
 
 /**
  * Build a Weft engine over the given storage, recovering in-flight workflows
  * (recover defaults to `true`). Exposed for tests that drive the real engine
  * with an injected backend.
  *
- * Omits `workflows` while the registry is empty so Engine.create applies the
- * branded default registry (see registries.ts / weft#455). Register ported
- * workflows with `engine.registerWorkflows(...)` once there are any.
+ * Omits `workflows` while the registry is empty so `Engine.create` applies the
+ * branded default registry (see weft#455). Register ported workflows with
+ * `engine.registerWorkflows(...)` once there are any.
+ *
+ * `detectSecondInstance` is a warn-only backstop for the single-replica
+ * invariant; it surfaces a `process.emitWarning` if a second engine writes to
+ * the same store, but does not prevent it (enforce one replica in infra).
  */
 export function createEngine(storage: Storage): Promise<Engine> {
-  return Engine.create({ storage });
+  return Engine.create({ storage, detectSecondInstance: true });
 }
 
 /**
@@ -40,16 +60,17 @@ export function createEngine(storage: Storage): Promise<Engine> {
  * Production requires the dedicated `WEFT_DATABASE_URL` (Neon, asserted
  * recovery-capable) and throws if it is missing. Non-production with no URL
  * returns `null` — the engine stays unbuilt and producers run log-only — so dev
- * and the test suite do not boot an engine they don't need. A non-production
- * run that *wants* a real engine sets `WEFT_DATABASE_URL`.
+ * and the test suite do not boot an engine they don't need. A non-production run
+ * that *wants* a real engine sets `WEFT_DATABASE_URL`.
  */
-export function resolveDurableStorage(configuration: WeftConfiguration): Storage | null {
-  if (configuration.databaseUrl) {
-    const storage = new NeonStorage({ url: configuration.databaseUrl });
+export function resolveDurableStorage(): Storage | null {
+  const databaseUrl = getDatabaseUrl();
+  if (databaseUrl) {
+    const storage = new NeonStorage({ url: databaseUrl });
     assertDurableStorageForRecovery(storage);
     return storage;
   }
-  if (configuration.isProduction) {
+  if (isProduction()) {
     throw new Error(
       'WEFT_DATABASE_URL is required in production: the engine needs durable storage to recover workflows.',
     );
@@ -57,32 +78,30 @@ export function resolveDurableStorage(configuration: WeftConfiguration): Storage
   return null;
 }
 
-// Module-level singletons: one engine + one client per process. Built lazily on
-// first use and memoized as a promise so concurrent callers share one engine.
-let enginePromise: Promise<Engine> | undefined;
+// Module-level singletons: one client per process, built lazily on first use.
+// Memoized only on SUCCESS — a rejected build (e.g. transient Neon failure on
+// the first dispatch) is NOT cached, so a later dispatch retries cleanly instead
+// of the whole process being poisoned until restart.
 let clientPromise: Promise<WeftClient | null> | undefined;
 
-/**
- * Get the shared in-process engine, or `null` when no durable store is
- * configured. Throws (via {@link resolveDurableStorage}) in production with no
- * `WEFT_DATABASE_URL`.
- */
-export function getEngine(): Promise<Engine | null> {
-  if (!enginePromise) {
-    const storage = resolveDurableStorage(getWeftConfiguration());
-    if (!storage) {
-      return Promise.resolve(null);
-    }
-    enginePromise = createEngine(storage);
+async function buildClient(): Promise<WeftClient | null> {
+  const storage = resolveDurableStorage();
+  if (!storage) {
+    return null;
   }
-  return enginePromise;
+  const engine = await createEngine(storage);
+  return new LocalClient(engine);
 }
 
 /**
  * Get the shared Weft client (a {@link LocalClient} over the in-process engine),
- * or `null` when no durable store is configured. This is what the GitHub service
- * context carries as `weftClient`; producers dispatch through it
- * transport-agnostically and fall back to log-only when it is `null`.
+ * or `null` when no durable store is configured. This is the resolver the GitHub
+ * service context carries; producers dispatch through it transport-agnostically
+ * and fall back to log-only when it is `null`.
+ *
+ * Builds lazily on first call and caches only on success. If the build rejects,
+ * the rejection is not cached: the next call retries (so a transient storage
+ * outage at first dispatch does not permanently disable dispatch).
  *
  * Dispatch is also safe before workflows are ported even when a client IS
  * present: the producers treat `WorkflowNotRegisteredError` as a no-op success,
@@ -91,7 +110,24 @@ export function getEngine(): Promise<Engine | null> {
  */
 export function getWeftClient(): Promise<WeftClient | null> {
   if (!clientPromise) {
-    clientPromise = getEngine().then((engine) => (engine ? new LocalClient(engine) : null));
+    const pending = buildClient();
+    clientPromise = pending;
+    // Drop the cache if the build fails, so the next call retries rather than
+    // reusing a rejected promise.
+    pending.catch(() => {
+      if (clientPromise === pending) {
+        clientPromise = undefined;
+      }
+    });
   }
   return clientPromise;
+}
+
+/**
+ * Reset the memoized client. Test-only: lets a suite build, dispose, and clear
+ * the singleton between cases so environment changes are observed and instances
+ * do not leak across tests.
+ */
+export function resetWeftClientForTests(): void {
+  clientPromise = undefined;
 }

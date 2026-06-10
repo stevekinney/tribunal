@@ -138,21 +138,23 @@ export async function signalPullRequestEvent(
 ): Promise<SignalPullRequestResult> {
   const workflowId = buildPullRequestOrchestratorWorkflowId(input.repositoryId, input.prNumber);
 
-  const client = await context.resolveWeftClient?.();
-  if (!client) {
-    console.log('[pull-request-orchestrator] would signal pull request event (no engine)', {
-      workflowId,
-      eventType: input.eventType,
-      workspaceId: input.workspaceId,
-      repositoryId: input.repositoryId,
-      pullRequestNumber: input.prNumber,
-      actorLogin: input.actorLogin,
-      eventId: input.eventId,
-    });
-    return { ok: true, workflowId };
-  }
-
   try {
+    // Resolve inside the try: a resolver failure (e.g. engine build / storage
+    // outage) must return an error result, not throw past the webhook handler.
+    const client = await context.resolveWeftClient?.();
+    if (!client) {
+      console.log('[pull-request-orchestrator] would signal pull request event (no engine)', {
+        workflowId,
+        eventType: input.eventType,
+        workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId,
+        pullRequestNumber: input.prNumber,
+        actorLogin: input.actorLogin,
+        eventId: input.eventId,
+      });
+      return { ok: true, workflowId };
+    }
+
     await client.startOrSignal(
       'pull-request-orchestrator',
       input,
@@ -191,17 +193,19 @@ export async function signalPullRequestClosed(
 ): Promise<SignalPullRequestResult> {
   const workflowId = buildPullRequestOrchestratorWorkflowId(input.repositoryId, input.prNumber);
 
-  const client = await context.resolveWeftClient?.();
-  if (!client) {
-    console.log('[pull-request-orchestrator] would signal pull request closed (no engine)', {
-      workflowId,
-      merged: input.merged,
-      actorLogin: input.actorLogin,
-    });
-    return { ok: true, workflowId };
-  }
-
   try {
+    // Resolve inside the try: a resolver failure must return an error result,
+    // not throw past the webhook handler.
+    const client = await context.resolveWeftClient?.();
+    if (!client) {
+      console.log('[pull-request-orchestrator] would signal pull request closed (no engine)', {
+        workflowId,
+        merged: input.merged,
+        actorLogin: input.actorLogin,
+      });
+      return { ok: true, workflowId };
+    }
+
     await client.signal(workflowId, 'pull_request_closed', {
       merged: input.merged,
       actorLogin: input.actorLogin,

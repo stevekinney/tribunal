@@ -45,26 +45,33 @@ export async function enqueueInstallationSync(
 ): Promise<EnqueueInstallationSyncResult> {
   const workflowId = `github:installations:${options.installationId}:sync`;
 
-  const client = await context.resolveWeftClient?.();
-  if (!client) {
-    console.log('[sync] would enqueue installation sync (no engine)', {
-      workflowId,
-      installationId: options.installationId,
-      reason: options.reason,
-      triggeredByUserId: options.triggeredByUserId,
-    });
-    return { workflowId, status: 'started' };
-  }
-
   try {
+    // Resolve inside the try: a resolver failure must return a 'error' result,
+    // not throw past the caller (webhook handlers and lifecycle paths).
+    const client = await context.resolveWeftClient?.();
+    if (!client) {
+      console.log('[sync] would enqueue installation sync (no engine)', {
+        workflowId,
+        installationId: options.installationId,
+        reason: options.reason,
+        triggeredByUserId: options.triggeredByUserId,
+      });
+      return { workflowId, status: 'started' };
+    }
+
     await client.startOrSignal(
       'installation-sync',
       options,
-      // startOrSignal needs a signalId (with the workflow id) so concurrent
-      // lifecycle webhooks converge on one sync run while each delivers once.
-      // No delivery GUID is threaded here yet; mint a fresh id per enqueue. The
-      // webhook HTTP layer already dedups GitHub redeliveries upstream.
-      { name: 'sync_requested', payload: options, signalId: crypto.randomUUID() },
+      // signalId (with the workflow id) lets concurrent lifecycle webhooks
+      // converge on one sync run while each logical event delivers exactly once.
+      // Use the caller's stable deliveryId (the GitHub delivery GUID) when
+      // present so redeliveries/retries dedup; mint a fresh id only for distinct
+      // manual/non-retryable intents that pass no deliveryId.
+      {
+        name: 'sync_requested',
+        payload: options,
+        signalId: options.deliveryId ?? crypto.randomUUID(),
+      },
       { id: workflowId },
     );
     return { workflowId, status: 'started' };

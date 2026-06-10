@@ -64,9 +64,12 @@ export async function handleInstallation(
           repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
         });
 
-        // Trigger sync to fetch repositories (fire-and-forget)
-        // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
-        // installation sync workflow.
+        // Trigger sync to fetch repositories (fire-and-forget). enqueueInstallationSync
+        // dispatches to Weft when configured; the `installation-sync` workflow itself
+        // is not ported yet.
+        // TODO(weft): thread the webhook delivery GUID from +server.ts down to here
+        // and pass it as `deliveryId` so retries dedup at the Weft signal layer too
+        // (GitHub redeliveries are already deduped upstream by claimWebhookDelivery).
         const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
         void enqueueInstallationSync(githubContext, {
           installationId,

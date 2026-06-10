@@ -72,8 +72,13 @@ no `serve()`, no HTTP hop.
   `HttpClient` + a dedicated `serve()` engine service is a config change — the
   producer call sites do not change.
 - **Cost (accepted):** the web tier must run as a **single replica** (two
-  engines on one durable store can double-resume a workflow). Enforce in
-  infrastructure.
+  engines on one durable store can double-resume a workflow). The engine enables
+  Weft's `detectSecondInstance` backstop — a warn-only runtime smoke alarm that
+  emits a `process.emitWarning` if a second instance writes to the same store.
+  That is **liveness, not fencing**: it does not prevent duplicate execution, so
+  the hard guarantee MUST still come from infrastructure (one replica + a
+  `Recreate`-style rollout). This is a prerequisite before enabling
+  `WEFT_DATABASE_URL` in production.
 
 ### Why not a separate engine service?
 
@@ -88,17 +93,19 @@ the concept; the separate service is the documented upgrade path, not v1.
 
 ```
 applications/web/src/lib/server/weft/
-  configuration.ts   # reads WEFT_DATABASE_URL (NOT DATABASE_URL — see §4.5/storage)
-  registries.ts      # workflow + activity registries (empty; ported workflows land here)
-  engine.ts          # getEngine() / getWeftClient() lazy singletons over NeonStorage
+  engine.ts   # resolveDurableStorage / createEngine / getWeftClient over NeonStorage
+              # (reads WEFT_DATABASE_URL, NOT DATABASE_URL — see Storage isolation)
 ```
 
 `github-context.ts` puts a **resolver** on the context —
 `resolveWeftClient: getWeftClient` — rather than a resolved client. The engine is
 built **lazily on the first dispatch**, not at module load, so web-app startup
-never blocks on `Engine.create` + `recoverAll()`. (`getWeftClient` is the
-memoized resolver: it builds the engine once and returns `null` when no
-`WEFT_DATABASE_URL` is set.)
+never blocks on `Engine.create` + `recoverAll()`. `getWeftClient` builds the
+client once and memoizes it **only on success** — a rejected build (transient
+Neon outage on first dispatch) is not cached, so a later dispatch retries instead
+of the process being poisoned until restart. It returns `null` when no
+`WEFT_DATABASE_URL` is set. Workflow definitions register on the engine via
+`engine.registerWorkflows(...)` once they are ported.
 
 **Webhook delivery acceptance is never blocked on the engine**, guaranteed two
 ways:
@@ -142,9 +149,13 @@ supersede-on-new-event, idle timeout). Blocked on `ctx.race(sleep|waitForSignal)
 ### 4.2 Installation sync (wired)
 
 `packages/github/src/sync/index.ts` — `enqueueInstallationSync` now
-`startOrSignal`s `installation-sync` with id `github:installations:{id}:sync` and
-a per-call `signalId`. The `installation-sync` workflow definition is still to
-port.
+`startOrSignal`s `installation-sync` with id `github:installations:{id}:sync`. Its
+`signalId` is the caller's stable `deliveryId` (the GitHub delivery GUID) when
+present so retries/redeliveries dedup, falling back to a fresh UUID only for
+distinct manual intents. (Webhook handlers don't thread the GUID down yet — noted
+as a `TODO(weft)` at the call sites; GitHub redeliveries are already deduped
+upstream by `claimWebhookDelivery`.) The `installation-sync` workflow definition
+is still to port.
 
 ### 4.3 Repository refresh + installation cancellation (pending)
 
@@ -227,13 +238,16 @@ _workflow definition_ cannot be ported (the _wiring_ is done and correct).
 - `@lostgradient/weft@0.3.0` installed in `applications/web` and `packages/github`.
 - In-process engine + `LocalClient` wired (`src/lib/server/weft/`, `github-context.ts`).
 - Both live producers dispatch through Weft with log-only fallback + error handling.
-- Unit tests (producers, fallbacks, `WorkflowNotFound`, `WorkflowNotRegistered`
-  no-op safety) + e2e tests against a real engine (start-or-signal coalescing,
-  signal delivery, completion) for both the PR and sync paths, plus a factory
-  test that drives the real `createEngine`/`resolveDurableStorage`/`LocalClient`
-  module. Full `@tribunal/github` suite green (293 tests); web server suite green
-  (343). The engine is built lazily on first dispatch (resolver thunk), so it
-  never boots during web-app startup or the test suite.
+- Unit tests (producers, fallbacks, `WorkflowNotFound`/`WorkflowNotRegistered`
+  no-op safety, resolver-rejection returns an error result not a throw,
+  `deliveryId`-based signalId dedup) + e2e tests against a real engine (the
+  producer reaches a real `LocalClient.startOrSignal`/`signal` under the
+  deterministic id) for both the PR and sync paths, plus a factory test that
+  drives the real `getWeftClient` over dependency-boundary mocks — including the
+  success-path memoization and the rejected-build-not-cached guard. Full
+  `@tribunal/github` suite green (297 tests); web server suite green (346). The
+  engine is built lazily on first dispatch (resolver thunk), so it never boots
+  during web-app startup or the test suite.
 - 13 issues filed upstream; `TODO(weft#NN)` notes at each seam.
 
 **Remaining:**

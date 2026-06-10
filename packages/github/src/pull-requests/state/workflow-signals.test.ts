@@ -24,6 +24,16 @@ function createContext(weftClient?: Partial<WeftClient>): GithubServiceContext {
   };
 }
 
+/** Context whose client resolver rejects (e.g. engine build / storage outage). */
+function createContextWithFailingResolver(error: Error): GithubServiceContext {
+  return {
+    db: {} as GithubServiceContext['db'],
+    cache: {} as GithubServiceContext['cache'],
+    getInstallationOctokit: vi.fn(),
+    resolveWeftClient: () => Promise.reject(error),
+  };
+}
+
 const eventInput: SignalPullRequestEventInput = {
   workspaceId: 1,
   repositoryId: 42,
@@ -110,6 +120,15 @@ describe('signalPullRequestEvent', () => {
 
     expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
   });
+
+  it('returns an error result (does not throw) when the client resolver rejects', async () => {
+    // A configured-but-unreachable engine must not throw past the webhook handler.
+    const context = createContextWithFailingResolver(new Error('engine build failed'));
+
+    const result = await signalPullRequestEvent(context, eventInput);
+
+    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'engine build failed' });
+  });
 });
 
 describe('signalPullRequestClosed', () => {
@@ -156,5 +175,13 @@ describe('signalPullRequestClosed', () => {
       expect.objectContaining({ workflowId: EXPECTED_ID, merged: true }),
     );
     log.mockRestore();
+  });
+
+  it('returns an error result (does not throw) when the client resolver rejects', async () => {
+    const context = createContextWithFailingResolver(new Error('engine build failed'));
+
+    const result = await signalPullRequestClosed(context, closedInput);
+
+    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'engine build failed' });
   });
 });

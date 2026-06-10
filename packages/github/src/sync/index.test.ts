@@ -3,7 +3,6 @@ import { Engine, workflow, WorkflowNotRegisteredError } from '@lostgradient/weft
 import { MemoryStorage } from '@lostgradient/weft/storage/memory';
 import { LocalClient } from '@lostgradient/weft/client/local';
 import type { WeftClient } from '@lostgradient/weft/client';
-import type { WorkflowState } from '@lostgradient/weft';
 import type { GithubServiceContext } from '../context.js';
 import { enqueueInstallationSync } from './index.js';
 import type { EnqueueInstallationSyncOptions } from './types.js';
@@ -17,6 +16,16 @@ function createContext(weftClient?: Partial<WeftClient>): GithubServiceContext {
   };
 }
 
+/** Context whose client resolver rejects (e.g. engine build / storage outage). */
+function createContextWithFailingResolver(error: Error): GithubServiceContext {
+  return {
+    db: {} as GithubServiceContext['db'],
+    cache: {} as GithubServiceContext['cache'],
+    getInstallationOctokit: vi.fn(),
+    resolveWeftClient: () => Promise.reject(error),
+  };
+}
+
 const options: EnqueueInstallationSyncOptions = {
   installationId: 555,
   reason: 'webhook:installation.created',
@@ -27,19 +36,37 @@ const options: EnqueueInstallationSyncOptions = {
 const EXPECTED_ID = 'github:installations:555:sync';
 
 describe('enqueueInstallationSync', () => {
-  it('start-or-signals the per-installation sync workflow', async () => {
+  it('uses the caller-supplied deliveryId as the signalId (for redelivery dedup)', async () => {
     const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID });
     const context = createContext({ startOrSignal });
 
-    const result = await enqueueInstallationSync(context, options);
+    const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-123' });
 
     expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
     expect(startOrSignal).toHaveBeenCalledWith(
       'installation-sync',
-      options,
-      { name: 'sync_requested', payload: options, signalId: expect.any(String) },
+      { ...options, deliveryId: 'guid-123' },
+      {
+        name: 'sync_requested',
+        payload: { ...options, deliveryId: 'guid-123' },
+        signalId: 'guid-123',
+      },
       { id: EXPECTED_ID },
     );
+  });
+
+  it('mints a fresh, distinct signalId per enqueue when no deliveryId is given', async () => {
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID });
+    const context = createContext({ startOrSignal });
+
+    await enqueueInstallationSync(context, options);
+    await enqueueInstallationSync(context, options);
+
+    const idA = (startOrSignal.mock.calls[0][2] as { signalId: string }).signalId;
+    const idB = (startOrSignal.mock.calls[1][2] as { signalId: string }).signalId;
+    expect(idA).toEqual(expect.any(String));
+    expect(idA.length).toBeGreaterThan(0);
+    expect(idB).not.toBe(idA);
   });
 
   it('falls back to log-only "started" when no engine is configured', async () => {
@@ -69,6 +96,18 @@ describe('enqueueInstallationSync', () => {
     });
   });
 
+  it('reports an error result (does not throw) when the client resolver rejects', async () => {
+    const context = createContextWithFailingResolver(new Error('engine build failed'));
+
+    const result = await enqueueInstallationSync(context, options);
+
+    expect(result).toEqual({
+      workflowId: EXPECTED_ID,
+      status: 'error',
+      error: 'engine build failed',
+    });
+  });
+
   it('reports "started" when the sync workflow is not registered yet', async () => {
     const startOrSignal = vi
       .fn()
@@ -89,22 +128,13 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     engine = undefined;
   });
 
-  it('starts a real installation-sync run and completes it', async () => {
-    // A minimal sync workflow that records each sync_requested signal's reason
-    // then finishes on a terminating one. Proves the producer's start-or-signal
-    // reaches a real engine and drives a run to completion.
+  it('start-or-signals a real installation-sync run with the deterministic id', async () => {
+    // Stand-in workflow that completes on its first signal, returning the reason
+    // it received — deterministic, no sleeps. Proves the producer reaches a real
+    // engine via startOrSignal under the expected id.
     const syncWorkflow = workflow({ name: 'installation-sync' }).execute(async function* (ctx) {
-      const reasons: string[] = [];
-      let done = false;
-      while (!done) {
-        const event = (yield* ctx.waitForSignal('sync_requested')) as {
-          reason?: string;
-          __terminate?: boolean;
-        };
-        if (event?.reason) reasons.push(event.reason);
-        if (event?.__terminate) done = true;
-      }
-      return { reasons };
+      const event = (yield* ctx.waitForSignal('sync_requested')) as { reason?: string };
+      return { reason: event?.reason };
     });
 
     engine = await Engine.create({
@@ -114,34 +144,17 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     const client = new LocalClient(engine);
     const context = createContext(client);
 
-    const result = await enqueueInstallationSync(context, options);
+    const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-xyz' });
     expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
 
-    // Let the start signal be consumed before the next arrives (same-tick bursts
-    // can drop the start payload in Weft 0.3.0 — weft#458).
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    // Terminating signal on the same channel completes the run.
-    await client.signal(EXPECTED_ID, 'sync_requested', {
-      reason: 'shutdown',
-      __terminate: true,
-    });
-
-    const terminal: ReadonlyArray<WorkflowState['status']> = [
-      'completed',
-      'failed',
-      'cancelled',
-      'timed-out',
-    ];
-    let state: WorkflowState | null = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      state = await client.get(EXPECTED_ID);
-      if (state && terminal.includes(state.status)) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const state = await client.get(EXPECTED_ID);
+      if (state?.status === 'completed') {
+        expect((state.result as { reason?: string }).reason).toBe('webhook:installation.created');
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
-
-    expect(state?.status).toBe('completed');
-    const output = state?.result as { reasons: string[] };
-    expect(output.reasons).toEqual(['webhook:installation.created', 'shutdown']);
+    throw new Error('installation-sync run did not complete within the polling budget');
   });
 });

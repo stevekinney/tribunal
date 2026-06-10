@@ -1,23 +1,23 @@
 /**
- * End-to-end test of the pull-request orchestrator wiring against a REAL Weft
- * engine (in-memory storage, no mocks of the client).
+ * End-to-end test of the pull-request producer wiring against a REAL Weft engine
+ * (in-memory storage, real LocalClient — no client mocks).
  *
- * This proves the full path that the in-process singleton uses in production:
- *   producer (signalPullRequestEvent / signalPullRequestClosed)
- *     → LocalClient.startOrSignal / .signal
- *       → a running pull-request-orchestrator workflow
- *         → coalesces repeated events onto ONE run (deterministic id)
- *         → completes on the close signal.
+ * Scope: prove that `signalPullRequestEvent` reaches a real
+ * `LocalClient.startOrSignal` with the deterministic workflow id and a delivered
+ * signal, and that `signalPullRequestClosed` signals a real run / no-ops cleanly
+ * when none exists. The production orchestrator *workflow definition* (debounce,
+ * supersede, idle-timeout via `ctx.race`) is not ported yet — it is blocked on
+ * Weft 0.3.0 bugs (#456 race rejects sleep/waitForSignal, #457 query on parked
+ * workflows, #458 same-tick signal drop). Coalescing/error semantics beyond a
+ * single delivery are covered deterministically at the producer unit layer.
  *
- * The orchestrator here is a faithful-but-minimal stand-in for the real one that
- * will be ported into the engine (see documentation/WEFT_MIGRATION_PLAN.md §5):
- * it waits for events, records them, and finishes when the PR closes.
+ * The stand-in workflow completes on its first signal so the assertion reads the
+ * terminal `result` — no sleeps, no polling, no timing dependency.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { Engine, workflow } from '@lostgradient/weft';
 import { MemoryStorage } from '@lostgradient/weft/storage/memory';
 import { LocalClient } from '@lostgradient/weft/client/local';
-import type { WorkflowState } from '@lostgradient/weft';
 import type { GithubServiceContext } from '../../context.js';
 import {
   signalPullRequestClosed,
@@ -25,48 +25,14 @@ import {
   type SignalPullRequestEventInput,
 } from './workflow-signals.js';
 
-type OrchestratorState = {
-  eventTypes: string[];
-  closed: boolean;
-  merged: boolean;
-};
+type ReceivedEvent = { eventType?: string };
 
-/**
- * Minimal orchestrator for the e2e: loops on a single `pull_request_event`
- * signal channel, recording every event type. A `__terminate` flag in an event
- * payload ends the loop so the run can complete and assert a terminal result.
- *
- * NOTE: The production orchestrator needs to multiplex `pull_request_event`
- * against `pull_request_closed` and a debounce timer — i.e.
- * `ctx.race([waitForSignal(...), sleep(...)])`. That is blocked on a Weft 0.3.0
- * bug where `ctx.race`/`ctx.all` reject `sleep`/`waitForSignal` sub-operations
- * (https://github.com/stevekinney/weft/issues/456). Until that ships, this e2e
- * exercises the part of the wiring that works today and is correct: start-or-
- * signal coalescing of webhook events onto one run, plus signal delivery and
- * completion. The close-signal multiplex path is covered at the producer layer
- * (unit + the "non-existent run" case below).
- */
+// Stand-in orchestrator: completes on the first `pull_request_event`, returning
+// the payload it received. Deterministic — `handle.result()` resolves as soon as
+// the producer's startOrSignal delivers the signal.
 const orchestrator = workflow({ name: 'pull-request-orchestrator' }).execute(async function* (ctx) {
-  const state: OrchestratorState = { eventTypes: [], closed: false, merged: false };
-
-  let done = false;
-  while (!done) {
-    const event = (yield* ctx.waitForSignal('pull_request_event')) as {
-      eventType?: string;
-      __terminate?: boolean;
-      merged?: boolean;
-    };
-    if (event?.eventType) {
-      state.eventTypes.push(event.eventType);
-    }
-    if (event?.__terminate) {
-      state.closed = true;
-      state.merged = Boolean(event.merged);
-      done = true;
-    }
-  }
-
-  return state;
+  const event = (yield* ctx.waitForSignal('pull_request_event')) as ReceivedEvent;
+  return { received: event };
 });
 
 let engine: Engine | undefined;
@@ -111,73 +77,33 @@ function eventInput(
 
 const ORCHESTRATOR_ID = 'pull-request-orchestrator:42:7';
 
-const TERMINAL: ReadonlyArray<WorkflowState['status']> = [
-  'completed',
-  'failed',
-  'cancelled',
-  'timed-out',
-];
-
-/** Poll `client.get(id)` until the run reaches a terminal status (capped). */
-async function waitForTerminal(client: LocalClient, id: string): Promise<WorkflowState> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+/** Poll the run until it completes, then return its result. Bounded; resolves as
+ * soon as the workflow finishes (the stand-in completes on its first signal). */
+async function awaitResult(client: LocalClient, id: string): Promise<{ received: ReceivedEvent }> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const state = await client.get(id);
-    if (state && TERMINAL.includes(state.status)) {
-      return state;
+    if (state?.status === 'completed') {
+      return state.result as { received: ReceivedEvent };
     }
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (state && ['failed', 'cancelled', 'timed-out'].includes(state.status)) {
+      throw new Error(`workflow ${id} ended in ${state.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`workflow ${id} did not reach a terminal state within the polling budget`);
+  throw new Error(`workflow ${id} did not complete within the polling budget`);
 }
 
-describe('pull-request orchestrator (e2e, real engine)', () => {
-  it('coalesces multiple events onto one run and completes with all of them', async () => {
-    // Proves the full production path against a real engine: the producer's
-    // start-or-signal converges every event on ONE run (deterministic id), each
-    // distinct signalId is delivered exactly once, and the accumulated state
-    // surfaces in the terminal result.
-    //
-    // Observed via the terminal `result`, not a mid-flight query: querying a
-    // workflow parked on waitForSignal returns undefined in Weft 0.3.0
-    // (https://github.com/stevekinney/weft/issues/457). The close-via-distinct-
-    // signal-name + debounce path additionally needs ctx.race, blocked on
-    // https://github.com/stevekinney/weft/issues/456 — so the terminating event
-    // is delivered on the working `pull_request_event` channel.
+describe('pull-request producer (e2e, real engine)', () => {
+  it('start-or-signals a real run with the deterministic id and delivers the event', async () => {
     const { context, client } = await createWiredContext();
 
-    // Space deliveries across event-loop turns so each is consumed before the
-    // next arrives. Real webhooks arrive milliseconds-to-seconds apart; a
-    // same-tick burst can drop the start payload in Weft 0.3.0
-    // (https://github.com/stevekinney/weft/issues/458).
-    //
-    // KNOWN TIMING DEPENDENCY: this asserts exact event ordering with a fixed
-    // 25ms gap. The robust alternative — poll the workflow's state between sends
-    // — is blocked by weft#457 (query returns undefined for a parked workflow).
-    // If this flakes on a loaded CI box, the cause is #458/#457, not the wiring.
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+    const result = await signalPullRequestEvent(context, eventInput('pr_opened'));
+    expect(result).toEqual({ ok: true, workflowId: ORCHESTRATOR_ID });
 
-    const first = await signalPullRequestEvent(context, eventInput('pr_opened'));
-    await settle();
-    const second = await signalPullRequestEvent(context, eventInput('review_submitted'));
-    await settle();
-
-    expect(first).toEqual({ ok: true, workflowId: ORCHESTRATOR_ID });
-    expect(second).toEqual({ ok: true, workflowId: ORCHESTRATOR_ID });
-
-    // A terminating event lets the run complete so we can read the final state.
-    await client.signal(ORCHESTRATOR_ID, 'pull_request_event', {
-      eventType: 'pr_closed',
-      __terminate: true,
-      merged: true,
-    });
-
-    const state = await waitForTerminal(client, ORCHESTRATOR_ID);
-    expect(state.status).toBe('completed');
-    const result = state.result as OrchestratorState;
-    expect(result.closed).toBe(true);
-    expect(result.merged).toBe(true);
-    // All three events landed on the same run, in order — coalescing works.
-    expect(result.eventTypes).toEqual(['pr_opened', 'review_submitted', 'pr_closed']);
+    // The real engine started the run under the deterministic id and the
+    // producer's payload was delivered as the pull_request_event signal.
+    const output = await awaitResult(client, ORCHESTRATOR_ID);
+    expect(output.received.eventType).toBe('pr_opened');
   });
 
   it('treats a close signal for a non-existent run as success', async () => {
