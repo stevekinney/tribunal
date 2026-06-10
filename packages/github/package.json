@@ -53,8 +53,9 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@tribunal/database": "workspace:*",
+    "@lostgradient/weft": "^0.3.0",
     "@octokit/types": "^16.0.0",
+    "@tribunal/database": "workspace:*",
     "drizzle-orm": "^0.45.1",
     "github-webhook-schemas": "1.1.0",
     "octokit": "^5.0.5",

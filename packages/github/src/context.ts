@@ -9,6 +9,7 @@
  * passes it to each function call.
  */
 import type { Database } from '@tribunal/database';
+import type { WeftClient } from '@lostgradient/weft/client';
 import type { createCache } from './cache.js';
 import type { Octokit, App } from 'octokit';
 
@@ -33,4 +34,17 @@ export interface GithubServiceContext {
 
   /** Get the GitHub App instance — only required by token minting functions. */
   getGithubApplication?: GetGithubApplication;
+
+  /**
+   * Lazily resolve the Weft durable-execution client.
+   *
+   * A resolver (not a resolved value) so the host can defer building the engine
+   * until the first dispatch, rather than at context-construction time — this
+   * keeps web-app startup from blocking on `Engine.create` + `recoverAll()`.
+   * Resolves to a {@link WeftClient} when an engine is configured, or `null`
+   * when it is not; producers fall back to log-only on `null`, so webhook
+   * delivery acceptance is never blocked on the engine. Omitted entirely in
+   * hosts that have no Weft integration.
+   */
+  resolveWeftClient?: () => Promise<WeftClient | null>;
 }
