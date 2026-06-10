@@ -147,13 +147,17 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-xyz' });
     expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    // Poll-until-terminal (not a fixed sleep): resolves the instant the run
+    // completes; the generous ~3s deadline only bites on a stuck run. WeftClient
+    // exposes no result(id)/getHandle(id), so polling get(id) is the available
+    // completion primitive.
+    for (let attempt = 0; attempt < 150; attempt += 1) {
       const state = await client.get(EXPECTED_ID);
       if (state?.status === 'completed') {
         expect((state.result as { reason?: string }).reason).toBe('webhook:installation.created');
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
     throw new Error('installation-sync run did not complete within the polling budget');
   });

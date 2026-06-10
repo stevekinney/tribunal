@@ -77,10 +77,19 @@ function eventInput(
 
 const ORCHESTRATOR_ID = 'pull-request-orchestrator:42:7';
 
-/** Poll the run until it completes, then return its result. Bounded; resolves as
- * soon as the workflow finishes (the stand-in completes on its first signal). */
+/**
+ * Await the run's completion via a bounded poll-until-terminal.
+ *
+ * This is poll-until-CONDITION, not a fixed sleep: it resolves the instant the
+ * status is terminal, so it is not order-dependent or timing-fragile the way the
+ * removed `setTimeout(25)` ordering assertion was. `WeftClient` exposes no
+ * `result(id)`/`getHandle(id)` for an existing run — only `get(id)` (state) — and
+ * the producer swallows the handle `startOrSignal` returns, so polling `get` is
+ * the available completion primitive. The deadline is generous (~3s) so a slow CI
+ * runner does not fail a valid completion.
+ */
 async function awaitResult(client: LocalClient, id: string): Promise<{ received: ReceivedEvent }> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
     const state = await client.get(id);
     if (state?.status === 'completed') {
       return state.result as { received: ReceivedEvent };
@@ -88,7 +97,7 @@ async function awaitResult(client: LocalClient, id: string): Promise<{ received:
     if (state && ['failed', 'cancelled', 'timed-out'].includes(state.status)) {
       throw new Error(`workflow ${id} ended in ${state.status}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`workflow ${id} did not complete within the polling budget`);
 }

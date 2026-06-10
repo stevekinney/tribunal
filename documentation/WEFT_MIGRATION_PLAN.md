@@ -157,6 +157,18 @@ as a `TODO(weft)` at the call sites; GitHub redeliveries are already deduped
 upstream by `claimWebhookDelivery`.) The `installation-sync` workflow definition
 is still to port.
 
+> [!WARNING]
+> **Fire-and-forget durability gap — must close before porting the sync
+> workflow.** The installation webhook delivery is claimed (`claimWebhookDelivery`)
+> _before_ the handler runs, and the handler enqueues the sync fire-and-forget
+> (it must return inside GitHub's ~10s timeout; awaiting a repo-provisioning sync
+> would regress latency). So a failed enqueue after the delivery is claimed is
+> lost — a GitHub redelivery gets deduped away. This is **inert today** (the
+> workflow isn't ported, so the producer is a no-op `started`), and the handler
+> now logs an `error` status rather than dropping it silently. Before the
+> `installation-sync` workflow ports, the enqueue must become recoverable: an
+> outbox row + reconciler, or claim-after-enqueue.
+
 ### 4.3 Repository refresh + installation cancellation (pending)
 
 `repositories/service.ts` (synchronous refresh) and `installations/lifecycle.ts`
@@ -230,6 +242,21 @@ a real engine — exactly the failures mocked unit tests cannot surface. **456 i
 the headline blocker** for porting the orchestrator workflow: every
 timer/signal-racing pattern depends on it. Until it ships, the orchestrator
 _workflow definition_ cannot be ported (the _wiring_ is done and correct).
+
+### Second pass (2026-06-09): audit of the wiring against the 0.3.0 dist
+
+A follow-up audit of the integration (producers, e2e tests, `NeonStorage`
+source, client/engine type surface) surfaced six more gaps, each verified
+against the shipped `dist/` before filing:
+
+| #                                                     | Kind        | Summary                                                                                              | Why Tribunal needs it                                                                                                                                 |
+| ----------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [465](https://github.com/stevekinney/weft/issues/465) | enhancement | `HttpClient` erases typed error codes (`code: 'HttpClientError'` + coarse `faultCode`)               | producers branch on `WorkflowNotFoundError`/`WorkflowNotRegisteredError`; the promised LocalClient→HttpClient swap would silently break both branches |
+| [466](https://github.com/stevekinney/weft/issues/466) | enhancement | `startOrSignal` outcome: report started-new-run vs signalled-existing                                | the `workflow_run` read-model (§4.5) + producer logging ("started or signaled — doesn't distinguish")                                                 |
+| [467](https://github.com/stevekinney/weft/issues/467) | enhancement | `client.getHandle(id)` to re-attach a `ClientHandle` to an existing run                              | fire-and-forget producers discard handles; tests/operator surfaces hand-roll `client.get(id)` polling loops                                           |
+| [468](https://github.com/stevekinney/weft/issues/468) | enhancement | `NeonStorage` configurable schema/table (hardcoded `public.kv`)                                      | would let Weft share the app database in a `weft` schema — one secret, one point-in-time-restore line (§3/storage isolation)                          |
+| [469](https://github.com/stevekinney/weft/issues/469) | enhancement | `NeonStorage.batch()` issues one query per operation — O(keys) sequential round trips per checkpoint | engine is in-process: `startOrSignal` persistence latency sits on the webhook response path                                                           |
+| [470](https://github.com/stevekinney/weft/issues/470) | enhancement | Lease-fenced single-writer ownership over shared storage                                             | removes the every-deploy-is-`Recreate` downtime cost of the in-process topology (remaining item 4)                                                    |
 
 ## 7. What's done vs. remaining
 
