@@ -7,6 +7,15 @@
  *
  * TODO(weft): Convert these classifications into ../weft activity failure
  * metadata once workflow execution is wired back in.
+ *
+ * Weft mapping: these error `name`s feed RetryPolicy.nonRetryableErrors
+ * (matched by error name) on each activity's ActivityCallOptions — the direct
+ * equivalent of Temporal's nonRetryableErrorTypes. No new infrastructure needed.
+ *
+ * TODO(weft#449): Weft 0.3.0 has no scheduleToCloseTimeout (a cross-attempt
+ * wall-clock budget). Until it lands, bound total retry time with
+ * ctx.race([ctx.run(activity, ...), ctx.sleep(totalBudget)]).
+ * https://github.com/stevekinney/weft/issues/449
  */
 
 /**

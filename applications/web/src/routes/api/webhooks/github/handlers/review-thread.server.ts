@@ -61,6 +61,8 @@ async function signalReviewThread(
     repo: data.repository.name,
     eventType,
     actorLogin: data.sender.login,
+    // GitHub delivery GUID -> Weft signalId for retry dedup.
+    eventId: context.deliveryId,
   });
 
   if (!result.ok) {

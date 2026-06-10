@@ -243,6 +243,13 @@ export async function cancelWorkflowsForRepositories(
  *
  * TODO(weft): Send cancellation signals to ../weft workflow handles before
  * marking local workflow rows cancelled.
+ *
+ * TODO(weft#446): Workflows holding external paid resources (E2B sandboxes)
+ * need durable cancellation teardown. Weft 0.3.0's ctx.onCancel / saga
+ * compensation is best-effort and not replayed after an engine restart, so a
+ * hard-cancel can leak the resource. Until a durable cancel path lands, pair
+ * engine.cancel() with a periodic reconciler sweep keyed by resource id.
+ * https://github.com/stevekinney/weft/issues/446
  */
 async function cancelWorkflows(
   context: GithubServiceContext,

@@ -17,8 +17,8 @@ import {
   handleInstallationSuspend,
   handleInstallationUnsuspend,
 } from '@tribunal/github/installations/lifecycle';
-import { enqueueInstallationSync } from '@tribunal/github/sync';
 import { getPrimaryWorkspaceIdForInstallation } from '$lib/server/github/webhooks/handlers';
+import { fireAndForgetInstallationSync } from './installation-sync-dispatch';
 
 /**
  * Handle installation webhook events.
@@ -64,15 +64,16 @@ export async function handleInstallation(
           repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
         });
 
-        // Trigger sync to fetch repositories (fire-and-forget)
-        // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
-        // installation sync workflow.
+        // Trigger sync to fetch repositories (fire-and-forget — see
+        // fireAndForgetInstallationSync for the durability limitation).
+        // TODO(weft): thread the webhook delivery GUID from +server.ts down to here
+        // and pass it as `deliveryId` so retries dedup at the Weft signal layer too
+        // (GitHub redeliveries are already deduped upstream by claimWebhookDelivery).
         const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
-        void enqueueInstallationSync(githubContext, {
-          installationId,
-          reason: 'webhook:installation.created',
-          workspaceId,
-        }).catch((e) => logger.error({ error: e }, 'Failed to enqueue installation sync'));
+        fireAndForgetInstallationSync(
+          { installationId, reason: 'webhook:installation.created', workspaceId },
+          logger,
+        );
 
         logger.info(
           `Installation ${installationId} created for ${account.login} (direct install or callback race)`,
@@ -87,14 +88,12 @@ export async function handleInstallation(
       await updateInstallationStatus(githubContext, installationId, 'active');
 
       // Trigger sync in case new permissions grant access to more repos
-      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
-      // installation sync workflow.
+      // (fire-and-forget — see fireAndForgetInstallationSync for the limitation).
       const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
-      void enqueueInstallationSync(githubContext, {
-        installationId,
-        reason: 'webhook:installation.new_permissions_accepted',
-        workspaceId,
-      }).catch((e) => logger.error({ error: e }, 'Failed to enqueue installation sync'));
+      fireAndForgetInstallationSync(
+        { installationId, reason: 'webhook:installation.new_permissions_accepted', workspaceId },
+        logger,
+      );
 
       logger.info(`Installation ${installationId} new permissions accepted`);
       break;

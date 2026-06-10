@@ -9,8 +9,8 @@ import type { InstallationRepositoriesEvent } from '@octokit/webhooks-types';
 import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
 import { handleRepositoriesRemoved } from '@tribunal/github/installations/lifecycle';
-import { enqueueInstallationSync } from '@tribunal/github/sync';
 import { getPrimaryWorkspaceIdForInstallation } from '$lib/server/github/webhooks/handlers';
+import { fireAndForgetInstallationSync } from './installation-sync-dispatch';
 
 /**
  * Handle installation_repositories webhook events.
@@ -34,14 +34,16 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list
-      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
-      // installation sync workflow.
-      void enqueueInstallationSync(githubContext, {
-        installationId,
-        reason: `webhook:installation_repositories.${action}`,
-        workspaceId,
-      }).catch((e) => logger.error({ error: e }, 'Failed to enqueue installation sync'));
+      // Trigger sync to update repository list (fire-and-forget — logs error
+      // results too, see fireAndForgetInstallationSync for the durability note).
+      fireAndForgetInstallationSync(
+        {
+          installationId,
+          reason: `webhook:installation_repositories.${action}`,
+          workspaceId,
+        },
+        logger,
+      );
 
       logger.info(`Installation ${installationId}: repositories added - triggering sync`);
       break;
@@ -61,14 +63,16 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list
-      // TODO(weft): Replace this enqueue shim with a ../weft start-or-signal
-      // installation sync workflow.
-      void enqueueInstallationSync(githubContext, {
-        installationId,
-        reason: `webhook:installation_repositories.${action}`,
-        workspaceId,
-      }).catch((e) => logger.error({ error: e }, 'Failed to enqueue installation sync'));
+      // Trigger sync to update repository list (fire-and-forget — logs error
+      // results too, see fireAndForgetInstallationSync for the durability note).
+      fireAndForgetInstallationSync(
+        {
+          installationId,
+          reason: `webhook:installation_repositories.${action}`,
+          workspaceId,
+        },
+        logger,
+      );
 
       logger.info(
         `Installation ${installationId}: repositories removed - cancelling workflows and triggering sync`,
