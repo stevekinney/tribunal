@@ -59,9 +59,20 @@ describe('resolveDurableStorage', () => {
     expect(resolveDurableStorage()).toBeNull();
   });
 
-  it('throws in production when no WEFT_DATABASE_URL is set', () => {
+  it('returns null and warns (does not throw) in production when no WEFT_DATABASE_URL is set', () => {
+    // A config gap must not become a per-dispatch rejection that 500s webhooks.
     mockEnv.NODE_ENV = 'production';
-    expect(() => resolveDurableStorage()).toThrow(/WEFT_DATABASE_URL is required/);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(resolveDurableStorage()).toBeNull();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('WEFT_DATABASE_URL is not set'));
+
+    // Warns at most once per process.
+    error.mockClear();
+    expect(resolveDurableStorage()).toBeNull();
+    expect(error).not.toHaveBeenCalled();
+
+    error.mockRestore();
   });
 
   it('builds a NeonStorage over WEFT_DATABASE_URL (not DATABASE_URL)', () => {

@@ -54,14 +54,23 @@ export function createEngine(storage: Storage): Promise<Engine> {
   return Engine.create({ storage, detectSecondInstance: true });
 }
 
+// Warn at most once per process when production runs with no durable store, so
+// the misconfiguration is loud in logs without throwing on every dispatch.
+let warnedMissingProductionUrl = false;
+
 /**
  * Resolve the durable storage backend, or `null` when none is configured.
  *
- * Production requires the dedicated `WEFT_DATABASE_URL` (Neon, asserted
- * recovery-capable) and throws if it is missing. Non-production with no URL
- * returns `null` — the engine stays unbuilt and producers run log-only — so dev
- * and the test suite do not boot an engine they don't need. A non-production run
- * that *wants* a real engine sets `WEFT_DATABASE_URL`.
+ * When `WEFT_DATABASE_URL` is set we build `NeonStorage` (asserted
+ * recovery-capable). When it is unset we return `null` in *every* environment —
+ * the engine stays unbuilt and producers run log-only.
+ *
+ * Crucially, a missing URL never throws: a configuration gap must not turn into a
+ * per-dispatch rejection, which webhook handlers translate into 500s (and GitHub
+ * retries). Instead, a missing URL in production is surfaced as a loud one-time
+ * boot warning. A genuine *build* failure (URL set but Neon unreachable) still
+ * rejects — that is a transient error worth a 500 + GitHub retry, distinct from
+ * "no engine configured".
  */
 export function resolveDurableStorage(): Storage | null {
   const databaseUrl = getDatabaseUrl();
@@ -70,9 +79,10 @@ export function resolveDurableStorage(): Storage | null {
     assertDurableStorageForRecovery(storage);
     return storage;
   }
-  if (isProduction()) {
-    throw new Error(
-      'WEFT_DATABASE_URL is required in production: the engine needs durable storage to recover workflows.',
+  if (isProduction() && !warnedMissingProductionUrl) {
+    warnedMissingProductionUrl = true;
+    console.error(
+      '[weft] WEFT_DATABASE_URL is not set in production: durable workflow dispatch is DISABLED (producers run log-only). Set it to enable the engine.',
     );
   }
   return null;
@@ -130,4 +140,5 @@ export function getWeftClient(): Promise<WeftClient | null> {
  */
 export function resetWeftClientForTests(): void {
   clientPromise = undefined;
+  warnedMissingProductionUrl = false;
 }

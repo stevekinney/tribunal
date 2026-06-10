@@ -12,7 +12,7 @@ export interface EnqueueInstallationSyncOptions {
    * and GitHub redeliveries of the same logical event coalesce to one signal
    * rather than re-running the sync. Webhook-originated callers should pass the
    * GitHub delivery GUID. Omit only for genuinely distinct manual/non-retryable
-   * intents, where each enqueue gets a fresh minted id.
+   * intents, where each enqueue gets a freshly minted id.
    */
   deliveryId?: string;
 }
