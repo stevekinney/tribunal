@@ -6,12 +6,15 @@
 > inherited (dormant and stubbed) from the sibling `depict` codebase.
 >
 > **Done so far:** dependency installed; in-process engine wired into the web
-> app (single-replica); the two live producers (PR orchestrator signals,
-> installation sync) dispatch through Weft with a log-only fallback; unit + e2e
-> tests against a real engine; 13 capability/bug issues filed upstream.
+> app (single-replica, lazy-on-first-dispatch); the two live producers (PR
+> orchestrator signals, installation sync) dispatch through Weft, with a log-only
+> fallback when unconfigured and a no-op-success path when a workflow isn't
+> registered; unit + e2e tests against a real engine; 13 capability/bug issues
+> filed upstream.
 >
-> **Not done:** porting the actual workflow definitions (the registries are
-> empty), schema reconciliation, and the deployment singleton enforcement.
+> **Not done:** porting the workflow definitions (blocked on weft#456),
+> schema reconciliation, deployment singleton enforcement, and the
+> fire-and-forget sync durability fix (see the §4.2 warning).
 
 ## 1. Background: how Tribunal got here
 
