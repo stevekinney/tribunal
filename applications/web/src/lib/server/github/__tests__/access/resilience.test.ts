@@ -3,8 +3,7 @@
  */
 
 // 1. Mocks FIRST (before any other imports)
-import { setupAccessMocks } from './access.mocks';
-setupAccessMocks();
+import './register-access-mocks';
 
 // 2. Vitest
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

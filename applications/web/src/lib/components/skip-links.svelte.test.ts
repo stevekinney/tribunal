@@ -5,7 +5,6 @@ import SkipLinks from './skip-links.svelte';
 
 describe('SkipLinks', () => {
   beforeEach(() => {
-    // Ensure a clean main-content target exists for each test
     document.body.innerHTML = '';
     const main = document.createElement('main');
     main.id = 'main-content';
@@ -17,6 +16,7 @@ describe('SkipLinks', () => {
     render(SkipLinks);
     const link = page.getByRole('link', { name: 'Skip to main content' });
     await expect.element(link).toBeInTheDocument();
+    await expect.element(link).toHaveAttribute('href', '#main-content');
   });
 
   it('focuses #main-content when the skip link is clicked', async () => {
@@ -34,7 +34,6 @@ describe('SkipLinks', () => {
 
     render(SkipLinks);
     await page.getByRole('link', { name: 'Skip to main content' }).click();
-    // main-content now has tabindex="-1" and is focused; blur to trigger cleanup
     main.blur();
 
     expect(main.hasAttribute('tabindex')).toBe(false);

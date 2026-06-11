@@ -47,12 +47,3 @@
 .prose a[aria-hidden='true'] {
   display: none;
 }
-
-/*
- * Flush card variant — removes Cinder Card body padding.
- * Replaces the old @tribunal/components `flush` boolean prop. Unlayered so it
- * wins over Cinder's layered `.cinder-card__body` padding.
- */
-.card--flush .cinder-card__body {
-  padding: 0;
-}
