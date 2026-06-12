@@ -17,7 +17,7 @@
 
 <Page title="Open pull requests" subtitle={repositoryName} {breadcrumbs}>
   {#if data.pullRequests.length === 0}
-    <Card class="card--flush">
+    <Card padding="none">
       <EmptyState
         title="No open pull requests"
         description="When this repository has open pull requests, they will appear here."

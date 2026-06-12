@@ -36,7 +36,7 @@
   {/if}
 
   {#if repositories.length === 0}
-    <Card class="card--flush">
+    <Card padding="none">
       <EmptyState title={emptyStateTitle} description={emptyStateDescription}>
         {#snippet icon()}<FolderGit2 size={48} />{/snippet}
         {#snippet action()}
