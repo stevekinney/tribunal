@@ -51,6 +51,15 @@
 > (`ctx.race` does not abort a losing `ctx.run` branch), weft#585 (`LocalClient`
 > rejects a branded engine), and weft#586 (`Engine.create` does not start the
 > scheduler). No open issues remain against `stevekinney/weft`.
+>
+> **0.6.0 bump (version-only for Tribunal).** Upgraded `^0.5.0` → `^0.6.0`. 0.6.0
+> adds an `Engine.create({ startScheduler })` option (weft#590) that decouples the
+> durable-timer poller from `recover`, for hosts that pass `recover: false` and
+> own their `recoverAll()`. It defaults to `recover !== false`, so it is a no-op
+> for Tribunal: `createEngine` uses the default `recover: true` path and the
+> scheduler already auto-starts. No code change — just the version. (weft#590 was
+> filed from the sibling `agent-bureau`, which DOES use the `recover: false`
+> host-owned-recovery topology; Tribunal does not.)
 
 ## 1. Background: how Tribunal got here
 
