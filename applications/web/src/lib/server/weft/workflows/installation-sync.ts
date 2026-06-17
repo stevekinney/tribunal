@@ -19,11 +19,16 @@
  * execution. A new startOrSignal for a terminal run will start a fresh
  * execution under the same stable workflow id.
  *
- * Status transitions written to the database:
- *   - 'pending'     (before debounce sleep — set by the producer via enqueueInstallationSync)
- *   - 'in_progress' (before each sync attempt)
+ * Status transitions written to the database by THIS flow:
+ *   - 'in_progress' (before each sync attempt — set in syncRepositories)
  *   - 'idle'        (on success — set inside refreshInstallationRepositories)
- *   - 'failed'      (on error — set in the catch branch of syncRepositories)
+ *   - 'failed'      (on error — set in the catch branch of syncRepositories;
+ *                    and on cancel/timeout by the finalizer below)
+ *
+ * Note: the `sync_status` enum also defines 'pending', but nothing in the sync
+ * flow writes it — `enqueueInstallationSync` only `startOrSignal`s, it does not
+ * pre-mark the row. (This is why the finalizer's WHERE matches only 'in_progress';
+ * see reconcileSyncStatusOnTeardown.)
  *
  * Durable finalizer (weft#446): on a CANCELLED or TIMED-OUT terminal — e.g. a
  * lease eviction (weft#470) deposing this engine mid-sync, lifecycle teardown
