@@ -6,15 +6,33 @@
  * separate engine service. There is no `serve()` and no HTTP hop; workflow
  * producers call the engine in-process via a {@link LocalClient}.
  *
- * Topology invariant: run the web app as a SINGLE replica. Two engines on one
- * durable store can double-resume a workflow. `detectSecondInstance` below is a
- * best-effort runtime smoke alarm (warn-only — it does NOT fence), so the hard
- * guarantee must still come from the deployment: one replica + a `Recreate`-style
- * rollout. Horizontal scaling requires moving the engine to a dedicated service
+ * Topology invariant: run the web app as a SINGLE writer over the durable store.
+ * Two engines on one store could double-resume a workflow, so single-writer
+ * ownership is enforced at TWO layers:
+ *
+ *   1. `ownership: 'lease'` (weft#470) — the HARD guarantee. At boot the engine
+ *      acquires a storage-keyed lease before recovering, renews it on a
+ *      heartbeat, releases it on dispose, and FENCES every durable write on the
+ *      lease epoch. A deposed zombie engine's writes lose a CAS against the
+ *      successor's newer epoch and the engine halts to avoid split-brain. A
+ *      rolling deploy becomes a clean handoff: the incoming instance parks (up to
+ *      {@link LEASE_WAIT_TIMEOUT}) until the outgoing one releases or its lease
+ *      expires, so the two never recover concurrently.
+ *   2. `detectSecondInstance: true` — a fast warn-only liveness smoke alarm. It
+ *      does NOT fence (the lease does that); it just surfaces a misconfigured
+ *      second instance via `process.emitWarning` sooner than waiting for a lease
+ *      CAS failure to manifest. Cheap defense-in-depth, kept alongside the lease.
+ *
+ * Horizontal scaling still requires moving the engine to a dedicated service
  * (swap `LocalClient` for `HttpClient` + `serve()`); the producer call sites do
  * not change because they depend only on the `WeftClient` interface.
+ *
+ * Operators should monitor for the `WeftEngineLeaseLostWarning`
+ * (`process.emitWarning`) the engine emits when a lease renewal fails or it is
+ * deposed — it signals that more than one instance is contending for the store.
  */
 import { Engine } from '@lostgradient/weft';
+import type { Duration } from '@lostgradient/weft';
 import type { WeftClient } from '@lostgradient/weft/client';
 import { LocalClient } from '@lostgradient/weft/client/local';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
@@ -23,6 +41,23 @@ import type { Storage } from '@lostgradient/weft/storage/interface';
 import { env } from '$env/dynamic/private';
 import { installationSyncWorkflow } from './workflows/installation-sync.js';
 import { pullRequestOrchestratorWorkflow } from './workflows/pull-request-orchestrator.js';
+
+/**
+ * Lease handoff window — how long a BOOTING instance waits to acquire the
+ * ownership lease before failing. Distinct from `leaseTtl` (default 30s), which
+ * bounds takeover after the incumbent STOPS renewing.
+ *
+ * 60s comfortably covers the crash/kill case: a predecessor that died or hung
+ * stops renewing, its lease lapses after the 30s TTL, and the successor acquires
+ * well within 60s. It does NOT, however, guarantee a rolling deploy where the
+ * OUTGOING instance stays alive and keeps renewing through a >60s overlap — there
+ * the successor would time out acquiring. A clean handoff relies on the outgoing
+ * process disposing the engine (which releases the lease) promptly on shutdown;
+ * if deploy overlap can exceed 60s, raise this above the max expected overlap.
+ * The lazy webhook path tolerates a transient acquisition failure (getWeftClient
+ * does not cache a rejected build; the webhook returns 500 → GitHub retries).
+ */
+const LEASE_WAIT_TIMEOUT: Duration = '60s';
 
 /**
  * Storage isolation: Weft's `NeonStorage` owns a single `kv` table in whatever
@@ -54,37 +89,42 @@ const WORKFLOWS = {
  * (recover defaults to `true`). Exposed for tests that drive the real engine
  * with an injected backend.
  *
- * Registers the ported workflow definitions ({@link WORKFLOWS}) so the producers'
- * `startOrSignal` dispatches resolve to a real run instead of throwing
- * `WorkflowNotRegisteredError`.
+ * The ported workflow definitions ({@link WORKFLOWS}) are registered through the
+ * `Engine.create({ workflows })` option so the producers' `startOrSignal`
+ * dispatches resolve to a real run instead of throwing
+ * `WorkflowNotRegisteredError`. 0.5.0 made `LocalClient` generic over the
+ * engine's registry (weft#585), so the branded engine `Engine.create` returns is
+ * assignable to `new LocalClient(engine)` with no cast — the canonical
+ * `Engine.create({ workflows }) → new LocalClient(engine)` topology type-checks
+ * directly. (Pre-0.5.0 we had to call `registerWorkflows` for its side effect and
+ * keep a default-typed reference to dodge the brand mismatch.)
  *
- * `detectSecondInstance` is a warn-only backstop for the single-replica
- * invariant; it surfaces a `process.emitWarning` if a second engine writes to
- * the same store, but does not prevent it (enforce one replica in infra).
+ * `ownership: 'lease'` (weft#470) enforces single-writer ownership at the storage
+ * layer — the hard guarantee behind the single-writer topology invariant. The
+ * lease is acquired on this `Engine.create()` boot path (its standard acquisition
+ * boundary) before recovery, so two instances never recover concurrently.
  *
- * Workflows are registered via `engine.registerWorkflows(...)` (which mutates the
- * engine in place) rather than `Engine.create({ workflows })`. Both register the
- * same definitions, but the `create({ workflows })` option BRANDS the returned
- * engine type with the registry, and that branded `Engine<R>` is not assignable
- * to `LocalClient`'s unbranded `constructor(engine: Engine)` (weft#585). Calling
- * `registerWorkflows` for its side effect and keeping the original default-typed
- * `engine` reference sidesteps the brand mismatch with no cast — the runtime
- * engine is identical (registerWorkflows returns a re-typed view of `this`).
+ * `detectSecondInstance` remains a fast warn-only liveness alarm layered on top
+ * of the lease (it does not fence; the lease does).
  *
- * CRITICAL — start the scheduler. `Engine.create` (even with the default
- * `recover: true`) constructs the scheduler but does NOT start its timer-polling
- * loop, so `ctx.sleep(...)` durable timers never fire until `scheduler.start()`
- * is called. Without this, the sync debounce and the orchestrator's
- * debounce/idle-timeout would park forever. We start it here, once, for this
- * long-lived in-process engine; `engine[Symbol.asyncDispose]()` stops it on
- * shutdown. (Filed upstream — Engine.create should auto-start or document this.)
- * https://github.com/stevekinney/weft/issues/586
+ * The scheduler's timer-polling loop now auto-starts on the default recovery path
+ * (weft#586 — fixed in 0.5.0), so `ctx.sleep(...)` durable timers (the sync
+ * debounce and the orchestrator's debounce/idle-timeout) fire without an explicit
+ * `engine.scheduler.start()`. `engine[Symbol.asyncDispose]()` stops it and
+ * releases the lease on shutdown.
  */
-export async function createEngine(storage: Storage): Promise<Engine> {
-  const engine = await Engine.create({ storage, detectSecondInstance: true });
-  engine.registerWorkflows(WORKFLOWS);
-  engine.scheduler.start();
-  return engine;
+export function createEngine(storage: Storage) {
+  // Return type is intentionally inferred: Engine.create({ workflows }) returns a
+  // registry-BRANDED Engine<R>, which is what LocalClient now accepts (weft#585).
+  // Annotating `Promise<Engine>` would widen it back to the default registry and
+  // drop the brand, reintroducing the very mismatch 0.5.0 fixed.
+  return Engine.create({
+    storage,
+    workflows: WORKFLOWS,
+    ownership: 'lease',
+    leaseWaitTimeout: LEASE_WAIT_TIMEOUT,
+    detectSecondInstance: true,
+  });
 }
 
 // Warn at most once per process when production runs with no durable store, so
@@ -144,9 +184,10 @@ async function buildClient(): Promise<WeftClient | null> {
     warnedProductionGatesOpen = true;
     console.error(
       '[weft] Durable engine ACTIVATED in production (WEFT_DATABASE_URL set). ' +
-        'Pre-production gates are still open — see documentation/WEFT_MIGRATION_PLAN.md §4.2/§7: ' +
-        'fire-and-forget sync durability (data-loss on terminal-conflict re-sync), ' +
-        'single-replica/lease enforcement, and analyze-activity concurrency hardening. ' +
+        'Single-writer ownership (lease fencing) and durable finalizers are now wired, ' +
+        'but pre-production gates remain — see documentation/WEFT_MIGRATION_PLAN.md §4.2/§7: ' +
+        'fire-and-forget sync durability (data-loss on terminal-conflict re-sync) and ' +
+        'analyze-activity concurrency hardening. ' +
         'Confirm these are closed before relying on durable execution in production.',
     );
   }

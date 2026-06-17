@@ -19,13 +19,17 @@
  *   and the sleep branch resolves undefined. Narrowing is done via discriminant
  *   helpers below.
  *
- * FIX 2 — STALE-WRITE FENCE (weft#584):
- *   A losing ctx.run branch is NOT aborted by Weft — a superseded analysis can
- *   still complete and write stale data. The monotonic analysisGeneration counter
- *   is passed into every analyzePullRequest call; the activity compares the head
- *   SHA it fetched against the live pull_request_state.headSha before writing
- *   and skips the write if they diverge (generationFenced=true). This is the
- *   load-bearing defence, not the race abort.
+ * FIX 2 — STALE-WRITE FENCE (weft#584, hardened in 0.5.0):
+ *   0.5.0 makes a losing ctx.run branch cooperatively aborted: when a signal wins
+ *   the analysis race, the losing analyze activity's ctx.signal (AbortSignal)
+ *   fires, and the activity's throwIfAborted() checks bail before the write. That
+ *   is the FIRST line of defence now. But it is COOPERATIVE — an activity already
+ *   past its last abort check (or mid-`octokit` call) can still reach the write,
+ *   and a SAME-COMMIT supersede (new comment, thread resolve) does not even cause
+ *   a head-SHA change. So the monotonic analysisGeneration counter + the head-SHA
+ *   generation fence in the activity REMAIN the load-bearing correctness guard
+ *   (skip the write when GitHub's head advanced); the abort is the fast path, the
+ *   fence is the guarantee.
  *
  * FIX 3 — SUPERSEDE CONTROL FLOW:
  *   When a pull_request_event wins the analysis race (supersede), the event IS
@@ -47,7 +51,14 @@
  *
  * weft#456: race accepts ctx.sleep + ctx.waitForSignal branches.
  * weft#447: ctx.log?.info/.warn/.error carries workflowId/workflowType automatically.
- * weft#584: losing ctx.run branch is not aborted; generation fence is the defence.
+ * weft#584: 0.5.0 cooperatively aborts a losing ctx.run branch (fast path); the
+ *   generation fence remains the load-bearing correctness guard (see FIX 2).
+ *
+ * No finalizer (weft#446): unlike installation-sync, this workflow has no DB
+ * status row to strand on cancel/timeout. Its only persistent side-effects are
+ * the action items written inside the analyze activity, which are DB-authoritative
+ * and self-heal on the next analysis cycle. A finalizer is added the day a
+ * sandbox-holding (paid-resource) activity is introduced here.
  */
 
 import { workflow, signal } from '@lostgradient/weft';
@@ -400,12 +411,15 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
 
         // ── (C) RUN ANALYSIS, RACING SUPERSEDE AND CLOSE ────────────────────
         //
-        // FIX 2 (weft#584): A losing ctx.run branch is NOT aborted by Weft, so a
-        // superseded analysis can still complete and write stale data. We pass an
-        // incrementing analysisGeneration counter into the activity; the activity
-        // compares the head SHA it fetched against pull_request_state.headSha at
-        // write time and skips the write if they diverge (generationFenced=true).
-        // This is the load-bearing defence, NOT the race abort.
+        // FIX 2 (weft#584, hardened 0.5.0): when a signal wins this race, the
+        // losing analyze activity is now cooperatively aborted (its ctx.signal
+        // fires; throwIfAborted bails before the write) — the fast path. But that
+        // is best-effort: an activity past its last abort check, or a same-commit
+        // supersede that does not move the head SHA, can still reach the write. So
+        // we pass an incrementing analysisGeneration counter; the activity compares
+        // the head SHA it fetched against GitHub's live head before writing and
+        // skips the write if it advanced (generationFenced=true). The fence is the
+        // load-bearing guarantee; the abort is the optimization.
         //
         // FIX 1: if the analysis run completes first, its result is an
         // AnalyzePullRequestOutput (no kind field → falls through). If a signal

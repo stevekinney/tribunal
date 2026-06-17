@@ -24,10 +24,21 @@
  *   - 'in_progress' (before each sync attempt)
  *   - 'idle'        (on success — set inside refreshInstallationRepositories)
  *   - 'failed'      (on error — set in the catch branch of syncRepositories)
+ *
+ * Durable finalizer (weft#446): on a CANCELLED or TIMED-OUT terminal — e.g. a
+ * lease eviction (weft#470) deposing this engine mid-sync, lifecycle teardown
+ * cancelling the run, or the activity exhausting its timeout — the engine drives
+ * `reconcileSyncStatusOnTeardown` post-terminal. Without it a row could be left
+ * stuck at 'pending'/'in_progress' forever (a perpetual spinner in the UI). The
+ * finalizer flips only a non-terminal row to 'failed' with an explanatory error,
+ * leaving an already-settled 'idle'/'failed' row untouched. `completed`/`failed`
+ * workflow terminals never run it. The workflow records its finalizer payload via
+ * `ctx.setFinalizerState({ installationId })` immediately on entry so the
+ * installation id is durable before any cancellable work begins.
  */
 
-import { workflow, signal } from '@lostgradient/weft';
-import { eq } from 'drizzle-orm';
+import { workflow, signal, activity } from '@lostgradient/weft';
+import { and, eq, inArray } from 'drizzle-orm';
 import { githubInstallation } from '@tribunal/database/schema';
 import { refreshInstallationRepositories } from '@tribunal/github/repositories/service';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
@@ -123,6 +134,49 @@ async function syncRepositories(input: { installationId: number }): Promise<{
   }
 }
 
+/** Payload staged via ctx.setFinalizerState and handed to the finalizer. */
+type SyncFinalizerState = { installationId: number };
+
+/**
+ * Finalizer: reconcile a stranded sync status after a cancelled/timed-out
+ * terminal (weft#446).
+ *
+ * Runs ONLY when the workflow is cancelled or times out (never on normal
+ * completion), and only because the workflow staged finalizer state on entry. A
+ * sync that is interrupted mid-flight — lease eviction, lifecycle teardown, or a
+ * timeout — can leave `syncStatus` stuck at 'pending'/'in_progress'. This flips
+ * such a row to 'failed' so the UI/operator sees an interrupted sync rather than
+ * a perpetual spinner.
+ *
+ * Idempotent by construction (the finalizer "runs at least once and must be
+ * idempotent"): the update is conditional on the row STILL being non-terminal
+ * (`syncStatus IN ('pending','in_progress')`). A second invocation, or a sync
+ * that actually finished as 'idle'/'failed' before teardown landed, matches no
+ * rows and is a no-op — so a genuine success is never clobbered.
+ */
+async function reconcileSyncStatusOnTeardown(state: SyncFinalizerState): Promise<void> {
+  const { installationId } = state;
+
+  await githubContext.db
+    .update(githubInstallation)
+    .set({
+      syncStatus: 'failed',
+      // Covers all non-completion terminals the finalizer fires on: a deliberate
+      // lifecycle teardown (installation removed), a lease eviction stopping the
+      // engine, and an activity timeout — without asserting which one occurred.
+      syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(githubInstallation.installationId, installationId),
+        // Conditional: only reconcile a still-non-terminal row. Leaves an
+        // already-settled 'idle'/'failed' row untouched (idempotency + no clobber).
+        inArray(githubInstallation.syncStatus, ['pending', 'in_progress']),
+      ),
+    );
+}
+
 // ============================================================================
 // WORKFLOW DEFINITION
 // ============================================================================
@@ -133,7 +187,19 @@ async function syncRepositories(input: { installationId: number }): Promise<{
  * Stable workflow id: `github:installations:{installationId}:sync`
  * Dispatched via enqueueInstallationSync (packages/github/src/sync/index.ts).
  */
-export const installationSyncWorkflow = workflow({ name: 'installation-sync' })
+export const installationSyncWorkflow = workflow({
+  name: 'installation-sync',
+  // Durable teardown on cancel/timeout (weft#446). The engine drives this with
+  // retry/backoff and re-drives it on crash recovery; it sees the
+  // ctx.setFinalizerState payload recorded on entry. The finalizer is a standalone
+  // activity definition (built via activity()), distinct from the .activities()
+  // map below.
+  finalizer: activity({
+    name: 'reconcileSyncStatusOnTeardown',
+    execute: reconcileSyncStatusOnTeardown,
+    timeout: '1m',
+  }),
+})
   .activities({
     syncRepositories: {
       execute: syncRepositories,
@@ -146,6 +212,12 @@ export const installationSyncWorkflow = workflow({ name: 'installation-sync' })
   })
   .execute(async function* (ctx, input: EnqueueInstallationSyncOptions) {
     const { installationId } = input;
+
+    // Record the finalizer payload BEFORE any cancellable work, so a cancel /
+    // timeout / lease eviction arriving during the debounce or the sync still has
+    // a durable installationId to reconcile (weft#446). Recording is what arms the
+    // finalizer at all — if it is never called, the engine skips teardown.
+    ctx.setFinalizerState({ installationId } satisfies SyncFinalizerState);
 
     // -----------------------------------------------------------------------
     // Debounce: sleep so rapid lifecycle webhooks accumulate as signals before

@@ -59,22 +59,14 @@ afterEach(() => {
 });
 
 /**
- * A mock engine stub. `createEngine` calls `engine.registerWorkflows(...)` and
- * `engine.scheduler.start()` after `Engine.create`, so the stub must provide
- * both. registerWorkflows returns a re-typed view of the same engine in
- * production; here it returns the same stub so the wiring runs without error.
+ * A mock engine stub. In 0.5.0 `createEngine` registers workflows via the
+ * `Engine.create({ workflows })` option and the scheduler auto-starts, so the
+ * stub no longer needs `registerWorkflows`/`scheduler.start` shims — the engine
+ * is opaque to `createEngine` after construction (it just hands it to
+ * `new LocalClient(engine)`).
  */
-function mockEngine(): {
-  id: string;
-  registerWorkflows: ReturnType<typeof vi.fn>;
-  scheduler: { start: ReturnType<typeof vi.fn> };
-} {
-  const engine = {
-    id: 'engine',
-    registerWorkflows: vi.fn(() => engine),
-    scheduler: { start: vi.fn() },
-  };
-  return engine;
+function mockEngine(): { id: string } {
+  return { id: 'engine' };
 }
 
 describe('resolveDurableStorage', () => {
@@ -160,7 +152,7 @@ describe('getWeftClient', () => {
 });
 
 describe('createEngine', () => {
-  it('enables the second-instance detector (single-replica backstop)', async () => {
+  it('enables the second-instance detector (fast warn-only liveness alarm)', async () => {
     engineCreate.mockResolvedValue(mockEngine());
     const storage = new MemoryStorage();
     await createEngine(storage);
@@ -169,31 +161,46 @@ describe('createEngine', () => {
     );
   });
 
-  it('registers the ported workflow definitions on the engine', async () => {
-    const engine = mockEngine();
-    engineCreate.mockResolvedValue(engine);
+  it('registers the ported workflow definitions via the Engine.create option', async () => {
+    engineCreate.mockResolvedValue(mockEngine());
 
     await createEngine(new MemoryStorage());
 
-    // Both ported workflows must be registered so producer startOrSignal
-    // dispatches resolve to a real run instead of WorkflowNotRegisteredError.
-    expect(engine.registerWorkflows).toHaveBeenCalledTimes(1);
-    const registered = engine.registerWorkflows.mock.calls[0][0] as Record<string, unknown>;
-    expect(Object.keys(registered).sort()).toEqual([
+    // 0.5.0 (weft#585): workflows are registered through Engine.create({ workflows })
+    // and the branded engine is assignable to LocalClient — no registerWorkflows
+    // side-effect dance. Both ported workflows must be present so producer
+    // startOrSignal dispatches resolve to a real run, not WorkflowNotRegisteredError.
+    expect(engineCreate).toHaveBeenCalledTimes(1);
+    const options = engineCreate.mock.calls[0][0] as { workflows: Record<string, unknown> };
+    expect(Object.keys(options.workflows).sort()).toEqual([
       'installation-sync',
       'pull-request-orchestrator',
     ]);
   });
 
-  it('starts the scheduler so ctx.sleep timers fire (weft#586)', async () => {
-    // Engine.create does NOT start the scheduler's polling loop; without this
-    // call, every ctx.sleep (sync debounce, orchestrator idle timeout) would
-    // park forever in production.
-    const engine = mockEngine();
-    engineCreate.mockResolvedValue(engine);
+  it('opts into lease ownership (weft#470) for hard single-writer fencing', async () => {
+    // The lease is the HARD guarantee behind the single-writer topology invariant:
+    // a deposed zombie engine's writes lose a CAS against the successor's epoch.
+    // A bounded leaseWaitTimeout lets a rolling deploy hand off cleanly.
+    engineCreate.mockResolvedValue(mockEngine());
 
     await createEngine(new MemoryStorage());
 
-    expect(engine.scheduler.start).toHaveBeenCalledTimes(1);
+    expect(engineCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ ownership: 'lease', leaseWaitTimeout: '60s' }),
+    );
+  });
+
+  it('does NOT call scheduler.start — the scheduler auto-starts in 0.5.0 (weft#586)', async () => {
+    // Regression guard for the removed workaround: createEngine must not poke the
+    // scheduler. The engine returned by Engine.create auto-starts its timer loop
+    // on the default recovery path, so ctx.sleep timers fire without our help.
+    // A scheduler.start spy on the returned engine must never be invoked.
+    const start = vi.fn();
+    engineCreate.mockResolvedValue({ id: 'engine', scheduler: { start } });
+
+    await createEngine(new MemoryStorage());
+
+    expect(start).not.toHaveBeenCalled();
   });
 });

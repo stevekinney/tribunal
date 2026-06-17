@@ -8,23 +8,28 @@
  * 4. Reconciles new + existing items (preserving human edits)
  * 5. Updates PR description if changed
  *
- * Generation fence (weft#584):
- * A losing ctx.run branch in ctx.race is NOT aborted by Weft — the coordinator
- * AbortSignal is not propagated to the activity executor. This means a superseded
- * analysis can still complete and write stale action items AFTER a newer run has
- * started or finished. To defend against this:
+ * Generation fence (weft#584, complementing 0.5.0's cooperative abort):
+ * 0.5.0 makes the coordinator abort a losing ctx.run branch — when a signal wins
+ * the orchestrator's analysis race, this activity's AbortSignal fires and the
+ * throwIfAborted() checks below bail before the write. That is the fast path. It
+ * is NOT sufficient alone, for two reasons: (a) it is cooperative — an activity
+ * already past its last abort check, or mid-`octokit` call, can still reach the
+ * write; (b) a SAME-COMMIT supersede (a new review comment, a thread resolve, a
+ * check completing) does not advance the head SHA and may not even cancel this
+ * run. So the generation fence remains the load-bearing correctness guard:
  *
  *   1. The caller passes an `analysisGeneration` counter (monotonically increasing
  *      per orchestrator run) in the activity input.
- *   2. Before the activity WRITES (DB upsert + PR body update) it compares the
- *      PR's current head SHA (fetched fresh at the top of the activity) against
- *      the head SHA stored on the pull_request_state row at write time.
+ *   2. Before the activity WRITES (DB upsert + PR body update) it RE-FETCHES the
+ *      live PR head SHA from GitHub and compares it (GitHub-to-GitHub) against the
+ *      head SHA it fetched at the start of this activity invocation.
  *   3. If the live head SHA has advanced (i.e. a newer push arrived and a newer
  *      analysis is in flight), the write is SKIPPED and the activity returns a
  *      `generationFenced` flag so the caller can observe the fence tripped.
  *
  * `ctx.signal` is honored cooperatively: it is passed to fetch where possible
- * and checked via throwIfAborted before the write boundary.
+ * and checked via throwIfAborted before the write boundary — and now actually
+ * fires on a race loss (0.5.0), not just on a workflow cancel.
  *
  * Adaptation from depict:
  * - DROP the LLM rewrite (depict used Haiku via @lasercat/homogenaize).
@@ -76,9 +81,11 @@ export type AnalyzePullRequestInput = {
    *
    * Monotonically increasing per orchestrator run — the orchestrator increments
    * this before each ctx.run('analyzePullRequest', ...) call. On the write path,
-   * the activity re-reads pull_request_state.headSha and skips the write if the
-   * head SHA has advanced beyond what was fetched at the start of this activity
-   * invocation, signalling that a newer analysis generation is already in flight.
+   * the activity RE-FETCHES the live PR head SHA from GitHub and skips the write
+   * if it has advanced beyond what was fetched at the start of this activity
+   * invocation (GitHub-to-GitHub comparison), signalling that a newer analysis
+   * generation is already in flight. (The counter itself is for log correlation;
+   * the head-SHA comparison is what actually fences the write.)
    */
   analysisGeneration: number;
 };
@@ -240,14 +247,16 @@ export async function analyzePullRequest(
   // ============================================================================
   // GENERATION FENCE (weft#584) — re-fetched, same-source comparison.
   //
-  // A losing ctx.run branch in ctx.race is NOT aborted by Weft, so a superseded
-  // analysis can still reach the write and clobber a newer run's output. The
-  // sound signal for "a newer push superseded me" is GitHub's OWN head SHA moving
-  // between when we fetched the conversation and when we are about to write — NOT
-  // a comparison against pull_request_state.head_sha, which is a webhook-lagging
-  // cache that is frequently BEHIND GitHub and would wrongly fence a current
-  // analysis (the false-positive Cursor flagged). So we re-fetch the live PR head
-  // + body immediately before the write and compare GitHub-to-GitHub.
+  // 0.5.0 cooperatively aborts a losing ctx.run race branch, but that is the fast
+  // path, not a guarantee: an activity past its last abort check can still reach
+  // this write, and a same-commit supersede does not move the head SHA at all. So
+  // a superseded analysis can still arrive here and clobber a newer run's output.
+  // The sound signal for "a newer push superseded me" is GitHub's OWN head SHA
+  // moving between when we fetched the conversation and when we are about to write
+  // — NOT a comparison against pull_request_state.head_sha, which is a
+  // webhook-lagging cache that is frequently BEHIND GitHub and would wrongly fence
+  // a current analysis (the false-positive Cursor flagged). So we re-fetch the
+  // live PR head + body immediately before the write and compare GitHub-to-GitHub.
   //
   // This runs after prStateRow ("no prStateRow" handled above) and honours
   // ctx.signal cooperatively before the mutation boundary.
@@ -287,8 +296,8 @@ export async function analyzePullRequest(
   }
 
   // Cooperative abort check immediately before the mutating write boundary.
-  // If the orchestrator has signalled cancellation, stop here so we don't
-  // write stale items. (weft#584 — ctx.signal cooperative check.)
+  // If this run lost the orchestrator's analysis race (0.5.0 fires the abort) or
+  // the workflow was cancelled, stop here so we don't write stale items.
   signal?.throwIfAborted();
 
   // Step 7b: Fetch existing items' firstSeenHeadSha values for status computation

@@ -26,23 +26,37 @@ type TestEngineInstance = InstanceType<typeof TestEngine>;
 // MOCKS — must be declared before importing the workflow (vi.mock is hoisted)
 // ---------------------------------------------------------------------------
 
-const { mockRefresh, dbStub } = vi.hoisted(() => {
+const { mockRefresh, dbStub, dbUpdates } = vi.hoisted(() => {
   const mockRefresh = vi.fn(async () => ({ repositoryCount: 3, deactivatedRepositoryCount: 0 }));
 
-  // Chainable db stub: .update().set().where() all return the stub itself,
-  // ignoring arguments. This absorbs githubContext.db.update(...).set(...).where(...)
-  // calls from the syncRepositories activity without requiring a real Drizzle DB.
-  const chainable: {
-    update: (...args: unknown[]) => typeof chainable;
-    set: (...args: unknown[]) => typeof chainable;
+  // Records the (set payload, where args) of every completed update chain so the
+  // finalizer test can assert what it wrote. Each .where() call closes one chain.
+  const dbUpdates: Array<{ set: unknown; whereArgs: unknown[] }> = [];
+
+  // Chainable db stub: .update().set().where(). .set captures its payload on the
+  // chain; .where records the completed update and resolves. This absorbs
+  // githubContext.db.update(...).set(...).where(...) calls without a real Drizzle
+  // DB, while letting the finalizer test inspect the reconciliation write.
+  type Chainable = {
+    update: (...args: unknown[]) => Chainable;
+    set: (payload: unknown) => Chainable;
     where: (...args: unknown[]) => Promise<void>;
-  } = {
+    _pendingSet?: unknown;
+  };
+  const chainable: Chainable = {
     update: () => chainable,
-    set: () => chainable,
-    where: () => Promise.resolve(),
+    set: (payload: unknown) => {
+      chainable._pendingSet = payload;
+      return chainable;
+    },
+    where: (...args: unknown[]) => {
+      dbUpdates.push({ set: chainable._pendingSet, whereArgs: args });
+      chainable._pendingSet = undefined;
+      return Promise.resolve();
+    },
   };
 
-  return { mockRefresh, dbStub: chainable };
+  return { mockRefresh, dbStub: chainable, dbUpdates };
 });
 
 vi.mock('@tribunal/github/repositories/service', () => ({
@@ -68,6 +82,7 @@ afterEach(async () => {
   mockRefresh.mockReset();
   // Restore the default success implementation after each test.
   mockRefresh.mockResolvedValue({ repositoryCount: 3, deactivatedRepositoryCount: 0 });
+  dbUpdates.length = 0;
 });
 
 function createEngine(): TestEngineInstance {
@@ -300,5 +315,65 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(state.status).toBe('completed');
     // Two sync passes: the initial one plus the coalesced second request.
     expect(mockRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * 6. Durable finalizer (weft#446): cancelling a sync mid-flight drives the
+   *    finalizer, which reconciles a stranded syncStatus to 'failed'.
+   *
+   * The sync activity is made to hang so the cancel lands while the run is
+   * non-terminal (mid-sync). On the resulting 'cancelled' terminal the engine
+   * drives reconcileSyncStatusOnTeardown with the staged { installationId }
+   * payload. We assert that AFTER cancellation a reconciliation update is written
+   * with syncStatus:'failed' and an interrupt error message — the write that
+   * stops the UI from showing a perpetual spinner. The non-completion terminal is
+   * the trigger that a normal 'completed' run never hits.
+   */
+  it('drives the finalizer to reconcile syncStatus on cancellation (weft#446)', async () => {
+    // Make the sync activity hang so the workflow is non-terminal when cancelled.
+    let releaseSync: (() => void) | undefined;
+    mockRefresh.mockImplementation(
+      () =>
+        new Promise<{ repositoryCount: number; deactivatedRepositoryCount: number }>((resolve) => {
+          releaseSync = () => resolve({ repositoryCount: 0, deactivatedRepositoryCount: 0 });
+        }),
+    );
+
+    const testEngine = createEngine();
+
+    const handle = await testEngine.start('installation-sync', syncInput(), {
+      id: WORKFLOW_ID,
+    });
+
+    // Advance past the leading debounce so the workflow enters the (hanging) sync.
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+
+    // The sync is now in flight and parked. Record how many DB writes happened
+    // before cancellation so we can isolate the finalizer's reconciliation write.
+    const writesBeforeCancel = dbUpdates.length;
+
+    // Cancel mid-sync → 'cancelled' terminal → engine drives the finalizer.
+    await testEngine.cancel(handle.id);
+    await yieldToPortableEventLoop();
+    // The finalizer is driven durably (scheduler-backed); advance + yield so its
+    // activity runs to completion.
+    await testEngine.advanceTime(PAST_DRAIN);
+    await yieldToPortableEventLoop();
+
+    const state = await awaitTerminal(testEngine, handle.id);
+    expect(state.status).toBe('cancelled');
+
+    // The finalizer wrote a reconciliation update after cancellation: syncStatus
+    // 'failed' with an interrupt message.
+    const finalizerWrites = dbUpdates.slice(writesBeforeCancel);
+    const reconciliation = finalizerWrites.find(
+      (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
+    );
+    expect(reconciliation).toBeDefined();
+    expect((reconciliation?.set as { syncError?: string })?.syncError).toContain('interrupted');
+
+    // Release the hung activity so the engine can dispose cleanly in afterEach.
+    releaseSync?.();
   });
 });

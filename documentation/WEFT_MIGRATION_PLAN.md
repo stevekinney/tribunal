@@ -21,18 +21,31 @@
 >   cancellation is wired into installation lifecycle teardown; the delivery GUID is
 >   threaded into sync dispatch for signal-layer dedup.
 >
+> **0.5.0 increment (this change):** upgraded to `^0.5.0`, which shipped fixes for
+> every issue filed during the 0.4.0 port. The four consumer-side workarounds were
+> removed: the explicit `engine.scheduler.start()` (weft#586 — the scheduler now
+> auto-starts on the recovery path), the `registerWorkflows`-then-keep-default-type
+> dance (weft#585 — `Engine.create({ workflows }) → new LocalClient(engine)` now
+> type-checks directly), and the local `NonNullable<ClientHandle['outcome']>`
+> derivation (weft#583 — `StartOrSignalOutcome` is now exported). The head-SHA
+> generation fence is KEPT: weft#584 now cooperatively aborts a losing `ctx.run`
+> race branch, but that is best-effort and does not catch a same-commit supersede,
+> so the fence remains the load-bearing correctness guard. Two pre-production gates
+> were also CLOSED: `ownership: 'lease'` (weft#470) is wired in `createEngine` for
+> hard storage-layer single-writer fencing, and a durable `finalizer` (weft#446)
+> reconciles a stranded `installation-sync` status on cancel/timeout.
+>
 > **Remaining (pre-production gates):** the fire-and-forget sync durability fix
 > (outbox + reconciler, or claim-after-enqueue) is a HARD prerequisite before
-> enabling `WEFT_DATABASE_URL` in production (§4.2); single-replica deployment
-> enforcement (`ownership: 'lease'` — weft#470 — evaluated, deferred as a deploy
-> decision); and a durable `finalizer` once a sandbox-holding activity exists
-> (weft#446 — no external-resource activity in Tribunal today).
+> enabling `WEFT_DATABASE_URL` in production (§4.2); and analyze-activity
+> concurrency hardening (the same-commit supersede gap and full-body overwrite,
+> §7 item 5).
 >
-> **0.4.0-resolved upstream issues:** 446–453, 455, 458, 465–470 shipped. Newly
-> filed during this increment: weft#583 (`StartOrSignalOutcome` not exported),
-> weft#584 (`ctx.race` does not abort a losing `ctx.run` branch — drove the
-> analyze activity's head-SHA generation fence), weft#585 (`LocalClient` rejects a
-> branded engine).
+> **Upstream issues — all resolved.** 0.4.0 shipped 446–453, 455, 458, 465–470.
+> 0.5.0 shipped weft#583 (`StartOrSignalOutcome` not exported), weft#584
+> (`ctx.race` does not abort a losing `ctx.run` branch), weft#585 (`LocalClient`
+> rejects a branded engine), and weft#586 (`Engine.create` does not start the
+> scheduler). No open issues remain against `stevekinney/weft`.
 
 ## 1. Background: how Tribunal got here
 
@@ -335,24 +348,38 @@ against the shipped `dist/` before filing:
    under a stable id blocks the next dispatch — the outbox/reconciler (or a
    restart-capable start-or-signal once weft#452's remaining slice ships) closes
    the data-loss window.
-2. **Single-replica enforcement** — one web replica + `Recreate` rollout, OR
-   adopt `ownership: 'lease'` (weft#470) as a deliberate deploy-semantics change
-   (evaluated, deferred — see weft#585's branded-engine note before wiring it).
-3. **Durable finalizer** (weft#446) — wire `ctx.setFinalizerState` + a
-   definition-level `finalizer` once a sandbox-holding activity exists. None do
-   today (analyze/sync touch only DB + GitHub).
+2. **Single-replica enforcement** — ✅ **CLOSED (0.5.0).** `createEngine` opts into
+   `ownership: 'lease'` (weft#470): the engine acquires a storage-keyed lease
+   before recovery, renews it on a heartbeat, fences every durable write on the
+   lease epoch, and halts a deposed instance rather than writing — a hard
+   storage-layer guarantee, not a deployment promise. `detectSecondInstance`
+   stays as a fast warn-only liveness alarm. A bounded `leaseWaitTimeout` (60s)
+   makes a rolling deploy a clean handoff. Operators should still keep
+   infra-level single-instance enforcement and monitor for the
+   `WeftEngineLeaseLostWarning` (`process.emitWarning`).
+3. **Durable finalizer** (weft#446) — ✅ **CLOSED (0.5.0).** `installation-sync`
+   registers a definition-level `finalizer` (`reconcileSyncStatusOnTeardown`) and
+   records `ctx.setFinalizerState({ installationId })` on entry; on a
+   cancelled/timed-out terminal (lease eviction, lifecycle teardown, timeout) the
+   engine reconciles a stranded `syncStatus` to `'failed'` (idempotent,
+   conditional on the row still being non-terminal). The orchestrator has no DB
+   status row to strand, so it has no finalizer yet — it gains one the day a
+   sandbox-holding activity is added there.
 4. **Review-agent dispatch** (`+server.ts`) — a separate future feature, still a
    logged no-op stub.
 5. **Analyze-activity concurrency hardening** — the analyze activity is correct
    for the single-active-analysis case but has known sharp edges under concurrent
    or rapid analyses. These are inert until `WEFT_DATABASE_URL` is set (the
    activity only runs then), and were surfaced by the review committee:
-   - **Same-commit supersede isn't fenced.** The generation fence compares the
-     fetched head SHA against the live `pull_request_state.headSha`; a supersede
-     on the _same_ commit (a new review comment, a thread resolve, a check
-     completing) does not advance the SHA, so a losing `ctx.run` analysis (which
-     Weft does not abort — weft#584) can still write. A durable per-PR generation
-     lease (write-conditional on "this generation is current") would close it.
+   - **Same-commit supersede isn't fenced.** The generation fence re-fetches
+     GitHub's live head SHA before the write and compares it (GitHub-to-GitHub)
+     against the SHA fetched at activity start; a supersede on the _same_ commit
+     (a new review comment, a thread resolve, a check completing) does not advance
+     the SHA. 0.5.0 now cooperatively aborts a losing `ctx.run` race branch
+     (weft#584), which catches most supersedes, but the abort is best-effort — an
+     activity past its last abort check, or a same-commit supersede that does not
+     even cancel the run, can still write. A durable per-PR generation lease
+     (write-conditional on "this generation is current") would fully close it.
    - **Full PR-body overwrite can clobber concurrent edits.** The activity
      rewrites the whole body from the snapshot it fetched at start; a human edit
      or a newer analysis landing mid-flight is overwritten. Re-fetch the body
