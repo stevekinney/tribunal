@@ -32,9 +32,11 @@
  *   consumed (it won). Control re-enters the DEBOUNCE phase directly (pending=r),
  *   not the wait-for-first-event phase. See: "superseding event — re-enter debounce".
  *
- * FIX 4 — analysisCount INCREMENTED AFTER SUCCESSFUL yield*:
- *   analysisCount is incremented only after the yield* ctx.run returns normally.
- *   A failed or fenced analysis never inflates the count.
+ * FIX 4 — analysisCount counts analyses that actually WROTE:
+ *   incremented only after the yield* ctx.run returns AND the result is not
+ *   generationFenced. A thrown analysis (propagates out of ctx.run) and a fenced
+ *   no-op (generationFenced=true, all persistence skipped) both leave the count
+ *   unchanged, so it reflects real writes, not attempts.
  *
  * FIX 5 — IDLE TIMER SCOPE:
  *   The 7-day sleep races signals only in the wait-for-first-event phase (A).
@@ -460,24 +462,31 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
 
         // ── Analysis run completed normally ───────────────────────────────
         // analysisRaceResult is AnalyzePullRequestOutput (no kind field).
-        // FIX 4: increment analysisCount ONLY after a successful yield* return.
-        // An exception from ctx.run propagates out of the workflow (the engine's
-        // retry policy governs attempts); it never reaches here, so a failed
-        // analysis never inflates the count.
+        // FIX 4: analysisCount counts analyses that actually WROTE. It is not
+        // incremented when the activity throws (an exception propagates out of
+        // ctx.run and never reaches here) NOR when the generation fence tripped
+        // (generationFenced=true means the activity skipped all persistence), so
+        // a fenced no-op is not reported as a completed analysis.
         const analysisOutput = analysisRaceResult as AnalyzePullRequestOutput;
 
-        analysisCount++; // FIX 4: increment after success only
-        ctx.log?.info('pull-request-orchestrator: analysis complete', {
-          repositoryId,
-          prNumber,
-          analysisCount,
-          updated: analysisOutput.updated,
-          actionItemCount: analysisOutput.actionItemCount,
-          generationFenced: analysisOutput.generationFenced,
-        });
+        if (analysisOutput.generationFenced) {
+          ctx.log?.info('pull-request-orchestrator: analysis fenced (stale; no write)', {
+            repositoryId,
+            prNumber,
+          });
+        } else {
+          analysisCount++;
+          ctx.log?.info('pull-request-orchestrator: analysis complete', {
+            repositoryId,
+            prNumber,
+            analysisCount,
+            updated: analysisOutput.updated,
+            actionItemCount: analysisOutput.actionItemCount,
+          });
+        }
 
-        // Analysis cycle settled and completed — return to (A) for the NEXT
-        // event with a fresh 7-day idle timer.
+        // Analysis cycle settled — return to (A) for the NEXT event with a fresh
+        // 7-day idle timer.
         continue mainLoop;
       } // end fused debounce→analyze cycle
     } // end mainLoop
@@ -511,15 +520,22 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
         analysisGeneration: finalGeneration, // FIX 2
       });
 
-      analysisCount++; // FIX 4: only on success
-      ctx.log?.info('pull-request-orchestrator: final analysis complete', {
-        repositoryId,
-        prNumber,
-        analysisCount,
-        updated: finalOutput.updated,
-        actionItemCount: finalOutput.actionItemCount,
-        generationFenced: finalOutput.generationFenced,
-      });
+      // FIX 4: count only analyses that actually wrote — skip a fenced no-op.
+      if (finalOutput.generationFenced) {
+        ctx.log?.info('pull-request-orchestrator: final analysis fenced (stale; no write)', {
+          repositoryId,
+          prNumber,
+        });
+      } else {
+        analysisCount++;
+        ctx.log?.info('pull-request-orchestrator: final analysis complete', {
+          repositoryId,
+          prNumber,
+          analysisCount,
+          updated: finalOutput.updated,
+          actionItemCount: finalOutput.actionItemCount,
+        });
+      }
     } catch (error) {
       // Final analysis failed — log and complete anyway. The PR is closed so
       // a retry on the next signal is not expected. Do NOT increment analysisCount.

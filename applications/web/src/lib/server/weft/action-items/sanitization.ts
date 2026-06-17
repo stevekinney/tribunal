@@ -67,16 +67,18 @@ export type FilterReason =
  * Filtering by char code sidesteps both linters cleanly.
  */
 function stripControlCharacters(value: string): string {
-  let result = '';
+  // Collect kept characters in an array and join once, rather than `result +=`
+  // in a loop (which can be O(n²) on large PR-body / CI-blob inputs).
+  const kept: string[] = [];
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
     const isC0 = code <= 0x1f;
     const isC1 = code >= 0x7f && code <= 0x9f;
     if (!isC0 && !isC1) {
-      result += character;
+      kept.push(character);
     }
   }
-  return result;
+  return kept.join('');
 }
 
 // ============================================================================

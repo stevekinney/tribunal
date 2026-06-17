@@ -238,28 +238,28 @@ export async function analyzePullRequest(
   }
 
   // ============================================================================
-  // GENERATION FENCE (weft#584)
+  // GENERATION FENCE (weft#584) — re-fetched, same-source comparison.
   //
-  // A losing ctx.run branch in ctx.race is NOT aborted by Weft. A superseded
-  // analysis can still complete and write stale action items AFTER a newer run
-  // has started. We defend against this by comparing the head SHA we fetched
-  // from GitHub (fetchedHeadSha) against the live head SHA on pull_request_state.
+  // A losing ctx.run branch in ctx.race is NOT aborted by Weft, so a superseded
+  // analysis can still reach the write and clobber a newer run's output. The
+  // sound signal for "a newer push superseded me" is GitHub's OWN head SHA moving
+  // between when we fetched the conversation and when we are about to write — NOT
+  // a comparison against pull_request_state.head_sha, which is a webhook-lagging
+  // cache that is frequently BEHIND GitHub and would wrongly fence a current
+  // analysis (the false-positive Cursor flagged). So we re-fetch the live PR head
+  // + body immediately before the write and compare GitHub-to-GitHub.
   //
-  // If the live head SHA has advanced — meaning a newer push triggered a newer
-  // analysis that is already in flight — we SKIP the write entirely and return
-  // generationFenced=true so the caller can observe this.
-  //
-  // This check runs after we have the prStateRow but BEFORE any writes, so
-  // "no prStateRow" (above) is handled independently. We also honour ctx.signal
-  // cooperatively here before the mutation boundary.
+  // This runs after prStateRow ("no prStateRow" handled above) and honours
+  // ctx.signal cooperatively before the mutation boundary.
   // ============================================================================
-  const liveHeadSha = prStateRow.headSha;
-  if (liveHeadSha && fetchedHeadSha && liveHeadSha !== fetchedHeadSha) {
-    // The PR head SHA has advanced since we fetched the conversation. A newer
-    // push occurred; skip the write so we don't overwrite fresher data.
+  signal?.throwIfAborted();
+  const live = await fetchPullRequestHeadAndBody(octokit, owner, repo, prNumber, signal);
+  if (live && fetchedHeadSha && live.headSha && live.headSha !== fetchedHeadSha) {
+    // GitHub's head advanced since we fetched the conversation → a newer push
+    // (and a newer analysis) superseded this run. Skip the write.
     console.info(
       `[analyzePullRequest] Generation fence tripped for repository ${repositoryId}, PR #${prNumber}: ` +
-        `fetched headSha=${fetchedHeadSha}, live headSha=${liveHeadSha}. Skipping write (generation=${input.analysisGeneration}).`,
+        `analyzed headSha=${fetchedHeadSha}, live headSha=${live.headSha}. Skipping write (generation=${input.analysisGeneration}).`,
     );
     return {
       updated: false,
@@ -268,18 +268,20 @@ export async function analyzePullRequest(
       generationFenced: true,
     };
   }
+  // The freshest body to write into: GitHub's current body if we re-fetched it,
+  // else the conversation snapshot. Writing into the FRESH body (#3) avoids
+  // clobbering edits a user made after the conversation fetch.
+  const currentBody = live?.body ?? conversation.body;
 
   // Null-SHA case: when either SHA is absent we have NO positive evidence that
   // the analysis is current — but absence is not evidence of divergence. A null
-  // liveHeadSha is the legitimate first-analysis case (the pull_request_state
-  // row exists but no webhook has stamped a head SHA yet); fencing here would
-  // block every first analysis. So we proceed, but log it so a stale-write that
-  // slips through the unfenced window is observable. (The generation counter in
+  // live head SHA fences nothing; proceed, but log so a stale-write that slips
+  // through the unfenced window is observable. (The generation counter in
   // the input correlates which generation proceeded unfenced.)
-  if (!liveHeadSha || !fetchedHeadSha) {
+  if (!live?.headSha || !fetchedHeadSha) {
     console.warn(
       `[analyzePullRequest] Proceeding WITHOUT a SHA generation fence for repository ${repositoryId}, ` +
-        `PR #${prNumber}: fetched headSha=${fetchedHeadSha || '<none>'}, live headSha=${liveHeadSha || '<none>'} ` +
+        `PR #${prNumber}: analyzed headSha=${fetchedHeadSha || '<none>'}, live headSha=${live?.headSha || '<none>'} ` +
         `(generation=${input.analysisGeneration}). Cannot confirm the analysis is current.`,
     );
   }
@@ -336,10 +338,12 @@ export async function analyzePullRequest(
   // the PR description will self-heal on the next analysis cycle.
   signal?.throwIfAborted();
 
-  // Step 8: Update PR description ONLY after successful persistence (DB/PR parity)
-  const newBody = updatePRDescription(conversation.body, reconciledItems);
+  // Step 8: Update PR description ONLY after successful persistence (DB/PR parity).
+  // Apply the action-items block to the FRESH body (re-fetched above), so a user
+  // edit made after the conversation fetch is preserved (#3 stale-body fix).
+  const newBody = updatePRDescription(currentBody, reconciledItems);
 
-  if (newBody === conversation.body) {
+  if (newBody === currentBody) {
     return { updated: false, actionItemCount: reconciledItems.length, persisted: true };
   }
 
@@ -445,6 +449,39 @@ const PR_CONVERSATION_QUERY = `
   }
 `;
 
+/**
+ * Lightweight re-fetch of just the live PR head SHA and body, used immediately
+ * before the write to (a) detect a superseding push since the analysis fetch
+ * (generation fence, same-source GitHub-to-GitHub comparison) and (b) apply the
+ * action-items block to the freshest body. Returns `null` on failure so a
+ * transient re-fetch error degrades to "proceed with the analysis snapshot"
+ * rather than crashing the activity.
+ */
+async function fetchPullRequestHeadAndBody(
+  octokit: import('octokit').Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  signal?: AbortSignal,
+): Promise<{ headSha: string; body: string } | null> {
+  try {
+    const { data } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+      request: signal ? { signal } : undefined,
+    });
+    return { headSha: data.head?.sha ?? '', body: data.body ?? '' };
+  } catch (error) {
+    console.warn(
+      `[analyzePullRequest] Live PR re-fetch failed for ${owner}/${repo}#${prNumber}; ` +
+        `proceeding with the analysis snapshot:`,
+      error,
+    );
+    return null;
+  }
+}
+
 async function fetchPRConversation(
   octokit: import('octokit').Octokit,
   owner: string,
@@ -537,34 +574,30 @@ async function fetchPRConversation(
 // ============================================================================
 
 /**
- * Deterministic FNV-1a hash of a string, rendered base-36. Stable across runs
- * (same input → same output) so a check name always maps to the same key.
- */
-function stableHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    // FNV prime, kept in 32-bit unsigned range via Math.imul + >>> 0.
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
-}
-
-/**
- * Make a CI check name safe to embed in a stable key, collision-resistantly.
+ * Make a CI check name safe to embed in a `ci-check-{seg}` stable key.
+ *
  * The key is rendered into a trailing `<!-- tribunal:ai:ci-check-{seg} -->` HTML
- * comment in the PR body and re-parsed next cycle, so a check name with `>`,
- * `--`, or whitespace (GitHub allows e.g. `CI / test (ubuntu)`) would corrupt
- * the comment. A pure slug would also collide — `CI / test`, `CI:test`, and
- * `CI test` all slug to `CI-test`, merging distinct checks and auto-completing
- * the wrong item. So the segment is `slug-{hash}`: a readable slug for humans
- * plus a hash of the ORIGINAL name for uniqueness. Applied identically on the
- * passingCheckNames lookup side so auto-completion still matches.
+ * comment in the PR body and re-parsed next cycle, so the segment must not break
+ * the comment: any char outside `[A-Za-z0-9._]` collapses to a single `-`, and
+ * runs of `-` collapse to one (so `>` / `--` / whitespace runs can never appear).
+ *
+ * Deliberately a pure, stable slug — NOT a hashed key. A hash would make the key
+ * unique per distinct name but would change the key for EVERY check, orphaning
+ * the `ci-check-{name}` markers already written into live PR bodies (duplicate
+ * items + broken auto-completion on the next cycle). The slug instead leaves the
+ * common case (`lint`, `build`, `test`) byte-identical to the legacy key, so
+ * reconciliation matches existing markers. The residual cost is that two check
+ * names that slug identically (e.g. `CI / test` and `CI:test`) share one item —
+ * an acceptable, rare merge, far less harmful than corrupting every key.
+ *
+ * Applied identically on the passingCheckNames lookup side so auto-completion
+ * still matches.
  */
-function safeCheckKeySegment(name: string): string {
-  const slug = name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-  const hash = stableHash(name);
-  return slug ? `${slug}-${hash}` : hash;
+export function safeCheckKeySegment(name: string): string {
+  return name
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 /**

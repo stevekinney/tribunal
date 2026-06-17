@@ -29,38 +29,37 @@ export async function upsertActionItems(
   pullRequestStateId: number,
   items: ActionItemInput[],
 ): Promise<PullRequestActionItem[]> {
-  const results: PullRequestActionItem[] = [];
+  if (items.length === 0) {
+    return [];
+  }
 
-  for (const item of items) {
-    const [result] = await db
-      .insert(pullRequestActionItem)
-      .values({
+  // Single multi-row upsert. With up to ~100 threads × ~50 comments, a per-item
+  // loop is O(items) round trips; one statement is O(1). The conflict-update set
+  // references the proposed row via `excluded.*` rather than per-item literals,
+  // and COALESCE keeps an already-set firstSeenHeadSha (preserving "first seen").
+  return db
+    .insert(pullRequestActionItem)
+    .values(
+      items.map((item) => ({
         pullRequestStateId,
         stableKey: item.stableKey,
         subject: item.subject,
         description: item.description ?? null,
         status: item.status,
         firstSeenHeadSha: item.firstSeenHeadSha ?? null,
-      })
-      .onConflictDoUpdate({
-        target: [pullRequestActionItem.pullRequestStateId, pullRequestActionItem.stableKey],
-        set: {
-          subject: item.subject,
-          description: item.description ?? null,
-          status: item.status,
-          updatedAt: new Date(),
-          // Backfill null firstSeenHeadSha values from rows created before the
-          // column was added. COALESCE preserves the existing non-null value so
-          // the "first seen" semantics are maintained once the field is set.
-          firstSeenHeadSha: sql`COALESCE(${pullRequestActionItem.firstSeenHeadSha}, ${item.firstSeenHeadSha ?? null})`,
-        },
-      })
-      .returning();
-
-    results.push(result);
-  }
-
-  return results;
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [pullRequestActionItem.pullRequestStateId, pullRequestActionItem.stableKey],
+      set: {
+        subject: sql`excluded.subject`,
+        description: sql`excluded.description`,
+        status: sql`excluded.status`,
+        updatedAt: new Date(),
+        firstSeenHeadSha: sql`COALESCE(${pullRequestActionItem.firstSeenHeadSha}, excluded.first_seen_head_sha)`,
+      },
+    })
+    .returning();
 }
 
 // ============================================================================
@@ -76,23 +75,28 @@ export async function addActionItemSources(
   actionItemId: number,
   sources: ActionItemSourceInput[],
 ): Promise<void> {
-  for (const source of sources) {
-    await db
-      .insert(pullRequestActionItemSource)
-      .values({
+  if (sources.length === 0) {
+    return;
+  }
+
+  // Single multi-row insert (one round trip), append-only via onConflictDoNothing.
+  await db
+    .insert(pullRequestActionItemSource)
+    .values(
+      sources.map((source) => ({
         actionItemId,
         sourceType: source.sourceType,
         sourceIdentifier: source.sourceIdentifier,
         sourceUrl: source.sourceUrl ?? null,
-      })
-      .onConflictDoNothing({
-        target: [
-          pullRequestActionItemSource.actionItemId,
-          pullRequestActionItemSource.sourceType,
-          pullRequestActionItemSource.sourceIdentifier,
-        ],
-      });
-  }
+      })),
+    )
+    .onConflictDoNothing({
+      target: [
+        pullRequestActionItemSource.actionItemId,
+        pullRequestActionItemSource.sourceType,
+        pullRequestActionItemSource.sourceIdentifier,
+      ],
+    });
 }
 
 // ============================================================================

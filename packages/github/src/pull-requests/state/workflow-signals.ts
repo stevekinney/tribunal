@@ -37,7 +37,15 @@ import type { GithubServiceContext, StartOrSignalOutcome } from '../../context.j
 // HELPERS
 // ============================================================================
 
-function buildPullRequestOrchestratorWorkflowId(repositoryId: number, prNumber: number): string {
+/**
+ * The stable Weft workflow id for a PR's orchestrator. Exported so lifecycle
+ * teardown can cancel the running orchestrator by id (these runs live in Weft
+ * storage under this deterministic id and are not enumerated via `workflow_run`).
+ */
+export function buildPullRequestOrchestratorWorkflowId(
+  repositoryId: number,
+  prNumber: number,
+): string {
   return `pull-request-orchestrator:${repositoryId}:${prNumber}`;
 }
 

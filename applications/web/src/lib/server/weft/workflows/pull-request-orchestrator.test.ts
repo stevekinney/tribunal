@@ -427,4 +427,34 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
     expect(output.analysisCount).toBe(0);
     expect(output.error).toContain('analysis boom');
   });
+
+  /**
+   * FIX 4 — a generation-FENCED analysis (returned successfully but skipped all
+   * writes) must NOT increment analysisCount. It is a no-op, not a completed
+   * analysis, so observability/output should not report it as one.
+   */
+  it('does not count a generation-fenced analysis', async () => {
+    // The (final) analysis returns generationFenced=true: success, but no write.
+    analyzeMock.mockResolvedValue({
+      updated: false,
+      actionItemCount: 0,
+      persisted: false,
+      generationFenced: true,
+    });
+
+    await engine!.start('pull-request-orchestrator', BASE_INPUT, {
+      id: WORKFLOW_ID,
+      services: TEST_SERVICES,
+    });
+    await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(true));
+
+    const finalState = await awaitTerminal(WORKFLOW_ID);
+    expect(finalState.status).toBe('completed');
+    const output = finalState.result as PullRequestOrchestratorOutput;
+    // The run completed (pr_merged), the activity WAS invoked, but the fenced
+    // no-op did not inflate the count.
+    expect(output.completionReason).toBe('pr_merged');
+    expect(analyzeMock).toHaveBeenCalled();
+    expect(output.analysisCount).toBe(0);
+  });
 });

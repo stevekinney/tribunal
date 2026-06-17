@@ -24,6 +24,7 @@ import { computeActionItemStatus } from './compute-action-item-status.js';
 import { extractSourceType } from './extract-source-type.js';
 import { sanitizeActionItemCandidate } from './sanitization.js';
 import { deterministicSummary } from './summarize.js';
+import { safeCheckKeySegment } from './analyze-pull-request.js';
 
 // ============================================================================
 // Helpers
@@ -687,5 +688,36 @@ describe('updatePRDescription', () => {
     expect(updated).not.toContain('ci-check-old');
     const startCount = updated.split('<!--TRIBUNAL-ACTION-ITEMS-START-->').length - 1;
     expect(startCount).toBe(1);
+  });
+});
+
+// ============================================================================
+// safeCheckKeySegment — CI check name → comment-safe stable key segment
+// ============================================================================
+
+describe('safeCheckKeySegment', () => {
+  it('leaves a simple name byte-identical (legacy ci-check-{name} compat)', () => {
+    // Existing PR bodies carry `ci-check-lint` markers; the segment must match
+    // so reconciliation does not orphan them and create duplicates.
+    expect(safeCheckKeySegment('lint')).toBe('lint');
+    expect(safeCheckKeySegment('typecheck')).toBe('typecheck');
+    expect(safeCheckKeySegment('build_and_test')).toBe('build_and_test');
+  });
+
+  it('replaces comment-breaking characters and collapses dashes (no --)', () => {
+    // `>` and `--` are invalid inside <!-- ... --> and would corrupt parsing.
+    const seg = safeCheckKeySegment('CI / test (ubuntu) > shard');
+    expect(seg).not.toContain('--');
+    expect(seg).not.toContain('>');
+    expect(seg).not.toContain(' ');
+    // A name already containing adjacent dashes must not yield `--`.
+    expect(safeCheckKeySegment('ci--test')).toBe('ci-test');
+    expect(safeCheckKeySegment('a -- b')).not.toContain('--');
+  });
+
+  it('has no leading/trailing dashes', () => {
+    const seg = safeCheckKeySegment('  /weird/  ');
+    expect(seg.startsWith('-')).toBe(false);
+    expect(seg.endsWith('-')).toBe(false);
   });
 });
