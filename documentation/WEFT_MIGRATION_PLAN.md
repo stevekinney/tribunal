@@ -105,14 +105,15 @@ no `serve()`, no HTTP hop.
   the web tier ever needs to scale horizontally, swapping `LocalClient` for
   `HttpClient` + a dedicated `serve()` engine service is a config change — the
   producer call sites do not change.
-- **Cost (accepted):** the web tier must run as a **single replica** (two
-  engines on one durable store can double-resume a workflow). The engine enables
-  Weft's `detectSecondInstance` backstop — a warn-only runtime smoke alarm that
-  emits a `process.emitWarning` if a second instance writes to the same store.
-  That is **liveness, not fencing**: it does not prevent duplicate execution, so
-  the hard guarantee MUST still come from infrastructure (one replica + a
-  `Recreate`-style rollout). This is a prerequisite before enabling
-  `WEFT_DATABASE_URL` in production.
+- **Cost (accepted):** the web tier must run as a **single writer** over the
+  durable store (two engines could double-resume a workflow). As of the 0.5.0
+  increment this is enforced at the storage layer by `ownership: 'lease'`
+  (weft#470) — the engine fences every durable write on its lease epoch and halts
+  a deposed instance, so duplicate execution is prevented, not merely warned about
+  (see §7 item 2). `detectSecondInstance` is retained as a fast warn-only liveness
+  alarm layered on top (it does not fence; the lease does). Infra-level
+  single-instance enforcement (one replica + a `Recreate`-style rollout) remains
+  good practice but is no longer the _only_ guarantee.
 
 ### Why not a separate engine service?
 
