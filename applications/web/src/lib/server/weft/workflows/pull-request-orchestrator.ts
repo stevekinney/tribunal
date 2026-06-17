@@ -23,13 +23,16 @@
  *   0.5.0 makes a losing ctx.run branch cooperatively aborted: when a signal wins
  *   the analysis race, the losing analyze activity's ctx.signal (AbortSignal)
  *   fires, and the activity's throwIfAborted() checks bail before the write. That
- *   is the FIRST line of defence now. But it is COOPERATIVE — an activity already
- *   past its last abort check (or mid-`octokit` call) can still reach the write,
- *   and a SAME-COMMIT supersede (new comment, thread resolve) does not even cause
- *   a head-SHA change. So the monotonic analysisGeneration counter + the head-SHA
- *   generation fence in the activity REMAIN the load-bearing correctness guard
- *   (skip the write when GitHub's head advanced); the abort is the fast path, the
- *   fence is the guarantee.
+ *   is the FIRST line of defence now. Two defences combine, neither total:
+ *     - the cooperative abort catches most supersedes, but an activity already
+ *       past its last abort check (or mid-`octokit` call) can still reach the write;
+ *     - the head-SHA generation fence skips the write when GitHub's head advanced,
+ *       so it covers supersede-by-NEWER-PUSH — but NOT a same-commit supersede
+ *       (a new review comment, a thread resolve, a check completing) that leaves
+ *       the head SHA unchanged.
+ *   So a same-commit supersede is an acknowledged pre-production gap (a durable
+ *   per-PR generation lease would close it; see WEFT_MIGRATION_PLAN.md §7). The
+ *   analysisGeneration counter is for log correlation, not the write predicate.
  *
  * FIX 3 — SUPERSEDE CONTROL FLOW:
  *   When a pull_request_event wins the analysis race (supersede), the event IS

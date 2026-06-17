@@ -68,7 +68,11 @@ vi.mock('$lib/server/github-context', () => ({
 }));
 
 // Import the workflow AFTER mocks are established.
-import { installationSyncWorkflow } from './installation-sync.js';
+import {
+  installationSyncWorkflow,
+  reconcileSyncStatusOnTeardown,
+  syncRepositories,
+} from './installation-sync.js';
 
 // ---------------------------------------------------------------------------
 // Engine lifecycle
@@ -76,7 +80,16 @@ import { installationSyncWorkflow } from './installation-sync.js';
 
 let engine: TestEngineInstance | undefined;
 
+// Resolver for a deliberately-hung sync activity (finalizer test). Hoisted to
+// module scope and released in afterEach BEFORE dispose, so a test that fails
+// mid-assertion still unblocks the parked activity and the engine disposes
+// cleanly (rather than asyncDispose hanging on an in-flight activity promise).
+let releaseHungSync: (() => void) | undefined;
+
 afterEach(async () => {
+  // Release any parked activity first so dispose does not wait on it.
+  releaseHungSync?.();
+  releaseHungSync = undefined;
   await engine?.[Symbol.asyncDispose]?.();
   engine = undefined;
   mockRefresh.mockReset();
@@ -331,11 +344,12 @@ describe('installation-sync workflow (e2e, real engine)', () => {
    */
   it('drives the finalizer to reconcile syncStatus on cancellation (weft#446)', async () => {
     // Make the sync activity hang so the workflow is non-terminal when cancelled.
-    let releaseSync: (() => void) | undefined;
+    // releaseHungSync is module-scoped and released in afterEach BEFORE dispose,
+    // so a mid-test assertion failure still unblocks the activity (no dispose hang).
     mockRefresh.mockImplementation(
       () =>
         new Promise<{ repositoryCount: number; deactivatedRepositoryCount: number }>((resolve) => {
-          releaseSync = () => resolve({ repositoryCount: 0, deactivatedRepositoryCount: 0 });
+          releaseHungSync = () => resolve({ repositoryCount: 0, deactivatedRepositoryCount: 0 });
         }),
     );
 
@@ -364,16 +378,78 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     const state = await awaitTerminal(testEngine, handle.id);
     expect(state.status).toBe('cancelled');
 
+    // The terminal is recorded before the finalizer activity necessarily finishes
+    // its DB write, so yield once more after confirming the terminal to let the
+    // finalizer's write land before inspecting dbUpdates (avoids a CI race).
+    await yieldToPortableEventLoop();
+
     // The finalizer wrote a reconciliation update after cancellation: syncStatus
-    // 'failed' with an interrupt message.
+    // 'failed' with an interrupt message, and a non-empty conditional WHERE.
     const finalizerWrites = dbUpdates.slice(writesBeforeCancel);
     const reconciliation = finalizerWrites.find(
       (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
     );
     expect(reconciliation).toBeDefined();
     expect((reconciliation?.set as { syncError?: string })?.syncError).toContain('interrupted');
+    // The write is CONDITIONAL (the no-clobber guard): a non-empty WHERE clause is
+    // passed, not an unconditional update. The DB enforces the actual match; here
+    // we assert the guard is present so it cannot be silently dropped.
+    expect(reconciliation?.whereArgs.length).toBeGreaterThan(0);
 
-    // Release the hung activity so the engine can dispose cleanly in afterEach.
-    releaseSync?.();
+    // Release the hung activity so the engine disposes cleanly (also released in
+    // afterEach as a backstop if an assertion above threw).
+    releaseHungSync?.();
+  });
+
+  /**
+   * 7. The finalizer issues a single conditional update (the no-clobber guard).
+   *
+   * Calls reconcileSyncStatusOnTeardown directly to assert the SHAPE of its write
+   * independent of engine timing: exactly one update, syncStatus:'failed', and a
+   * WHERE clause present (the `eq(syncStatus,'in_progress')` conditional that makes
+   * the finalizer idempotent and prevents clobbering an already-settled row). A
+   * second invocation issues the same conditional statement — idempotent by the
+   * predicate, which the DB evaluates (a settled row matches zero rows).
+   */
+  it('reconcileSyncStatusOnTeardown issues one conditional failed-update (no-clobber)', async () => {
+    dbUpdates.length = 0;
+
+    await reconcileSyncStatusOnTeardown({ installationId: 42 });
+
+    expect(dbUpdates).toHaveLength(1);
+    expect((dbUpdates[0].set as { syncStatus?: string }).syncStatus).toBe('failed');
+    // Conditional WHERE present — the load-bearing idempotency / no-clobber guard.
+    expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
+
+    // Idempotent: a second invocation issues the same conditional statement (the
+    // predicate, not the call count, is what makes a settled row a no-op).
+    await reconcileSyncStatusOnTeardown({ installationId: 42 });
+    expect(dbUpdates).toHaveLength(2);
+    expect((dbUpdates[1].set as { syncStatus?: string }).syncStatus).toBe('failed');
+    expect(dbUpdates[1].whereArgs.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * 8. syncRepositories cooperatively aborts (no late 'idle' write after cancel).
+   *
+   * If the run is already cancelled when the activity starts (e.g. cancelled
+   * during the leading debounce), syncRepositories must throw BEFORE writing
+   * 'in_progress' or calling refreshInstallationRepositories — so it cannot report
+   * success ('idle') over the finalizer's 'failed'. This closes the late-writer
+   * window Codex flagged: lease fencing protects Weft's durable writes, not our
+   * application DB writes, so the activity itself must honor the AbortSignal.
+   */
+  it('syncRepositories throws on a pre-aborted signal without writing (cooperative abort)', async () => {
+    dbUpdates.length = 0;
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      syncRepositories({ installationId: 42 }, { signal: controller.signal }),
+    ).rejects.toThrow();
+
+    // No DB write and no GitHub fetch happened — the abort check fired first.
+    expect(dbUpdates).toHaveLength(0);
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 });

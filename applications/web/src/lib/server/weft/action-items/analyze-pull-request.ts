@@ -16,7 +16,9 @@
  * already past its last abort check, or mid-`octokit` call, can still reach the
  * write; (b) a SAME-COMMIT supersede (a new review comment, a thread resolve, a
  * check completing) does not advance the head SHA and may not even cancel this
- * run. So the generation fence remains the load-bearing correctness guard:
+ * run. The head-SHA generation fence below covers supersede-by-NEWER-PUSH (the
+ * common case); a same-commit supersede is an acknowledged pre-production gap (a
+ * durable per-PR generation lease would close it — WEFT_MIGRATION_PLAN.md §7):
  *
  *   1. The caller passes an `analysisGeneration` counter (monotonically increasing
  *      per orchestrator run) in the activity input.

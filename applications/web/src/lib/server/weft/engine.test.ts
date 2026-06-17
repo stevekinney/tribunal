@@ -172,6 +172,7 @@ describe('createEngine', () => {
     // startOrSignal dispatches resolve to a real run, not WorkflowNotRegisteredError.
     expect(engineCreate).toHaveBeenCalledTimes(1);
     const options = engineCreate.mock.calls[0][0] as { workflows: Record<string, unknown> };
+    expect(options.workflows).toBeDefined();
     expect(Object.keys(options.workflows).sort()).toEqual([
       'installation-sync',
       'pull-request-orchestrator',

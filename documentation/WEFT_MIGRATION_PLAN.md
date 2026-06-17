@@ -353,18 +353,32 @@ against the shipped `dist/` before filing:
    before recovery, renews it on a heartbeat, fences every durable write on the
    lease epoch, and halts a deposed instance rather than writing — a hard
    storage-layer guarantee, not a deployment promise. `detectSecondInstance`
-   stays as a fast warn-only liveness alarm. A bounded `leaseWaitTimeout` (60s)
-   makes a rolling deploy a clean handoff. Operators should still keep
+   stays as a fast warn-only liveness alarm. `leaseWaitTimeout` (60s) bounds
+   boot-time wait; it yields a clean rolling-deploy handoff ONLY when the outgoing
+   instance disposes (releasing the lease) or its lease expires within 60s — a
+   longer live overlap times out the incoming engine, which the lazy webhook path
+   then handles via failure + GitHub retry. Operators should still keep
    infra-level single-instance enforcement and monitor for the
    `WeftEngineLeaseLostWarning` (`process.emitWarning`).
 3. **Durable finalizer** (weft#446) — ✅ **CLOSED (0.5.0).** `installation-sync`
    registers a definition-level `finalizer` (`reconcileSyncStatusOnTeardown`) and
    records `ctx.setFinalizerState({ installationId })` on entry; on a
    cancelled/timed-out terminal (lease eviction, lifecycle teardown, timeout) the
-   engine reconciles a stranded `syncStatus` to `'failed'` (idempotent,
-   conditional on the row still being non-terminal). The orchestrator has no DB
-   status row to strand, so it has no finalizer yet — it gains one the day a
-   sandbox-holding activity is added there.
+   engine reconciles a row still showing this run's `'in_progress'` to `'failed'`
+   (idempotent, conditional on `syncStatus = 'in_progress'`). `syncRepositories`
+   also checks its cooperative `AbortSignal` before its success write so a
+   cancelled run does not report `'idle'`. The orchestrator has no DB status row
+   to strand, so it has no finalizer yet — it gains one the day a sandbox-holding
+   activity is added there.
+
+   _Residual hard-guarantee gap (pre-production):_ `refreshInstallationRepositories`
+   writes `'idle'` internally at the end of a successful fetch, so a cancel landing
+   after that internal write but before the finalizer can still leave a stale
+   `'idle'`. The no-clobber rests on Weft blocking a fresh same-id run while
+   teardown is pending plus the cooperative abort. A durable per-attempt generation
+   token (shared by the activity's success write and the finalizer `WHERE`) would
+   make it airtight — deferred as it is inert until `WEFT_DATABASE_URL` is set.
+
 4. **Review-agent dispatch** (`+server.ts`) — a separate future feature, still a
    logged no-op stub.
 5. **Analyze-activity concurrency hardening** — the analyze activity is correct
