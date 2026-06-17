@@ -31,9 +31,14 @@ vi.mock('@lostgradient/weft/storage/interface', () => ({
   assertDurableStorageForRecovery: vi.fn(),
 }));
 
-vi.mock('@lostgradient/weft', () => ({
-  Engine: { create: engineCreate },
-}));
+// Spread the real module and override only Engine.create. engine.ts now
+// transitively imports the workflow definitions, which use `workflow`/`signal`
+// from this package at module-eval time — so the mock must keep every real
+// export and stub only the dependency boundary the test controls.
+vi.mock('@lostgradient/weft', async (importActual) => {
+  const actual = await importActual<typeof import('@lostgradient/weft')>();
+  return { ...actual, Engine: { create: engineCreate } };
+});
 
 import {
   createEngine,
@@ -52,6 +57,25 @@ beforeEach(() => {
 afterEach(() => {
   resetWeftClientForTests();
 });
+
+/**
+ * A mock engine stub. `createEngine` calls `engine.registerWorkflows(...)` and
+ * `engine.scheduler.start()` after `Engine.create`, so the stub must provide
+ * both. registerWorkflows returns a re-typed view of the same engine in
+ * production; here it returns the same stub so the wiring runs without error.
+ */
+function mockEngine(): {
+  id: string;
+  registerWorkflows: ReturnType<typeof vi.fn>;
+  scheduler: { start: ReturnType<typeof vi.fn> };
+} {
+  const engine = {
+    id: 'engine',
+    registerWorkflows: vi.fn(() => engine),
+    scheduler: { start: vi.fn() },
+  };
+  return engine;
+}
 
 describe('resolveDurableStorage', () => {
   it('returns null in non-production when no WEFT_DATABASE_URL is set', () => {
@@ -97,7 +121,7 @@ describe('getWeftClient', () => {
   it('builds one client over the configured store and memoizes it', async () => {
     mockEnv.NODE_ENV = 'production';
     mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
-    engineCreate.mockResolvedValue({ id: 'engine' });
+    engineCreate.mockResolvedValue(mockEngine());
 
     const first = await getWeftClient();
     const second = await getWeftClient();
@@ -110,7 +134,7 @@ describe('getWeftClient', () => {
   it('shares one build across concurrent first callers', async () => {
     mockEnv.NODE_ENV = 'production';
     mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
-    engineCreate.mockResolvedValue({ id: 'engine' });
+    engineCreate.mockResolvedValue(mockEngine());
 
     const [a, b] = await Promise.all([getWeftClient(), getWeftClient()]);
 
@@ -124,7 +148,7 @@ describe('getWeftClient', () => {
     mockEnv.NODE_ENV = 'production';
     mockEnv.WEFT_DATABASE_URL = 'postgresql://user:pass@weft.neon.tech/weft?sslmode=require';
     engineCreate.mockRejectedValueOnce(new Error('neon unreachable'));
-    engineCreate.mockResolvedValueOnce({ id: 'engine' });
+    engineCreate.mockResolvedValueOnce(mockEngine());
 
     await expect(getWeftClient()).rejects.toThrow('neon unreachable');
 
@@ -137,11 +161,39 @@ describe('getWeftClient', () => {
 
 describe('createEngine', () => {
   it('enables the second-instance detector (single-replica backstop)', async () => {
-    engineCreate.mockResolvedValue({ id: 'engine' });
+    engineCreate.mockResolvedValue(mockEngine());
     const storage = new MemoryStorage();
     await createEngine(storage);
     expect(engineCreate).toHaveBeenCalledWith(
       expect.objectContaining({ storage, detectSecondInstance: true }),
     );
+  });
+
+  it('registers the ported workflow definitions on the engine', async () => {
+    const engine = mockEngine();
+    engineCreate.mockResolvedValue(engine);
+
+    await createEngine(new MemoryStorage());
+
+    // Both ported workflows must be registered so producer startOrSignal
+    // dispatches resolve to a real run instead of WorkflowNotRegisteredError.
+    expect(engine.registerWorkflows).toHaveBeenCalledTimes(1);
+    const registered = engine.registerWorkflows.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(registered).sort()).toEqual([
+      'installation-sync',
+      'pull-request-orchestrator',
+    ]);
+  });
+
+  it('starts the scheduler so ctx.sleep timers fire (weft#586)', async () => {
+    // Engine.create does NOT start the scheduler's polling loop; without this
+    // call, every ctx.sleep (sync debounce, orchestrator idle timeout) would
+    // park forever in production.
+    const engine = mockEngine();
+    engineCreate.mockResolvedValue(engine);
+
+    await createEngine(new MemoryStorage());
+
+    expect(engine.scheduler.start).toHaveBeenCalledTimes(1);
   });
 });

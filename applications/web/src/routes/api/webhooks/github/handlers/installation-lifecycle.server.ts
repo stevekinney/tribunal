@@ -29,7 +29,7 @@ export async function handleInstallation(
   context: WebhookContext,
 ): Promise<void> {
   const { action } = payload;
-  const { installationId, logger } = context;
+  const { installationId, logger, deliveryId } = context;
 
   switch (action) {
     case 'deleted': {
@@ -66,12 +66,12 @@ export async function handleInstallation(
 
         // Trigger sync to fetch repositories (fire-and-forget — see
         // fireAndForgetInstallationSync for the durability limitation).
-        // TODO(weft): thread the webhook delivery GUID from +server.ts down to here
-        // and pass it as `deliveryId` so retries dedup at the Weft signal layer too
-        // (GitHub redeliveries are already deduped upstream by claimWebhookDelivery).
+        // deliveryId (the GitHub delivery GUID) becomes the Weft signalId so
+        // retries/redeliveries dedup at the signal layer too (on top of the
+        // upstream claimWebhookDelivery dedup).
         const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
         fireAndForgetInstallationSync(
-          { installationId, reason: 'webhook:installation.created', workspaceId },
+          { installationId, reason: 'webhook:installation.created', workspaceId, deliveryId },
           logger,
         );
 
@@ -91,7 +91,12 @@ export async function handleInstallation(
       // (fire-and-forget — see fireAndForgetInstallationSync for the limitation).
       const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
       fireAndForgetInstallationSync(
-        { installationId, reason: 'webhook:installation.new_permissions_accepted', workspaceId },
+        {
+          installationId,
+          reason: 'webhook:installation.new_permissions_accepted',
+          workspaceId,
+          deliveryId,
+        },
         logger,
       );
 

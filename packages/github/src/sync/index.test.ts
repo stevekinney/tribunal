@@ -37,12 +37,13 @@ const EXPECTED_ID = 'github:installations:555:sync';
 
 describe('enqueueInstallationSync', () => {
   it('uses the caller-supplied deliveryId as the signalId (for redelivery dedup)', async () => {
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID });
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'started' });
     const context = createContext({ startOrSignal });
 
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-123' });
 
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
+    // weft#466: the producer propagates the handle's outcome.
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
     expect(startOrSignal).toHaveBeenCalledWith(
       'installation-sync',
       { ...options, deliveryId: 'guid-123' },
@@ -53,6 +54,16 @@ describe('enqueueInstallationSync', () => {
       },
       { id: EXPECTED_ID },
     );
+  });
+
+  it('propagates a "signalled" outcome when the dispatch coalesced onto a live run', async () => {
+    // weft#466: a lifecycle webhook coalesced onto an already-running sync.
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'signalled' });
+    const context = createContext({ startOrSignal });
+
+    const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-456' });
+
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'signalled' });
   });
 
   it('mints a fresh, distinct signalId per enqueue when no deliveryId is given', async () => {
@@ -145,23 +156,15 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     const context = createContext(client);
 
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-xyz' });
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
+    // weft#466: the real engine reports this dispatch started a fresh run.
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
 
-    // Poll-until-terminal (not a fixed sleep): resolves the instant the run
-    // completes; the generous ~3s deadline only bites on a stuck run. WeftClient
-    // exposes no result(id)/getHandle(id), so polling get(id) is the available
-    // completion primitive. Fails fast on a terminal failure for a clear diagnostic.
-    for (let attempt = 0; attempt < 150; attempt += 1) {
-      const state = await client.get(EXPECTED_ID);
-      if (state?.status === 'completed') {
-        expect((state.result as { reason?: string }).reason).toBe('webhook:installation.created');
-        return;
-      }
-      if (state && ['failed', 'cancelled', 'timed-out'].includes(state.status)) {
-        throw new Error(`installation-sync run ended in ${state.status}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error('installation-sync run did not complete within the polling budget');
+    // weft#467: re-attach to the run by id and await its result directly, rather
+    // than hand-rolling a status poll loop. `getHandle(id)` returns a handle
+    // whose `result()` resolves from persisted state once the run is terminal.
+    const handle = await client.getHandle(EXPECTED_ID);
+    expect(handle).not.toBeNull();
+    const output = (await handle!.result()) as { reason?: string };
+    expect(output.reason).toBe('webhook:installation.created');
   });
 });

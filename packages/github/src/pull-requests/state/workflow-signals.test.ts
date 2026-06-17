@@ -57,24 +57,37 @@ const EXPECTED_ID = 'pull-request-orchestrator:42:7';
 
 describe('signalPullRequestEvent', () => {
   it('start-or-signals the per-PR orchestrator with the deterministic id', async () => {
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID });
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'started' });
     const context = createContext({ startOrSignal });
 
     const result = await signalPullRequestEvent(context, eventInput);
 
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
+    // weft#466: the producer propagates the handle's outcome.
+    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID, outcome: 'started' });
     expect(startOrSignal).toHaveBeenCalledTimes(1);
     expect(startOrSignal).toHaveBeenCalledWith(
       'pull-request-orchestrator',
       eventInput,
       // signalId is the delivery GUID (eventId) so retries dedup to one signal.
-      { name: 'pull_request_event', payload: eventInput, signalId: 'evt-1' },
+      // The signal payload carries kind:'event' so the orchestrator's ctx.race
+      // can discriminate it from a close signal / the sleep timer (FIX 1).
+      { name: 'pull_request_event', payload: { kind: 'event', ...eventInput }, signalId: 'evt-1' },
       { id: EXPECTED_ID },
     );
   });
 
+  it('propagates a "signalled" outcome when an event coalesced onto a live orchestrator', async () => {
+    // weft#466: a rapid follow-up webhook coalesced onto the running orchestrator.
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'signalled' });
+    const context = createContext({ startOrSignal });
+
+    const result = await signalPullRequestEvent(context, eventInput);
+
+    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID, outcome: 'signalled' });
+  });
+
   it('mints a fresh signalId when the event carries no delivery id', async () => {
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID });
+    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'started' });
     const context = createContext({ startOrSignal });
     const { eventId: _omitted, ...withoutEventId } = eventInput;
 
@@ -140,6 +153,9 @@ describe('signalPullRequestClosed', () => {
 
     expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
     expect(signal).toHaveBeenCalledWith(EXPECTED_ID, 'pull_request_closed', {
+      // kind:'closed' lets the orchestrator's ctx.race discriminate the close
+      // signal from an event payload / the sleep timer (FIX 1).
+      kind: 'closed',
       merged: true,
       actorLogin: 'octocat',
     });

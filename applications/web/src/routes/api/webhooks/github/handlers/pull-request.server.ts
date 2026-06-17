@@ -17,8 +17,10 @@ import {
  * The synchronize action is not dispatched to the orchestrator (matches pre-refactor behavior).
  * Claiming is performed at the +server.ts level for all orchestrator events.
  *
- * TODO(weft): Route pull request open/reopen/close signals into a ../weft pull
- * request orchestrator workflow instead of the current workflow-signals stub.
+ * These dispatch through `signalPullRequestEvent` / `signalPullRequestClosed`,
+ * which start-or-signal the registered `pull-request-orchestrator` Weft workflow
+ * (sliding debounce, supersede, idle timeout, final-analysis-on-close). Dispatch
+ * is a no-op success only when no durable engine is configured.
  */
 export async function handlePullRequestEvent(
   payload: PullRequestEvent,

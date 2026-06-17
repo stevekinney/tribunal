@@ -5,12 +5,57 @@
  * Cancels active workflows when installations or repositories become unavailable.
  */
 
+import { isWeftFault } from '@lostgradient/weft';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { GithubServiceContext } from '../context.js';
-import { repository } from '@tribunal/database/schema';
+import { repository, pullRequestState } from '@tribunal/database/schema';
 import { workflowRun, type WorkflowPhase } from '@tribunal/database/schema';
 import { deleteInstallation, updateInstallationStatus } from './records.js';
 import { markInstallationRepositoryInactive } from '../repositories/service.js';
+import { buildPullRequestOrchestratorWorkflowId } from '../pull-requests/state/workflow-signals.js';
+
+/** True when a Weft error means the target workflow run does not exist. */
+function isWorkflowNotFound(error: unknown): boolean {
+  return isWeftFault(error, 'WorkflowNotFoundError');
+}
+
+/**
+ * Cancel running Weft workflows by their stable id, directly through the durable
+ * engine. The ported `pull-request-orchestrator` / `installation-sync` runs live
+ * in Weft storage under deterministic ids and are NOT enumerated in
+ * `workflow_run`, so the `workflow_run`-based cancellation path cannot reach
+ * them — this closes that teardown gap. A missing run (already terminal, or no
+ * engine configured) is treated as success: there is nothing to cancel.
+ */
+async function cancelWeftWorkflowsById(
+  context: GithubServiceContext,
+  workflowIds: string[],
+): Promise<{ cancelled: number; failed: number; errors: string[] }> {
+  if (workflowIds.length === 0) {
+    return { cancelled: 0, failed: 0, errors: [] };
+  }
+  const client = await context.resolveWeftClient?.().catch(() => null);
+  if (!client) {
+    return { cancelled: 0, failed: 0, errors: [] };
+  }
+
+  let cancelled = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  for (const workflowId of workflowIds) {
+    try {
+      await client.cancel(workflowId);
+      cancelled++;
+    } catch (error) {
+      if (isWorkflowNotFound(error)) {
+        continue; // nothing running under this id — not an error
+      }
+      failed++;
+      errors.push(`${workflowId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { cancelled, failed, errors };
+}
 
 // =============================================================================
 // Constants
@@ -79,6 +124,11 @@ export async function handleInstallationDeleted(
       ...result,
     });
   }
+
+  // Cancel the per-installation sync workflow by its stable Weft id (it is not
+  // recorded in workflow_run and is not tied to a repository, so the repo-scoped
+  // cancellation above cannot reach it).
+  await cancelWeftWorkflowsById(context, [`github:installations:${installationId}:sync`]);
 
   // Delete the installation (cascades to installation-repository links)
   await deleteInstallation(context, installationId);
@@ -216,7 +266,7 @@ export async function cancelWorkflowsForRepositories(
     return { cancelled: 0, failed: 0, errors: [] };
   }
 
-  // Find active workflows for these repositories
+  // Find active workflows recorded in the workflow_run read-model.
   const activeWorkflows = await context.db
     .select({
       id: workflowRun.id,
@@ -231,24 +281,52 @@ export async function cancelWorkflowsForRepositories(
       ),
     );
 
-  return cancelWorkflows(context, activeWorkflows, reason);
+  const runResult = await cancelWorkflows(context, activeWorkflows, reason);
+
+  // Also cancel the ported PR orchestrators directly by their stable Weft id.
+  // These runs are not recorded in workflow_run, so the query above misses them;
+  // without this, repository removal / installation deletion would leave in-flight
+  // PR analysis running. We derive the id for every non-closed PR in the removed
+  // repositories from pull_request_state.
+  const openPrs = await context.db
+    .select({ repositoryId: pullRequestState.repositoryId, prNumber: pullRequestState.prNumber })
+    .from(pullRequestState)
+    .where(
+      and(
+        inArray(pullRequestState.repositoryId, repositoryIds),
+        eq(pullRequestState.state, 'open'),
+      ),
+    );
+  const orchestratorIds = openPrs.map((pr) =>
+    buildPullRequestOrchestratorWorkflowId(pr.repositoryId, pr.prNumber),
+  );
+  const orchestratorResult = await cancelWeftWorkflowsById(context, orchestratorIds);
+
+  return {
+    cancelled: runResult.cancelled + orchestratorResult.cancelled,
+    failed: runResult.failed + orchestratorResult.failed,
+    errors: [...runResult.errors, ...orchestratorResult.errors],
+  };
 }
 
 /**
  * Cancel a list of workflows.
  *
- * The workflow runtime that previously received cancel signals has been
- * removed; this logs the workflows that would have been cancelled and still
- * updates the database to prevent stuck records.
+ * Cancels the running Weft workflow (via the durable engine) and then marks the
+ * local `workflow_run` observability row `cancelled`. The engine cancel is
+ * best-effort relative to the DB write: a missing run (already terminal, or
+ * never started because storage is unconfigured) is treated as success — there
+ * is nothing to cancel — so the local row is still reconciled to `cancelled`.
  *
- * TODO(weft): Send cancellation signals to ../weft workflow handles before
- * marking local workflow rows cancelled.
- *
- * TODO(weft#446): Workflows holding external paid resources (E2B sandboxes)
- * need durable cancellation teardown. Weft 0.3.0's ctx.onCancel / saga
- * compensation is best-effort and not replayed after an engine restart, so a
- * hard-cancel can leak the resource. Until a durable cancel path lands, pair
- * engine.cancel() with a periodic reconciler sweep keyed by resource id.
+ * Durable resource teardown (weft#446): when a workflow holds an external paid
+ * resource (e.g. an E2B sandbox), `client.cancel(id)` alone is not enough — the
+ * resource must be torn down even across a crash. 0.4.0 ships the mechanism: a
+ * definition-level `finalizer` activity driven post-terminal, fed by
+ * `ctx.setFinalizerState(resourceId)`. Tribunal's current activities
+ * (analyzePullRequest, syncRepositories) hold NO external resources, so no
+ * finalizer is registered yet. When a sandbox-holding activity lands, give its
+ * workflow a `finalizer` and call `ctx.setFinalizerState` after acquiring the
+ * resource; cancellation here then drives durable teardown automatically.
  * https://github.com/stevekinney/weft/issues/446
  */
 async function cancelWorkflows(
@@ -264,13 +342,25 @@ async function cancelWorkflows(
   let failed = 0;
   const errors: string[] = [];
 
-  console.log('[lifecycle] would cancel workflows', {
-    reason,
-    workflowIds: workflows.map((workflow) => workflow.workflowId),
-  });
+  // Resolve the durable client once for the whole batch. Null when no engine is
+  // configured (WEFT_DATABASE_URL unset) — the local rows are still reconciled.
+  const client = await context.resolveWeftClient?.().catch(() => null);
 
   for (const workflow of workflows) {
     try {
+      // Cancel the running Weft workflow before marking the row cancelled. A
+      // missing run (WorkflowNotFoundError) means there is nothing to cancel —
+      // not an error — so we proceed to reconcile the local row regardless.
+      if (client) {
+        try {
+          await client.cancel(workflow.workflowId);
+        } catch (cancelError) {
+          if (!isWorkflowNotFound(cancelError)) {
+            throw cancelError;
+          }
+        }
+      }
+
       // Update database record only if still in an active phase
       // This prevents overwriting workflows that completed/failed during the cancellation process
       const updateResult = await context.db

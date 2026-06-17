@@ -6,15 +6,11 @@
  * - Proper retry timing in durable workflows
  * - Visibility into rate limit state across requests
  *
- * TODO(weft): Feed this state into ../weft GitHub activity retry/backoff once
- * installation and pull request workflows are restored.
- *
  * Weft mapping: rate-limit reset windows inform RetryPolicy.initialBackoff /
- * maxBackoff on ActivityCallOptions. Activity liveness uses Weft's
- * `visibilityTimeout` (its name for Temporal's heartbeatTimeout) — call
+ * maxBackoff on the ActivityCallOptions of the ported GitHub activities.
+ * Activity liveness uses Weft's `visibilityTimeout` (its name for Temporal's
+ * heartbeatTimeout — the rename is documented per weft#454) — call
  * ctx.heartbeat() inside long activities to roll the window forward.
- * TODO(weft#454): track the heartbeatTimeout->visibilityTimeout naming so the
- * migration note stays accurate. https://github.com/stevekinney/weft/issues/454
  *
  * Design decisions:
  * - Fail open: If Redis unavailable, return { limited: false } to allow requests

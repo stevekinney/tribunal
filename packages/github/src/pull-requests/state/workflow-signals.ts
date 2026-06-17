@@ -10,34 +10,42 @@
  * when the orchestrator workflow is not registered yet — so webhook acceptance
  * is never blocked on the engine.
  *
- * TODO(weft): Port the `pull-request-orchestrator` workflow *definition* (the
- * consumer side). Depict's Temporal version used signalWithStart for webhook
- * coalescing and signal-only close events for already-running orchestrators.
+ * The consumer side — the `pull-request-orchestrator` workflow *definition* — is
+ * ported and registered (applications/web/src/lib/server/weft/workflows/
+ * pull-request-orchestrator.ts). The mapping these producers rely on:
+ * - Coalescing: startOrSignal('pull-request-orchestrator', input,
+ *   { name: 'pull_request_event', payload: { kind: 'event', ...input } }, { id }).
+ *   The `kind` discriminant lets the orchestrator's ctx.race identify the winner.
+ * - Close: signal(id, 'pull_request_closed', { kind: 'closed', merged }).
+ * - Mid-flight supersede: ctx.race([ctx.run('analyzePullRequest'),
+ *   ctx.waitForSignal('pull_request_event')]) (weft#456 — race accepts these).
  *
- * Weft mapping for the orchestrator workflow:
- * - Coalescing: engine.startOrSignal('pull-request-orchestrator', input,
- *   { name: 'pull_request_event', payload }, { id: buildPullRequestOrchestratorWorkflowId(...) }).
- * - Close: engine.signal(id, 'pull_request_closed', { merged }).
- * - Mid-flight supersede: ctx.race([ctx.run('analyzePullRequest'), ctx.waitForSignal('pull_request_event')]).
- *
- * TODO(weft#448): The sliding-debounce loop currently must be hand-rolled as a
- * race-restart loop because Weft 0.3.0 has no ctx.condition/waitUntil predicate
- * gate. Replace the manual loop with the helper once it ships.
- * https://github.com/stevekinney/weft/issues/448
- * TODO(weft#453): analyzePullRequest activity must cooperatively honor
- * ctx.signal (throwIfAborted + pass signal to fetch) so a superseded analysis
- * actually stops; see the cooperative-cancellation contract.
- * https://github.com/stevekinney/weft/issues/453
+ * Notes on resolved upstream items:
+ * - weft#448 (ctx.waitUntil) shipped, but the orchestrator's sliding debounce is
+ *   correctly a ctx.race([sleep, waitForSignal]) loop, NOT waitUntil: signals are
+ *   pull-only and do not re-drive a waitUntil predicate, so the race is the right
+ *   idiom here.
+ * - weft#453 (cooperative cancellation) is handled in the analyze activity via a
+ *   head-SHA generation fence + ctx.signal throwIfAborted, because weft#584
+ *   confirms a losing ctx.run race branch is NOT auto-aborted.
  */
 
-import { isWeftErrorLike } from '@lostgradient/weft';
-import type { GithubServiceContext } from '../../context.js';
+import { isWeftFault } from '@lostgradient/weft';
+import type { GithubServiceContext, StartOrSignalOutcome } from '../../context.js';
 
 // ============================================================================
 // HELPERS
 // ============================================================================
 
-function buildPullRequestOrchestratorWorkflowId(repositoryId: number, prNumber: number): string {
+/**
+ * The stable Weft workflow id for a PR's orchestrator. Exported so lifecycle
+ * teardown can cancel the running orchestrator by id (these runs live in Weft
+ * storage under this deterministic id and are not enumerated via `workflow_run`).
+ */
+export function buildPullRequestOrchestratorWorkflowId(
+  repositoryId: number,
+  prNumber: number,
+): string {
   return `pull-request-orchestrator:${repositoryId}:${prNumber}`;
 }
 
@@ -59,7 +67,7 @@ function deriveSignalId(eventId: string | undefined): string {
 
 /** True when an error means the target workflow does not exist. */
 function isWorkflowNotFound(error: unknown): boolean {
-  return isWeftErrorLike(error) && error.code === 'WorkflowNotFoundError';
+  return isWeftFault(error, 'WorkflowNotFoundError');
 }
 
 /**
@@ -67,9 +75,13 @@ function isWorkflowNotFound(error: unknown): boolean {
  * yet. A client may be configured (storage provisioned) before the workflow
  * definitions are ported; until then, dispatch is a no-op, not a failure —
  * otherwise enabling storage would 500 every webhook. Treated like "no client".
+ *
+ * `isWeftFault` (weft#465) matches both in-process `WeftError` subclasses and
+ * HTTP-wrapped faults carrying a `weftCode`, so this branch holds unchanged if
+ * the engine ever moves behind an `HttpClient`.
  */
 function isWorkflowNotRegistered(error: unknown): boolean {
-  return isWeftErrorLike(error) && error.code === 'WorkflowNotRegisteredError';
+  return isWeftFault(error, 'WorkflowNotRegisteredError');
 }
 
 // ============================================================================
@@ -117,6 +129,13 @@ export interface SignalPullRequestClosedInput {
 export interface SignalPullRequestResult {
   ok: boolean;
   workflowId: string;
+  /**
+   * Which atomic path a `startOrSignal` dispatch took (weft#466): `'started'`
+   * for a fresh orchestrator run, `'signalled'` for an event coalesced onto a
+   * live run. Absent for signal-only paths (`signalPullRequestClosed`), no-op
+   * fallbacks (no engine / unregistered workflow), and error results.
+   */
+  outcome?: StartOrSignalOutcome;
   error?: string;
 }
 
@@ -155,13 +174,23 @@ export async function signalPullRequestEvent(
       return { ok: true, workflowId };
     }
 
-    await client.startOrSignal(
+    const handle = await client.startOrSignal(
       'pull-request-orchestrator',
       input,
-      { name: 'pull_request_event', payload: input, signalId: deriveSignalId(input.eventId) },
+      {
+        name: 'pull_request_event',
+        // The orchestrator's ctx.race discriminates the winning branch by a
+        // `kind` field on the payload (there is no keyed race), so the signal
+        // payload must carry kind:'event'. The workflow *input* (2nd arg) stays
+        // clean — only the signal payload is discriminated.
+        payload: { kind: 'event', ...input },
+        signalId: deriveSignalId(input.eventId),
+      },
       { id: workflowId },
     );
-    return { ok: true, workflowId };
+    // weft#466: the handle reports which atomic path the call took — a fresh
+    // orchestrator run ('started') vs. coalesced onto a live one ('signalled').
+    return { ok: true, workflowId, outcome: handle.outcome };
   } catch (error) {
     // Storage may be configured before the orchestrator workflow is ported.
     // Until it is, dispatch is a no-op success, not a webhook-failing error.
@@ -207,6 +236,11 @@ export async function signalPullRequestClosed(
     }
 
     await client.signal(workflowId, 'pull_request_closed', {
+      // kind:'closed' lets the orchestrator's ctx.race discriminate this from a
+      // pull_request_event payload and the sleep timer (see FIX 1 in the
+      // orchestrator workflow). Without it the close is misrouted and the
+      // workflow never reaches its final-analysis-and-exit path.
+      kind: 'closed',
       merged: input.merged,
       actorLogin: input.actorLogin,
     });

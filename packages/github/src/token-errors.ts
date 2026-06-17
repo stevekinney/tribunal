@@ -5,8 +5,9 @@
  * enabling proper retry behavior in durable workflows and actionable
  * error messages in the UI.
  *
- * TODO(weft): Map these retryability classifications into ../weft activity
- * retry policy configuration when GitHub workflows are reintroduced.
+ * Weft mapping: these retryability classifications feed
+ * RetryPolicy.nonRetryableErrors (matched by error `name`) on the GitHub
+ * activities' ActivityCallOptions — see error-taxonomy.ts.
  */
 
 import type { Octokit } from 'octokit';
@@ -203,7 +204,8 @@ export function isRetryableTokenError(code: InstallationTokenErrorCode): boolean
 /**
  * Non-retryable error codes for workflow retry policy configuration.
  *
- * TODO(weft): Add these to the ../weft GitHub activity retry policy.
+ * Wire these into a GitHub activity's `RetryPolicy.nonRetryableErrors` so a
+ * suspended/revoked/not-found installation fails fast instead of burning retries.
  */
 export const NON_RETRYABLE_TOKEN_ERROR_CODES: readonly InstallationTokenErrorCode[] = [
   'suspended',

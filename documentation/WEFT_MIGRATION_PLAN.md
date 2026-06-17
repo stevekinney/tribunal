@@ -1,20 +1,38 @@
 # Weft Migration Plan
 
-> Status: **In progress.** This is the plan + first increment of installing
-> [Weft](https://github.com/stevekinney/weft) (`@lostgradient/weft`) as
-> Tribunal's durable-execution substrate, replacing the Temporal layer Tribunal
-> inherited (dormant and stubbed) from the sibling `depict` codebase.
+> Status: **Workflow definitions ported on Weft 0.4.0.** Weft
+> ([`@lostgradient/weft`](https://github.com/stevekinney/weft)) is Tribunal's
+> durable-execution substrate, replacing the Temporal layer Tribunal inherited
+> (dormant and stubbed) from the sibling `depict` codebase. The 0.4.0 release
+> resolved 16 of the 19 issues filed during the wiring increment — most
+> importantly weft#456 (the `ctx.race` sleep/wait-signal blocker) and weft#458
+> (same-tick signal-drop) — which unblocked porting the actual workflow
+> _definitions_.
 >
-> **Done so far:** dependency installed; in-process engine wired into the web
-> app (single-replica, lazy-on-first-dispatch); the two live producers (PR
-> orchestrator signals, installation sync) dispatch through Weft, with a log-only
-> fallback when unconfigured and a no-op-success path when a workflow isn't
-> registered; unit + e2e tests against a real engine; 13 capability/bug issues
-> filed upstream.
+> **Done (0.4.0 increment):** dependency upgraded `^0.3.0` → `^0.4.0`; producer
+> seams adopt the now-shipped APIs (`isWeftFault`, the `startOrSignal` `outcome`,
+> `getHandle`); the **`pull-request-orchestrator`** and **`installation-sync`**
+> workflow _definitions_ are ported, registered on the in-process engine, and
+> unit/e2e-tested against a real engine; the **PR action-items feature** (schema
 >
-> **Not done:** porting the workflow definitions (blocked on weft#456),
-> schema reconciliation, deployment singleton enforcement, and the
-> fire-and-forget sync durability fix (see the §4.2 warning).
+> - analyze activity + reconciliation) is ported from depict (deterministic
+>   summaries, no LLM dependency); the schema is rebuilt-minimal (`workflow_run` is
+>   now a thin observability read-model, `pull_request_trigger` dropped); engine
+>   cancellation is wired into installation lifecycle teardown; the delivery GUID is
+>   threaded into sync dispatch for signal-layer dedup.
+>
+> **Remaining (pre-production gates):** the fire-and-forget sync durability fix
+> (outbox + reconciler, or claim-after-enqueue) is a HARD prerequisite before
+> enabling `WEFT_DATABASE_URL` in production (§4.2); single-replica deployment
+> enforcement (`ownership: 'lease'` — weft#470 — evaluated, deferred as a deploy
+> decision); and a durable `finalizer` once a sandbox-holding activity exists
+> (weft#446 — no external-resource activity in Tribunal today).
+>
+> **0.4.0-resolved upstream issues:** 446–453, 455, 458, 465–470 shipped. Newly
+> filed during this increment: weft#583 (`StartOrSignalOutcome` not exported),
+> weft#584 (`ctx.race` does not abort a losing `ctx.run` branch — drove the
+> analyze activity's head-SHA generation fence), weft#585 (`LocalClient` rejects a
+> branded engine).
 
 ## 1. Background: how Tribunal got here
 
@@ -265,33 +283,91 @@ against the shipped `dist/` before filing:
 
 ## 7. What's done vs. remaining
 
-**Done (this increment):**
+**Done (0.4.0 increment):**
 
-- `@lostgradient/weft@0.3.0` installed in `applications/web` and `packages/github`.
-- In-process engine + `LocalClient` wired (`src/lib/server/weft/`, `github-context.ts`).
-- Both live producers dispatch through Weft with log-only fallback + error handling.
-- Unit tests (producers, fallbacks, `WorkflowNotFound`/`WorkflowNotRegistered`
-  no-op safety, resolver-rejection returns an error result not a throw,
-  `deliveryId`-based signalId dedup) + e2e tests against a real engine (the
-  producer reaches a real `LocalClient.startOrSignal`/`signal` under the
-  deterministic id) for both the PR and sync paths, plus a factory test that
-  drives the real `getWeftClient` over dependency-boundary mocks — including the
-  success-path memoization and the rejected-build-not-cached guard. Full
-  `@tribunal/github` suite green (297 tests); web server suite green (346). The
-  engine is built lazily on first dispatch (resolver thunk), so it never boots
-  during web-app startup or the test suite.
-- 13 issues filed upstream; `TODO(weft#NN)` notes at each seam.
+- `@lostgradient/weft` upgraded `^0.3.0` → `^0.4.0` in `applications/web` and
+  `packages/github`. Producer seams adopt the shipped APIs: `isWeftFault` replaces
+  the `isWeftErrorLike(e) && e.code === …` pattern; `startOrSignal` returns a
+  handle whose `outcome` (`'started' | 'signalled'`) is propagated; the sync e2e
+  uses `getHandle(id).result()`.
+- **Workflow definitions ported and registered** on the in-process engine
+  (`createEngine` → `registerWorkflows`): `pull-request-orchestrator` (sliding
+  debounce + supersede + idle timeout + final-analysis-on-close, via
+  `ctx.race([run, sleep, waitForSignal])`) and `installation-sync` (leading-sleep
+  debounce + drain race). No `continueAsNew` — the checkpoint model bounds state.
+- **PR action-items feature** ported from depict into
+  `applications/web/src/lib/server/weft/action-items/`: GraphQL conversation
+  fetch, derivation keying, reconciliation (preserves human edits), PR-body
+  writeback, persisted via the `@tribunal/github/pull-requests/action-items`
+  repository layer. LLM rewrite dropped in favour of `deterministicSummary` (no
+  Anthropic dependency). A head-SHA **generation fence** guards stale writes
+  (weft#584).
+- **Schema rebuilt-minimal** (§4.5): `workflow_run` reduced to a thin
+  observability read-model (Temporal-era execution columns dropped);
+  `pull_request_trigger` dropped entirely; action-item tables restored to the
+  source schema (migration `0023`). Migration verified applying in PGlite.
+- **Cancellation** wired: installation lifecycle teardown calls
+  `client.cancel(workflowId)` before reconciling the local row; delivery GUID
+  threaded into sync dispatch for signal-layer dedup.
+- Tests: `@tribunal/github` green (299); web server suite green (347); database
+  suite green (93 + migration test); workflow-definition + activity-helper unit
+  tests against a real engine. `TODO(weft#NN)` seams refreshed.
 
-**Remaining:**
+> [!WARNING] Enabling `WEFT_DATABASE_URL` in production is gated.
+> The durable engine only builds when `WEFT_DATABASE_URL` is set, so the gates
+> below are inert until an operator takes that deliberate step. To make the risk
+> mechanical (not just documentation — the review committee's point), the engine
+> emits a loud one-time `console.error` when it activates in production with these
+> gates open (`buildClient` in `engine.ts`). **Deploy decision still open:**
+> whether to harden that warning into a HARD REFUSAL — engine build throws in
+> production unless an explicit `WEFT_PRODUCTION_ENABLED` flag is set, forcing a
+> two-step opt-in. Deferred to the production-enablement increment as a deploy
+> call, not wired now (it changes deploy semantics and is moot while the gates
+> below are open).
 
-1. **Schema rebuild-minimal** (§4.5) — reshape `workflow_run` / drop
-   `pull_request_trigger` machinery.
-2. **Port the orchestrator + sync workflow definitions** — blocked on weft#456
-   for the orchestrator's debounce/supersede; sync can proceed sooner.
-3. **Repository refresh + cancellation** (§4.3) — blocked on weft#446 for
-   durable teardown.
-4. **Singleton enforcement** — single web replica; second-instance detector.
-5. **Apply gaps** as upstream issues ship (refactor the `TODO(weft#NN)` seams).
+**Remaining (pre-production gates, not code-blocking):**
+
+1. **Fire-and-forget sync durability** (§4.2) — outbox + reconciler or
+   claim-after-enqueue. HARD prerequisite before enabling `WEFT_DATABASE_URL` in
+   production. The GUID threading added now is defense-in-depth, not the fix.
+   This also covers the `StartOrSignalConflictError` terminal-conflict re-sync:
+   today it surfaces as a loud error (not silently dropped), but a completed sync
+   under a stable id blocks the next dispatch — the outbox/reconciler (or a
+   restart-capable start-or-signal once weft#452's remaining slice ships) closes
+   the data-loss window.
+2. **Single-replica enforcement** — one web replica + `Recreate` rollout, OR
+   adopt `ownership: 'lease'` (weft#470) as a deliberate deploy-semantics change
+   (evaluated, deferred — see weft#585's branded-engine note before wiring it).
+3. **Durable finalizer** (weft#446) — wire `ctx.setFinalizerState` + a
+   definition-level `finalizer` once a sandbox-holding activity exists. None do
+   today (analyze/sync touch only DB + GitHub).
+4. **Review-agent dispatch** (`+server.ts`) — a separate future feature, still a
+   logged no-op stub.
+5. **Analyze-activity concurrency hardening** — the analyze activity is correct
+   for the single-active-analysis case but has known sharp edges under concurrent
+   or rapid analyses. These are inert until `WEFT_DATABASE_URL` is set (the
+   activity only runs then), and were surfaced by the review committee:
+   - **Same-commit supersede isn't fenced.** The generation fence compares the
+     fetched head SHA against the live `pull_request_state.headSha`; a supersede
+     on the _same_ commit (a new review comment, a thread resolve, a check
+     completing) does not advance the SHA, so a losing `ctx.run` analysis (which
+     Weft does not abort — weft#584) can still write. A durable per-PR generation
+     lease (write-conditional on "this generation is current") would close it.
+   - **Full PR-body overwrite can clobber concurrent edits.** The activity
+     rewrites the whole body from the snapshot it fetched at start; a human edit
+     or a newer analysis landing mid-flight is overwritten. Re-fetch the body
+     immediately before the write and apply the block replacement to the fresh
+     body.
+   - **`synchronize` is not dispatched to the orchestrator**, so a fenced
+     analysis (head advanced) has no guaranteed replacement run for the new head.
+     Either dispatch head changes or have a fenced analysis re-arm a debounced
+     analysis for the current head.
+   - **GraphQL connections are first-page only** (reviews/threads/comments/checks
+     truncate at their limits; `StatusContext` classic statuses are ignored).
+     Paginate the connections needed for correctness and map `StatusContext`
+     failures alongside `CheckRun`.
+   - **`upsertActionItems` / `addActionItemSources` issue one query per item.**
+     Batch into a single `unnest`/multi-values upsert before a real workload.
 
 > Engine boot timing is **resolved**: the engine builds lazily on first
 > dispatch (via the `resolveWeftClient` thunk), so web-app startup is not coupled

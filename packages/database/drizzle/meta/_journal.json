@@ -162,6 +162,13 @@
       "when": 1780602663789,
       "tag": "0022_neon-auth-profile-mapping",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1781718794354,
+      "tag": "0023_weft_action_items_reshape",
+      "breakpoints": true
     }
   ]
 }
