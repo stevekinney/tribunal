@@ -166,10 +166,16 @@ type RawDerivedItem = {
  */
 export async function analyzePullRequest(
   input: AnalyzePullRequestInput,
-  signal?: AbortSignal,
+  // Weft invokes an activity as execute(input, ActivityContext) — the AbortSignal
+  // is ActivityContext.signal, NOT the second positional arg itself. We accept the
+  // context (typed to the one field we use) and read .signal from it, matching
+  // syncRepositories. Reading the signal off the context is what makes the
+  // cooperative throwIfAborted checks below actually fire on cancel/race-loss.
+  context?: { signal: AbortSignal },
 ): Promise<AnalyzePullRequestOutput> {
   const { db, getInstallationOctokit } = githubContext;
   const { repositoryId, prNumber, installationId, owner, repository: repo } = input;
+  const signal = context?.signal;
 
   // Step 1: Get authenticated client
   signal?.throwIfAborted();
