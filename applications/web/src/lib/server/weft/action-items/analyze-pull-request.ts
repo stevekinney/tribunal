@@ -537,11 +537,6 @@ async function fetchPRConversation(
 // ============================================================================
 
 /**
- * Derive raw action items from conversation state.
- *
- * One item per review comment (not per thread), plus CI checks and
- * changes-requested reviews. Bodies are raw — summarization happens later.
-/**
  * Deterministic FNV-1a hash of a string, rendered base-36. Stable across runs
  * (same input → same output) so a check name always maps to the same key.
  */
@@ -572,6 +567,12 @@ function safeCheckKeySegment(name: string): string {
   return slug ? `${slug}-${hash}` : hash;
 }
 
+/**
+ * Derive raw action items from conversation state.
+ *
+ * One item per review comment (not per thread), plus failing CI checks and
+ * changes-requested reviews. Bodies are raw — summarization happens later.
+ */
 function deriveRawItems(conversation: PRConversationState): RawDerivedItem[] {
   const items: RawDerivedItem[] = [];
 
