@@ -155,9 +155,11 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 
     let repositoryRefreshFailed = false;
     try {
-      // TODO(weft): Replace this direct refresh with an installation sync workflow
-      // backed by ../weft. Depict's old Temporal path used signalWithStart here
-      // so repeated setup/update callbacks coalesced into one durable sync.
+      // Direct (synchronous) refresh is intentional here: the user just completed
+      // the GitHub install/connect flow and expects to see their repositories
+      // immediately. The durable `installation-sync` Weft workflow handles the
+      // ongoing, coalesced path from lifecycle webhooks; both call this same
+      // shared body (refreshInstallationRepositories). See its JSDoc.
       const refreshResult = await refreshInstallationRepositories(githubContext, installation.id);
       console.log(
         `[connect] Installation ${installation.id} bound to user ${locals.user.id}; refreshed ${refreshResult.repositoryCount} repositories.`,

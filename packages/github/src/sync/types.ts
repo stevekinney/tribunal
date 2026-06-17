@@ -2,6 +2,8 @@
  * Type definitions for GitHub sync enqueue functions.
  */
 
+import type { StartOrSignalOutcome } from '../context.js';
+
 export interface EnqueueInstallationSyncOptions {
   installationId: number;
   reason: string;
@@ -21,9 +23,16 @@ export interface EnqueueInstallationSyncResult {
   workflowId: string;
   /**
    * Status of the enqueue operation.
-   * - 'started': Workflow was started or signaled (startOrSignal doesn't distinguish)
+   * - 'started': Workflow was started or signaled successfully
    * - 'error': Failed to enqueue the workflow
    */
   status: 'started' | 'error';
+  /**
+   * Which atomic path the `startOrSignal` dispatch took (weft#466): `'started'`
+   * for a fresh sync run, `'signalled'` for a lifecycle webhook coalesced onto a
+   * live run. Absent for no-op fallbacks (no engine / unregistered workflow) and
+   * error results. (Previously `startOrSignal` could not distinguish the two.)
+   */
+  outcome?: StartOrSignalOutcome;
   error?: string;
 }

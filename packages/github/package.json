@@ -23,6 +23,7 @@
     "./installations/tokens": "./src/installations/tokens.ts",
     "./installations/user-bindings": "./src/installations/user-bindings.ts",
     "./repositories/service": "./src/repositories/service.ts",
+    "./pull-requests/action-items": "./src/pull-requests/action-items/index.ts",
     "./pull-requests/service": "./src/pull-requests/service.ts",
     "./pull-requests/state": "./src/pull-requests/state/index.ts",
     "./pull-requests/state/base-branch-update": "./src/pull-requests/state/base-branch-update.ts",
@@ -53,7 +54,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@lostgradient/weft": "^0.3.0",
+    "@lostgradient/weft": "^0.4.0",
     "@octokit/types": "^16.0.0",
     "@tribunal/database": "workspace:*",
     "drizzle-orm": "^0.45.1",

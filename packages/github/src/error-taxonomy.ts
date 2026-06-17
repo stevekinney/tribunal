@@ -5,16 +5,16 @@
  * - NonRetryableError: Permanent failures that should not be retried
  * - RetryableError: Transient failures that may succeed on retry
  *
- * TODO(weft): Convert these classifications into ../weft activity failure
- * metadata once workflow execution is wired back in.
- *
  * Weft mapping: these error `name`s feed RetryPolicy.nonRetryableErrors
  * (matched by error name) on each activity's ActivityCallOptions — the direct
- * equivalent of Temporal's nonRetryableErrorTypes. No new infrastructure needed.
+ * equivalent of Temporal's nonRetryableErrorTypes. The ported activities
+ * (analyzePullRequest, syncRepositories) attach these names to their retry
+ * policies. No new infrastructure needed.
  *
- * TODO(weft#449): Weft 0.3.0 has no scheduleToCloseTimeout (a cross-attempt
- * wall-clock budget). Until it lands, bound total retry time with
- * ctx.race([ctx.run(activity, ...), ctx.sleep(totalBudget)]).
+ * Cross-attempt total-time budget: weft#449 shipped in 0.4.0 as
+ * `ActivityCallOptions.scheduleToCloseTimeout` (wall-clock budget across all
+ * attempts; overshoot throws `ActivityScheduleToCloseTimeoutError`). Use it
+ * directly instead of the old `ctx.race([run, sleep(budget)])` workaround.
  * https://github.com/stevekinney/weft/issues/449
  */
 

@@ -107,7 +107,8 @@ describe('pull-request producer (e2e, real engine)', () => {
     const { context, client } = await createWiredContext();
 
     const result = await signalPullRequestEvent(context, eventInput('pr_opened'));
-    expect(result).toEqual({ ok: true, workflowId: ORCHESTRATOR_ID });
+    // weft#466: the real engine reports this dispatch started a fresh run.
+    expect(result).toEqual({ ok: true, workflowId: ORCHESTRATOR_ID, outcome: 'started' });
 
     // The real engine started the run under the deterministic id and the
     // producer's payload was delivered as the pull_request_event signal.

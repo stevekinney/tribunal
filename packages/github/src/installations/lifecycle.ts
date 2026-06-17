@@ -5,12 +5,18 @@
  * Cancels active workflows when installations or repositories become unavailable.
  */
 
+import { isWeftFault } from '@lostgradient/weft';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { GithubServiceContext } from '../context.js';
 import { repository } from '@tribunal/database/schema';
 import { workflowRun, type WorkflowPhase } from '@tribunal/database/schema';
 import { deleteInstallation, updateInstallationStatus } from './records.js';
 import { markInstallationRepositoryInactive } from '../repositories/service.js';
+
+/** True when a Weft error means the target workflow run does not exist. */
+function isWorkflowNotFound(error: unknown): boolean {
+  return isWeftFault(error, 'WorkflowNotFoundError');
+}
 
 // =============================================================================
 // Constants
@@ -237,18 +243,21 @@ export async function cancelWorkflowsForRepositories(
 /**
  * Cancel a list of workflows.
  *
- * The workflow runtime that previously received cancel signals has been
- * removed; this logs the workflows that would have been cancelled and still
- * updates the database to prevent stuck records.
+ * Cancels the running Weft workflow (via the durable engine) and then marks the
+ * local `workflow_run` observability row `cancelled`. The engine cancel is
+ * best-effort relative to the DB write: a missing run (already terminal, or
+ * never started because storage is unconfigured) is treated as success — there
+ * is nothing to cancel — so the local row is still reconciled to `cancelled`.
  *
- * TODO(weft): Send cancellation signals to ../weft workflow handles before
- * marking local workflow rows cancelled.
- *
- * TODO(weft#446): Workflows holding external paid resources (E2B sandboxes)
- * need durable cancellation teardown. Weft 0.3.0's ctx.onCancel / saga
- * compensation is best-effort and not replayed after an engine restart, so a
- * hard-cancel can leak the resource. Until a durable cancel path lands, pair
- * engine.cancel() with a periodic reconciler sweep keyed by resource id.
+ * Durable resource teardown (weft#446): when a workflow holds an external paid
+ * resource (e.g. an E2B sandbox), `client.cancel(id)` alone is not enough — the
+ * resource must be torn down even across a crash. 0.4.0 ships the mechanism: a
+ * definition-level `finalizer` activity driven post-terminal, fed by
+ * `ctx.setFinalizerState(resourceId)`. Tribunal's current activities
+ * (analyzePullRequest, syncRepositories) hold NO external resources, so no
+ * finalizer is registered yet. When a sandbox-holding activity lands, give its
+ * workflow a `finalizer` and call `ctx.setFinalizerState` after acquiring the
+ * resource; cancellation here then drives durable teardown automatically.
  * https://github.com/stevekinney/weft/issues/446
  */
 async function cancelWorkflows(
@@ -264,13 +273,25 @@ async function cancelWorkflows(
   let failed = 0;
   const errors: string[] = [];
 
-  console.log('[lifecycle] would cancel workflows', {
-    reason,
-    workflowIds: workflows.map((workflow) => workflow.workflowId),
-  });
+  // Resolve the durable client once for the whole batch. Null when no engine is
+  // configured (WEFT_DATABASE_URL unset) — the local rows are still reconciled.
+  const client = await context.resolveWeftClient?.().catch(() => null);
 
   for (const workflow of workflows) {
     try {
+      // Cancel the running Weft workflow before marking the row cancelled. A
+      // missing run (WorkflowNotFoundError) means there is nothing to cancel —
+      // not an error — so we proceed to reconcile the local row regardless.
+      if (client) {
+        try {
+          await client.cancel(workflow.workflowId);
+        } catch (cancelError) {
+          if (!isWorkflowNotFound(cancelError)) {
+            throw cancelError;
+          }
+        }
+      }
+
       // Update database record only if still in an active phase
       // This prevents overwriting workflows that completed/failed during the cancellation process
       const updateResult = await context.db

@@ -21,7 +21,7 @@ export async function handleInstallationRepositories(
   context: WebhookContext,
 ): Promise<void> {
   const { action } = payload;
-  const { installationId, logger } = context;
+  const { installationId, logger, deliveryId } = context;
 
   switch (action) {
     case 'added': {
@@ -41,6 +41,7 @@ export async function handleInstallationRepositories(
           installationId,
           reason: `webhook:installation_repositories.${action}`,
           workspaceId,
+          deliveryId,
         },
         logger,
       );
@@ -70,6 +71,7 @@ export async function handleInstallationRepositories(
           installationId,
           reason: `webhook:installation_repositories.${action}`,
           workspaceId,
+          deliveryId,
         },
         logger,
       );

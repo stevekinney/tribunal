@@ -314,9 +314,15 @@ export async function getOrCreateRepository(
 /**
  * Refresh local repository rows and installation links from GitHub.
  *
- * TODO(weft): Move this into an installation sync workflow backed by ../weft.
- * The web request path calls it directly only so the GitHub setup callback has
- * an immediately visible result while the durable workflow runtime is absent.
+ * This is the shared sync body, used in two places:
+ *   - The `installation-sync` Weft workflow's `syncRepositories` activity wraps
+ *     it for the durable, coalesced path (ongoing lifecycle webhooks).
+ *   - The GitHub setup callback calls it directly for an immediately visible
+ *     result at install time — the durable workflow runs after a debounce, which
+ *     is the wrong latency for "user just clicked Install and expects to see
+ *     their repos." The two paths are complementary, not duplicative.
+ *
+ * It sets `githubInstallation.syncStatus = 'idle'` and `lastSyncedAt` on success.
  */
 export async function refreshInstallationRepositories(
   context: GithubServiceContext,

@@ -71,6 +71,27 @@ export const errorCategoryEnum = pgEnum('error_category', [
 ]);
 
 // ============================================================================
+// PULL REQUEST ACTION ITEM ENUMS
+// ============================================================================
+
+/** Lifecycle status of a derived pull request action item */
+export const actionItemStatusEnum = pgEnum('action_item_status', [
+  'pending', // Outstanding work
+  'in_progress', // Worked since first seen but not yet resolved
+  'done', // Resolved (thread resolved / check passing / human-checked)
+]);
+
+/** What a pull request action item was derived from */
+export const actionItemSourceTypeEnum = pgEnum('action_item_source_type', [
+  'review_comment', // A pull request review thread comment
+  'issue_comment', // A top-level issue comment on the pull request
+  'review', // A CHANGES_REQUESTED review body
+  'ci_check_run', // A failing CI check run
+  'ci_annotation', // A CI check annotation
+  'composite', // Aggregated from multiple sources
+]);
+
+// ============================================================================
 // DERIVED TYPESCRIPT TYPES
 // ============================================================================
 
@@ -88,3 +109,7 @@ export type SyncStatus = (typeof syncStatusEnum.enumValues)[number];
 export type WorkflowPhase = (typeof workflowPhaseEnum.enumValues)[number];
 export type WorkflowTaskType = (typeof workflowTaskTypeEnum.enumValues)[number];
 export type ErrorCategory = (typeof errorCategoryEnum.enumValues)[number];
+
+// Pull request action item types
+export type ActionItemStatus = (typeof actionItemStatusEnum.enumValues)[number];
+export type ActionItemSourceType = (typeof actionItemSourceTypeEnum.enumValues)[number];

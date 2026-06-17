@@ -46,8 +46,8 @@ async function signalReviewThread(
   eventType: PullRequestEventType,
   action: string | null,
 ): Promise<void> {
-  // TODO(weft): Route review-thread signals into a ../weft pull request
-  // orchestrator workflow instead of the current workflow-signals stub.
+  // Routes review-thread signals into the registered pull-request-orchestrator Weft
+  // workflow via signalPullRequestEvent (start-or-signal, coalesced).
   const { installationId, repositoryId, logger } = context;
 
   if (!data.pull_request.number) return;

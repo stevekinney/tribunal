@@ -21,6 +21,8 @@ import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import { assertDurableStorageForRecovery } from '@lostgradient/weft/storage/interface';
 import type { Storage } from '@lostgradient/weft/storage/interface';
 import { env } from '$env/dynamic/private';
+import { installationSyncWorkflow } from './workflows/installation-sync.js';
+import { pullRequestOrchestratorWorkflow } from './workflows/pull-request-orchestrator.js';
 
 /**
  * Storage isolation: Weft's `NeonStorage` owns a single `kv` table in whatever
@@ -38,20 +40,51 @@ function isProduction(): boolean {
 }
 
 /**
+ * The durable workflow definitions registered on the engine, keyed by their
+ * workflow `name`. The producers (`signalPullRequestEvent`,
+ * `enqueueInstallationSync`) dispatch to these names via `startOrSignal`.
+ */
+const WORKFLOWS = {
+  'pull-request-orchestrator': pullRequestOrchestratorWorkflow,
+  'installation-sync': installationSyncWorkflow,
+} as const;
+
+/**
  * Build a Weft engine over the given storage, recovering in-flight workflows
  * (recover defaults to `true`). Exposed for tests that drive the real engine
  * with an injected backend.
  *
- * Omits `workflows` while the registry is empty so `Engine.create` applies the
- * branded default registry (see weft#455). Register ported workflows with
- * `engine.registerWorkflows(...)` once there are any.
+ * Registers the ported workflow definitions ({@link WORKFLOWS}) so the producers'
+ * `startOrSignal` dispatches resolve to a real run instead of throwing
+ * `WorkflowNotRegisteredError`.
  *
  * `detectSecondInstance` is a warn-only backstop for the single-replica
  * invariant; it surfaces a `process.emitWarning` if a second engine writes to
  * the same store, but does not prevent it (enforce one replica in infra).
+ *
+ * Workflows are registered via `engine.registerWorkflows(...)` (which mutates the
+ * engine in place) rather than `Engine.create({ workflows })`. Both register the
+ * same definitions, but the `create({ workflows })` option BRANDS the returned
+ * engine type with the registry, and that branded `Engine<R>` is not assignable
+ * to `LocalClient`'s unbranded `constructor(engine: Engine)` (weft#585). Calling
+ * `registerWorkflows` for its side effect and keeping the original default-typed
+ * `engine` reference sidesteps the brand mismatch with no cast — the runtime
+ * engine is identical (registerWorkflows returns a re-typed view of `this`).
+ *
+ * CRITICAL — start the scheduler. `Engine.create` (even with the default
+ * `recover: true`) constructs the scheduler but does NOT start its timer-polling
+ * loop, so `ctx.sleep(...)` durable timers never fire until `scheduler.start()`
+ * is called. Without this, the sync debounce and the orchestrator's
+ * debounce/idle-timeout would park forever. We start it here, once, for this
+ * long-lived in-process engine; `engine[Symbol.asyncDispose]()` stops it on
+ * shutdown. (Filed upstream — Engine.create should auto-start or document this.)
+ * https://github.com/stevekinney/weft/issues/586
  */
-export function createEngine(storage: Storage): Promise<Engine> {
-  return Engine.create({ storage, detectSecondInstance: true });
+export async function createEngine(storage: Storage): Promise<Engine> {
+  const engine = await Engine.create({ storage, detectSecondInstance: true });
+  engine.registerWorkflows(WORKFLOWS);
+  engine.scheduler.start();
+  return engine;
 }
 
 // Warn at most once per process when production runs with no durable store, so
