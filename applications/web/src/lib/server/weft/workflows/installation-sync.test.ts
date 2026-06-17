@@ -452,4 +452,36 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(dbUpdates).toHaveLength(0);
     expect(mockRefresh).not.toHaveBeenCalled();
   });
+
+  /**
+   * 9. A cancel landing AFTER a successful fetch must NOT mark the run failed.
+   *
+   * Regression guard: an earlier fix re-checked the abort signal AFTER
+   * refreshInstallationRepositories (which writes 'idle' on success). That check
+   * sat inside the try, so a post-success abort threw into the catch and wrote
+   * 'failed' — corrupting a sync that actually completed. The activity must return
+   * the result for a successful fetch regardless of a late abort: the data is
+   * synced and 'idle' is correct; there is nothing to roll back.
+   */
+  it('does NOT mark a run failed when the signal aborts after a successful fetch', async () => {
+    dbUpdates.length = 0;
+
+    // Signal becomes aborted only AFTER refreshInstallationRepositories resolves.
+    const controller = new AbortController();
+    mockRefresh.mockImplementation(async () => {
+      controller.abort();
+      return { repositoryCount: 5, deactivatedRepositoryCount: 1 };
+    });
+
+    const result = await syncRepositories({ installationId: 42 }, { signal: controller.signal });
+
+    // The successful result is returned, not thrown.
+    expect(result).toEqual({ repositoryCount: 5, deactivatedRepositoryCount: 1 });
+    // Only the 'in_progress' write happened; NO 'failed' write (the catch path
+    // must not run for a successful fetch with a late abort).
+    const failedWrites = dbUpdates.filter(
+      (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
+    );
+    expect(failedWrites).toHaveLength(0);
+  });
 });

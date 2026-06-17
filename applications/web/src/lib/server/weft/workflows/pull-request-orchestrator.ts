@@ -417,12 +417,13 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
         // FIX 2 (weft#584, hardened 0.5.0): when a signal wins this race, the
         // losing analyze activity is now cooperatively aborted (its ctx.signal
         // fires; throwIfAborted bails before the write) — the fast path. But that
-        // is best-effort: an activity past its last abort check, or a same-commit
-        // supersede that does not move the head SHA, can still reach the write. So
-        // we pass an incrementing analysisGeneration counter; the activity compares
-        // the head SHA it fetched against GitHub's live head before writing and
-        // skips the write if it advanced (generationFenced=true). The fence is the
-        // load-bearing guarantee; the abort is the optimization.
+        // is best-effort. So the activity also re-fetches GitHub's live head SHA
+        // before writing and skips the write if it advanced (generationFenced=true,
+        // via the analysisGeneration counter for log correlation). Together: the
+        // abort catches most race losses; the head-SHA fence covers supersede-by-
+        // NEWER-PUSH. Neither covers a SAME-COMMIT supersede (new comment, thread
+        // resolve) — that remains a documented pre-production gap (a durable per-PR
+        // generation lease would close it; WEFT_MIGRATION_PLAN.md §7).
         //
         // FIX 1: if the analysis run completes first, its result is an
         // AnalyzePullRequestOutput (no kind field → falls through). If a signal

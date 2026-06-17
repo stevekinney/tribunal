@@ -103,17 +103,21 @@ const DRAIN_DURATION = '1s';
  * workflow body can decide whether to loop or exit.
  *
  * Cooperative cancellation (0.5.0): the activity receives an `AbortSignal` that
- * fires on workflow cancel/timeout. We check it BEFORE the GitHub fetch so a run
- * cancelled during the leading debounce never starts a sync and never writes the
- * success `idle` state that would clobber the finalizer's `failed`. This is the
- * same write-fence ordering the analyze activity uses. NOTE — best-effort, not a
- * hard guarantee: `refreshInstallationRepositories` writes `idle` internally at
- * the end of a successful fetch, so a cancel landing AFTER that internal write
- * but before the finalizer can still leave a stale `idle`. Fully closing that
- * residual window needs a durable per-attempt generation token shared by the
- * activity's success write and the finalizer (documented as a pre-production gate
- * in WEFT_MIGRATION_PLAN.md §7); inert today since the engine only runs when
- * WEFT_DATABASE_URL is set.
+ * fires on workflow cancel/timeout. We check it ONCE, BEFORE any side effect, so
+ * a run cancelled during the leading debounce never starts a sync and never
+ * writes the `in_progress`/`idle` state that would mask the finalizer's `failed`.
+ * We deliberately do NOT re-check after a successful fetch: at that point the
+ * repositories ARE synced and `idle` is correct, so a late cancel is not a data
+ * problem and must not be turned into a spurious `failed`.
+ *
+ * Residual hard-guarantee gap (best-effort, not airtight): if a cancel lands
+ * while `refreshInstallationRepositories` is mid-fetch, that function may still
+ * write `idle` internally before returning, leaving a stale `idle` for a run that
+ * was cancelled mid-flight (the finalizer's `eq(in_progress)` WHERE then matches
+ * nothing). Fully closing this needs a durable per-attempt generation token
+ * shared by the activity's success write and the finalizer — tracked as a
+ * pre-production gate in WEFT_MIGRATION_PLAN.md §7; inert today since the engine
+ * only runs when WEFT_DATABASE_URL is set.
  */
 export async function syncRepositories(
   input: { installationId: number },
@@ -138,11 +142,13 @@ export async function syncRepositories(
 
   try {
     const result = await refreshInstallationRepositories(githubContext, installationId);
-    // refreshInstallationRepositories already sets syncStatus = 'idle' on success.
-    // Final cooperative check: if cancellation landed during the fetch, throw so
-    // the workflow sees a failure and the finalizer reconciles, rather than
-    // reporting success for a run that was cancelled mid-flight.
-    context?.signal.throwIfAborted();
+    // refreshInstallationRepositories already set syncStatus = 'idle' on success.
+    // We deliberately do NOT re-check the abort signal here: a cancel arriving
+    // AFTER a successful fetch is not a data problem — the repositories ARE synced
+    // and 'idle' is the correct status. Throwing here would route into the catch
+    // below and overwrite 'idle' with a spurious 'failed' for a run that actually
+    // completed. The leading throwIfAborted (above, before any write) is what
+    // matters: it stops a run cancelled during the debounce from starting.
     return result;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

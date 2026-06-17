@@ -30,14 +30,19 @@
 > derivation (weft#583 — `StartOrSignalOutcome` is now exported). The head-SHA
 > generation fence is KEPT: weft#584 now cooperatively aborts a losing `ctx.run`
 > race branch, but that is best-effort and does not catch a same-commit supersede,
-> so the fence remains the load-bearing correctness guard. Two pre-production gates
-> were also CLOSED: `ownership: 'lease'` (weft#470) is wired in `createEngine` for
-> hard storage-layer single-writer fencing, and a durable `finalizer` (weft#446)
-> reconciles a stranded `installation-sync` status on cancel/timeout.
+> so the fence covers supersede-by-newer-push only. Pre-production gates advanced:
+> `ownership: 'lease'` (weft#470) is wired in `createEngine` for hard storage-layer
+> single-writer fencing (gate fully CLOSED), and a durable `finalizer` (weft#446)
+> reconciles a stranded `installation-sync` status on cancel/timeout (the
+> perpetual-spinner case CLOSED; a generation-token hardening for the
+> finalizer/success-write race remains tracked below).
 >
 > **Remaining (pre-production gates):** the fire-and-forget sync durability fix
 > (outbox + reconciler, or claim-after-enqueue) is a HARD prerequisite before
-> enabling `WEFT_DATABASE_URL` in production (§4.2); and analyze-activity
+> enabling `WEFT_DATABASE_URL` in production (§4.2); a durable per-attempt
+> generation token for installation-sync so the finalizer's `failed` and the
+> activity's success `idle` write cannot race to a wrong last-writer (§7 item 3 —
+> the stranded-spinner case is closed, this hardening is not); and analyze-activity
 > concurrency hardening (the same-commit supersede gap and full-body overwrite,
 > §7 item 5).
 >
@@ -361,21 +366,23 @@ against the shipped `dist/` before filing:
    then handles via failure + GitHub retry. Operators should still keep
    infra-level single-instance enforcement and monitor for the
    `WeftEngineLeaseLostWarning` (`process.emitWarning`).
-3. **Durable finalizer** (weft#446) — ✅ **CLOSED (0.5.0).** `installation-sync`
-   registers a definition-level `finalizer` (`reconcileSyncStatusOnTeardown`) and
-   records `ctx.setFinalizerState({ installationId })` on entry; on a
-   cancelled/timed-out terminal (lease eviction, lifecycle teardown, timeout) the
-   engine reconciles a row still showing this run's `'in_progress'` to `'failed'`
-   (idempotent, conditional on `syncStatus = 'in_progress'`). `syncRepositories`
-   also checks its cooperative `AbortSignal` before its success write so a
-   cancelled run does not report `'idle'`. The orchestrator has no DB status row
-   to strand, so it has no finalizer yet — it gains one the day a sandbox-holding
+3. **Durable finalizer** (weft#446) — ◑ **stranded-spinner case CLOSED (0.5.0);
+   generation-token hardening REMAINS.** `installation-sync` registers a
+   definition-level `finalizer` (`reconcileSyncStatusOnTeardown`) and records
+   `ctx.setFinalizerState({ installationId })` on entry; on a cancelled/timed-out
+   terminal (lease eviction, lifecycle teardown, timeout) the engine reconciles a
+   row still showing this run's `'in_progress'` to `'failed'` (idempotent,
+   conditional on `syncStatus = 'in_progress'`). `syncRepositories` checks its
+   cooperative `AbortSignal` once, before any side effect, so a run cancelled
+   during the debounce never starts. The orchestrator has no DB status row to
+   strand, so it has no finalizer yet — it gains one the day a sandbox-holding
    activity is added there.
 
-   _Residual hard-guarantee gap (pre-production):_ `refreshInstallationRepositories`
-   writes `'idle'` internally at the end of a successful fetch, so a cancel landing
-   after that internal write but before the finalizer can still leave a stale
-   `'idle'`. The no-clobber rests on Weft blocking a fresh same-id run while
+   _Remaining hard-guarantee gap (tracked in the top "Remaining" list):_
+   `refreshInstallationRepositories` writes `'idle'` internally at the end of a
+   successful fetch, so a cancel landing while it is mid-fetch can leave a stale
+   `'idle'` for a cancelled run (the finalizer's `eq('in_progress')` then matches
+   nothing). The no-clobber rests on Weft blocking a fresh same-id run while
    teardown is pending plus the cooperative abort. A durable per-attempt generation
    token (shared by the activity's success write and the finalizer `WHERE`) would
    make it airtight — deferred as it is inert until `WEFT_DATABASE_URL` is set.
