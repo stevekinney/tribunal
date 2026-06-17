@@ -160,9 +160,16 @@ export type PullRequestOrchestratorOutput = {
 // they work at all three race sites (the analysis race also yields an
 // AnalyzePullRequestOutput, which has no `kind` field) without a per-race union.
 
-/** True when the sleep branch won (idle timeout or debounce timer expired). */
-function isTimerWinner(value: unknown): value is undefined | null | void {
-  return value === undefined || value === null;
+/**
+ * True when the sleep branch won (idle timeout or debounce timer expired).
+ * `ctx.sleep` resolves `undefined` (typed `void`); the signal branches resolve
+ * non-null objects, so `undefined` unambiguously identifies the timer winner.
+ * The predicate lists `void` (not just `undefined`) because the race result type
+ * includes the `void` from `ctx.sleep` — listing it is what lets the false-branch
+ * narrow to the signal-payload union at the call sites.
+ */
+function isTimerWinner(value: unknown): value is undefined | void {
+  return value === undefined;
 }
 
 /** True when a pull_request_event signal won the race. */

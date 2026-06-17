@@ -110,6 +110,14 @@ export function parseActionItemsBlock(body: string): ParsedBlock | null {
     const checkMatch = CHECKLIST_ITEM_REGEX.exec(itemLine);
     if (!checkMatch) continue;
 
+    // Skip checklist lines with no `tribunal:ai:` stable-id comment. These are
+    // hand-added items the workflow does not own; carrying them with id:'' would
+    // (a) collapse multiple unmarked lines onto the same empty stableKey and
+    // collide on the unique (pullRequestStateId, stableKey) index, and (b) match
+    // no auto-completion rule. We leave such lines untouched in the PR body
+    // (render only writes back the items we own) rather than ingesting them.
+    if (!stableId) continue;
+
     const completed = checkMatch[1].toLowerCase() === 'x';
     let description = checkMatch[2].trim();
 
@@ -289,77 +297,57 @@ export function reconcileActionItems(
  * 2. Auto-complete review thread items when resolved
  * 3. Auto-complete CI items when checks pass
  */
+/**
+ * Auto-completion rule shared by every completion resolver: returns `true` when
+ * a stable id should be auto-marked done by conversation state (its review
+ * thread is resolved, or its CI check is passing), or `null` when no rule
+ * applies and the caller should fall back to its own signal. Keeping this in one
+ * place means the thread/CI prefixes and the `ci-check-` lookup live in exactly
+ * one spot.
+ */
+function autoCompleteByConversation(id: string, state: ConversationState): true | null {
+  if (
+    (id.startsWith('review-thread-') || id.startsWith('review-comment:')) &&
+    isThreadResolved(id, state)
+  ) {
+    return true;
+  }
+
+  if (id.startsWith('ci-check-')) {
+    if (state.allChecksPassing) return true;
+    if (state.passingCheckNames.has(id.slice('ci-check-'.length))) return true;
+  }
+
+  return null;
+}
+
+/**
+ * Completion state when an existing (parsed) item is reconciled against a freshly
+ * derived one. A human checkbox always wins; otherwise auto-completion applies;
+ * otherwise the derived suggestion (which factors in conversation state) wins.
+ */
 function resolveCompletionState(
   existing: ParsedActionItem,
   derived: DerivedActionItem,
   state: ConversationState,
 ): boolean {
-  // If the existing item was manually checked by a human, keep it checked
   if (existing.completed) return true;
-
-  // Auto-complete resolved review threads (both old and new ID formats)
-  if (
-    (existing.id.startsWith('review-thread-') || existing.id.startsWith('review-comment:')) &&
-    isThreadResolved(existing.id, state)
-  ) {
-    return true;
-  }
-
-  // Auto-complete CI items when checks pass
-  if (existing.id.startsWith('ci-check-')) {
-    if (state.allChecksPassing) return true;
-    const checkName = existing.id.replace('ci-check-', '');
-    if (state.passingCheckNames.has(checkName)) return true;
-  }
-
-  // Use derived suggestion (which factors in conversation state)
-  return derived.completed;
+  return autoCompleteByConversation(existing.id, state) ?? derived.completed;
 }
 
-/**
- * Resolve completion state for a newly derived item.
- */
+/** Completion state for a newly derived item (no existing human edit to honour). */
 function resolveNewItemCompletion(item: DerivedActionItem, state: ConversationState): boolean {
-  // Auto-complete resolved review threads (both old and new ID formats)
-  if (
-    (item.id.startsWith('review-thread-') || item.id.startsWith('review-comment:')) &&
-    isThreadResolved(item.id, state)
-  ) {
-    return true;
-  }
-
-  // Auto-complete CI items when checks pass
-  if (item.id.startsWith('ci-check-')) {
-    if (state.allChecksPassing) return true;
-    const checkName = item.id.replace('ci-check-', '');
-    if (state.passingCheckNames.has(checkName)) return true;
-  }
-
-  return item.completed;
+  return autoCompleteByConversation(item.id, state) ?? item.completed;
 }
 
 /**
- * Resolve completion state for an orphaned item (exists in PR body but no
- * longer produced by derivation). Preserves human checkbox edits and still
- * applies auto-completion for resolved threads and passing CI checks.
+ * Completion state for an orphaned item (exists in PR body but no longer
+ * produced by derivation). Preserves a human checkbox edit, still applies
+ * auto-completion for resolved threads and passing CI checks.
  */
 function resolveOrphanedItemCompletion(item: ParsedActionItem, state: ConversationState): boolean {
   if (item.completed) return true;
-
-  if (
-    (item.id.startsWith('review-thread-') || item.id.startsWith('review-comment:')) &&
-    isThreadResolved(item.id, state)
-  ) {
-    return true;
-  }
-
-  if (item.id.startsWith('ci-check-')) {
-    if (state.allChecksPassing) return true;
-    const checkName = item.id.replace('ci-check-', '');
-    if (state.passingCheckNames.has(checkName)) return true;
-  }
-
-  return item.completed;
+  return autoCompleteByConversation(item.id, state) ?? item.completed;
 }
 
 /**

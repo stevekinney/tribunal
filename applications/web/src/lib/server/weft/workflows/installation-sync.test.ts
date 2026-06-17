@@ -260,4 +260,45 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     // Only one sync pass should have run (no signal looping).
     expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * 5. A sync_requested signal arriving during the drain window triggers a
+   *    SECOND sync pass before the workflow terminates.
+   *
+   * This is the coalescing loop — the core value over a one-shot function — and
+   * the primary purpose of the drain race. A regression where the drain timer
+   * always wins (the lost-signal hazard) would drop the second signal and run
+   * the sync only once.
+   */
+  it('loops for a second sync when a signal arrives during the drain window', async () => {
+    const testEngine = createEngine();
+
+    const handle = await testEngine.start('installation-sync', syncInput(), {
+      id: WORKFLOW_ID,
+    });
+
+    // Stage 1: fire the leading debounce so the first sync runs.
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+
+    // Buffer a second sync request BEFORE the drain window elapses. The drain
+    // race must observe it (waitForSignal wins over the bounded sleep) and loop.
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput());
+    await yieldToPortableEventLoop();
+
+    // Stage 2: fire the drain timer; the buffered signal sends us back into the
+    // loop, which re-runs the leading debounce + a second sync, then drains again.
+    await testEngine.advanceTime(PAST_DRAIN);
+    await yieldToPortableEventLoop();
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await testEngine.advanceTime(PAST_DRAIN);
+    await yieldToPortableEventLoop();
+
+    const state = await awaitTerminal(testEngine, handle.id);
+
+    expect(state.status).toBe('completed');
+    // Two sync passes: the initial one plus the coalesced second request.
+    expect(mockRefresh).toHaveBeenCalledTimes(2);
+  });
 });

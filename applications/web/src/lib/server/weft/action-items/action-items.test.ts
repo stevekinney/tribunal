@@ -14,6 +14,7 @@ import {
   parseActionItemsBlock,
   reconcileActionItems,
   renderActionItemsBlock,
+  updatePRDescription,
   type ActionItem,
   type ConversationState,
   type DerivedActionItem,
@@ -646,5 +647,45 @@ describe('computeActionItemStatus', () => {
         existingFirstSeenHeadSha: 'sha-same',
       }),
     ).toBe('pending');
+  });
+});
+
+// ============================================================================
+// updatePRDescription — replace vs. append
+// ============================================================================
+
+describe('updatePRDescription', () => {
+  const items: ActionItem[] = [
+    { id: 'ci-check-lint', description: 'Fix CI: lint', completed: false },
+  ];
+
+  it('appends a new block when the body has no existing markers', () => {
+    const body = 'Original PR description.';
+    const updated = updatePRDescription(body, items);
+
+    // Original text is preserved and the block is appended after it.
+    expect(updated.startsWith('Original PR description.')).toBe(true);
+    expect(updated).toContain('<!--TRIBUNAL-ACTION-ITEMS-START-->');
+    expect(updated).toContain('<!--TRIBUNAL-ACTION-ITEMS-END-->');
+    expect(updated).toContain('<!-- tribunal:ai:ci-check-lint -->');
+  });
+
+  it('replaces the existing block in place, leaving surrounding text intact', () => {
+    // Build a body with an existing (stale) block between prose.
+    const stale = renderActionItemsBlock([
+      { id: 'ci-check-old', description: 'Fix CI: old', completed: true },
+    ]);
+    const body = `Intro paragraph.\n\n${stale}\n\nClosing paragraph.`;
+
+    const updated = updatePRDescription(body, items);
+
+    // Surrounding prose survives.
+    expect(updated).toContain('Intro paragraph.');
+    expect(updated).toContain('Closing paragraph.');
+    // The new item replaced the stale one — exactly one block, new content only.
+    expect(updated).toContain('<!-- tribunal:ai:ci-check-lint -->');
+    expect(updated).not.toContain('ci-check-old');
+    const startCount = updated.split('<!--TRIBUNAL-ACTION-ITEMS-START-->').length - 1;
+    expect(startCount).toBe(1);
   });
 });

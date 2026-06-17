@@ -1,10 +1,6 @@
 import { and, count, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '@tribunal/database';
-import {
-  pullRequestActionItem,
-  pullRequestActionItemSource,
-  pullRequestActionItemDependency,
-} from '@tribunal/database/schema';
+import { pullRequestActionItem, pullRequestActionItemSource } from '@tribunal/database/schema';
 import type {
   PullRequestActionItem,
   PullRequestActionItemSource,
@@ -100,36 +96,6 @@ export async function addActionItemSources(
 }
 
 // ============================================================================
-// DEPENDENCIES
-// ============================================================================
-
-/**
- * Replace all dependencies for an action item. Wraps the delete-then-insert
- * in a transaction so a failed insert cannot leave the action item with no
- * dependencies. Self-dependency is rejected by the DB check constraint.
- */
-export async function replaceActionItemDependencies(
-  db: Database,
-  actionItemId: number,
-  dependsOnIds: number[],
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    await tx
-      .delete(pullRequestActionItemDependency)
-      .where(eq(pullRequestActionItemDependency.actionItemId, actionItemId));
-
-    if (dependsOnIds.length > 0) {
-      await tx.insert(pullRequestActionItemDependency).values(
-        dependsOnIds.map((dependsOnActionItemId) => ({
-          actionItemId,
-          dependsOnActionItemId,
-        })),
-      );
-    }
-  });
-}
-
-// ============================================================================
 // QUERIES
 // ============================================================================
 
@@ -216,23 +182,21 @@ export async function getActionItem(
 // METADATA QUERIES
 // ============================================================================
 
-export type PullRequestActionItemDependencyRecord = {
-  dependsOnActionItemId: number;
-  dependsOnStableKey: string;
-  dependsOnSubject: string;
-};
-
 export type PullRequestActionItemWithMetadata = PullRequestActionItem & {
   sources: PullRequestActionItemSource[];
-  dependencies: PullRequestActionItemDependencyRecord[];
 };
 
 /**
- * List action items for a pull request state with sources and dependency targets.
+ * List action items for a pull request state, each with its derived sources.
  * Ordering is deterministic:
  * 1) Status rank: pending, in_progress, done
  * 2) createdAt ascending
  * 3) stableKey ascending
+ *
+ * Note: the schema carries a `pull_request_action_item_dependency` table for a
+ * future dependency-graph feature, but no producer populates it and no consumer
+ * reads it yet, so this query intentionally does not join it. Add the dependency
+ * read back when a caller needs it.
  */
 export async function listActionItemsWithMetadata(
   db: Database,
@@ -269,39 +233,6 @@ export async function listActionItemsWithMetadata(
       pullRequestActionItemSource.sourceIdentifier,
     );
 
-  const dependencyLinks = await db
-    .select({
-      actionItemId: pullRequestActionItemDependency.actionItemId,
-      dependsOnActionItemId: pullRequestActionItemDependency.dependsOnActionItemId,
-    })
-    .from(pullRequestActionItemDependency)
-    .where(inArray(pullRequestActionItemDependency.actionItemId, actionItemIds))
-    .orderBy(
-      pullRequestActionItemDependency.actionItemId,
-      pullRequestActionItemDependency.dependsOnActionItemId,
-    );
-
-  const dependencyTargetIds = Array.from(
-    new Set(dependencyLinks.map((dependency) => dependency.dependsOnActionItemId)),
-  );
-  const dependencyTargets =
-    dependencyTargetIds.length > 0
-      ? await db
-          .select({
-            id: pullRequestActionItem.id,
-            stableKey: pullRequestActionItem.stableKey,
-            subject: pullRequestActionItem.subject,
-            createdAt: pullRequestActionItem.createdAt,
-          })
-          .from(pullRequestActionItem)
-          .where(inArray(pullRequestActionItem.id, dependencyTargetIds))
-      : [];
-
-  const dependencyTargetsById = new Map<number, (typeof dependencyTargets)[number]>();
-  for (const target of dependencyTargets) {
-    dependencyTargetsById.set(target.id, target);
-  }
-
   const sourcesByActionItemId = new Map<number, PullRequestActionItemSource[]>();
   for (const source of sources) {
     const entries = sourcesByActionItemId.get(source.actionItemId) ?? [];
@@ -309,39 +240,8 @@ export async function listActionItemsWithMetadata(
     sourcesByActionItemId.set(source.actionItemId, entries);
   }
 
-  const dependenciesByActionItemId = new Map<number, PullRequestActionItemDependencyRecord[]>();
-  for (const dependency of dependencyLinks) {
-    const target = dependencyTargetsById.get(dependency.dependsOnActionItemId);
-    const entries = dependenciesByActionItemId.get(dependency.actionItemId) ?? [];
-    entries.push({
-      dependsOnActionItemId: dependency.dependsOnActionItemId,
-      dependsOnStableKey: target?.stableKey ?? `action-item-${dependency.dependsOnActionItemId}`,
-      dependsOnSubject: target?.subject ?? '',
-    });
-    dependenciesByActionItemId.set(dependency.actionItemId, entries);
-  }
-
-  // Keep dependency display order deterministic by target creation time then stable key.
-  for (const [actionItemId, dependencies] of dependenciesByActionItemId.entries()) {
-    dependencies.sort((left, right) => {
-      const leftTarget = dependencyTargetsById.get(left.dependsOnActionItemId);
-      const rightTarget = dependencyTargetsById.get(right.dependsOnActionItemId);
-
-      const leftTimestamp = leftTarget?.createdAt.getTime() ?? Number.MAX_SAFE_INTEGER;
-      const rightTimestamp = rightTarget?.createdAt.getTime() ?? Number.MAX_SAFE_INTEGER;
-      if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp;
-
-      if (left.dependsOnStableKey < right.dependsOnStableKey) return -1;
-      if (left.dependsOnStableKey > right.dependsOnStableKey) return 1;
-
-      return left.dependsOnActionItemId - right.dependsOnActionItemId;
-    });
-    dependenciesByActionItemId.set(actionItemId, dependencies);
-  }
-
   return items.map((item) => ({
     ...item,
     sources: sourcesByActionItemId.get(item.id) ?? [],
-    dependencies: dependenciesByActionItemId.get(item.id) ?? [],
   }));
 }

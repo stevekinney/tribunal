@@ -326,6 +326,31 @@ against the shipped `dist/` before filing:
    today (analyze/sync touch only DB + GitHub).
 4. **Review-agent dispatch** (`+server.ts`) — a separate future feature, still a
    logged no-op stub.
+5. **Analyze-activity concurrency hardening** — the analyze activity is correct
+   for the single-active-analysis case but has known sharp edges under concurrent
+   or rapid analyses. These are inert until `WEFT_DATABASE_URL` is set (the
+   activity only runs then), and were surfaced by the review committee:
+   - **Same-commit supersede isn't fenced.** The generation fence compares the
+     fetched head SHA against the live `pull_request_state.headSha`; a supersede
+     on the _same_ commit (a new review comment, a thread resolve, a check
+     completing) does not advance the SHA, so a losing `ctx.run` analysis (which
+     Weft does not abort — weft#584) can still write. A durable per-PR generation
+     lease (write-conditional on "this generation is current") would close it.
+   - **Full PR-body overwrite can clobber concurrent edits.** The activity
+     rewrites the whole body from the snapshot it fetched at start; a human edit
+     or a newer analysis landing mid-flight is overwritten. Re-fetch the body
+     immediately before the write and apply the block replacement to the fresh
+     body.
+   - **`synchronize` is not dispatched to the orchestrator**, so a fenced
+     analysis (head advanced) has no guaranteed replacement run for the new head.
+     Either dispatch head changes or have a fenced analysis re-arm a debounced
+     analysis for the current head.
+   - **GraphQL connections are first-page only** (reviews/threads/comments/checks
+     truncate at their limits; `StatusContext` classic statuses are ignored).
+     Paginate the connections needed for correctness and map `StatusContext`
+     failures alongside `CheckRun`.
+   - **`upsertActionItems` / `addActionItemSources` issue one query per item.**
+     Batch into a single `unnest`/multi-values upsert before a real workload.
 
 > Engine boot timing is **resolved**: the engine builds lazily on first
 > dispatch (via the `resolveWeftClient` thunk), so web-app startup is not coupled

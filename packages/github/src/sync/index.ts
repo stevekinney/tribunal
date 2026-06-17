@@ -92,6 +92,24 @@ export async function enqueueInstallationSync(
       console.log('[sync] installation-sync not registered yet; skipping dispatch', { workflowId });
       return { workflowId, status: 'started' };
     }
+    // Terminal-run conflict (weft#452, remaining slice): the prior sync under
+    // this stable id reached a terminal state, so `startOrSignal` cannot reuse
+    // the id and cannot coalesce. 0.4.0 ships purge-and-restart only on the
+    // in-process `engine.start({ onTerminalConflict: 'start-new' })`, which is
+    // NOT exposed on the transport-neutral `WeftClient.startOrSignal`. Until a
+    // restart-capable start-or-signal lands upstream, surface this as a distinct,
+    // loud error (not swallowed) so a dropped re-sync is visible to operators —
+    // the caller (fireAndForgetInstallationSync) logs error results. This path
+    // is inert until WEFT_DATABASE_URL is configured; see WEFT_MIGRATION_PLAN.md.
+    if (isWeftFault(error, 'StartOrSignalConflictError')) {
+      return {
+        workflowId,
+        status: 'error',
+        error:
+          `installation-sync id ${workflowId} has a terminal prior run; startOrSignal ` +
+          `cannot restart it (weft#452 remaining slice). Re-sync was not dispatched.`,
+      };
+    }
     return {
       workflowId,
       status: 'error',

@@ -1,12 +1,8 @@
 export type { ActionItemInput, ActionItemSourceInput } from './types.js';
-export type {
-  PullRequestActionItemDependencyRecord,
-  PullRequestActionItemWithMetadata,
-} from './repository.js';
+export type { PullRequestActionItemWithMetadata } from './repository.js';
 export {
   upsertActionItems,
   addActionItemSources,
-  replaceActionItemDependencies,
   listActionItems,
   countActionItemsByStatus,
   getActionItem,

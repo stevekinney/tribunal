@@ -32,6 +32,14 @@
  * - Tribunal marker namespace: TRIBUNAL-ACTION-ITEMS-START/END, tribunal:ai:{id}
  * - isRepositoryLinkedToProject guard is DROPPED (Tribunal has no project-link table).
  * - Activities close over the module-level githubContext singleton.
+ *
+ * Concurrency hardening is a documented pre-production gate (see
+ * WEFT_MIGRATION_PLAN.md §7, item 5), inert until WEFT_DATABASE_URL is set:
+ * the SHA fence does not catch a same-commit supersede; the full-body write can
+ * clobber a concurrent edit (re-fetch before write); `synchronize` is not yet
+ * dispatched so a fenced run has no guaranteed replacement; GraphQL connections
+ * are first-page only. These were surfaced by the review committee and are
+ * tracked for the production-enablement increment, not this one.
  */
 
 import { and, eq } from 'drizzle-orm';
@@ -534,6 +542,19 @@ async function fetchPRConversation(
  * One item per review comment (not per thread), plus CI checks and
  * changes-requested reviews. Bodies are raw — summarization happens later.
  */
+/**
+ * Make a CI check name safe to embed in a stable key. The key is rendered into
+ * a trailing `<!-- tribunal:ai:ci-check-{name} -->` HTML comment in the PR body
+ * and re-parsed on the next cycle, so a check name containing `>`, `--`, or
+ * whitespace runs (GitHub allows e.g. `CI / test (ubuntu)`) would corrupt the
+ * comment and orphan the item. Collapse anything outside `[A-Za-z0-9._-]` to a
+ * single `-`. Applied identically on the lookup side (passingCheckNames) so
+ * auto-completion still matches.
+ */
+function safeCheckKeySegment(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 function deriveRawItems(conversation: PRConversationState): RawDerivedItem[] {
   const items: RawDerivedItem[] = [];
 
@@ -553,7 +574,9 @@ function deriveRawItems(conversation: PRConversationState): RawDerivedItem[] {
   for (const check of conversation.ciStatus.checks) {
     if (check.conclusion === 'FAILURE' || check.conclusion === 'failure') {
       items.push({
-        id: `ci-check-${check.name}`,
+        // Sanitize the check name in the KEY (it gets embedded in an HTML
+        // comment in the PR body); keep the raw name in the human-readable body.
+        id: `ci-check-${safeCheckKeySegment(check.name)}`,
         body: `Fix CI: ${check.name}`,
         completed: false,
         sourceRef: check.detailsUrl || undefined,
@@ -602,7 +625,10 @@ function buildConversationState(conversation: PRConversationState): Conversation
   const passingCheckNames = new Set<string>();
   for (const check of conversation.ciStatus.checks) {
     if (check.conclusion === 'SUCCESS' || check.conclusion === 'success') {
-      passingCheckNames.add(check.name);
+      // Sanitize to match the key form used in deriveRawItems, so the
+      // `ci-check-{name}` auto-completion lookup (which strips the prefix and
+      // checks this set) compares like-for-like.
+      passingCheckNames.add(safeCheckKeySegment(check.name));
     }
   }
 
