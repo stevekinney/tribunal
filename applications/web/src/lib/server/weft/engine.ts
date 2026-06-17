@@ -185,10 +185,10 @@ async function buildClient(): Promise<WeftClient | null> {
     console.error(
       '[weft] Durable engine ACTIVATED in production (WEFT_DATABASE_URL set). ' +
         'Single-writer ownership (lease fencing) and durable finalizers are now wired, ' +
-        'but pre-production gates remain — see documentation/WEFT_MIGRATION_PLAN.md §4.2/§7: ' +
-        'fire-and-forget sync durability (data-loss on terminal-conflict re-sync) and ' +
-        'analyze-activity concurrency hardening. ' +
-        'Confirm these are closed before relying on durable execution in production.',
+        'but pre-production gates REMAIN. See the authoritative checklist in ' +
+        'documentation/WEFT_MIGRATION_PLAN.md (top "Remaining" block + §4.2/§7) and ' +
+        'confirm every gate is closed before relying on durable execution in production. ' +
+        '(The list is intentionally NOT duplicated here, to avoid drifting from the plan.)',
     );
   }
   const engine = await createEngine(storage);
