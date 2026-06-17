@@ -541,18 +541,35 @@ async function fetchPRConversation(
  *
  * One item per review comment (not per thread), plus CI checks and
  * changes-requested reviews. Bodies are raw — summarization happens later.
- */
 /**
- * Make a CI check name safe to embed in a stable key. The key is rendered into
- * a trailing `<!-- tribunal:ai:ci-check-{name} -->` HTML comment in the PR body
- * and re-parsed on the next cycle, so a check name containing `>`, `--`, or
- * whitespace runs (GitHub allows e.g. `CI / test (ubuntu)`) would corrupt the
- * comment and orphan the item. Collapse anything outside `[A-Za-z0-9._-]` to a
- * single `-`. Applied identically on the lookup side (passingCheckNames) so
- * auto-completion still matches.
+ * Deterministic FNV-1a hash of a string, rendered base-36. Stable across runs
+ * (same input → same output) so a check name always maps to the same key.
+ */
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    // FNV prime, kept in 32-bit unsigned range via Math.imul + >>> 0.
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+/**
+ * Make a CI check name safe to embed in a stable key, collision-resistantly.
+ * The key is rendered into a trailing `<!-- tribunal:ai:ci-check-{seg} -->` HTML
+ * comment in the PR body and re-parsed next cycle, so a check name with `>`,
+ * `--`, or whitespace (GitHub allows e.g. `CI / test (ubuntu)`) would corrupt
+ * the comment. A pure slug would also collide — `CI / test`, `CI:test`, and
+ * `CI test` all slug to `CI-test`, merging distinct checks and auto-completing
+ * the wrong item. So the segment is `slug-{hash}`: a readable slug for humans
+ * plus a hash of the ORIGINAL name for uniqueness. Applied identically on the
+ * passingCheckNames lookup side so auto-completion still matches.
  */
 function safeCheckKeySegment(name: string): string {
-  return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const slug = name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const hash = stableHash(name);
+  return slug ? `${slug}-${hash}` : hash;
 }
 
 function deriveRawItems(conversation: PRConversationState): RawDerivedItem[] {

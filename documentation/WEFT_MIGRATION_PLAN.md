@@ -313,11 +313,28 @@ against the shipped `dist/` before filing:
   suite green (93 + migration test); workflow-definition + activity-helper unit
   tests against a real engine. `TODO(weft#NN)` seams refreshed.
 
+> [!WARNING] Enabling `WEFT_DATABASE_URL` in production is gated.
+> The durable engine only builds when `WEFT_DATABASE_URL` is set, so the gates
+> below are inert until an operator takes that deliberate step. To make the risk
+> mechanical (not just documentation — the review committee's point), the engine
+> emits a loud one-time `console.error` when it activates in production with these
+> gates open (`buildClient` in `engine.ts`). **Deploy decision still open:**
+> whether to harden that warning into a HARD REFUSAL — engine build throws in
+> production unless an explicit `WEFT_PRODUCTION_ENABLED` flag is set, forcing a
+> two-step opt-in. Deferred to the production-enablement increment as a deploy
+> call, not wired now (it changes deploy semantics and is moot while the gates
+> below are open).
+
 **Remaining (pre-production gates, not code-blocking):**
 
 1. **Fire-and-forget sync durability** (§4.2) — outbox + reconciler or
    claim-after-enqueue. HARD prerequisite before enabling `WEFT_DATABASE_URL` in
    production. The GUID threading added now is defense-in-depth, not the fix.
+   This also covers the `StartOrSignalConflictError` terminal-conflict re-sync:
+   today it surfaces as a loud error (not silently dropped), but a completed sync
+   under a stable id blocks the next dispatch — the outbox/reconciler (or a
+   restart-capable start-or-signal once weft#452's remaining slice ships) closes
+   the data-loss window.
 2. **Single-replica enforcement** — one web replica + `Recreate` rollout, OR
    adopt `ownership: 'lease'` (weft#470) as a deliberate deploy-semantics change
    (evaluated, deferred — see weft#585's branded-engine note before wiring it).

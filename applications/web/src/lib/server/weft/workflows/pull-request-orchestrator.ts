@@ -49,6 +49,7 @@
  */
 
 import { workflow, signal } from '@lostgradient/weft';
+import type { Duration } from '@lostgradient/weft';
 import { analyzePullRequest } from '../action-items/analyze-pull-request.js';
 import type { AnalyzePullRequestOutput } from '../action-items/analyze-pull-request.js';
 
@@ -230,13 +231,21 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
       execute: analyzePullRequest,
       // Allow up to 3 minutes for GitHub GraphQL + DB write per analysis.
       timeout: '3m',
-      // Retry up to 3 times with exponential back-off; certain classes of
-      // errors (NotFound, Validation) are treated as permanent by the activity.
+      // Retry up to 3 times with exponential back-off. Permanent failures (by
+      // error `name`, from packages/github/src/error-taxonomy.ts) skip retries
+      // and fail fast — matching depict's nonRetryableErrorTypes policy.
       retry: {
         maximumAttempts: 3,
         initialDelay: '5s',
         backoffCoefficient: 2,
         maximumDelay: '1m',
+        nonRetryableErrors: [
+          'NonRetryableError',
+          'NotFoundError',
+          'ValidationError',
+          'PermissionError',
+          'ConflictError',
+        ],
       },
     },
   })
@@ -249,6 +258,16 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
     input: PullRequestOrchestratorInput,
   ): AsyncGenerator<unknown, PullRequestOrchestratorOutput, unknown> {
     const { workspaceId, repositoryId, prNumber, installationId, owner, repo } = input;
+
+    // Debounce/idle durations default to the production constants but can be
+    // overridden per-run via `services` (never checkpointed, host memory only).
+    // Production passes no services. Tests inject tiny values so the in-process
+    // race-branch timers — which advanceTime cannot drive — fire in milliseconds.
+    const services = ctx.services as
+      | { debounceDuration?: Duration; idleDuration?: Duration }
+      | undefined;
+    const debounceDuration: Duration = services?.debounceDuration ?? DEBOUNCE_DURATION;
+    const idleDuration: Duration = services?.idleDuration ?? IDLE_DURATION;
 
     // Monotonic generation counter for the stale-write fence (weft#584 / FIX 2).
     // Incremented before each ctx.run('analyzePullRequest', ...) call so the
@@ -298,7 +317,7 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
       const first = yield* ctx.race([
         ctx.waitForSignal('pull_request_event'),
         ctx.waitForSignal('pull_request_closed'),
-        ctx.sleep(IDLE_DURATION), // FIX 5: 7-day idle only in phase (A)
+        ctx.sleep(idleDuration), // FIX 5: 7-day idle only in phase (A)
       ] as const);
 
       if (isTimerWinner(first)) {
@@ -356,7 +375,7 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
           const debounceResult = yield* ctx.race([
             ctx.waitForSignal('pull_request_event'),
             ctx.waitForSignal('pull_request_closed'),
-            ctx.sleep(DEBOUNCE_DURATION),
+            ctx.sleep(debounceDuration),
           ] as const);
 
           if (isTimerWinner(debounceResult)) {

@@ -127,10 +127,28 @@ export function resolveDurableStorage(): Storage | null {
 // of the whole process being poisoned until restart.
 let clientPromise: Promise<WeftClient | null> | undefined;
 
+// Warn at most once when the durable engine activates in production while the
+// documented pre-production hardening gates are still open (WEFT_MIGRATION_PLAN.md
+// §4.2 + §7). This is the mechanical "documentation is not a guard" signal — it
+// makes activating WEFT_DATABASE_URL before the gates close LOUD at runtime,
+// without a hard refusal. (A hard refusal behind an explicit enablement flag is
+// the stronger option recorded as a deploy decision in the migration plan.)
+let warnedProductionGatesOpen = false;
+
 async function buildClient(): Promise<WeftClient | null> {
   const storage = resolveDurableStorage();
   if (!storage) {
     return null;
+  }
+  if (isProduction() && !warnedProductionGatesOpen) {
+    warnedProductionGatesOpen = true;
+    console.error(
+      '[weft] Durable engine ACTIVATED in production (WEFT_DATABASE_URL set). ' +
+        'Pre-production gates are still open — see documentation/WEFT_MIGRATION_PLAN.md §4.2/§7: ' +
+        'fire-and-forget sync durability (data-loss on terminal-conflict re-sync), ' +
+        'single-replica/lease enforcement, and analyze-activity concurrency hardening. ' +
+        'Confirm these are closed before relying on durable execution in production.',
+    );
   }
   const engine = await createEngine(storage);
   return new LocalClient(engine);

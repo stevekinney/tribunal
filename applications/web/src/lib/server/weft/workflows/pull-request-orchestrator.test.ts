@@ -80,17 +80,23 @@ function makeClose(merged: boolean, actorLogin?: string) {
 // Engine lifecycle
 // ──────────────────────────────────────────────────────────────────────────────
 
+// The orchestrator's debounce/idle sleeps live INSIDE ctx.race, so they are
+// transient in-process timers — TestEngine.advanceTime (which ticks the durable
+// scheduler) cannot fire them. Instead we inject tiny debounce/idle durations
+// via per-run `services` (defaults to 30s/7d in production) so the real
+// in-process timers fire in milliseconds, keeping tests fast and deterministic
+// without waiting on wall-clock time.
 let engine: Engine | undefined;
 let client: LocalClient;
+
+// Tiny per-run timing overrides delivered through `services`.
+const TEST_SERVICES = { debounceDuration: '20ms', idleDuration: '40ms' } as const;
 
 beforeEach(async () => {
   analyzeMock.mockClear();
   // Reset to the default stub return for each test.
   analyzeMock.mockResolvedValue({ updated: true, actionItemCount: 1, persisted: true });
 
-  // Register via registerWorkflows (side effect) rather than the create({ workflows })
-  // option so the engine keeps the unbranded default type that LocalClient's
-  // constructor accepts (weft#585) — mirrors production engine.ts.
   const createdEngine = await Engine.create({ storage: new MemoryStorage() });
   createdEngine.registerWorkflows({ 'pull-request-orchestrator': pullRequestOrchestratorWorkflow });
   engine = createdEngine;
@@ -150,6 +156,37 @@ async function startOrSignalEvent(payload = makeEvent()) {
     { id: WORKFLOW_ID },
   );
   return handle;
+}
+
+/**
+ * Start the orchestrator with tiny injected debounce/idle durations (services)
+ * so the in-process race-branch timers fire in milliseconds, then deliver the
+ * first event. `services` is an inline-only `engine.start` option (it cannot ride
+ * `client.startOrSignal`), so this dispatches through the engine directly.
+ */
+async function startWithFastTimers(payload = makeEvent()) {
+  await engine!.start('pull-request-orchestrator', BASE_INPUT, {
+    id: WORKFLOW_ID,
+    services: TEST_SERVICES,
+  });
+  await client.signal(WORKFLOW_ID, 'pull_request_event', payload);
+}
+
+/** Real-time wait helper (the race-branch sleeps are in-process timers). */
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll until the analyze stub has been called at least `n` times, or throw. */
+async function waitForCalls(n: number, budgetMs: number) {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    if (analyzeMock.mock.calls.length >= n) return;
+    await wait(10);
+  }
+  throw new Error(
+    `analyzePullRequest was called ${analyzeMock.mock.calls.length} times, expected >= ${n} within ${budgetMs}ms`,
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -322,7 +359,8 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
    * never gets stuck and never times out.
    */
   it('re-enters debounce (does not drop the cycle) when an event supersedes an in-flight analysis', async () => {
-    // First analyze call hangs until we release it, so phase (C) is in-flight.
+    // Make the FIRST analysis hang so it is genuinely in flight in phase (C)
+    // when the superseding event arrives. Later calls resolve normally.
     let releaseFirstAnalysis: (() => void) | undefined;
     const firstAnalysisHang = new Promise<void>((resolve) => {
       releaseFirstAnalysis = resolve;
@@ -332,29 +370,34 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
       return { updated: true, actionItemCount: 1, persisted: true };
     });
 
-    await startOrSignalEvent();
-    // Let the debounce settle into the analysis phase is impractical with the
-    // real 30s timer; instead we directly drive a supersede + close and assert
-    // the run never wedges. Deliver a superseding event.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Start with tiny (20ms) debounce so the in-process race-sleep fires fast and
+    // the workflow leaves phase (B) into phase (C) — the first analysis (hanging)
+    // is now genuinely in flight.
+    await startWithFastTimers();
+    await waitForCalls(1, 1_000); // poll until the first analysis is reached (phase C)
+    expect(analyzeMock).toHaveBeenCalledTimes(1);
+
+    // Deliver a superseding event while the analysis is in flight. It wins the
+    // phase-(C) race; FIX 3 must re-enter DEBOUNCE (not return to phase A).
     await client.signal(
       WORKFLOW_ID,
       'pull_request_event',
       makeEvent({ eventType: 'check_completed' }),
     );
-
-    // Release any hung analysis and close the PR to flush the workflow to terminal.
+    // Release the now-superseded (losing) first analysis — its result is dropped.
     releaseFirstAnalysis?.();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(false));
 
+    // The re-entered debounce (20ms) settles and a SECOND analysis runs for the
+    // superseding event — proof the cycle was NOT dropped back to phase (A).
+    await waitForCalls(2, 1_000);
+    expect(analyzeMock).toHaveBeenCalledTimes(2);
+
+    // Close to flush to terminal and confirm a clean completion.
+    await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(false));
     const finalState = await awaitTerminal(WORKFLOW_ID);
-    // The key assertion: the workflow reached a clean terminal (it did not wedge
-    // or time out), proving the supersede path kept the cycle alive.
     expect(finalState.status).toBe('completed');
     const output = finalState.result as PullRequestOrchestratorOutput;
     expect(output.completionReason).toBe('pr_closed');
-    expect(output.analysisCount).toBeGreaterThanOrEqual(1);
   });
 
   /**
@@ -362,11 +405,18 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
    * failed final analysis does not increment analysisCount).
    */
   it('completes with completionReason error when the final analysis throws', async () => {
-    await startOrSignalEvent();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Throw a NON-retryable error (by name) so the activity fails fast instead of
+    // burning the 3× 5s+ retry backoff — keeps the test quick and deterministic.
+    const nonRetryable = new Error('analysis boom');
+    nonRetryable.name = 'ValidationError';
+    analyzeMock.mockRejectedValue(nonRetryable);
 
-    // The final analysis (triggered by close) rejects on every attempt.
-    analyzeMock.mockRejectedValue(new Error('analysis boom'));
+    // No first event needed — a close on a fresh run goes straight to final
+    // analysis. Start with fast timers and close immediately.
+    await engine!.start('pull-request-orchestrator', BASE_INPUT, {
+      id: WORKFLOW_ID,
+      services: TEST_SERVICES,
+    });
     await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(false));
 
     const finalState = await awaitTerminal(WORKFLOW_ID);

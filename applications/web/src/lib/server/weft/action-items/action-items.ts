@@ -110,12 +110,17 @@ export function parseActionItemsBlock(body: string): ParsedBlock | null {
     const checkMatch = CHECKLIST_ITEM_REGEX.exec(itemLine);
     if (!checkMatch) continue;
 
-    // Skip checklist lines with no `tribunal:ai:` stable-id comment. These are
-    // hand-added items the workflow does not own; carrying them with id:'' would
-    // (a) collapse multiple unmarked lines onto the same empty stableKey and
-    // collide on the unique (pullRequestStateId, stableKey) index, and (b) match
-    // no auto-completion rule. We leave such lines untouched in the PR body
-    // (render only writes back the items we own) rather than ingesting them.
+    // Skip checklist lines with no `tribunal:ai:` stable-id comment. Carrying
+    // them with id:'' would (a) collapse multiple unmarked lines onto the same
+    // empty stableKey and collide on the unique (pullRequestStateId, stableKey)
+    // index, and (b) match no auto-completion rule.
+    //
+    // Note: the whole TRIBUNAL-ACTION-ITEMS block is workflow-owned —
+    // `updatePRDescription` replaces it wholesale on each cycle — so a line a
+    // human hand-adds *inside* the block (without our marker) is NOT preserved;
+    // it is dropped on the next render. Humans should edit checkbox state of
+    // marked items or add notes OUTSIDE the block. (This is the intended
+    // ownership contract; preserving in-block unowned lines is a future option.)
     if (!stableId) continue;
 
     const completed = checkMatch[1].toLowerCase() === 'x';
