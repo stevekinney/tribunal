@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { toAgentDefinition } from '@tribunal/agents/definitions';
 import type {
   AgentEvent,
   AgentResult,
@@ -68,6 +69,7 @@ export type ReviewWorkflowConfiguration = {
   proxyUrl: string;
   proxySigningKey: string;
   runTokenTtlSeconds: number;
+  defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
 };
 
 export type ReviewRunStatus =
@@ -175,6 +177,7 @@ export type ReviewWorkflowStatePort = {
   loadPullRequestState(input: PullRequestReviewInput): Promise<PullRequestWorkflowState>;
   upsertReviewRun(run: ReviewRunRecord): Promise<void>;
   upsertAgentRun(run: AgentRunRecord): Promise<void>;
+  upsertAgentEvent?(event: AgentEvent): Promise<void>;
   claimReviewPost(reviewRunId: string, now: Date): Promise<ReviewPostClaimResult>;
   refreshReviewPostClaim(
     reviewRunId: string,
@@ -214,6 +217,7 @@ export class ReviewWorkflowEngine {
   private readonly reviewRuns = new Map<string, ReviewRunRecord>();
   private readonly agentRuns = new Map<string, AgentRunRecord>();
   private readonly agentEvents: AgentEvent[] = [];
+  private readonly agentEventWrites: Promise<void>[] = [];
   private readonly postedReviewRunIds: Set<string>;
   private readonly reconciledReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
@@ -619,7 +623,7 @@ export class ReviewWorkflowEngine {
       input.dailyCostCapUsd,
     );
 
-    if (reviewRun.status === 'superseded' || reviewRun.status === 'cancelled') return reviewRun;
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     if (quotaBlocked) {
       reviewRun.costEstimateUsd = agentResults.reduce(
         (total, result) => total + result.costEstimateUsd,
@@ -641,11 +645,7 @@ export class ReviewWorkflowEngine {
 
     const findings = agentResults.flatMap((result) => result.findings);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
-    if (
-      reviewPayload.comments.length > 0 &&
-      !this.postedReviewRunIds.has(reviewRun.id) &&
-      reviewRun.commentsPosted === 0
-    ) {
+    if (findings.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
       let ownedClaimedAt: Date | undefined;
       if (claimResult.status === 'already_posted') {
@@ -749,8 +749,15 @@ export class ReviewWorkflowEngine {
         await this.persistReviewRun(reviewRun);
       }
     }
-    if (reviewPayload.comments.length > 0 && reviewRun.commentsPosted > 0) {
+    if (
+      findings.length > 0 &&
+      (reviewRun.commentsPosted > 0 || this.postedReviewRunIds.has(reviewRun.id))
+    ) {
       this.postedReviewRunIds.add(reviewRun.id);
+    }
+    if (isStoppedReviewRun(reviewRun)) {
+      await this.persistReviewRun(reviewRun);
+      return reviewRun;
     }
     reviewRun.costEstimateUsd = agentResults.reduce(
       (total, result) => total + result.costEstimateUsd,
@@ -766,6 +773,7 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(agentResults),
     );
+    await this.ports.cost.reconcile(reviewRun.id);
     return reviewRun;
   }
 
@@ -801,6 +809,12 @@ export class ReviewWorkflowEngine {
     runToken: string,
   ): Promise<AgentResult> {
     const agentRunId = createAgentRunId(reviewRun.id, agent);
+    const mappedAgent = toAgentDefinition(agent, this.configuration.defaultModel);
+    const effectiveAgent: AgentSpec = {
+      ...agent,
+      model: mappedAgent.effectiveModel,
+      effort: mappedAgent.effectiveEffort ?? undefined,
+    };
     const controller = new AbortController();
     const execution: AgentExecution = { agentRunId, controller, stopReason: 'superseded' };
     supervisor.activeAgents.set(agentRunId, execution);
@@ -821,7 +835,7 @@ export class ReviewWorkflowEngine {
       const result = await this.ports.sandbox.runAgent(
         supervisor.sandboxId,
         agentRunId,
-        agent,
+        effectiveAgent,
         runToken,
         (event) => this.recordAgentEvent(agentRunId, event),
         controller.signal,
@@ -829,15 +843,17 @@ export class ReviewWorkflowEngine {
       const normalizedResult = controller.signal.aborted
         ? { ...result, stopped: execution.stopReason, findings: [] }
         : result;
+      await this.flushAgentEventWrites();
       await this.finishAgentRun(agentRunId, reviewRun, agent, normalizedResult);
       return normalizedResult;
     } catch (error) {
+      await this.flushAgentEventWrites();
       if (controller.signal.aborted) {
-        const stoppedResult = createStoppedAgentResult(agent, execution.stopReason);
+        const stoppedResult = createStoppedAgentResult(effectiveAgent, execution.stopReason);
         await this.finishAgentRun(agentRunId, reviewRun, agent, stoppedResult);
         return stoppedResult;
       }
-      const failedResult = createFailedAgentResult(agent, error);
+      const failedResult = createFailedAgentResult(effectiveAgent, error);
       await this.finishAgentRun(agentRunId, reviewRun, agent, failedResult);
       return failedResult;
     } finally {
@@ -867,6 +883,7 @@ export class ReviewWorkflowEngine {
 
     await this.ports.cost.recordLlmEstimate({
       userId: reviewRun.userId,
+      repositoryId: reviewRun.repositoryId,
       reviewRunId: reviewRun.id,
       agentRunId,
       agentId: agent.id,
@@ -876,7 +893,16 @@ export class ReviewWorkflowEngine {
   }
 
   private recordAgentEvent(agentRunId: string, event: AgentEvent): void {
-    this.agentEvents.push({ ...event, agentRunId });
+    const normalizedEvent = { ...event, agentRunId };
+    this.agentEvents.push(normalizedEvent);
+    const write = this.ports.state?.upsertAgentEvent?.(normalizedEvent);
+    if (write !== undefined) this.agentEventWrites.push(write);
+  }
+
+  private async flushAgentEventWrites(): Promise<void> {
+    if (this.agentEventWrites.length === 0) return;
+    const writes = this.agentEventWrites.splice(0);
+    await Promise.all(writes);
   }
 
   private async stopActiveAgents(
@@ -976,6 +1002,7 @@ export class ReviewWorkflowEngine {
       activeRunId: activeRun?.id,
       reviewedHeadShas: persistedState.reviewRuns
         .filter((run) => run.status === 'posted')
+        .sort(compareReviewRunsChronologically)
         .map((run) => run.headSha),
       status: 'running',
       input,
@@ -1022,10 +1049,29 @@ function buildReviewPayload(
       startSide: finding.endLine === null ? undefined : finding.side,
     }))
     .sort(compareReviewComments);
+  const inlineCommentKeys = new Set(
+    comments.map((comment) => `${comment.path}:${comment.side}:${comment.line}`),
+  );
+  const unanchoredFindings = findings.filter(
+    (finding) =>
+      finding.startLine === null ||
+      !inlineCommentKeys.has(`${finding.path}:${finding.side}:${finding.startLine}`),
+  );
 
   return {
     headSha,
-    body: 'Tribunal review findings.',
+    body:
+      unanchoredFindings.length === 0
+        ? 'Tribunal review findings.'
+        : [
+            'Tribunal review findings.',
+            '',
+            'Unanchored findings:',
+            ...unanchoredFindings.map(
+              (finding) =>
+                `- **${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`}** ${finding.title}: ${finding.body}`,
+            ),
+          ].join('\n'),
     comments,
   };
 }
@@ -1122,6 +1168,17 @@ function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): numbe
 
 function isReusableReviewRun(run: ReviewRunRecord): boolean {
   return run.status === 'posted';
+}
+
+function isStoppedReviewRun(run: ReviewRunRecord): boolean {
+  return run.status === 'superseded' || run.status === 'cancelled';
+}
+
+function compareReviewRunsChronologically(left: ReviewRunRecord, right: ReviewRunRecord): number {
+  if (left.startedAt.getTime() !== right.startedAt.getTime()) {
+    return left.startedAt.getTime() - right.startedAt.getTime();
+  }
+  return compareReviewRuns(left, right);
 }
 
 function compareAgentRuns(left: AgentRunRecord, right: AgentRunRecord): number {

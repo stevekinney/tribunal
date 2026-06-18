@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   check,
   index,
   integer,
@@ -14,7 +15,7 @@ import { agentRun } from './agent-run';
 export const agentEvent = pgTable(
   'agent_event',
   {
-    id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
     agentRunId: text('agent_run_id')
       .notNull()
       .references(() => agentRun.id, { onDelete: 'cascade' }),

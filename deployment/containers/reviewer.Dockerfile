@@ -9,5 +9,7 @@ RUN apt-get update \
 
 ENV NODE_ENV=production
 ENV TRIBUNAL_RUNNER_MODE=sandbox
+COPY runner/package.json ./runner/package.json
+RUN cd runner && bun install --production
 COPY runner ./runner
 CMD ["node", "runner/verify-image.mjs"]

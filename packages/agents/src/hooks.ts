@@ -32,6 +32,13 @@ export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicy
   if (requestedPath !== null && !isRepositoryRelativePath(requestedPath)) {
     return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
   }
+  if (
+    policyInput.toolName === 'Read' &&
+    requestedPath !== null &&
+    !policyInput.diffContext.changedFiles.some((file) => file.path === requestedPath)
+  ) {
+    return { permissionDecision: 'deny', reason: 'read path is outside the pull request diff' };
+  }
 
   return { permissionDecision: 'allow' };
 }

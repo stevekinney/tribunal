@@ -31,8 +31,14 @@ type ClaimedReviewIntentRow = {
   claimedAt: Date;
 };
 
+type PullRequestReviewInputBuildResult =
+  | { status: 'ready'; pullRequest: PullRequestReviewInput }
+  | { status: 'missing_target' }
+  | { status: 'temporarily_unavailable'; reason: string };
+
 export type ReviewIntentPortOptions = {
   defaultDailyCostCapUsd: number;
+  reviewsEnabled?: boolean;
 };
 
 export function createDatabaseReviewIntentPort(
@@ -41,13 +47,24 @@ export function createDatabaseReviewIntentPort(
 ): ReviewIntentPort {
   return {
     async claimNextReviewIntent(now: Date) {
+      if (options.reviewsEnabled === false) return null;
       const row = await claimNextIntentRow(database, now);
       if (row === null) return null;
 
       const normalizedRow = normalizeClaimedReviewIntentRow(row);
-      const pullRequest = await buildPullRequestReviewInput(database, normalizedRow, options);
-      if (pullRequest === null) {
+      const result = await buildPullRequestReviewInput(database, normalizedRow, options);
+      if (result.status === 'missing_target') {
         await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
+        return null;
+      }
+      if (result.status === 'temporarily_unavailable') {
+        await deferReviewIntentRetry(
+          database,
+          normalizedRow.id,
+          normalizedRow.claimedAt,
+          now,
+          result.reason,
+        );
         return null;
       }
 
@@ -55,7 +72,7 @@ export function createDatabaseReviewIntentPort(
         id: normalizedRow.id,
         deliveryId: normalizedRow.deliveryId,
         kind: normalizedRow.kind,
-        pullRequest,
+        pullRequest: result.pullRequest,
         prState: normalizedRow.prState ?? undefined,
         createdAt: normalizedRow.createdAt,
         claimedAt: normalizedRow.claimedAt,
@@ -130,7 +147,7 @@ async function buildPullRequestReviewInput(
   database: ReviewIntentDatabase,
   intent: ClaimedReviewIntentRow,
   options: ReviewIntentPortOptions,
-): Promise<PullRequestReviewInput | null> {
+): Promise<PullRequestReviewInputBuildResult> {
   const [target] = await database
     .select({
       userId: githubInstallation.userId,
@@ -168,7 +185,7 @@ async function buildPullRequestReviewInput(
     .where(eq(reviewIntent.id, intent.id))
     .limit(1);
 
-  if (!target?.userId) return null;
+  if (!target?.userId) return { status: 'missing_target' };
 
   const agents = await database
     .select({
@@ -193,18 +210,32 @@ async function buildPullRequestReviewInput(
     .orderBy(asc(agent.slug));
 
   const headSha = intent.headSha ?? target.headSha ?? target.currentHeadSha;
-  if (!headSha || agents.length === 0) return null;
+  if (!headSha) {
+    return {
+      status: 'temporarily_unavailable',
+      reason: 'Review intent is waiting for a pull request head SHA.',
+    };
+  }
+  if (agents.length === 0) {
+    return {
+      status: 'temporarily_unavailable',
+      reason: 'Review intent is waiting for an eligible review agent.',
+    };
+  }
 
   return {
-    userId: target.userId,
-    repositoryId: intent.repositoryId,
-    installationId: target.installationId,
-    repository: { owner: target.owner, name: target.name },
-    pullRequestNumber: intent.prNumber,
-    headSha,
-    trigger: toReviewTrigger(intent.kind),
-    agents: agents.map(toAgentSpec),
-    dailyCostCapUsd: Number(target.dailyCostCapUsd ?? options.defaultDailyCostCapUsd),
+    status: 'ready',
+    pullRequest: {
+      userId: target.userId,
+      repositoryId: intent.repositoryId,
+      installationId: target.installationId,
+      repository: { owner: target.owner, name: target.name },
+      pullRequestNumber: intent.prNumber,
+      headSha,
+      trigger: toReviewTrigger(intent.kind),
+      agents: agents.map(toAgentSpec),
+      dailyCostCapUsd: Number(target.dailyCostCapUsd ?? options.defaultDailyCostCapUsd),
+    },
   };
 }
 
@@ -217,6 +248,31 @@ function markReviewIntentProcessed(
   return database
     .update(reviewIntent)
     .set({ processedAt: now })
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        isNull(reviewIntent.processedAt),
+      ),
+    )
+    .then(() => {});
+}
+
+function deferReviewIntentRetry(
+  database: ReviewIntentDatabase,
+  intentId: string,
+  claimedAt: Date,
+  now: Date,
+  reason: string,
+): Promise<void> {
+  return database
+    .update(reviewIntent)
+    .set({
+      claimedAt: null,
+      failedAt: now,
+      lastError: reason,
+      nextAttemptAt: new Date(now.getTime() + backoffMinutesForFailure(1) * 60 * 1000),
+    })
     .where(
       and(
         eq(reviewIntent.id, intentId),

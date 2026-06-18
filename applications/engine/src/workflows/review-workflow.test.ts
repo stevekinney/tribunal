@@ -8,6 +8,7 @@ import type {
   CostPort,
   DiffContext,
   GitHubPort,
+  LlmEstimateInput,
   RepoRef,
   ReviewPayload,
   SandboxOptions,
@@ -157,9 +158,17 @@ describe('ReviewWorkflowEngine', () => {
     ]);
     expect(ports.state.agentRuns[0]).toMatchObject({
       findingsCount: 1,
-      modelUsed: 'claude-sonnet-4-6',
+      modelUsed: 'sonnet',
       durationMs: 25,
     });
+    expect(ports.state.agentEvents).toEqual([
+      expect.objectContaining({
+        agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+        seq: 1,
+        kind: 'session_start',
+      }),
+    ]);
+    expect(ports.cost.reconcileCalls).toEqual(['run:42:7:aaa111:opened']);
   });
 
   it('hydrates running review state and skips duplicate posts when durable state shows comments already posted', async () => {
@@ -230,6 +239,91 @@ describe('ReviewWorkflowEngine', () => {
         id: 'arun:run:42:7:aaa111:opened:agent_security',
         status: 'succeeded',
       }),
+    ]);
+  });
+
+  it('hydrates reviewed head SHAs from durable runs in chronological order', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:newest:opened',
+      idempotencyKey: 'review:run:42:7:newest:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'newest',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T12:03:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:04:00.000Z'),
+    });
+    ports.state.seedReviewRun({
+      id: 'run:42:7:oldest:opened',
+      idempotencyKey: 'review:run:42:7:oldest:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'oldest',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T12:01:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:02:00.000Z'),
+    });
+    ports.state.seedReviewRun({
+      id: 'run:42:7:same-a:opened',
+      idempotencyKey: 'review:run:42:7:same-a:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'same-a',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T12:02:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:02:30.000Z'),
+    });
+    ports.state.seedReviewRun({
+      id: 'run:42:7:same-b:opened',
+      idempotencyKey: 'review:run:42:7:same-b:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'same-b',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T12:02:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:02:45.000Z'),
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+
+    expect(engine.snapshot().supervisors[0]?.reviewedHeadShas).toEqual([
+      'oldest',
+      'same-a',
+      'same-b',
+      'newest',
+      'aaa111',
     ]);
   });
 
@@ -874,6 +968,31 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.mintReadTokenCalls).toEqual([]);
   });
 
+  it('passes resolved model and effort to the sandbox and records effective effort', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [
+        {
+          ...baseInput.agents[0]!,
+          model: 'sonnet',
+          effort: 'xhigh',
+        },
+      ],
+    });
+
+    expect(ports.sandbox.runAgentCalls[0]).toMatchObject({
+      model: 'sonnet',
+      effort: 'high',
+    });
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      modelUsed: 'sonnet',
+      effortUsed: 'high',
+    });
+  });
+
   it('releases a claimed intent when downstream processing fails without aborting the drain loop', async () => {
     const ports = createFakePorts({ failCheckRunCreation: true });
     ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
@@ -942,6 +1061,21 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
+  it('posts unanchored findings in the review body', async () => {
+    const ports = createFakePorts({ fileLevelFinding: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.github.reviews[0]).toMatchObject({
+      comments: [],
+      body: expect.stringContaining('Unanchored findings:'),
+    });
+    expect(ports.github.reviews[0]?.body).toContain(
+      '- **src/example.ts** File-level finding: This cannot be anchored inline.',
+    );
+  });
+
   it('supports operator stop for one running agent', async () => {
     const ports = createFakePorts({ holdAgentRuns: true });
     const engine = createEngine(ports);
@@ -979,6 +1113,31 @@ describe('ReviewWorkflowEngine', () => {
           summary: 'Review run stopped by operator.',
         },
       },
+    });
+  });
+
+  it('does not overwrite a cancelled run as posted when cancellation races with review posting', async () => {
+    const ports = createFakePorts({ holdReviewPosts: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.github.waitForReviewPost();
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.github.resolveHeldReviewPosts();
+
+    await expect(runningReview).resolves.toMatchObject({
+      status: 'cancelled',
+      commentsPosted: 1,
+    });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'cancelled',
+      commentsPosted: 1,
+    });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'cancelled' },
     });
   });
 
@@ -1043,6 +1202,7 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       proxyUrl: 'https://proxy.example.test',
       proxySigningKey: 'proxy-signing-key',
       runTokenTtlSeconds: 60 * 60,
+      defaultModel: 'sonnet',
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
   );
@@ -1103,7 +1263,9 @@ type FakePortOptions = {
   failPostedReviewLookupsRemaining?: number;
   publishFailedReviewBeforeThrowing?: boolean;
   multipleFindings?: boolean;
+  fileLevelFinding?: boolean;
   spendAfterFirstEstimate?: number;
+  holdReviewPosts?: boolean;
 };
 
 class FakeReviewIntentPort implements ReviewIntentPort {
@@ -1140,6 +1302,7 @@ class FakeReviewIntentPort implements ReviewIntentPort {
 class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   readonly reviewRuns: ReviewRunRecord[] = [];
   readonly agentRuns: AgentRunRecord[] = [];
+  readonly agentEvents: AgentEvent[] = [];
   private alreadyPostedOnNextClaim: number | undefined;
   private afterClearClaimResult:
     | { status: 'already_posted'; commentsPosted: number }
@@ -1294,6 +1457,18 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
     }
     this.agentRuns[index] = { ...run };
   }
+
+  async upsertAgentEvent(event: AgentEvent): Promise<void> {
+    const index = this.agentEvents.findIndex(
+      (existingEvent) =>
+        existingEvent.agentRunId === event.agentRunId && existingEvent.seq === event.seq,
+    );
+    if (index === -1) {
+      this.agentEvents.push({ ...event });
+      return;
+    }
+    this.agentEvents[index] = { ...event };
+  }
 }
 
 class FakeGitHubPort implements GitHubPort {
@@ -1312,6 +1487,11 @@ class FakeGitHubPort implements GitHubPort {
   private checkRunUpdateFailuresRemaining: number;
   private reviewPostFailuresRemaining: number;
   private postedReviewLookupFailuresRemaining: number;
+  private reviewPostResolver: (() => void) | undefined;
+  private readonly reviewPostPromise = new Promise<void>((resolve) => {
+    this.reviewPostResolver = resolve;
+  });
+  private readonly heldReviewPostResolvers: Array<() => void> = [];
 
   constructor(private readonly options: FakePortOptions = {}) {
     this.checkRunCreationFailuresRemaining =
@@ -1406,10 +1586,26 @@ class FakeGitHubPort implements GitHubPort {
       }
       throw new Error('review post failed');
     }
+    this.reviewPostResolver?.();
+    if (this.options.holdReviewPosts === true) {
+      await new Promise<void>((resolve) => {
+        this.heldReviewPostResolvers.push(resolve);
+      });
+    }
     this.reviews.push(review);
     const marker = /<!-- tribunal-review-run:v1:.+? -->/.exec(review.body);
     if (marker !== null) this.postedReviews.set(marker[0], review.comments.length);
     return { comments: review.comments.length };
+  }
+
+  async waitForReviewPost(): Promise<void> {
+    await this.reviewPostPromise;
+  }
+
+  resolveHeldReviewPosts(): void {
+    for (const resolve of this.heldReviewPostResolvers.splice(0)) {
+      resolve();
+    }
   }
 
   async findPostedReview(
@@ -1435,7 +1631,13 @@ class FakeSandboxPort implements SandboxPort {
     head: string;
     runToken: string;
   }> = [];
-  readonly runAgentCalls: Array<{ sandboxId: string; agentId: string; runToken: string }> = [];
+  readonly runAgentCalls: Array<{
+    sandboxId: string;
+    agentId: string;
+    runToken: string;
+    model: string;
+    effort: string | undefined;
+  }> = [];
   readonly stopCalls: string[] = [];
   readonly terminateCalls: string[] = [];
 
@@ -1475,7 +1677,13 @@ class FakeSandboxPort implements SandboxPort {
     onEvent: (event: AgentEvent) => void,
     signal: AbortSignal,
   ): Promise<AgentResult> {
-    this.runAgentCalls.push({ sandboxId, agentId: agent.id, runToken });
+    this.runAgentCalls.push({
+      sandboxId,
+      agentId: agent.id,
+      runToken,
+      model: agent.model,
+      effort: agent.effort,
+    });
     this.runningAgents += 1;
     onEvent({
       agentRunId: 'placeholder',
@@ -1502,7 +1710,12 @@ class FakeSandboxPort implements SandboxPort {
       throw new Error('process killed');
     }
 
-    return createAgentResult(agent, signal.aborted, this.options.multipleFindings);
+    return createAgentResult(
+      agent,
+      signal.aborted,
+      this.options.multipleFindings,
+      this.options.fileLevelFinding,
+    );
   }
 
   async stop(_sandboxId: string, agentRunId: string): Promise<void> {
@@ -1554,7 +1767,7 @@ class FakeCostPort implements CostPort {
     return [...this.idempotencyKeys].sort();
   }
 
-  async recordLlmEstimate(event: { idempotencyKey: string }): Promise<void> {
+  async recordLlmEstimate(event: LlmEstimateInput): Promise<void> {
     this.recordLlmEstimateCalls.push(event.idempotencyKey);
     this.idempotencyKeys.add(event.idempotencyKey);
     if (this.options.duplicateCostRecordCalls) {
@@ -1585,63 +1798,76 @@ function createAgentResult(
   agent: AgentSpec,
   stopped: boolean,
   multipleFindings = false,
+  fileLevelFinding = false,
 ): AgentResult {
-  const findings = multipleFindings
+  const findings = fileLevelFinding
     ? [
         {
-          path: 'src/second.ts',
-          startLine: 1,
+          path: 'src/example.ts',
+          startLine: null,
           endLine: null,
           side: 'RIGHT' as const,
           severity: 'warning' as const,
-          title: 'Second file',
-          body: 'This should sort last by path.',
-        },
-        {
-          path: 'src/example.ts',
-          startLine: 3,
-          endLine: null,
-          side: 'RIGHT' as const,
-          severity: 'warning' as const,
-          title: 'Earlier right side',
-          body: 'This should sort before the later right-side comment.',
-        },
-        {
-          path: 'src/example.ts',
-          startLine: 12,
-          endLine: null,
-          side: 'RIGHT' as const,
-          severity: 'warning' as const,
-          title: 'Right side',
-          body: 'This should sort after the left-side comment.',
-        },
-        {
-          path: 'src/example.ts',
-          startLine: 2,
-          endLine: null,
-          side: 'LEFT' as const,
-          severity: 'warning' as const,
-          title: 'Left side',
-          body: 'This should sort first within the file.',
+          title: 'File-level finding',
+          body: 'This cannot be anchored inline.',
         },
       ]
-    : [
-        {
-          path: 'src/example.ts',
-          startLine: 12,
-          endLine: null,
-          side: 'RIGHT' as const,
-          severity: 'warning' as const,
-          title: 'Check this change',
-          body: 'This fake finding proves review posting stays outside the agent.',
-        },
-      ];
+    : multipleFindings
+      ? [
+          {
+            path: 'src/second.ts',
+            startLine: 1,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Second file',
+            body: 'This should sort last by path.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: 3,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Earlier right side',
+            body: 'This should sort before the later right-side comment.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Right side',
+            body: 'This should sort after the left-side comment.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: 2,
+            endLine: null,
+            side: 'LEFT' as const,
+            severity: 'warning' as const,
+            title: 'Left side',
+            body: 'This should sort first within the file.',
+          },
+        ]
+      : [
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Check this change',
+            body: 'This fake finding proves review posting stays outside the agent.',
+          },
+        ];
 
   return {
     agentSlug: agent.slug,
     findings: stopped ? [] : findings,
-    modelUsed: 'claude-sonnet-4-6',
-    effortUsed: 'medium',
+    modelUsed: agent.model,
+    effortUsed: agent.effort ?? null,
     usage: {
       inputTokens: 10,
       outputTokens: 5,

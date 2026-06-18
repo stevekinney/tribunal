@@ -42,7 +42,7 @@ export const agentResultSchema = z.object({
   }),
   costEstimateUsd: z.number().nonnegative(),
   durationMs: z.number().int().nonnegative(),
-  stopped: z.enum(['superseded', 'pr_closed', 'budget', 'timeout']).optional(),
+  stopped: z.enum(['superseded', 'pr_closed', 'budget', 'timeout', 'operator']).optional(),
   error: z.string().optional(),
 });
 

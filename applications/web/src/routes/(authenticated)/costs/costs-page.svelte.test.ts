@@ -20,12 +20,12 @@ const data = {
     dailyCostCapUsd: 10,
     todayTotalUsd: 2.5,
     rollups: {
-      bySource: [{ label: 'estimate', amountUsd: 2.5 }],
-      byKind: [{ label: 'llm', amountUsd: 2.5 }],
-      byRepository: [{ label: 'lost-gradient/tribunal', amountUsd: 2.5 }],
+      byReviewRun: [{ label: 'run_1', amountUsd: 2.5 }],
       byPullRequest: [{ label: 'Run run_1', amountUsd: 2.5 }],
-      byRun: [{ label: 'run_1', amountUsd: 2.5 }],
+      byRepository: [{ label: 'lost-gradient/tribunal', amountUsd: 2.5 }],
       byAgent: [{ label: 'security', amountUsd: 2.5 }],
+      byAgentPerRepository: [{ label: 'security @ lost-gradient/tribunal', amountUsd: 2.5 }],
+      byUserPerDay: [{ label: '1 @ 2026-06-18', amountUsd: 2.5 }],
     },
     cacheTokens: {
       cacheCreationTokens: 10,
@@ -45,7 +45,7 @@ describe('/costs page', () => {
       .element(page.getByRole('link', { name: 'Estimate' }))
       .toHaveAttribute('data-active', 'true');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
-    await expect.element(page.getByText('byRepository')).toBeInTheDocument();
+    await expect.element(page.getByText('byAgentPerRepository')).toBeInTheDocument();
     await expect.element(page.getByText('Read tokens: 25')).toBeInTheDocument();
   });
 });

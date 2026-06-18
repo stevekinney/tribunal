@@ -146,6 +146,7 @@ describe('cost ledger', () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     await recordLlmEstimate(testDatabase.db, {
       userId: user.id,
+      repositoryId: repository.id,
       reviewRunId: review.id,
       agentRunId: run.id,
       agentId: reviewer.id,
@@ -190,6 +191,7 @@ describe('cost ledger', () => {
 
     expect(rows.map((row) => row.source).sort()).toEqual(['estimate', 'reconciled', 'reconciled']);
     expect(rows.find((row) => row.source === 'estimate')?.amountUsd).toBe('1.25000000');
+    expect(rows.find((row) => row.source === 'estimate')?.repositoryId).toBe(repository.id);
     expect(
       rows
         .filter((row) => row.source === 'reconciled')
@@ -239,6 +241,7 @@ describe('cost ledger', () => {
     if (decision.allowed) {
       await recordLlmEstimate(testDatabase.db, {
         userId: user.id,
+        repositoryId: review.repositoryId,
         reviewRunId: review.id,
         agentRunId: run.id,
         agentId: reviewer.id,
@@ -311,6 +314,7 @@ describe('cost ledger', () => {
 
     await port.recordLlmEstimate({
       userId: user.id,
+      repositoryId: repository.id,
       reviewRunId: review.id,
       agentRunId: run.id,
       agentId: reviewer.id,
@@ -332,5 +336,10 @@ describe('cost ledger', () => {
       estimateUsd: 1,
       reconciledUsd: 0.75,
     });
+    const rows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, `llm:${run.id}:estimate`));
+    expect(rows[0]?.repositoryId).toBe(repository.id);
   });
 });

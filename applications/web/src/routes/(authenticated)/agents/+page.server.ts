@@ -1,10 +1,12 @@
 import { redirect } from '@sveltejs/kit';
 import {
+  deleteAgent,
   getReviewEffortOptions,
   getReviewModelOptions,
   listAgents,
   operatorSurfaceStates,
   saveAgent,
+  setAgentEnabled,
 } from '$lib/server/review/operator';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -26,5 +28,17 @@ export const actions: Actions = {
     if (!user) redirect(302, '/login');
 
     return saveAgent(user.id, await request.formData());
+  },
+  setEnabled: async ({ locals, request }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    return setAgentEnabled(user.id, await request.formData());
+  },
+  delete: async ({ locals, request }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    return deleteAgent(user.id, await request.formData());
   },
 };

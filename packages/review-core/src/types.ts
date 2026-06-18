@@ -37,7 +37,7 @@ export interface AgentResult {
   };
   costEstimateUsd: number;
   durationMs: number;
-  stopped?: 'superseded' | 'pr_closed' | 'budget' | 'timeout';
+  stopped?: 'superseded' | 'pr_closed' | 'budget' | 'timeout' | 'operator';
   error?: string;
 }
 

@@ -108,7 +108,7 @@ export function createSandboxPort(
       agentRunId: string,
       agent: AgentSpec,
       runToken: string,
-      _onEvent: (event: AgentEvent) => void,
+      onEvent: (event: AgentEvent) => void,
       _signal: AbortSignal,
     ): Promise<AgentResult> {
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -122,8 +122,11 @@ export function createSandboxPort(
           ['runner/run-agent.mjs', agent.slug],
           {
             TRIBUNAL_RUN_TOKEN: runToken,
+            TRIBUNAL_AGENT_RUN_ID: agentRunId,
             TRIBUNAL_PROXY_URL: configuration.proxyUrl,
             ANTHROPIC_BASE_URL: makeProxiedAnthropicUrl(configuration.proxyUrl),
+            TRIBUNAL_AGENT_MODEL: agent.model,
+            ...(agent.effort ? { TRIBUNAL_AGENT_EFFORT: agent.effort } : {}),
           },
           async (processId) => {
             execution.processId = processId;
@@ -138,8 +141,7 @@ export function createSandboxPort(
       if (commandResult.exitCode !== 0) {
         throw new Error(formatAgentCommandFailure(commandResult));
       }
-      const parsedOutput = JSON.parse(commandResult.stdout) as unknown;
-      return agentResultSchema.parse(parsedOutput);
+      return parseAgentRunnerOutput(commandResult.stdout, onEvent);
     },
     async stop(sandboxId: string, agentRunId: string) {
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -157,6 +159,75 @@ export function createSandboxPort(
       await adapter.terminate(sandboxId);
     },
   };
+}
+
+function parseAgentRunnerOutput(stdout: string, onEvent: (event: AgentEvent) => void): AgentResult {
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return agentResultSchema.parse(JSON.parse(stdout) as unknown);
+  }
+
+  let result: AgentResult | undefined;
+  for (const line of lines) {
+    const record = JSON.parse(line) as unknown;
+    const event = parseAgentEventRecord(record);
+    if (event !== undefined) {
+      onEvent(event);
+      continue;
+    }
+
+    const resultRecord = parseAgentResultRecord(record);
+    if (resultRecord !== undefined) {
+      result = resultRecord;
+      continue;
+    }
+
+    result = agentResultSchema.parse(record);
+  }
+
+  if (result === undefined) {
+    throw new Error('Agent runner did not produce a result record.');
+  }
+
+  return result;
+}
+
+function parseAgentEventRecord(record: unknown): AgentEvent | undefined {
+  if (isRecord(record) && record.type === 'event') {
+    return parseAgentEvent(record.event);
+  }
+  return parseAgentEvent(record);
+}
+
+function parseAgentResultRecord(record: unknown): AgentResult | undefined {
+  if (isRecord(record) && record.type === 'result') {
+    return agentResultSchema.parse(record.result);
+  }
+  return undefined;
+}
+
+function parseAgentEvent(value: unknown): AgentEvent | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.agentRunId !== 'string') return undefined;
+  if (typeof value.seq !== 'number') return undefined;
+  if (typeof value.kind !== 'string') return undefined;
+  if (typeof value.at !== 'string') return undefined;
+
+  return {
+    agentRunId: value.agentRunId,
+    seq: value.seq,
+    kind: value.kind as AgentEvent['kind'],
+    ...(typeof value.tool === 'string' ? { tool: value.tool } : {}),
+    ...(isRecord(value.detail) ? { detail: value.detail } : {}),
+    at: value.at,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function makeCredentiallessRepositoryUrl(repository: RepoRef): string {

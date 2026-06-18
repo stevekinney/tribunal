@@ -275,6 +275,40 @@ export async function saveAgent(userId: number, formData: FormData) {
   return { success: true };
 }
 
+export async function deleteAgent(userId: number, formData: FormData) {
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return fail(400, { error: 'Agent id is required.' });
+
+  const deletedRows = await db
+    .delete(agent)
+    .where(and(eq(agent.id, id), eq(agent.userId, userId)))
+    .returning({ id: agent.id });
+
+  if (deletedRows.length === 0) {
+    return fail(404, { error: 'Agent not found.' });
+  }
+
+  return { success: true };
+}
+
+export async function setAgentEnabled(userId: number, formData: FormData) {
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return fail(400, { error: 'Agent id is required.' });
+
+  const enabled = formData.get('enabled') === 'true';
+  const updatedRows = await db
+    .update(agent)
+    .set({ enabled, updatedAt: new Date() })
+    .where(and(eq(agent.id, id), eq(agent.userId, userId)))
+    .returning({ id: agent.id });
+
+  if (updatedRows.length === 0) {
+    return fail(404, { error: 'Agent not found.' });
+  }
+
+  return { success: true };
+}
+
 export async function getRunsOverview(userId: number) {
   const rows = await db
     .select({
@@ -304,10 +338,11 @@ export async function getRunInspector(userId: number, runId: string) {
     })
     .from(reviewRun)
     .innerJoin(repository, eq(repository.id, reviewRun.repositoryId))
-    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .where(eq(reviewRun.id, runId))
     .limit(1);
 
   if (!runRow) error(404, 'Run not found.');
+  if (runRow.run.userId !== userId) error(403, 'You do not have access to this run.');
 
   const [agentRows, findingRows] = await Promise.all([
     db
@@ -389,7 +424,7 @@ export async function stopRun(userId: number, runId: string) {
     UPDATE ${agentRun}
     SET
       "status" = 'cancelled',
-      "stopped_reason" = 'timeout'
+      "stopped_reason" = 'operator'
     WHERE ${agentRun.userId} = ${userId}
       AND ${agentRun.reviewRunId} IN (SELECT id FROM stopped_run)
   `);
@@ -443,18 +478,28 @@ export async function getCostOverview(userId: number, source: 'estimate' | 'reco
     dailyCostCapUsd: Number(settings.dailyCostCapUsd),
     todayTotalUsd: todayTotal,
     rollups: {
-      bySource: rollup(rows, () => source),
-      byKind: rollup(rows, (row) => row.event.kind),
+      byReviewRun: rollup(rows, (row) => row.event.reviewRunId ?? 'Unassigned'),
+      byPullRequest: rollup(rows, (row) =>
+        row.event.reviewRunId ? `Run ${row.event.reviewRunId}` : 'Unassigned',
+      ),
       byRepository: rollup(rows, (row) =>
         row.repositoryOwner && row.repositoryName
           ? `${row.repositoryOwner}/${row.repositoryName}`
           : 'Unassigned',
       ),
-      byPullRequest: rollup(rows, (row) =>
-        row.event.reviewRunId ? `Run ${row.event.reviewRunId}` : 'Unassigned',
-      ),
-      byRun: rollup(rows, (row) => row.event.reviewRunId ?? 'Unassigned'),
       byAgent: rollup(rows, (row) => row.agentSlug ?? 'Unassigned'),
+      byAgentPerRepository: rollup(rows, (row) => {
+        const agentLabel = row.agentSlug ?? 'Unassigned agent';
+        const repositoryLabel =
+          row.repositoryOwner && row.repositoryName
+            ? `${row.repositoryOwner}/${row.repositoryName}`
+            : 'Unassigned repository';
+        return `${agentLabel} @ ${repositoryLabel}`;
+      }),
+      byUserPerDay: rollup(
+        rows,
+        (row) => `${row.event.userId} @ ${row.event.occurredAt.toISOString().slice(0, 10)}`,
+      ),
     },
     cacheTokens: rows.reduce(
       (accumulator, row) => {

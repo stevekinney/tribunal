@@ -5,6 +5,7 @@ import type { GithubServiceContext } from '@tribunal/github/context';
 import type { Database } from '@tribunal/database';
 import {
   agent,
+  agentEvent,
   agentRun,
   githubInstallation,
   githubInstallationRepository,
@@ -207,6 +208,8 @@ describe('runtime review intent consumer wiring', () => {
         defer: false,
       }),
     );
+    expect(result).toHaveBeenCalled();
+    await waitForIntent('intent_1', (intent) => intent.processedAt !== null);
     const [intent] = await testDatabase.db
       .select()
       .from(reviewIntent)
@@ -214,11 +217,33 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent?.processedAt).toBeInstanceOf(Date);
   });
 
+  it('records failed review intents when a started workflow later fails', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const result = vi.fn().mockRejectedValue(new Error('workflow result failed'));
+    const start = vi.fn().mockResolvedValue({ result });
+    consumer.bindWorkflowEngine({ start });
+
+    await expect(consumer.drain(1)).resolves.toBe(1);
+    await waitForIntent('intent_1', (intent) => intent.failureCount === 1);
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 1,
+      lastError: 'workflow result failed',
+    });
+    expect(intent?.nextAttemptAt).toBeInstanceOf(Date);
+  });
+
   it('records failed review intents with backoff when bound workflow dispatch fails', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
-    const result = vi.fn().mockRejectedValue(new Error('workflow failed'));
-    consumer.bindWorkflowEngine({ start: vi.fn().mockResolvedValue({ result }) });
+    consumer.bindWorkflowEngine({ start: vi.fn().mockRejectedValue(new Error('workflow failed')) });
 
     await expect(consumer.drain(1)).resolves.toBe(0);
 
@@ -252,13 +277,14 @@ describe('runtime review intent consumer wiring', () => {
       headSha: 'b'.repeat(40),
     });
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
-    const result = vi
+    const start = vi
       .fn()
       .mockRejectedValueOnce(new Error('workflow failed'))
-      .mockResolvedValueOnce({ processed: true });
-    consumer.bindWorkflowEngine({ start: vi.fn().mockResolvedValue({ result }) });
+      .mockResolvedValueOnce({ result: vi.fn().mockResolvedValue({ processed: true }) });
+    consumer.bindWorkflowEngine({ start });
 
     await expect(consumer.drain(2)).resolves.toBe(1);
+    await waitForIntent('intent_2', (intent) => intent.processedAt !== null);
 
     const rows = await testDatabase.db.select().from(reviewIntent).orderBy(reviewIntent.id);
     expect(rows[0]).toMatchObject({
@@ -338,6 +364,22 @@ describe('database review workflow state port', () => {
       },
       durationMs: 25,
     });
+    await port.upsertAgentEvent?.({
+      agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { path: 'src/auth.ts' },
+      at: '2026-06-17T12:00:05.000Z',
+    });
+    await port.upsertAgentEvent?.({
+      agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+      seq: 1,
+      kind: 'tool_post',
+      tool: 'Read',
+      detail: { path: 'src/auth.ts', ok: true },
+      at: '2026-06-17T12:00:06.000Z',
+    });
     await port.upsertReviewRun({
       id: 'run:42:7:aaa111:opened',
       idempotencyKey: 'review:run:42:7:aaa111:opened',
@@ -395,6 +437,15 @@ describe('database review workflow state port', () => {
     ]);
     await expect(testDatabase.db.select().from(reviewRun)).resolves.toHaveLength(1);
     await expect(testDatabase.db.select().from(agentRun)).resolves.toHaveLength(1);
+    await expect(testDatabase.db.select().from(agentEvent)).resolves.toEqual([
+      expect.objectContaining({
+        agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+        seq: 1,
+        kind: 'tool_post',
+        tool: 'Read',
+        detail: { path: 'src/auth.ts', ok: true },
+      }),
+    ]);
   });
 
   it('claims review posting atomically and reports posted or actively claimed runs', async () => {
@@ -871,6 +922,7 @@ function runtimeEnvironment() {
     TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
     TRIBUNAL_PROXY_CIDR: '10.0.0.8/32',
     PROXY_SIGNING_KEY: 'proxy-signing-key',
+    TRIBUNAL_DEFAULT_MODEL: 'sonnet',
     DEFAULT_DAILY_COST_CAP_USD: '25',
   };
 }
@@ -956,6 +1008,21 @@ async function createRunnableReviewIntentFixture() {
     prNumber: 7,
     headSha: null,
   });
+}
+
+async function waitForIntent(
+  intentId: string,
+  predicate: (intent: typeof reviewIntent.$inferSelect) => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, intentId));
+    if (intent !== undefined && predicate(intent)) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Review intent ${intentId} did not reach expected state.`);
 }
 
 function claimedIntent() {

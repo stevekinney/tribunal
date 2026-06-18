@@ -94,6 +94,7 @@ export interface SandboxPort {
 
 export interface LlmEstimateInput {
   userId: number;
+  repositoryId: number;
   reviewRunId: string;
   agentRunId: string;
   agentId: string;

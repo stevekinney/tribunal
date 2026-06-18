@@ -49,6 +49,10 @@ export type EngineRuntime = {
   release(): Promise<void>;
 };
 
+type DisposableEngine = {
+  [Symbol.asyncDispose]?(): Promise<void> | void;
+};
+
 export async function createEngineRuntime(
   options: EngineBootstrapOptions = {},
 ): Promise<EngineRuntime> {
@@ -92,7 +96,11 @@ export async function createEngineRuntime(
       },
       async release() {
         poller.stop();
-        await lease?.release();
+        try {
+          await (engine as DisposableEngine)[Symbol.asyncDispose]?.();
+        } finally {
+          await lease?.release();
+        }
       },
     };
   } catch (error) {

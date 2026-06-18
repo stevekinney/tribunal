@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentResult } from '@tribunal/review-core/types';
+import type { AgentEvent, AgentResult } from '@tribunal/review-core/types';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from './port';
 
 const result: AgentResult = {
@@ -167,6 +167,7 @@ describe('sandbox port', () => {
           description: 'Find security issues',
           body: 'Review.',
           model: 'sonnet',
+          effort: 'high',
           enabled: true,
         },
         'token',
@@ -182,11 +183,175 @@ describe('sandbox port', () => {
       input: {
         environment: {
           TRIBUNAL_RUN_TOKEN: 'token',
+          TRIBUNAL_AGENT_RUN_ID: 'agent_run_1',
           TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
           ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic/api.anthropic.com',
+          TRIBUNAL_AGENT_MODEL: 'sonnet',
+          TRIBUNAL_AGENT_EFFORT: 'high',
         },
       },
     });
+  });
+
+  it('parses JSONL agent runner output and forwards event records', async () => {
+    const { adapter } = createFakeAdapter();
+    const event = {
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { path: 'src/auth.ts' },
+      at: '2026-06-18T10:00:00.000Z',
+    } satisfies AgentEvent;
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 0,
+      stdout: [JSON.stringify(event), JSON.stringify(result)].join('\n'),
+      stderr: '',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+    const events: AgentEvent[] = [];
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        'agent_run_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        (agentEvent) => events.push(agentEvent),
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ agentSlug: 'security-reviewer' });
+    expect(events).toEqual([event]);
+  });
+
+  it('parses wrapped JSONL event and result records from the runner', async () => {
+    const { adapter } = createFakeAdapter();
+    const event = {
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { path: 'src/auth.ts' },
+      at: '2026-06-18T10:00:00.000Z',
+    } satisfies AgentEvent;
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 0,
+      stdout: [
+        JSON.stringify({ type: 'event', event }),
+        JSON.stringify({ type: 'result', result }),
+      ].join('\n'),
+      stderr: '',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+    const events: AgentEvent[] = [];
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        'agent_run_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        (agentEvent) => events.push(agentEvent),
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual(result);
+    expect(events).toEqual([event]);
+  });
+
+  it('rejects successful runner commands that never emit a final result', async () => {
+    const { adapter } = createFakeAdapter();
+    const event = {
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      at: '2026-06-18T10:00:00.000Z',
+    } satisfies AgentEvent;
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ type: 'event', event }),
+      stderr: '',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        'agent_run_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        () => {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('Agent runner did not produce a result record.');
+  });
+
+  it('rejects empty runner output', async () => {
+    const { adapter } = createFakeAdapter();
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        'agent_run_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        () => {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(SyntaxError);
   });
 
   it('rejects failed agent runner commands before parsing stdout', async () => {

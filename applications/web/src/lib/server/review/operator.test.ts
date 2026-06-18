@@ -152,7 +152,7 @@ describe('review operator server helpers', () => {
     expect(inspected.agentRuns[0]?.events[0]?.detail).toMatchObject({ denied: true });
     await expect(
       withTestDatabase(() => getRunInspector(otherUser.id, 'run_1')),
-    ).rejects.toMatchObject({ status: 404 });
+    ).rejects.toMatchObject({ status: 403 });
     await expect(withTestDatabase(() => stopRun(otherUser.id, 'run_1'))).rejects.toMatchObject({
       status: 403,
     });
@@ -160,6 +160,11 @@ describe('review operator server helpers', () => {
     await withTestDatabase(() => stopRun(owner.id, 'run_1'));
     const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
     expect(stoppedRun.status).toBe('cancelled');
+    const [stoppedAgentRun] = await testDb.db
+      .select()
+      .from(agentRun)
+      .where(eq(agentRun.id, 'agent_run_1'));
+    expect(stoppedAgentRun.stoppedReason).toBe('operator');
   });
 
   it('signals the live engine after marking an owned run stopped when configured', async () => {
@@ -263,8 +268,11 @@ describe('review operator server helpers', () => {
 
     const overview = await withTestDatabase(() => getCostOverview(owner.id, 'estimate'));
 
-    expect(overview.rollups.byKind).toEqual([{ label: 'llm', amountUsd: 1.25 }]);
+    expect(overview.rollups.byReviewRun).toEqual([{ label: 'run_cost', amountUsd: 1.25 }]);
     expect(overview.rollups.byAgent).toEqual([{ label: 'security', amountUsd: 1.25 }]);
+    expect(overview.rollups.byAgentPerRepository).toEqual([
+      { label: 'security @ lost-gradient/tribunal', amountUsd: 1.25 },
+    ]);
     expect(overview.cacheTokens).toEqual({ cacheReadTokens: 20, cacheCreationTokens: 10 });
   });
 });

@@ -3,10 +3,8 @@ import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import { createEngineRuntime, type EngineRuntime } from './workflows/bootstrap';
-import {
-  createReviewIntentConsumerFromEnvironment,
-  type ReviewIntentRuntimeEnvironment,
-} from './workflows/runtime-ports';
+import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
+import { parseEngineEnvironment } from './environment';
 
 export function parsePort(value: string | undefined, fallback: number): number {
   if (value === undefined || value === '') return fallback;
@@ -16,27 +14,17 @@ export function parsePort(value: string | undefined, fallback: number): number {
 
 if (import.meta.main) {
   const port = parsePort(Bun.env.PORT, 3001);
-  const storageConfiguration = createStorageConfigurationFromEnvironment(Bun.env);
+  const environment = parseEngineEnvironment(Bun.env);
+  const storageConfiguration = createStorageConfigurationFromEnvironment(environment);
 
   const runtime = await createEngineRuntime({
     storage: storageConfiguration.storage,
     healthDependencies: storageConfiguration.healthDependencies,
-    reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(
-      Bun.env as ReviewIntentRuntimeEnvironment,
-    ),
+    reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
     allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
   });
 
-  Bun.serve(
-    createEngineServerOptions(
-      port,
-      runtime,
-      requireEnvironmentValue(
-        Bun.env.TRIBUNAL_ENGINE_CONTROL_TOKEN,
-        'TRIBUNAL_ENGINE_CONTROL_TOKEN',
-      ),
-    ),
-  );
+  Bun.serve(createEngineServerOptions(port, runtime, environment.TRIBUNAL_ENGINE_CONTROL_TOKEN));
 }
 
 export function createStorageConfigurationFromEnvironment(environment: {

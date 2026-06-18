@@ -3,6 +3,7 @@ import { createDatabase, type Database } from '@tribunal/database';
 import { and, desc, eq, inArray, isNull, ne, sql } from '@tribunal/database/operators';
 import {
   agentRun,
+  agentEvent,
   githubInstallation,
   githubInstallationRepository,
   repository as repositoryTable,
@@ -36,6 +37,7 @@ import type {
   AgentRunRecord,
   ClaimedReviewIntent,
   PullRequestReviewInput,
+  ReviewIntentPort,
   ReviewPostClaimResult,
   ReviewRunRecord,
   ReviewWorkflowStatePort,
@@ -53,7 +55,9 @@ export type ReviewIntentRuntimeEnvironment = {
   TRIBUNAL_PROXY_URL?: string;
   TRIBUNAL_PROXY_CIDR?: string;
   PROXY_SIGNING_KEY?: string;
-  DEFAULT_DAILY_COST_CAP_USD?: string;
+  TRIBUNAL_DEFAULT_MODEL?: string;
+  DEFAULT_DAILY_COST_CAP_USD?: number | string;
+  REVIEWS_ENABLED?: boolean | string;
 };
 
 export const emptyUsageCostApiClient = {
@@ -82,13 +86,14 @@ export function createReviewIntentConsumer(
   const githubContext = createEngineGithubContext(database, environment);
   const intentPort = createDatabaseReviewIntentPort(database, {
     defaultDailyCostCapUsd: parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25),
+    reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
   });
   const reviewWorkflowEngine = new ReviewWorkflowEngine(
     {
       github: createEngineGitHubPort(database, githubContext),
       sandbox: createEngineSandboxPort(environment),
       cost: createCostPort(database, {
-        usageCostApiClient: unconfiguredUsageCostApiClient,
+        usageCostApiClient: emptyUsageCostApiClient,
       }),
       intents: intentPort,
       state: createDatabaseReviewWorkflowStatePort(database),
@@ -101,6 +106,10 @@ export function createReviewIntentConsumer(
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
+      defaultModel: requireEnvironmentValue(
+        environment.TRIBUNAL_DEFAULT_MODEL,
+        'TRIBUNAL_DEFAULT_MODEL',
+      ) as Exclude<PullRequestReviewInput['agents'][number]['model'], 'inherit'>,
     },
   );
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
@@ -119,8 +128,8 @@ export function createReviewIntentConsumer(
         if (intent === null) return processed;
 
         try {
-          await dispatchReviewIntentWorkflow(workflowEngine, intent);
-          await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
+          const handle = await dispatchReviewIntentWorkflow(workflowEngine, intent);
+          observeReviewIntentWorkflowCompletion(handle, intent, intentPort);
           processed += 1;
         } catch (error) {
           await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
@@ -144,14 +153,18 @@ type ReviewIntentWorkflowEngine = {
       onTerminalConflict: 'start-new';
       defer: false;
     },
-  ): Promise<{ result(): Promise<unknown> }>;
+  ): Promise<ReviewIntentWorkflowHandle>;
+};
+
+type ReviewIntentWorkflowHandle = {
+  result(): Promise<unknown>;
 };
 
 async function dispatchReviewIntentWorkflow(
   workflowEngine: ReviewIntentWorkflowEngine,
   intent: ClaimedReviewIntent,
-): Promise<void> {
-  const handle = await workflowEngine.start('review-pr', intent, {
+): Promise<ReviewIntentWorkflowHandle> {
+  return workflowEngine.start('review-pr', intent, {
     id: createPullRequestWorkflowId({
       repositoryId: intent.pullRequest.repositoryId,
       pullRequestNumber: intent.pullRequest.pullRequestNumber,
@@ -159,7 +172,21 @@ async function dispatchReviewIntentWorkflow(
     onTerminalConflict: 'start-new',
     defer: false,
   });
-  await handle.result();
+}
+
+function observeReviewIntentWorkflowCompletion(
+  handle: ReviewIntentWorkflowHandle,
+  intent: ClaimedReviewIntent,
+  intentPort: ReviewIntentPort,
+): void {
+  void (async () => {
+    try {
+      await handle.result();
+      await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
+    } catch (error) {
+      await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
+    }
+  })();
 }
 
 export function createEngineGithubContext(
@@ -514,6 +541,27 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           },
         });
     },
+    async upsertAgentEvent(event) {
+      await database
+        .insert(agentEvent)
+        .values({
+          agentRunId: event.agentRunId,
+          seq: event.seq,
+          kind: event.kind,
+          tool: event.tool,
+          detail: event.detail ?? {},
+          at: new Date(event.at),
+        })
+        .onConflictDoUpdate({
+          target: [agentEvent.agentRunId, agentEvent.seq],
+          set: {
+            kind: event.kind,
+            tool: event.tool,
+            detail: event.detail ?? {},
+            at: new Date(event.at),
+          },
+        });
+    },
   };
 }
 
@@ -757,7 +805,15 @@ function requireEnvironmentValue(value: string | undefined, name: string): strin
   return value;
 }
 
-function parsePositiveNumber(value: string | undefined, fallback: number): number {
+function parsePositiveNumber(value: number | string | undefined, fallback: number): number {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseBooleanFlag(value: boolean | string | undefined, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return fallback;
 }

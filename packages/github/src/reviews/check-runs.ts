@@ -145,6 +145,9 @@ export function validateUpdateCheckRunInput(input: UpdateCheckRunInput): void {
   validatePositiveInteger(input.checkRunId, 'checkRunId');
   if (input.status !== undefined) validateStatus(input.status);
   if (input.conclusion !== undefined) validateConclusion(input.conclusion);
+  if (input.conclusion !== undefined && input.status === undefined) {
+    throw new ValidationError('A Check Run conclusion requires status completed.');
+  }
   if (
     input.status !== undefined &&
     input.status !== 'completed' &&

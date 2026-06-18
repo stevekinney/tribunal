@@ -53,6 +53,26 @@ describe('credential proxy', () => {
     expect(auditEvents).toHaveLength(0);
   });
 
+  it('reports unhealthy when GitHub credential resolution is not configured', async () => {
+    const { environment } = createFixture();
+    const handler = createProxyHandler({ environment });
+
+    const response = await handler(new Request('https://proxy.tribunal.test/health'));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      dependencies: [
+        { name: 'configuration', ok: true },
+        {
+          name: 'credential_resolver',
+          ok: false,
+          detail: 'GitHub credential resolver is not configured',
+        },
+      ],
+    });
+  });
+
   it('uses default audit and clock dependencies when optional handler dependencies are omitted', async () => {
     const consoleInfo = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {

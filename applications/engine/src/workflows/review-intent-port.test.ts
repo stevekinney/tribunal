@@ -97,6 +97,75 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent?.claimedAt).toBeNull();
   });
 
+  it('leaves ready review intents unclaimed when the global review switch is disabled', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, {
+      defaultDailyCostCapUsd: 25,
+      reviewsEnabled: false,
+    });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent?.claimedAt).toBeNull();
+  });
+
+  it('marks an intent processed when its target disappears after claim', async () => {
+    const updateThenable = {
+      set: () => updateThenable,
+      where: () => updateThenable,
+      then: (resolve: () => void) => resolve(),
+    };
+    const selectBuilder = {
+      from: () => selectBuilder,
+      innerJoin: () => selectBuilder,
+      leftJoin: () => selectBuilder,
+      where: () => selectBuilder,
+      limit: () => Promise.resolve([]),
+    };
+    const database = {
+      execute: async () => ({
+        rows: [
+          {
+            id: 'intent_missing_target',
+            deliveryId: 'delivery_missing_target',
+            kind: 'start',
+            repositoryId: 42,
+            prNumber: 7,
+            headSha: null,
+            prState: null,
+            createdAt: new Date('2026-06-17T11:59:00.000Z'),
+            claimedAt: new Date('2026-06-17T12:00:00.000Z'),
+          },
+        ],
+      }),
+      select: () => selectBuilder,
+      update: () => updateThenable,
+    };
+    const port = createDatabaseReviewIntentPort(database as never, { defaultDailyCostCapUsd: 25 });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+  });
+
   it('claims workflow input from an active installation when inactive installations are linked', async () => {
     const { user, repository } = await createReviewIntentFixture();
     const factories = createFactories(testDatabase.db);
@@ -254,7 +323,7 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toBeNull();
   });
 
-  it('marks watched intents without assigned agents processed without returning work', async () => {
+  it('releases watched intents without assigned agents for retry', async () => {
     await createReviewIntentFixture();
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
 
@@ -266,7 +335,52 @@ describe('createDatabaseReviewIntentPort', () => {
       .select()
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
-    expect(intent?.processedAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 0,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+      deadLetteredAt: null,
+    });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:30.000Z')),
+    ).resolves.toBeNull();
+  });
+
+  it('releases watched intents without a head SHA for retry', async () => {
+    const { user, repository } = await createReviewIntentFixture({ createPullRequestState: false });
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 0,
+      lastError: 'Review intent is waiting for a pull request head SHA.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+      deadLetteredAt: null,
+    });
   });
 
   it('does not let stale claim owners mark reclaimed review intents processed', async () => {
@@ -442,7 +556,11 @@ describe('createDatabaseReviewIntentPort', () => {
 });
 
 async function createReviewIntentFixture(
-  options: { watched?: boolean; kind?: 'start' | 'commit_pushed' | 'pr_closed' } = {},
+  options: {
+    watched?: boolean;
+    kind?: 'start' | 'commit_pushed' | 'pr_closed';
+    createPullRequestState?: boolean;
+  } = {},
 ) {
   const factories = createFactories(testDatabase.db);
   const user = await factories.user.create();
@@ -470,12 +588,14 @@ async function createReviewIntentFixture(
     repositoryId: repository.id,
     watched: options.watched ?? true,
   });
-  await testDatabase.db.insert(pullRequestState).values({
-    repositoryId: repository.id,
-    prNumber: 7,
-    state: 'open',
-    headSha: 'a'.repeat(40),
-  });
+  if (options.createPullRequestState !== false) {
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: repository.id,
+      prNumber: 7,
+      state: 'open',
+      headSha: 'a'.repeat(40),
+    });
+  }
   await testDatabase.db.insert(reviewIntent).values({
     id: 'intent_1',
     deliveryId: 'delivery_1',

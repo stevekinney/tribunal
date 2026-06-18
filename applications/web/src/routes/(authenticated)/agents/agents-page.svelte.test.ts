@@ -24,15 +24,9 @@ const data = {
 describe('/agents page', () => {
   afterEach(() => cleanup());
 
-  it('shows the xhigh fallback notice for sonnet', async () => {
+  it('gates xhigh effort for ineligible models', async () => {
     render(AgentsPage, { data, form: null });
 
-    await expect
-      .element(
-        page.getByText(
-          'xhigh will be stored, but this model falls back to high effort at runtime.',
-        ),
-      )
-      .toBeInTheDocument();
+    await expect.element(page.getByRole('option', { name: 'xhigh' })).toBeDisabled();
   });
 });

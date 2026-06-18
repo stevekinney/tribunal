@@ -333,4 +333,20 @@ describe('updateCheckRun', () => {
     ).rejects.toThrow('A Check Run conclusion can only be set when status is completed.');
     expect(update).not.toHaveBeenCalled();
   });
+
+  it('rejects a conclusion without an explicit completed status before calling GitHub', async () => {
+    const update = vi.fn();
+    const context = createContext({ update });
+
+    await expect(
+      updateCheckRun(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        checkRunId: 99,
+        conclusion: 'success',
+      }),
+    ).rejects.toThrow('A Check Run conclusion requires status completed.');
+    expect(update).not.toHaveBeenCalled();
+  });
 });

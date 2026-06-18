@@ -60,6 +60,20 @@ describe('read-only hook policy', () => {
     ).toMatchObject({ permissionDecision: 'deny' });
   });
 
+  it('blocks direct reads outside the pull request diff', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Read',
+        input: { file_path: 'src/unchanged.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is outside the pull request diff',
+    });
+  });
+
   it('blocks invalid record_finding calls', () => {
     expect(
       enforceReadOnlyToolUse({

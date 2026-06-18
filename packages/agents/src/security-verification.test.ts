@@ -92,4 +92,18 @@ describe('agent security verification', () => {
       reason: 'tool path escapes the repository',
     });
   });
+
+  it('denies direct reads outside the pull request diff', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Read',
+        input: { file_path: 'src/unchanged-secret.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is outside the pull request diff',
+    });
+  });
 });

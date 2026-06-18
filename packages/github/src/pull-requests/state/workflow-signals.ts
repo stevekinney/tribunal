@@ -112,12 +112,7 @@ async function enqueueReviewIntent(
       prState: input.prState ?? null,
     })
     .onConflictDoNothing({
-      target: [
-        reviewIntent.deliveryId,
-        reviewIntent.kind,
-        reviewIntent.repositoryId,
-        reviewIntent.prNumber,
-      ],
+      target: [reviewIntent.deliveryId, reviewIntent.kind],
     })
     .returning();
 

@@ -76,10 +76,29 @@ describe('createEngineRuntime', () => {
 
     await runtime.release();
   });
+
+  it('async-disposes the Weft engine before releasing the singleton lease', async () => {
+    const events: string[] = [];
+    const lock = new FakeEngineSingletonLock(events);
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      lock,
+    });
+    (runtime.engine as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose] =
+      vi.fn(async () => {
+        events.push('engine.asyncDispose');
+      });
+
+    await runtime.release();
+
+    expect(events).toEqual(['engine.asyncDispose', 'lease.release']);
+  });
 });
 
 class FakeEngineSingletonLock implements EngineSingletonLock {
   private held = false;
+
+  constructor(private readonly events: string[] = []) {}
 
   async acquire(): Promise<EngineSingletonLease> {
     if (this.held) {
@@ -89,6 +108,7 @@ class FakeEngineSingletonLock implements EngineSingletonLock {
     this.held = true;
     return {
       release: async () => {
+        this.events.push('lease.release');
         this.held = false;
       },
     };

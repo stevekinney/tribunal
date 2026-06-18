@@ -57,7 +57,19 @@ export function createProxyHandler(
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
-      return createHealthResponse();
+      return createHealthResponse({
+        dependencies: [
+          { name: 'configuration', ok: true },
+          {
+            name: 'credential_resolver',
+            ok: options.githubCredentialResolver !== undefined,
+            detail:
+              options.githubCredentialResolver === undefined
+                ? 'GitHub credential resolver is not configured'
+                : undefined,
+          },
+        ],
+      });
     }
 
     const token = extractBearerToken(request);
