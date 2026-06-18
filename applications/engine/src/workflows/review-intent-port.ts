@@ -297,19 +297,26 @@ async function markReviewIntentFailed(
   error: unknown,
 ): Promise<void> {
   const [intent] = await database
-    .select({ failureCount: reviewIntent.failureCount })
+    .select({ failureCount: reviewIntent.failureCount, processedAt: reviewIntent.processedAt })
     .from(reviewIntent)
-    .where(
-      and(
-        eq(reviewIntent.id, intentId),
-        eq(reviewIntent.claimedAt, claimedAt),
-        isNull(reviewIntent.processedAt),
-      ),
-    )
+    .where(and(eq(reviewIntent.id, intentId), eq(reviewIntent.claimedAt, claimedAt)))
     .limit(1);
   if (intent === undefined) return;
 
   const failureCount = intent.failureCount + 1;
+  if (intent.processedAt !== null) {
+    await database
+      .update(reviewIntent)
+      .set({
+        failedAt: now,
+        failureCount,
+        lastError: serializeReviewIntentError(error),
+      })
+      .where(and(eq(reviewIntent.id, intentId), eq(reviewIntent.claimedAt, claimedAt)))
+      .then(() => {});
+    return;
+  }
+
   const deadLetteredAt = failureCount >= maxReviewIntentFailures ? now : null;
   const nextAttemptAt =
     deadLetteredAt === null

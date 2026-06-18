@@ -232,12 +232,34 @@ describe('runtime review intent consumer wiring', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent).toMatchObject({
-      claimedAt: null,
-      processedAt: null,
+      processedAt: expect.any(Date),
       failureCount: 1,
       lastError: 'workflow result failed',
     });
-    expect(intent?.nextAttemptAt).toBeInstanceOf(Date);
+    expect(intent?.claimedAt).toBeInstanceOf(Date);
+    expect(intent?.nextAttemptAt).toBeNull();
+  });
+
+  it('does not reclaim a dispatched long-running review intent as stale', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const result = vi.fn().mockReturnValue(new Promise(() => {}));
+    const start = vi.fn().mockResolvedValue({ result });
+    consumer.bindWorkflowEngine({ start });
+
+    await expect(consumer.drain(1)).resolves.toBe(1);
+    await waitForIntent('intent_1', (intent) => intent.processedAt !== null);
+
+    await expect(consumer.drain(1)).resolves.toBe(0);
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      processedAt: expect.any(Date),
+      failureCount: 0,
+    });
+    expect(start).toHaveBeenCalledTimes(1);
   });
 
   it('records failed review intents with backoff when bound workflow dispatch fails', async () => {
@@ -313,6 +335,7 @@ describe('database review workflow state port', () => {
         trigger: 'opened',
         agents: [],
         dailyCostCapUsd: 25,
+        ignoreGlobs: [],
       }),
     ).resolves.toEqual({ reviewRuns: [], agentRuns: [] });
   });
@@ -590,6 +613,33 @@ describe('database review workflow state port', () => {
     await expect(
       port.claimReviewPost('run:42:7:bbb222:synchronize', new Date('2026-06-17T12:11:00.000Z')),
     ).resolves.toEqual({ status: 'already_posted', commentsPosted: 0 });
+
+    await port.upsertReviewRun({
+      ...run,
+      id: 'run:42:7:ccc333:opened',
+      idempotencyKey: 'review:run:42:7:ccc333:opened',
+      headSha: 'ccc333',
+      status: 'running',
+      commentsPosted: 1,
+    });
+    await port.upsertReviewRun({
+      ...run,
+      id: 'run:42:7:ccc333:opened',
+      idempotencyKey: 'review:run:42:7:ccc333:opened',
+      headSha: 'ccc333',
+      status: 'cancelled',
+      commentsPosted: 1,
+      finishedAt: new Date('2026-06-17T12:12:00.000Z'),
+    });
+    await expect(
+      testDatabase.db.select().from(reviewRun).where(eq(reviewRun.id, 'run:42:7:ccc333:opened')),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        commentsPosted: 1,
+        status: 'cancelled',
+        finishedAt: new Date('2026-06-17T12:12:00.000Z'),
+      }),
+    ]);
   });
 });
 
@@ -1046,6 +1096,7 @@ function claimedIntent() {
       trigger: 'opened' as const,
       agents: [],
       dailyCostCapUsd: 25,
+      ignoreGlobs: [],
     },
     createdAt: new Date('2026-06-17T12:00:00.000Z'),
     claimedAt: new Date('2026-06-17T12:00:00.000Z'),

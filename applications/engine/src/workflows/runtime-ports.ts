@@ -129,6 +129,7 @@ export function createReviewIntentConsumer(
 
         try {
           const handle = await dispatchReviewIntentWorkflow(workflowEngine, intent);
+          await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
           observeReviewIntentWorkflowCompletion(handle, intent, intentPort);
           processed += 1;
         } catch (error) {
@@ -383,6 +384,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           target: reviewRun.id,
           set: {
             status: sql`CASE
+              WHEN ${run.status} IN ('cancelled', 'superseded')
+              THEN ${run.status}
               WHEN ${reviewRun.status} = 'posted'
                 OR ${run.status} = 'posted'
                 OR ${reviewRun.commentsPosted} > 0
@@ -406,6 +409,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
             END`,
             costEstimateUsd: String(run.costEstimateUsd),
             finishedAt: sql`CASE
+              WHEN ${run.status} IN ('cancelled', 'superseded')
+              THEN ${run.finishedAt ?? null}
               WHEN ${reviewRun.status} = 'posted' AND ${reviewRun.finishedAt} IS NOT NULL
               THEN ${reviewRun.finishedAt}
               WHEN ${reviewRun.commentsPosted} > 0 AND ${reviewRun.finishedAt} IS NOT NULL
@@ -413,6 +418,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
               ELSE ${run.finishedAt ?? null}
             END`,
             error: sql`CASE
+              WHEN ${run.status} IN ('cancelled', 'superseded')
+              THEN ${run.error ?? null}
               WHEN ${reviewRun.status} = 'posted'
                 OR ${run.status} = 'posted'
                 OR ${reviewRun.commentsPosted} > 0
