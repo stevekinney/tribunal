@@ -25,9 +25,10 @@
  *   correctly a ctx.race([sleep, waitForSignal]) loop, NOT waitUntil: signals are
  *   pull-only and do not re-drive a waitUntil predicate, so the race is the right
  *   idiom here.
- * - weft#453 (cooperative cancellation) is handled in the analyze activity via a
- *   head-SHA generation fence + ctx.signal throwIfAborted, because weft#584
- *   confirms a losing ctx.run race branch is NOT auto-aborted.
+ * - weft#453/#584: 0.5.0 cooperatively aborts a losing ctx.run race branch (the
+ *   fast path), but the analyze activity STILL relies on a head-SHA generation
+ *   fence + ctx.signal throwIfAborted as the load-bearing guard, because the abort
+ *   is best-effort and a same-commit supersede does not move the head SHA.
  */
 
 import { isWeftFault } from '@lostgradient/weft';

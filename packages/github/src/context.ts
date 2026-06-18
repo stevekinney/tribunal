@@ -9,7 +9,7 @@
  * passes it to each function call.
  */
 import type { Database } from '@tribunal/database';
-import type { ClientHandle, WeftClient } from '@lostgradient/weft/client';
+import type { WeftClient } from '@lostgradient/weft/client';
 import type { createCache } from './cache.js';
 import type { Octokit, App } from 'octokit';
 
@@ -18,12 +18,11 @@ import type { Octokit, App } from 'octokit';
  * was created) or `'signalled'` (the event was coalesced onto a live run) — the
  * weft#466 outcome distinction.
  *
- * Weft exposes this on the public `ClientHandle.outcome` field but does not yet
- * export the type by name, so we derive it from the field. This stays correct if
- * the union ever grows, and avoids re-declaring the literals at each producer.
- * Tracked upstream: https://github.com/stevekinney/weft/issues/583
+ * Re-exported from `@lostgradient/weft/client`, where 0.5.0 publishes the type by
+ * name (weft#583). The producers annotate their result interfaces with it; this
+ * package re-exports it so they import a single name from one place.
  */
-export type StartOrSignalOutcome = NonNullable<ClientHandle['outcome']>;
+export type { StartOrSignalOutcome } from '@lostgradient/weft/client';
 
 /** Cache operations — matches the return type of `createCache` from `./cache`. */
 export type CacheOperations = ReturnType<typeof createCache>;

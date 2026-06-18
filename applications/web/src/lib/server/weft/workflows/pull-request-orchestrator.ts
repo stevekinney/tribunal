@@ -19,13 +19,20 @@
  *   and the sleep branch resolves undefined. Narrowing is done via discriminant
  *   helpers below.
  *
- * FIX 2 — STALE-WRITE FENCE (weft#584):
- *   A losing ctx.run branch is NOT aborted by Weft — a superseded analysis can
- *   still complete and write stale data. The monotonic analysisGeneration counter
- *   is passed into every analyzePullRequest call; the activity compares the head
- *   SHA it fetched against the live pull_request_state.headSha before writing
- *   and skips the write if they diverge (generationFenced=true). This is the
- *   load-bearing defence, not the race abort.
+ * FIX 2 — STALE-WRITE FENCE (weft#584, hardened in 0.5.0):
+ *   0.5.0 makes a losing ctx.run branch cooperatively aborted: when a signal wins
+ *   the analysis race, the losing analyze activity's ctx.signal (AbortSignal)
+ *   fires, and the activity's throwIfAborted() checks bail before the write. That
+ *   is the FIRST line of defence now. Two defences combine, neither total:
+ *     - the cooperative abort catches most supersedes, but an activity already
+ *       past its last abort check (or mid-`octokit` call) can still reach the write;
+ *     - the head-SHA generation fence skips the write when GitHub's head advanced,
+ *       so it covers supersede-by-NEWER-PUSH — but NOT a same-commit supersede
+ *       (a new review comment, a thread resolve, a check completing) that leaves
+ *       the head SHA unchanged.
+ *   So a same-commit supersede is an acknowledged pre-production gap (a durable
+ *   per-PR generation lease would close it; see WEFT_MIGRATION_PLAN.md §7). The
+ *   analysisGeneration counter is for log correlation, not the write predicate.
  *
  * FIX 3 — SUPERSEDE CONTROL FLOW:
  *   When a pull_request_event wins the analysis race (supersede), the event IS
@@ -47,7 +54,14 @@
  *
  * weft#456: race accepts ctx.sleep + ctx.waitForSignal branches.
  * weft#447: ctx.log?.info/.warn/.error carries workflowId/workflowType automatically.
- * weft#584: losing ctx.run branch is not aborted; generation fence is the defence.
+ * weft#584: 0.5.0 cooperatively aborts a losing ctx.run branch (fast path); the
+ *   generation fence remains the load-bearing correctness guard (see FIX 2).
+ *
+ * No finalizer (weft#446): unlike installation-sync, this workflow has no DB
+ * status row to strand on cancel/timeout. Its only persistent side-effects are
+ * the action items written inside the analyze activity, which are DB-authoritative
+ * and self-heal on the next analysis cycle. A finalizer is added the day a
+ * sandbox-holding (paid-resource) activity is introduced here.
  */
 
 import { workflow, signal } from '@lostgradient/weft';
@@ -400,12 +414,16 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
 
         // ── (C) RUN ANALYSIS, RACING SUPERSEDE AND CLOSE ────────────────────
         //
-        // FIX 2 (weft#584): A losing ctx.run branch is NOT aborted by Weft, so a
-        // superseded analysis can still complete and write stale data. We pass an
-        // incrementing analysisGeneration counter into the activity; the activity
-        // compares the head SHA it fetched against pull_request_state.headSha at
-        // write time and skips the write if they diverge (generationFenced=true).
-        // This is the load-bearing defence, NOT the race abort.
+        // FIX 2 (weft#584, hardened 0.5.0): when a signal wins this race, the
+        // losing analyze activity is now cooperatively aborted (its ctx.signal
+        // fires; throwIfAborted bails before the write) — the fast path. But that
+        // is best-effort. So the activity also re-fetches GitHub's live head SHA
+        // before writing and skips the write if it advanced (generationFenced=true,
+        // via the analysisGeneration counter for log correlation). Together: the
+        // abort catches most race losses; the head-SHA fence covers supersede-by-
+        // NEWER-PUSH. Neither covers a SAME-COMMIT supersede (new comment, thread
+        // resolve) — that remains a documented pre-production gap (a durable per-PR
+        // generation lease would close it; WEFT_MIGRATION_PLAN.md §7).
         //
         // FIX 1: if the analysis run completes first, its result is an
         // AnalyzePullRequestOutput (no kind field → falls through). If a signal
