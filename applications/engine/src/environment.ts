@@ -13,8 +13,6 @@ export const engineEnvironmentSchema = z.object({
   PROXY_SIGNING_KEY: z.string().min(1),
   TRIBUNAL_ENGINE_CONTROL_TOKEN: z.string().min(1),
   TRIBUNAL_DEFAULT_MODEL: z.string().min(1),
-  MAX_CONCURRENT_AGENTS: positiveIntegerString.transform(Number),
-  PER_AGENT_BUDGET_USD: positiveDecimalString.transform(Number),
   DEFAULT_DAILY_COST_CAP_USD: positiveDecimalString.transform(Number),
   IDLE_SUSPEND_SECONDS: positiveIntegerString.transform(Number),
   SANDBOX_REAP_INTERVAL: positiveIntegerString.transform(Number),

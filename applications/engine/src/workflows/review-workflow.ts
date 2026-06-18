@@ -67,7 +67,6 @@ export type ReviewWorkflowConfiguration = {
   proxyUrl: string;
   proxySigningKey: string;
   runTokenTtlSeconds: number;
-  maxConcurrentAgents: number;
 };
 
 export type ReviewRunStatus =
@@ -109,10 +108,15 @@ export type AgentRunRecord = {
   id: string;
   idempotencyKey: string;
   reviewRunId: string;
+  userId: number;
   agentId: string;
   status: AgentRunStatus;
   findingsCount: number;
   costEstimateUsd: number;
+  modelUsed?: string;
+  effortUsed?: AgentResult['effortUsed'];
+  usage?: AgentResult['usage'];
+  durationMs?: number;
   stoppedReason?: AgentResult['stopped'];
   error?: string;
 };
@@ -152,6 +156,18 @@ export type ReviewWorkflowPorts = {
   sandbox: SandboxPort;
   cost: CostPort;
   intents: ReviewIntentPort;
+  state?: ReviewWorkflowStatePort;
+};
+
+export type PullRequestWorkflowState = {
+  reviewRuns: ReviewRunRecord[];
+  agentRuns: AgentRunRecord[];
+};
+
+export type ReviewWorkflowStatePort = {
+  loadPullRequestState(input: PullRequestReviewInput): Promise<PullRequestWorkflowState>;
+  upsertReviewRun(run: ReviewRunRecord): Promise<void>;
+  upsertAgentRun(run: AgentRunRecord): Promise<void>;
 };
 
 export type ReviewWorkflowSnapshot = {
@@ -246,6 +262,7 @@ export class ReviewWorkflowEngine {
     if (activeRun?.status === 'running') {
       activeRun.status = 'superseded';
       activeRun.finishedAt = this.now();
+      await this.persistReviewRun(activeRun);
     }
 
     supervisor.input = input;
@@ -262,7 +279,8 @@ export class ReviewWorkflowEngine {
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
     });
-    const supervisor = this.supervisors.get(workflowId);
+    const supervisor =
+      this.supervisors.get(workflowId) ?? (await this.hydrateSupervisor(workflowId, input));
     if (supervisor === undefined || supervisor.status === 'closed') return;
 
     await this.stopActiveAgents(supervisor, 'pr_closed');
@@ -272,6 +290,7 @@ export class ReviewWorkflowEngine {
     if (activeRun?.status === 'running') {
       activeRun.status = 'cancelled';
       activeRun.finishedAt = this.now();
+      await this.persistReviewRun(activeRun);
     }
 
     if (supervisor.checkRunId !== undefined) {
@@ -318,6 +337,7 @@ export class ReviewWorkflowEngine {
       if (run?.status === 'running') {
         run.status = 'cancelled';
         run.finishedAt = this.now();
+        await this.persistReviewRun(run);
       }
       await this.updateCheckRun(supervisor.input.repository, supervisor.checkRunId, {
         status: 'completed',
@@ -401,6 +421,9 @@ export class ReviewWorkflowEngine {
     workflowId: string,
     input: PullRequestReviewInput,
   ): Promise<SupervisorState> {
+    const hydratedSupervisor = await this.hydrateSupervisor(workflowId, input);
+    if (hydratedSupervisor !== undefined) return hydratedSupervisor;
+
     const sandboxKey = createPullRequestSandboxKey({
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
@@ -456,7 +479,9 @@ export class ReviewWorkflowEngine {
           run.error = error instanceof Error ? error.message : 'Review run failed.';
           run.finishedAt = this.now();
         }
-        throw error;
+        return this.persistReviewRun(run).then(() => {
+          throw error;
+        });
       })
       .finally(() => {
         const run = this.reviewRuns.get(runId);
@@ -501,11 +526,13 @@ export class ReviewWorkflowEngine {
     };
     this.reviewRuns.set(runId, reviewRun);
     supervisor.activeRunId = runId;
+    await this.persistReviewRun(reviewRun);
 
     const spendTodayEstimate = await this.ports.cost.spendTodayEstimate(input.userId);
     if (spendTodayEstimate >= input.dailyCostCapUsd) {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
       await this.updateCheckRun(input.repository, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'neutral',
@@ -550,6 +577,7 @@ export class ReviewWorkflowEngine {
       );
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
       await this.updateCheckRun(input.repository, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'neutral',
@@ -579,6 +607,7 @@ export class ReviewWorkflowEngine {
     reviewRun.status = 'posted';
     reviewRun.finishedAt = this.now();
     supervisor.reviewedHeadShas.push(headSha);
+    await this.persistReviewRun(reviewRun);
 
     await this.updateCheckRun(
       input.repository,
@@ -623,15 +652,18 @@ export class ReviewWorkflowEngine {
     const controller = new AbortController();
     const execution: AgentExecution = { agentRunId, controller, stopReason: 'superseded' };
     supervisor.activeAgents.set(agentRunId, execution);
-    this.agentRuns.set(agentRunId, {
+    const agentRun: AgentRunRecord = {
       id: agentRunId,
       idempotencyKey: createAgentReviewIdempotencyKey(reviewRun.id, agent),
       reviewRunId: reviewRun.id,
+      userId: reviewRun.userId,
       agentId: agent.id,
       status: 'running',
       findingsCount: 0,
       costEstimateUsd: 0,
-    });
+    };
+    this.agentRuns.set(agentRunId, agentRun);
+    await this.persistAgentRun(agentRun);
 
     try {
       const result = await this.ports.sandbox.runAgent(
@@ -673,8 +705,13 @@ export class ReviewWorkflowEngine {
     agentRun.status = result.stopped ? 'cancelled' : result.error ? 'failed' : 'succeeded';
     agentRun.findingsCount = result.findings.length;
     agentRun.costEstimateUsd = result.costEstimateUsd;
+    agentRun.modelUsed = result.modelUsed;
+    agentRun.effortUsed = result.effortUsed;
+    agentRun.usage = result.usage;
+    agentRun.durationMs = result.durationMs;
     agentRun.stoppedReason = result.stopped;
     agentRun.error = result.error;
+    await this.persistAgentRun(agentRun);
 
     await this.ports.cost.recordLlmEstimate({
       userId: reviewRun.userId,
@@ -715,6 +752,56 @@ export class ReviewWorkflowEngine {
     await this.ports.sandbox.terminate(sandboxId);
     this.terminatedSandboxIds.add(sandboxId);
     return true;
+  }
+
+  private async hydrateSupervisor(
+    workflowId: string,
+    input: PullRequestReviewInput,
+  ): Promise<SupervisorState | undefined> {
+    const persistedState = await this.ports.state?.loadPullRequestState(input);
+    if (persistedState === undefined) return undefined;
+
+    for (const reviewRun of persistedState.reviewRuns) {
+      this.reviewRuns.set(reviewRun.id, reviewRun);
+    }
+    for (const agentRun of persistedState.agentRuns) {
+      this.agentRuns.set(agentRun.id, agentRun);
+    }
+
+    const usableRun = persistedState.reviewRuns.find(
+      (run) => run.sandboxId !== '' && run.checkRunId !== undefined,
+    );
+    if (usableRun === undefined) return undefined;
+
+    const activeRun = persistedState.reviewRuns.find((run) => run.status === 'running');
+    const supervisor: SupervisorState = {
+      workflowId,
+      repositoryId: input.repositoryId,
+      pullRequestNumber: input.pullRequestNumber,
+      sandboxId: usableRun.sandboxId,
+      headSha: activeRun?.headSha ?? input.headSha,
+      activeRunId: activeRun?.id,
+      reviewedHeadShas: persistedState.reviewRuns
+        .filter((run) => run.status === 'posted')
+        .map((run) => run.headSha),
+      status: 'running',
+      input,
+      checkRunId: usableRun.checkRunId,
+      activeAgents: new Map(),
+      runPromises: new Map(),
+    };
+
+    this.supervisors.set(workflowId, supervisor);
+    return supervisor;
+  }
+
+  private async persistReviewRun(run: ReviewRunRecord | undefined): Promise<void> {
+    if (run === undefined) return;
+    await this.ports.state?.upsertReviewRun(run);
+  }
+
+  private async persistAgentRun(run: AgentRunRecord): Promise<void> {
+    await this.ports.state?.upsertAgentRun(run);
   }
 }
 
@@ -829,7 +916,7 @@ function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): numbe
 }
 
 function isReusableReviewRun(run: ReviewRunRecord): boolean {
-  return run.status === 'posted';
+  return run.status === 'posted' || run.status === 'running';
 }
 
 function compareAgentRuns(left: AgentRunRecord, right: AgentRunRecord): number {

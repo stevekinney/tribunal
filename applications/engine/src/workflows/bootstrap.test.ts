@@ -71,7 +71,7 @@ describe('createEngineRuntime', () => {
 
     expect(runtime.healthDependencies()).toEqual([
       { name: 'weft_database', ok: true },
-      { name: 'singleton_lock', ok: true, detail: 'runtime ownership active' },
+      { name: 'singleton_lock', ok: true, detail: 'Weft lease ownership active' },
     ]);
 
     await runtime.release();

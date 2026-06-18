@@ -111,7 +111,7 @@ function createRuntimeHealthDependencies(
 
   return [
     ...runtimeDependencies,
-    { name: 'singleton_lock', ok: true, detail: 'runtime ownership active' },
+    { name: 'singleton_lock', ok: true, detail: 'Weft lease ownership active' },
   ];
 }
 

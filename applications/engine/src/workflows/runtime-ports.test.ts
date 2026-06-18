@@ -5,6 +5,7 @@ import type { GithubServiceContext } from '@tribunal/github/context';
 import type { Database } from '@tribunal/database';
 import {
   agent,
+  agentRun,
   githubInstallation,
   githubInstallationRepository,
   pullRequestState,
@@ -12,6 +13,7 @@ import {
   repositoryAgent,
   repositoryReviewSettings,
   reviewIntent,
+  reviewRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
@@ -93,6 +95,7 @@ const {
   createEngineGitHubPort,
   createEngineGithubContext,
   createEngineSandboxPort,
+  createDatabaseReviewWorkflowStatePort,
   createReviewIntentConsumer,
   createReviewIntentConsumerFromEnvironment,
   emptyUsageCostApiClient,
@@ -263,6 +266,133 @@ describe('runtime review intent consumer wiring', () => {
       lastError: 'workflow failed',
     });
     expect(rows[1]?.processedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('database review workflow state port', () => {
+  it('returns an empty state for a pull request with no persisted review runs', async () => {
+    await createRepositoryInstallation();
+    const port = createDatabaseReviewWorkflowStatePort(testDatabase.db);
+
+    await expect(
+      port.loadPullRequestState({
+        userId: 1,
+        repositoryId: 42,
+        installationId: 1001,
+        repository: { owner: 'lostgradient', name: 'tribunal' },
+        pullRequestNumber: 7,
+        headSha: 'aaa111',
+        trigger: 'opened',
+        agents: [],
+        dailyCostCapUsd: 25,
+      }),
+    ).resolves.toEqual({ reviewRuns: [], agentRuns: [] });
+  });
+
+  it('upserts and reloads review and agent run state for a pull request', async () => {
+    const { repository: createdRepository, installation } = await createRepositoryInstallation();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: installation.userId!,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    const port = createDatabaseReviewWorkflowStatePort(testDatabase.db);
+
+    await port.upsertReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: installation.userId!,
+      repositoryId: createdRepository.id,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T12:00:00.000Z'),
+    });
+    await port.upsertAgentRun({
+      id: 'arun:run:42:7:aaa111:opened:agent_security',
+      idempotencyKey: 'agent:run:42:7:aaa111:opened:agent_security',
+      reviewRunId: 'run:42:7:aaa111:opened',
+      userId: installation.userId!,
+      agentId: 'agent_security',
+      status: 'succeeded',
+      findingsCount: 2,
+      costEstimateUsd: 0.25,
+      modelUsed: 'claude-sonnet-4-6',
+      effortUsed: 'medium',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 1,
+        cacheCreationTokens: 2,
+      },
+      durationMs: 25,
+    });
+    await port.upsertReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: installation.userId!,
+      repositoryId: createdRepository.id,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 2,
+      costEstimateUsd: 0.25,
+      startedAt: new Date('2026-06-17T12:00:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:01:00.000Z'),
+    });
+
+    const state = await port.loadPullRequestState({
+      userId: installation.userId!,
+      repositoryId: createdRepository.id,
+      installationId: installation.installationId,
+      repository: { owner: createdRepository.owner, name: createdRepository.name },
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      agents: [],
+      dailyCostCapUsd: 25,
+    });
+
+    expect(state.reviewRuns).toEqual([
+      expect.objectContaining({
+        id: 'run:42:7:aaa111:opened',
+        status: 'posted',
+        commentsPosted: 2,
+        costEstimateUsd: 0.25,
+        sandboxId: 'sandbox-existing',
+        checkRunId: 9001,
+      }),
+    ]);
+    expect(state.agentRuns).toEqual([
+      expect.objectContaining({
+        id: 'arun:run:42:7:aaa111:opened:agent_security',
+        status: 'succeeded',
+        userId: installation.userId,
+        findingsCount: 2,
+        costEstimateUsd: 0.25,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 1,
+          cacheCreationTokens: 2,
+        },
+      }),
+    ]);
+    await expect(testDatabase.db.select().from(reviewRun)).resolves.toHaveLength(1);
+    await expect(testDatabase.db.select().from(agentRun)).resolves.toHaveLength(1);
   });
 });
 
@@ -559,7 +689,6 @@ function runtimeEnvironment() {
     TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
     TRIBUNAL_PROXY_CIDR: '10.0.0.8/32',
     PROXY_SIGNING_KEY: 'proxy-signing-key',
-    MAX_CONCURRENT_AGENTS: '2',
     DEFAULT_DAILY_COST_CAP_USD: '25',
   };
 }

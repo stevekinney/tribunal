@@ -16,10 +16,13 @@ import type {
 import { verifyCapabilityToken } from '@tribunal/review-core/capability-token';
 import {
   ReviewWorkflowEngine,
+  type AgentRunRecord,
   type ClaimedReviewIntent,
   type PullRequestReviewInput,
   type ReviewIntent,
   type ReviewIntentPort,
+  type ReviewRunRecord,
+  type ReviewWorkflowStatePort,
 } from './review-workflow';
 
 const repository = { owner: 'lostgradient', name: 'tribunal' };
@@ -135,6 +138,94 @@ describe('ReviewWorkflowEngine', () => {
     ]);
     expect(ports.sandbox.ensureCalls).toHaveLength(1);
     expect(ports.github.createdCheckRuns).toEqual(['aaa111']);
+  });
+
+  it('persists review and agent run state as the review progresses', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+
+    expect(ports.state.reviewRuns.map((run) => [run.id, run.status])).toEqual([
+      ['run:42:7:aaa111:opened', 'posted'],
+    ]);
+    expect(ports.state.agentRuns.map((run) => [run.id, run.status, run.userId])).toEqual([
+      ['arun:run:42:7:aaa111:opened:agent_security', 'succeeded', 1],
+    ]);
+    expect(ports.state.agentRuns[0]).toMatchObject({
+      findingsCount: 1,
+      modelUsed: 'claude-sonnet-4-6',
+      durationMs: 25,
+    });
+  });
+
+  it('hydrates running review state before creating external resources after restart', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:previous:opened',
+      idempotencyKey: 'review:run:42:7:previous:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'previous',
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T11:58:00.000Z'),
+      finishedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    ports.state.seedAgentRun({
+      id: 'arun:run:42:7:aaa111:opened:agent_security',
+      idempotencyKey: 'agent:run:42:7:aaa111:opened:agent_security',
+      reviewRunId: 'run:42:7:aaa111:opened',
+      userId: 1,
+      agentId: 'agent_security',
+      status: 'running',
+      findingsCount: 0,
+      costEstimateUsd: 0,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'running',
+    });
+
+    expect(ports.sandbox.ensureCalls).toEqual([]);
+    expect(ports.github.createdCheckRuns).toEqual([]);
+    expect(engine.snapshot().supervisors[0]).toMatchObject({
+      sandboxId: 'sandbox-existing',
+      activeRunId: 'run:42:7:aaa111:opened',
+      reviewedHeadShas: ['previous'],
+    });
+    expect(engine.snapshot().agentRuns).toEqual([
+      expect.objectContaining({
+        id: 'arun:run:42:7:aaa111:opened:agent_security',
+        status: 'running',
+      }),
+    ]);
   });
 
   it('returns the existing synchronize run when the same head is signaled twice', async () => {
@@ -507,7 +598,6 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       proxyUrl: 'https://proxy.example.test',
       proxySigningKey: 'proxy-signing-key',
       runTokenTtlSeconds: 60 * 60,
-      maxConcurrentAgents: 2,
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
   );
@@ -533,6 +623,7 @@ type FakePorts = {
   sandbox: FakeSandboxPort;
   cost: FakeCostPort;
   intents: FakeReviewIntentPort;
+  state: FakeReviewWorkflowStatePort;
 };
 
 function createFakePorts(options: FakePortOptions = {}): FakePorts {
@@ -541,6 +632,7 @@ function createFakePorts(options: FakePortOptions = {}): FakePorts {
     sandbox: new FakeSandboxPort(options),
     cost: new FakeCostPort(options),
     intents: new FakeReviewIntentPort(),
+    state: new FakeReviewWorkflowStatePort(),
   };
 }
 
@@ -586,6 +678,55 @@ class FakeReviewIntentPort implements ReviewIntentPort {
       intentId,
       message: error instanceof Error ? error.message : 'Review intent processing failed.',
     });
+  }
+}
+
+class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
+  readonly reviewRuns: ReviewRunRecord[] = [];
+  readonly agentRuns: AgentRunRecord[] = [];
+
+  seedReviewRun(run: ReviewRunRecord): void {
+    this.reviewRuns.push(run);
+  }
+
+  seedAgentRun(run: AgentRunRecord): void {
+    this.agentRuns.push(run);
+  }
+
+  async loadPullRequestState(input: PullRequestReviewInput) {
+    return {
+      reviewRuns: this.reviewRuns.filter(
+        (run) =>
+          run.repositoryId === input.repositoryId &&
+          run.pullRequestNumber === input.pullRequestNumber,
+      ),
+      agentRuns: this.agentRuns.filter((agentRun) =>
+        this.reviewRuns.some(
+          (reviewRun) =>
+            reviewRun.id === agentRun.reviewRunId &&
+            reviewRun.repositoryId === input.repositoryId &&
+            reviewRun.pullRequestNumber === input.pullRequestNumber,
+        ),
+      ),
+    };
+  }
+
+  async upsertReviewRun(run: ReviewRunRecord): Promise<void> {
+    const index = this.reviewRuns.findIndex((existingRun) => existingRun.id === run.id);
+    if (index === -1) {
+      this.reviewRuns.push({ ...run });
+      return;
+    }
+    this.reviewRuns[index] = { ...run };
+  }
+
+  async upsertAgentRun(run: AgentRunRecord): Promise<void> {
+    const index = this.agentRuns.findIndex((existingRun) => existingRun.id === run.id);
+    if (index === -1) {
+      this.agentRuns.push({ ...run });
+      return;
+    }
+    this.agentRuns[index] = { ...run };
   }
 }
 

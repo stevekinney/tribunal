@@ -192,9 +192,8 @@ describe('review contract schema', () => {
     const result = await testDatabase.client.exec(
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
     );
-    const tableNames = new Set(
-      (result[0]?.rows as Array<{ tablename: string }>).map((row) => row.tablename),
-    );
+    const tableRows = (result[0]?.rows ?? []) as Array<{ tablename: string }>;
+    const tableNames = new Set(tableRows.map((row) => row.tablename));
 
     for (const tableName of [
       'agent',
@@ -214,9 +213,8 @@ describe('review contract schema', () => {
     const indexResult = await testDatabase.client.exec(
       "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'",
     );
-    const indexNames = new Set(
-      (indexResult[0]?.rows as Array<{ indexname: string }>).map((row) => row.indexname),
-    );
+    const indexRows = (indexResult[0]?.rows ?? []) as Array<{ indexname: string }>;
+    const indexNames = new Set(indexRows.map((row) => row.indexname));
 
     for (const indexName of [
       'cost_event_user_occurred_idx',

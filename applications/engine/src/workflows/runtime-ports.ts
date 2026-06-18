@@ -1,10 +1,12 @@
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
-import { and, eq } from '@tribunal/database/operators';
+import { and, desc, eq, inArray } from '@tribunal/database/operators';
 import {
+  agentRun,
   githubInstallation,
   githubInstallationRepository,
   repository as repositoryTable,
+  reviewRun,
 } from '@tribunal/database/schema';
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
@@ -25,9 +27,15 @@ import type {
 } from '@tribunal/review-core';
 import { ReviewWorkflowEngine } from './review-workflow';
 import { createDatabaseReviewIntentPort } from './review-intent-port';
-import { createPullRequestWorkflowId } from './identifiers';
+import { createPullRequestWorkflowId, createReviewRunIdempotencyKey } from './identifiers';
 import { createReviewWorkflowDefinitions } from './review-workflow-definitions';
-import type { ClaimedReviewIntent } from './review-workflow';
+import type {
+  AgentRunRecord,
+  ClaimedReviewIntent,
+  PullRequestReviewInput,
+  ReviewRunRecord,
+  ReviewWorkflowStatePort,
+} from './review-workflow';
 
 export type ReviewIntentRuntimeEnvironment = {
   DATABASE_URL?: string;
@@ -41,7 +49,6 @@ export type ReviewIntentRuntimeEnvironment = {
   TRIBUNAL_PROXY_URL?: string;
   TRIBUNAL_PROXY_CIDR?: string;
   PROXY_SIGNING_KEY?: string;
-  MAX_CONCURRENT_AGENTS?: string;
   DEFAULT_DAILY_COST_CAP_USD?: string;
 };
 
@@ -80,6 +87,7 @@ export function createReviewIntentConsumer(
         usageCostApiClient: unconfiguredUsageCostApiClient,
       }),
       intents: intentPort,
+      state: createDatabaseReviewWorkflowStatePort(database),
     },
     {
       sandboxImage: requireEnvironmentValue(
@@ -89,7 +97,6 @@ export function createReviewIntentConsumer(
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
-      maxConcurrentAgents: parsePositiveInteger(environment.MAX_CONCURRENT_AGENTS, 3),
     },
   );
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
@@ -266,6 +273,167 @@ export function createEngineSandboxPort(environment: ReviewIntentRuntimeEnvironm
     proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
     proxyCidr: requireEnvironmentValue(environment.TRIBUNAL_PROXY_CIDR, 'TRIBUNAL_PROXY_CIDR'),
   });
+}
+
+export function createDatabaseReviewWorkflowStatePort(database: Database): ReviewWorkflowStatePort {
+  return {
+    async loadPullRequestState(input: PullRequestReviewInput) {
+      const reviewRunRows = await database
+        .select()
+        .from(reviewRun)
+        .where(
+          and(
+            eq(reviewRun.repositoryId, input.repositoryId),
+            eq(reviewRun.prNumber, input.pullRequestNumber),
+          ),
+        )
+        .orderBy(desc(reviewRun.startedAt));
+
+      if (reviewRunRows.length === 0) {
+        return { reviewRuns: [], agentRuns: [] };
+      }
+
+      const reviewRunIds = reviewRunRows.map((row) => row.id);
+      const agentRunRows = await database
+        .select()
+        .from(agentRun)
+        .where(inArray(agentRun.reviewRunId, reviewRunIds));
+
+      return {
+        reviewRuns: reviewRunRows.map(toReviewRunRecord),
+        agentRuns: agentRunRows.map(toAgentRunRecord),
+      };
+    },
+    async upsertReviewRun(run: ReviewRunRecord) {
+      await database
+        .insert(reviewRun)
+        .values({
+          id: run.id,
+          userId: run.userId,
+          repositoryId: run.repositoryId,
+          prNumber: run.pullRequestNumber,
+          headSha: run.headSha,
+          prevHeadSha: run.previousHeadSha,
+          trigger: run.trigger,
+          status: run.status,
+          workflowId: run.workflowId,
+          sandboxId: run.sandboxId,
+          checkRunId: run.checkRunId,
+          commentsPosted: run.commentsPosted,
+          costEstimateUsd: String(run.costEstimateUsd),
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          error: run.error,
+        })
+        .onConflictDoUpdate({
+          target: reviewRun.id,
+          set: {
+            status: run.status,
+            sandboxId: run.sandboxId,
+            checkRunId: run.checkRunId,
+            commentsPosted: run.commentsPosted,
+            costEstimateUsd: String(run.costEstimateUsd),
+            finishedAt: run.finishedAt,
+            error: run.error,
+          },
+        });
+    },
+    async upsertAgentRun(run: AgentRunRecord) {
+      await database
+        .insert(agentRun)
+        .values({
+          id: run.id,
+          userId: run.userId,
+          reviewRunId: run.reviewRunId,
+          agentId: run.agentId,
+          modelUsed: run.modelUsed,
+          effortUsed: run.effortUsed,
+          status: run.status,
+          findingsCount: run.findingsCount,
+          inputTokens: run.usage?.inputTokens ?? 0,
+          outputTokens: run.usage?.outputTokens ?? 0,
+          cacheReadTokens: run.usage?.cacheReadTokens ?? 0,
+          cacheCreationTokens: run.usage?.cacheCreationTokens ?? 0,
+          costEstimateUsd: String(run.costEstimateUsd),
+          durationMs: run.durationMs,
+          stoppedReason: run.stoppedReason,
+          error: run.error,
+        })
+        .onConflictDoUpdate({
+          target: agentRun.id,
+          set: {
+            modelUsed: run.modelUsed,
+            effortUsed: run.effortUsed,
+            status: run.status,
+            findingsCount: run.findingsCount,
+            inputTokens: run.usage?.inputTokens ?? 0,
+            outputTokens: run.usage?.outputTokens ?? 0,
+            cacheReadTokens: run.usage?.cacheReadTokens ?? 0,
+            cacheCreationTokens: run.usage?.cacheCreationTokens ?? 0,
+            costEstimateUsd: String(run.costEstimateUsd),
+            durationMs: run.durationMs,
+            stoppedReason: run.stoppedReason,
+            error: run.error,
+          },
+        });
+    },
+  };
+}
+
+function toReviewRunRecord(row: typeof reviewRun.$inferSelect): ReviewRunRecord {
+  return {
+    id: row.id,
+    idempotencyKey: createReviewRunIdempotencyKey({
+      repositoryId: row.repositoryId,
+      pullRequestNumber: row.prNumber,
+      headSha: row.headSha,
+      trigger: row.trigger,
+    }),
+    workflowId:
+      row.workflowId ??
+      createPullRequestWorkflowId({
+        repositoryId: row.repositoryId,
+        pullRequestNumber: row.prNumber,
+      }),
+    userId: row.userId,
+    repositoryId: row.repositoryId,
+    pullRequestNumber: row.prNumber,
+    headSha: row.headSha,
+    previousHeadSha: row.prevHeadSha ?? undefined,
+    trigger: row.trigger as ReviewRunRecord['trigger'],
+    status: row.status as ReviewRunRecord['status'],
+    sandboxId: row.sandboxId ?? '',
+    checkRunId: row.checkRunId ?? undefined,
+    commentsPosted: row.commentsPosted,
+    costEstimateUsd: Number(row.costEstimateUsd),
+    startedAt: row.startedAt ?? new Date(0),
+    finishedAt: row.finishedAt ?? undefined,
+    error: row.error ?? undefined,
+  };
+}
+
+function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
+  return {
+    id: row.id,
+    idempotencyKey: `agent:${row.reviewRunId}:${row.agentId}`,
+    reviewRunId: row.reviewRunId,
+    userId: row.userId,
+    agentId: row.agentId,
+    status: row.status as AgentRunRecord['status'],
+    findingsCount: row.findingsCount,
+    costEstimateUsd: Number(row.costEstimateUsd),
+    modelUsed: row.modelUsed ?? undefined,
+    effortUsed: row.effortUsed as AgentRunRecord['effortUsed'],
+    usage: {
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      cacheCreationTokens: row.cacheCreationTokens,
+    },
+    durationMs: row.durationMs ?? undefined,
+    stoppedReason: (row.stoppedReason ?? undefined) as AgentRunRecord['stoppedReason'],
+    error: row.error ?? undefined,
+  };
 }
 
 export class TensorlakeSandboxAdapter implements SandboxAdapter {
@@ -449,11 +617,6 @@ function normalizeFileStatus(status: string): DiffContext['changedFiles'][number
 function requireEnvironmentValue(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is required for review intent processing.`);
   return value;
-}
-
-function parsePositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
