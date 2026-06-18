@@ -12,12 +12,7 @@ import {
   userReviewSettings,
 } from '@tribunal/database/schema';
 import type { AgentSpec } from '@tribunal/review-core';
-import type {
-  ClaimedReviewIntent,
-  PullRequestReviewInput,
-  ReviewIntentKind,
-  ReviewIntentPort,
-} from './review-workflow';
+import type { PullRequestReviewInput, ReviewIntentKind, ReviewIntentPort } from './review-workflow';
 
 type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 

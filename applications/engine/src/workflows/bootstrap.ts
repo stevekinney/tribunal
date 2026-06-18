@@ -8,6 +8,7 @@ import type { Storage } from '@lostgradient/weft';
 import type { EngineHealthDependency } from '../health';
 
 const engineHeartbeat = workflow({ name: 'engine-heartbeat' }).execute(async function* () {
+  yield* [];
   return { ok: true };
 });
 

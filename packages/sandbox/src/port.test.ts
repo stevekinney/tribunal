@@ -97,7 +97,9 @@ describe('sandbox port', () => {
         },
       },
     });
-    const commandArguments = (calls[0]?.input as { arguments_: string[] }).arguments_;
+    const firstCall = calls[0];
+    expect(firstCall).toBeDefined();
+    const commandArguments = (firstCall!.input as { arguments_: string[] }).arguments_;
     expect(commandArguments.join(' ')).toContain('git -C /workspace/repository');
     expect(commandArguments.join(' ')).toContain(
       'http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN',

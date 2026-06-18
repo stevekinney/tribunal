@@ -2,14 +2,17 @@ import { workflow } from '@lostgradient/weft';
 import type { ClaimedReviewIntent, ReviewWorkflowEngine } from './review-workflow';
 
 const reviewRunWorkflow = workflow({ name: 'review-run' }).execute(async function* () {
+  yield* [];
   return { registered: true };
 });
 
 const agentReviewWorkflow = workflow({ name: 'agent-review' }).execute(async function* () {
+  yield* [];
   return { registered: true };
 });
 
 const sandboxReaperWorkflow = workflow({ name: 'sandbox-reaper' }).execute(async function* () {
+  yield* [];
   return { registered: true };
 });
 

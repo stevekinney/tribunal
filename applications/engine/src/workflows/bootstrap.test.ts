@@ -40,6 +40,7 @@ describe('createEngineRuntime', () => {
   it('registers review workflows and binds the created Weft engine to the consumer', async () => {
     const bindWorkflowEngine = vi.fn();
     const reviewWorkflow = workflow({ name: 'review-pr' }).execute(async function* () {
+      yield* [];
       return { ok: true };
     });
     const runtime = await createEngineRuntime({

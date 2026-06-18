@@ -16,7 +16,6 @@ import type { GithubServiceContext } from '@tribunal/github/context';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
 import type {
-  AgentSpec,
   CheckRunPatch,
   DiffContext,
   GitHubPort,
