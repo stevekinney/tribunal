@@ -264,6 +264,45 @@ describe('credential proxy', () => {
     );
   });
 
+  it('rejects upstream redirects after credential injection', async () => {
+    const { auditEvents, handler, upstreamRequests } = createFixture({
+      upstreamFetch: async (request) => {
+        upstreamRequests.push(request.clone());
+        return new Response(null, {
+          status: 301,
+          headers: { location: 'https://evil.example.com/collect' },
+        });
+      },
+    });
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request(
+        'https://proxy.tribunal.test/github/api.github.test/repos/lostgradient/tribunal/pulls/1',
+        {
+          headers: bearerHeaders(capabilityToken),
+        },
+      ),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'upstream_redirect_not_allowed',
+    });
+    expect(upstreamRequests).toHaveLength(1);
+    expect(upstreamRequests[0].redirect).toBe('manual');
+    expect(upstreamRequests[0].headers.get('authorization')).toBe(`Bearer ${githubReadToken}`);
+    expect(auditEvents).toContainEqual(
+      expect.objectContaining({
+        credentialInjected: true,
+        outcome: 'blocked',
+        reason: 'upstream_redirect_not_allowed',
+        status: 502,
+      }),
+    );
+  });
+
   it('injects the Anthropic credential for message requests', async () => {
     const { handler, upstreamRequests } = createFixture();
     const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
@@ -449,9 +488,18 @@ describe('credential proxy', () => {
         },
       ),
     );
+    const doubleEncodedTraversalResponse = await handler(
+      new Request(
+        'https://proxy.tribunal.test/github/api.github.test/repos/lostgradient/tribunal/%252e%252e/%252e%252e/other-repo/pulls/1',
+        {
+          headers: bearerHeaders(capabilityToken),
+        },
+      ),
+    );
 
     expect(writeResponse.status).toBe(403);
     expect(crossRepositoryResponse.status).toBe(403);
+    expect(doubleEncodedTraversalResponse.status).toBe(403);
     expect(upstreamRequests).toHaveLength(0);
   });
 
@@ -511,10 +559,17 @@ describe('credential proxy', () => {
         { method: 'POST', headers: bearerHeaders(capabilityToken), body: '0000' },
       ),
     );
+    const doubleEncodedTraversalResponse = await handler(
+      new Request(
+        'https://proxy.tribunal.test/github/github.com/lostgradient/tribunal.git/%252e%252e/other-repo.git/info/refs?service=git-upload-pack',
+        { headers: bearerHeaders(capabilityToken) },
+      ),
+    );
 
     expect(refsResponse.status).toBe(200);
     expect(uploadPackResponse.status).toBe(200);
     expect(receivePackResponse.status).toBe(403);
+    expect(doubleEncodedTraversalResponse.status).toBe(403);
     expect(upstreamRequests.map((request) => request.url)).toEqual([
       'https://github.com/lostgradient/tribunal.git/info/refs?service=git-upload-pack',
       'https://github.com/lostgradient/tribunal/git-upload-pack',
@@ -586,7 +641,7 @@ describe('credential proxy', () => {
 });
 
 function createFixture(
-  overrides: Partial<Pick<ProxyFixtureOptions, 'githubCredentialResolver'>> = {},
+  overrides: Partial<Pick<ProxyFixtureOptions, 'githubCredentialResolver' | 'upstreamFetch'>> = {},
 ): ProxyFixture {
   const environment = parseProxyEnvironment(rawEnvironment);
   const auditEvents: ProxyAuditEvent[] = [];
@@ -598,19 +653,21 @@ function createFixture(
       auditEvents.push(event);
     },
     githubCredentialResolver: overrides.githubCredentialResolver ?? (() => githubReadToken),
-    upstreamFetch: async (request) => {
-      upstreamRequests.push(request.clone());
-      return Response.json(
-        { ok: true },
-        {
-          headers: {
-            authorization: `Bearer ${githubReadToken}`,
-            'set-cookie': 'upstream-cookie=secret',
-            'x-api-key': anthropicApiKey,
+    upstreamFetch:
+      overrides.upstreamFetch ??
+      (async (request) => {
+        upstreamRequests.push(request.clone());
+        return Response.json(
+          { ok: true },
+          {
+            headers: {
+              authorization: `Bearer ${githubReadToken}`,
+              'set-cookie': 'upstream-cookie=secret',
+              'x-api-key': anthropicApiKey,
+            },
           },
-        },
-      );
-    },
+        );
+      }),
   });
 
   return { auditEvents, environment, handler, upstreamRequests };
@@ -618,6 +675,7 @@ function createFixture(
 
 type ProxyFixtureOptions = {
   githubCredentialResolver: () => string | null;
+  upstreamFetch: (request: Request) => Promise<Response>;
 };
 
 function createClaims(overrides: Partial<CapabilityTokenClaims> = {}): CapabilityTokenClaims {

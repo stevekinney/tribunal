@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { findingSchema } from '@tribunal/review-core/schemas';
 import type { DiffContext, Finding } from '@tribunal/review-core/types';
@@ -87,5 +88,24 @@ function stripControlCharacters(value: string): string {
 }
 
 function containsUnsafeCommentAction(value: string): boolean {
-  return /(^|\s)@(everyone|here|all)\b/i.test(value) || /^\s*\/\S+/.test(value);
+  return /(^|[^\w])@[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?\b/iu.test(value) || /^\s*\/\S+/m.test(value);
+}
+
+export function computeCanonicalFindingFingerprint(finding: Finding): string {
+  const payload = JSON.stringify({
+    path: finding.path,
+    normalizedLine: normalizeFindingLine(finding),
+    severity: finding.severity,
+    normalizedTitle: normalizeFindingTitle(finding.title),
+  });
+
+  return createHash('sha256').update(payload).digest('hex');
+}
+
+function normalizeFindingLine(finding: Finding): number {
+  return finding.endLine ?? finding.startLine ?? 0;
+}
+
+function normalizeFindingTitle(title: string): string {
+  return stripControlCharacters(title).trim().replace(/\s+/gu, ' ').toLowerCase();
 }

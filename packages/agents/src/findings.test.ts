@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffContext, Finding } from '@tribunal/review-core/types';
-import { isRepositoryRelativePath, sanitizeFinding, validateFinding } from './findings';
+import {
+  computeCanonicalFindingFingerprint,
+  isRepositoryRelativePath,
+  sanitizeFinding,
+  validateFinding,
+} from './findings';
 
 const diffContext: DiffContext = {
   headSha: 'head',
@@ -48,7 +53,36 @@ describe('finding validation', () => {
     expect(
       validateFinding({ ...finding, body: '@everyone please approve this' }, diffContext).ok,
     ).toBe(false);
+    expect(
+      validateFinding({ ...finding, body: 'Please ask @octocat to approve' }, diffContext).ok,
+    ).toBe(false);
     expect(validateFinding({ ...finding, body: '/approve' }, diffContext).ok).toBe(false);
+    expect(
+      validateFinding({ ...finding, body: 'Legitimate finding.\n/approve' }, diffContext).ok,
+    ).toBe(false);
+  });
+
+  it('computes canonical finding fingerprints from stable finding fields', () => {
+    const fingerprint = computeCanonicalFindingFingerprint({
+      ...finding,
+      endLine: null,
+      title: ' Missing\tAuthorization\nCheck ',
+    });
+    const sameFingerprint = computeCanonicalFindingFingerprint({
+      ...finding,
+      startLine: null,
+      endLine: 12,
+      title: 'missing authorization check',
+    });
+    const differentLineFingerprint = computeCanonicalFindingFingerprint({
+      ...finding,
+      startLine: 13,
+      endLine: 13,
+    });
+
+    expect(fingerprint).toBe('760817880bb9ff443df0e200b90e7d0ea7b615c19ca0a82bbcab2e4ebf0b41ab');
+    expect(sameFingerprint).toBe(fingerprint);
+    expect(differentLineFingerprint).not.toBe(fingerprint);
   });
 
   it('clamps over-length bodies deterministically', () => {

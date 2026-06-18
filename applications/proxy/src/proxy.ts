@@ -245,8 +245,10 @@ function parseRoute(url: URL): Omit<ValidatedRoute, 'method' | 'requiredPermissi
     return null;
   }
 
-  const upstreamHost = safeDecodeURIComponent(routeTail.slice(0, hostSeparatorIndex)).toLowerCase();
-  if (!isValidHost(upstreamHost)) {
+  const upstreamHost = safeDecodeURIComponent(
+    routeTail.slice(0, hostSeparatorIndex),
+  )?.toLowerCase();
+  if (upstreamHost === undefined || !isValidHost(upstreamHost)) {
     return null;
   }
 
@@ -315,6 +317,21 @@ async function forwardValidatedRequest(input: {
   }
   const upstreamResponse = await input.upstreamFetch(upstreamRequest.request);
 
+  if (isRedirectResponse(upstreamResponse)) {
+    await emitAudit(
+      input.auditSink,
+      auditEventForRequest(input.request, input.route, input.claims, {
+        outcome: 'blocked',
+        status: 502,
+        reason: 'upstream_redirect_not_allowed',
+        credentialInjected: true,
+      }),
+      input.options,
+      [input.capabilityToken, credential],
+    );
+    return errorResponse(502, 'upstream_redirect_not_allowed');
+  }
+
   await emitAudit(
     input.auditSink,
     auditEventForRequest(input.request, input.route, input.claims, {
@@ -355,6 +372,7 @@ async function createUpstreamRequest(
       method: route.method,
       headers,
       body,
+      redirect: 'manual',
     }),
   };
 }
@@ -413,6 +431,10 @@ function sanitizeUpstreamResponse(response: Response): Response {
   });
 }
 
+function isRedirectResponse(response: Response): boolean {
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400);
+}
+
 async function resolveCredential(
   service: ProxyService,
   claims: CapabilityTokenClaims,
@@ -445,7 +467,7 @@ function isValidHost(host: string): boolean {
 
 function isScopedGitHubRestPath(pathname: string, claims: CapabilityTokenClaims): boolean {
   const segments = decodePathSegments(pathname);
-  if (segments.length < 3 || segments[0] !== 'repos') {
+  if (segments === null || segments.length < 3 || segments[0] !== 'repos') {
     return false;
   }
 
@@ -459,7 +481,11 @@ function isScopedGitSmartHttpPath(
   claims: CapabilityTokenClaims,
 ): boolean {
   const segments = decodePathSegments(pathname);
-  if (segments.length < 3 || !isSameRepository(segments[0], trimGitSuffix(segments[1]), claims)) {
+  if (
+    segments === null ||
+    segments.length < 3 ||
+    !isSameRepository(segments[0], trimGitSuffix(segments[1]), claims)
+  ) {
     return false;
   }
 
@@ -474,18 +500,31 @@ function isScopedGitSmartHttpPath(
   return method === 'POST' && segments[2] === 'git-upload-pack';
 }
 
-function decodePathSegments(pathname: string): string[] {
-  return pathname
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => safeDecodeURIComponent(segment));
+function decodePathSegments(pathname: string): string[] | null {
+  const segments: string[] = [];
+
+  for (const segment of pathname.split('/').filter(Boolean)) {
+    const decodedSegment = safeDecodeURIComponent(segment);
+    if (
+      decodedSegment === undefined ||
+      decodedSegment === '.' ||
+      decodedSegment === '..' ||
+      decodedSegment.includes('%')
+    ) {
+      return null;
+    }
+
+    segments.push(decodedSegment);
+  }
+
+  return segments;
 }
 
-function safeDecodeURIComponent(value: string): string {
+function safeDecodeURIComponent(value: string): string | undefined {
   try {
     return decodeURIComponent(value);
   } catch {
-    return '';
+    return undefined;
   }
 }
 
