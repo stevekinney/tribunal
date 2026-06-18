@@ -33,6 +33,22 @@ interface GitHubReviewCommentPayload {
   start_side?: ReviewCommentSide;
 }
 
+interface PullRequestReviewListItem {
+  id: number;
+  body: string | null;
+}
+
+const reviewWriteTimeoutMilliseconds = 60_000;
+const reviewMarkerLookupTimeoutMilliseconds = 60_000;
+
+export interface FindPostedPullRequestReviewInput {
+  installationId: number;
+  owner: string;
+  repository: string;
+  pullRequestNumber: number;
+  reviewMarker: string;
+}
+
 export async function postPullRequestReview(
   context: GithubServiceContext,
   input: PostPullRequestReviewInput,
@@ -50,6 +66,9 @@ export async function postPullRequestReview(
       event: 'COMMENT',
       body: input.body,
       comments,
+      request: {
+        signal: AbortSignal.timeout(reviewWriteTimeoutMilliseconds),
+      },
     }),
   );
 
@@ -57,6 +76,34 @@ export async function postPullRequestReview(
     id: response.data.id,
     htmlUrl: response.data.html_url ?? null,
   };
+}
+
+export async function findPostedPullRequestReview(
+  context: GithubServiceContext,
+  input: FindPostedPullRequestReviewInput,
+): Promise<{ id: number; comments: number } | undefined> {
+  validateFindPostedPullRequestReviewInput(input);
+  const octokit = await requireInstallationOctokit(context, input.installationId);
+  const signal = AbortSignal.timeout(reviewMarkerLookupTimeoutMilliseconds);
+  const review = await findReviewByMarker(
+    octokit,
+    input.owner,
+    input.repository,
+    input.pullRequestNumber,
+    input.reviewMarker,
+    signal,
+  );
+  if (review === undefined) return undefined;
+
+  const comments = await listPullRequestReviewComments(
+    octokit,
+    input.owner,
+    input.repository,
+    input.pullRequestNumber,
+    review.id,
+    signal,
+  );
+  return { id: review.id, comments };
 }
 
 export function validatePostPullRequestReviewInput(input: PostPullRequestReviewInput): void {
@@ -74,6 +121,12 @@ export function validatePostPullRequestReviewInput(input: PostPullRequestReviewI
   }
 }
 
+function validateFindPostedPullRequestReviewInput(input: FindPostedPullRequestReviewInput): void {
+  validateRepositoryTarget(input.owner, input.repository);
+  validatePositiveInteger(input.pullRequestNumber, 'pullRequestNumber');
+  validateNonEmptyString(input.reviewMarker, 'reviewMarker');
+}
+
 function validateReviewComment(comment: PullRequestReviewCommentInput): void {
   validateNonEmptyString(comment.path, 'comment.path');
   validateNonEmptyString(comment.body, 'comment.body');
@@ -86,6 +139,59 @@ function validateReviewComment(comment: PullRequestReviewCommentInput): void {
     if (comment.startLine! > comment.line) {
       throw new ValidationError('comment.startLine must be less than or equal to comment.line.');
     }
+  }
+}
+
+async function findReviewByMarker(
+  octokit: Octokit,
+  owner: string,
+  repository: string,
+  pullRequestNumber: number,
+  marker: string,
+  signal: AbortSignal,
+): Promise<PullRequestReviewListItem | undefined> {
+  const perPage = 100;
+  for (let page = 1; ; page += 1) {
+    const response = await withGitHubWriteErrorClassification(() =>
+      octokit.rest.pulls.listReviews({
+        owner,
+        repo: repository,
+        pull_number: pullRequestNumber,
+        per_page: perPage,
+        page,
+        request: { signal },
+      }),
+    );
+    const review = response.data.find((candidate) => candidate.body?.includes(marker));
+    if (review !== undefined) return review;
+    if (response.data.length < perPage) return undefined;
+  }
+}
+
+async function listPullRequestReviewComments(
+  octokit: Octokit,
+  owner: string,
+  repository: string,
+  pullRequestNumber: number,
+  reviewId: number,
+  signal: AbortSignal,
+): Promise<number> {
+  let comments = 0;
+  const perPage = 100;
+  for (let page = 1; ; page += 1) {
+    const response = await withGitHubWriteErrorClassification(() =>
+      octokit.rest.pulls.listCommentsForReview({
+        owner,
+        repo: repository,
+        pull_number: pullRequestNumber,
+        review_id: reviewId,
+        per_page: perPage,
+        page,
+        request: { signal },
+      }),
+    );
+    comments += response.data.length;
+    if (response.data.length < perPage) return comments;
   }
 }
 

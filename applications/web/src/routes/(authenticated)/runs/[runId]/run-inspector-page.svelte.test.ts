@@ -28,6 +28,7 @@ const data = {
     sandboxId: null,
     checkRunId: null,
     commentsPosted: 0,
+    reviewPostClaimedAt: null,
     costEstimateUsd: '1.00',
     startedAt: new Date('2026-06-17T12:00:00Z'),
     finishedAt: null,

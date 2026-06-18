@@ -32,6 +32,7 @@ export const reviewRun = pgTable(
     sandboxId: text('sandbox_id'),
     checkRunId: bigint('check_run_id', { mode: 'number' }),
     commentsPosted: integer('comments_posted').notNull().default(0),
+    reviewPostClaimedAt: timestamp('review_post_claimed_at', { withTimezone: true }),
     costEstimateUsd: numeric('cost_estimate_usd').notNull().default('0'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

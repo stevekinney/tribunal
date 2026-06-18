@@ -33,21 +33,42 @@ export interface ReviewPayload {
   }>;
 }
 
+export interface PostedReviewRecord {
+  comments: number;
+}
+
 export interface GitHubPort {
   mintReadToken(repositoryId: number, installationId: number): Promise<ScopedToken>;
   getDiffContext(
     repository: RepoRef,
+    installationId: number,
     pullRequestNumber: number,
     head: string,
     previousHead?: string,
   ): Promise<DiffContext>;
-  createCheckRun(repository: RepoRef, headSha: string): Promise<{ checkRunId: number }>;
-  updateCheckRun(repository: RepoRef, checkRunId: number, patch: CheckRunPatch): Promise<void>;
+  createCheckRun(
+    repository: RepoRef,
+    installationId: number,
+    headSha: string,
+  ): Promise<{ checkRunId: number }>;
+  updateCheckRun(
+    repository: RepoRef,
+    installationId: number,
+    checkRunId: number,
+    patch: CheckRunPatch,
+  ): Promise<void>;
   postReview(
     repository: RepoRef,
+    installationId: number,
     pullRequestNumber: number,
     review: ReviewPayload,
   ): Promise<{ comments: number }>;
+  findPostedReview(
+    repository: RepoRef,
+    installationId: number,
+    pullRequestNumber: number,
+    reviewMarker: string,
+  ): Promise<PostedReviewRecord | undefined>;
 }
 
 export interface SandboxOptions {

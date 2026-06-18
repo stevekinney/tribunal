@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type {
   AgentEvent,
   AgentResult,
@@ -94,6 +95,7 @@ export type ReviewRunRecord = {
   sandboxId: string;
   checkRunId?: number;
   commentsPosted: number;
+  reviewPostClaimedAt?: Date;
   costEstimateUsd: number;
   startedAt: Date;
   finishedAt?: Date;
@@ -164,11 +166,33 @@ export type PullRequestWorkflowState = {
   agentRuns: AgentRunRecord[];
 };
 
+export type ReviewPostClaimResult =
+  | { status: 'claimed'; claimedAt: Date }
+  | { status: 'already_posted'; commentsPosted: number }
+  | { status: 'claimed_by_other'; claimedAt?: Date };
+
 export type ReviewWorkflowStatePort = {
   loadPullRequestState(input: PullRequestReviewInput): Promise<PullRequestWorkflowState>;
   upsertReviewRun(run: ReviewRunRecord): Promise<void>;
   upsertAgentRun(run: AgentRunRecord): Promise<void>;
+  claimReviewPost(reviewRunId: string, now: Date): Promise<ReviewPostClaimResult>;
+  refreshReviewPostClaim(
+    reviewRunId: string,
+    claimedAt: Date,
+    now: Date,
+  ): Promise<Date | undefined>;
+  clearReviewPostClaim(reviewRunId: string, claimedAt: Date): Promise<boolean>;
+  ownsReviewPostClaim(reviewRunId: string, claimedAt: Date): Promise<boolean>;
 };
+
+class ReviewPostAlreadyClaimedError extends Error {
+  constructor(reviewRunId: string) {
+    super(`Review post is already claimed for ${reviewRunId}.`);
+    this.name = 'ReviewPostAlreadyClaimedError';
+  }
+}
+
+const staleReviewPostClaimMilliseconds = 5 * 60 * 1000;
 
 export type ReviewWorkflowSnapshot = {
   supervisors: PullRequestSupervisorSnapshot[];
@@ -294,14 +318,19 @@ export class ReviewWorkflowEngine {
     }
 
     if (supervisor.checkRunId !== undefined) {
-      await this.ports.github.updateCheckRun(input.repository, supervisor.checkRunId, {
-        status: 'completed',
-        conclusion: prState === 'merged' ? 'success' : 'cancelled',
-        output: {
-          title: 'Tribunal review stopped',
-          summary: `Pull request ${prState}; stopped in-flight review work.`,
+      await this.ports.github.updateCheckRun(
+        input.repository,
+        input.installationId,
+        supervisor.checkRunId,
+        {
+          status: 'completed',
+          conclusion: prState === 'merged' ? 'success' : 'cancelled',
+          output: {
+            title: 'Tribunal review stopped',
+            summary: `Pull request ${prState}; stopped in-flight review work.`,
+          },
         },
-      });
+      );
     }
 
     await this.terminateSandboxOnce(supervisor.sandboxId);
@@ -339,7 +368,7 @@ export class ReviewWorkflowEngine {
         run.finishedAt = this.now();
         await this.persistReviewRun(run);
       }
-      await this.updateCheckRun(supervisor.input.repository, supervisor.checkRunId, {
+      await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'cancelled',
         output: {
@@ -432,7 +461,11 @@ export class ReviewWorkflowEngine {
       image: this.configuration.sandboxImage,
       proxyUrl: this.configuration.proxyUrl,
     });
-    const { checkRunId } = await this.ports.github.createCheckRun(input.repository, input.headSha);
+    const { checkRunId } = await this.ports.github.createCheckRun(
+      input.repository,
+      input.installationId,
+      input.headSha,
+    );
     const supervisor: SupervisorState = {
       workflowId,
       repositoryId: input.repositoryId,
@@ -473,13 +506,28 @@ export class ReviewWorkflowEngine {
     const runPromise = this.executeReviewRun(supervisor, runId, headSha, trigger, previousHeadSha)
       .catch((error) => {
         supervisor.runPromises.delete(runId);
+        if (error instanceof ReviewPostAlreadyClaimedError) throw error;
+
         const run = this.reviewRuns.get(runId);
+        if (run !== undefined && (run.status === 'posted' || run.commentsPosted > 0)) {
+          return this.persistReviewRun(run).then(() => {
+            throw error;
+          });
+        }
         if (run !== undefined) {
           run.status = 'failed';
           run.error = error instanceof Error ? error.message : 'Review run failed.';
           run.finishedAt = this.now();
         }
-        return this.persistReviewRun(run).then(() => {
+        return this.persistReviewRun(run).then(async () => {
+          await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
+            status: 'completed',
+            conclusion: 'neutral',
+            output: {
+              title: 'Tribunal review failed',
+              summary: 'Review run failed during setup. See Tribunal logs for details.',
+            },
+          });
           throw error;
         });
       })
@@ -501,7 +549,7 @@ export class ReviewWorkflowEngine {
     previousHeadSha?: string,
   ): Promise<ReviewRunRecord> {
     const input = supervisor.input;
-    const startedAt = this.now();
+    const existingRun = this.reviewRuns.get(runId);
     const reviewRun: ReviewRunRecord = {
       id: runId,
       idempotencyKey: createReviewRunIdempotencyKey({
@@ -518,11 +566,12 @@ export class ReviewWorkflowEngine {
       previousHeadSha,
       trigger,
       status: 'running',
-      sandboxId: supervisor.sandboxId,
-      checkRunId: supervisor.checkRunId,
-      commentsPosted: 0,
-      costEstimateUsd: 0,
-      startedAt,
+      sandboxId: existingRun?.sandboxId ?? supervisor.sandboxId,
+      checkRunId: existingRun?.checkRunId ?? supervisor.checkRunId,
+      commentsPosted: existingRun?.commentsPosted ?? 0,
+      reviewPostClaimedAt: existingRun?.reviewPostClaimedAt,
+      costEstimateUsd: existingRun?.costEstimateUsd ?? 0,
+      startedAt: existingRun?.startedAt ?? this.now(),
     };
     this.reviewRuns.set(runId, reviewRun);
     supervisor.activeRunId = runId;
@@ -533,7 +582,7 @@ export class ReviewWorkflowEngine {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
       await this.persistReviewRun(reviewRun);
-      await this.updateCheckRun(input.repository, supervisor.checkRunId, {
+      await this.updateCheckRun(input, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'neutral',
         output: {
@@ -556,6 +605,7 @@ export class ReviewWorkflowEngine {
     await this.ports.sandbox.update(supervisor.sandboxId, input.repository, headSha, runToken);
     const diffContext = await this.ports.github.getDiffContext(
       input.repository,
+      input.installationId,
       input.pullRequestNumber,
       headSha,
       previousHeadSha,
@@ -578,7 +628,7 @@ export class ReviewWorkflowEngine {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
       await this.persistReviewRun(reviewRun);
-      await this.updateCheckRun(input.repository, supervisor.checkRunId, {
+      await this.updateCheckRun(input, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'neutral',
         output: {
@@ -591,13 +641,115 @@ export class ReviewWorkflowEngine {
 
     const findings = agentResults.flatMap((result) => result.findings);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
-    if (reviewPayload.comments.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
-      const posted = await this.ports.github.postReview(
-        input.repository,
-        input.pullRequestNumber,
-        reviewPayload,
-      );
-      reviewRun.commentsPosted = posted.comments;
+    if (
+      reviewPayload.comments.length > 0 &&
+      !this.postedReviewRunIds.has(reviewRun.id) &&
+      reviewRun.commentsPosted === 0
+    ) {
+      const claimResult = await this.claimReviewPost(reviewRun);
+      let ownedClaimedAt: Date | undefined;
+      if (claimResult.status === 'already_posted') {
+        reviewRun.commentsPosted = claimResult.commentsPosted;
+      } else if (claimResult.status === 'claimed_by_other') {
+        let posted: { comments: number } | undefined;
+        try {
+          posted = await this.findPostedReview(input, reviewRun.id);
+        } catch {
+          throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+        }
+        if (posted !== undefined) {
+          reviewRun.commentsPosted = posted.comments;
+          reviewRun.reviewPostClaimedAt = undefined;
+          this.postedReviewRunIds.add(reviewRun.id);
+          await this.persistReviewRun(reviewRun);
+        } else if (
+          claimResult.claimedAt !== undefined &&
+          this.isStaleReviewPostClaim(claimResult.claimedAt)
+        ) {
+          const cleared = await this.ports.state?.clearReviewPostClaim(
+            reviewRun.id,
+            claimResult.claimedAt,
+          );
+          if (cleared !== true) throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+          reviewRun.reviewPostClaimedAt = undefined;
+          const retryClaimResult = await this.claimReviewPost(reviewRun);
+          if (retryClaimResult.status === 'already_posted') {
+            reviewRun.commentsPosted = retryClaimResult.commentsPosted;
+          } else if (retryClaimResult.status === 'claimed') {
+            ownedClaimedAt = retryClaimResult.claimedAt;
+          } else {
+            throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+          }
+        } else {
+          throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+        }
+      } else if (claimResult.status === 'claimed') {
+        ownedClaimedAt = claimResult.claimedAt;
+      }
+
+      if (ownedClaimedAt !== undefined) {
+        reviewRun.reviewPostClaimedAt = ownedClaimedAt;
+        await this.persistReviewRun(reviewRun);
+
+        let attemptedReviewPost = false;
+        try {
+          const stillOwnsClaim = await this.ownsReviewPostClaim(reviewRun.id, ownedClaimedAt);
+          if (!stillOwnsClaim) throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+          const posted = await this.findPostedReview(input, reviewRun.id);
+          if (posted !== undefined) {
+            reviewRun.commentsPosted = posted.comments;
+            this.postedReviewRunIds.add(reviewRun.id);
+            await this.persistReviewRun(reviewRun);
+          } else {
+            const stillOwnsClaimAfterLookup = await this.ownsReviewPostClaim(
+              reviewRun.id,
+              ownedClaimedAt,
+            );
+            if (!stillOwnsClaimAfterLookup) throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+            const refreshedClaimedAt = await this.refreshReviewPostClaim(
+              reviewRun.id,
+              ownedClaimedAt,
+            );
+            if (refreshedClaimedAt === undefined) {
+              throw new ReviewPostAlreadyClaimedError(reviewRun.id);
+            }
+            ownedClaimedAt = refreshedClaimedAt;
+            reviewRun.reviewPostClaimedAt = refreshedClaimedAt;
+            await this.persistReviewRun(reviewRun);
+            attemptedReviewPost = true;
+            const posted = await this.ports.github.postReview(
+              input.repository,
+              input.installationId,
+              input.pullRequestNumber,
+              withReviewRunMarker(
+                reviewPayload,
+                createSignedReviewRunMarker(reviewRun.id, this.configuration.proxySigningKey),
+              ),
+            );
+            reviewRun.commentsPosted = posted.comments;
+          }
+        } catch (error) {
+          if (!attemptedReviewPost) {
+            reviewRun.reviewPostClaimedAt = undefined;
+            await this.ports.state?.clearReviewPostClaim(reviewRun.id, ownedClaimedAt);
+            await this.persistReviewRun(reviewRun);
+            throw error;
+          }
+
+          const posted = await this.findPostedReview(input, reviewRun.id);
+          if (posted !== undefined) {
+            reviewRun.commentsPosted = posted.comments;
+            this.postedReviewRunIds.add(reviewRun.id);
+          }
+          await this.persistReviewRun(reviewRun);
+          if (posted === undefined) throw error;
+        }
+        reviewRun.reviewPostClaimedAt = undefined;
+        this.postedReviewRunIds.add(reviewRun.id);
+        await this.persistReviewRun(reviewRun);
+      }
+    }
+    if (reviewPayload.comments.length > 0 && reviewRun.commentsPosted > 0) {
       this.postedReviewRunIds.add(reviewRun.id);
     }
     reviewRun.costEstimateUsd = agentResults.reduce(
@@ -610,7 +762,7 @@ export class ReviewWorkflowEngine {
     await this.persistReviewRun(reviewRun);
 
     await this.updateCheckRun(
-      input.repository,
+      input,
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(agentResults),
     );
@@ -739,12 +891,53 @@ export class ReviewWorkflowEngine {
   }
 
   private async updateCheckRun(
-    repository: RepoRef,
+    input: Pick<PullRequestReviewInput, 'repository' | 'installationId'>,
     checkRunId: number | undefined,
     patch: CheckRunPatch,
   ): Promise<void> {
     if (checkRunId === undefined) return;
-    await this.ports.github.updateCheckRun(repository, checkRunId, patch);
+    await this.ports.github.updateCheckRun(
+      input.repository,
+      input.installationId,
+      checkRunId,
+      patch,
+    );
+  }
+
+  private async claimReviewPost(reviewRun: ReviewRunRecord): Promise<ReviewPostClaimResult> {
+    const claimedAt = this.now();
+    if (this.ports.state === undefined) return { status: 'claimed', claimedAt };
+    return this.ports.state.claimReviewPost(reviewRun.id, claimedAt);
+  }
+
+  private async ownsReviewPostClaim(reviewRunId: string, claimedAt: Date): Promise<boolean> {
+    if (this.ports.state === undefined) return true;
+    return this.ports.state.ownsReviewPostClaim(reviewRunId, claimedAt);
+  }
+
+  private async refreshReviewPostClaim(
+    reviewRunId: string,
+    claimedAt: Date,
+  ): Promise<Date | undefined> {
+    const refreshedAt = this.now();
+    if (this.ports.state === undefined) return refreshedAt;
+    return this.ports.state.refreshReviewPostClaim(reviewRunId, claimedAt, refreshedAt);
+  }
+
+  private async findPostedReview(
+    input: Pick<PullRequestReviewInput, 'repository' | 'installationId' | 'pullRequestNumber'>,
+    reviewRunId: string,
+  ): Promise<{ comments: number } | undefined> {
+    return this.ports.github.findPostedReview(
+      input.repository,
+      input.installationId,
+      input.pullRequestNumber,
+      createSignedReviewRunMarker(reviewRunId, this.configuration.proxySigningKey),
+    );
+  }
+
+  private isStaleReviewPostClaim(claimedAt: Date): boolean {
+    return this.now().getTime() - claimedAt.getTime() >= staleReviewPostClaimMilliseconds;
   }
 
   private async terminateSandboxOnce(sandboxId: string): Promise<boolean> {
@@ -837,6 +1030,18 @@ function buildReviewPayload(
   };
 }
 
+function withReviewRunMarker(review: ReviewPayload, reviewMarker: string): ReviewPayload {
+  return {
+    ...review,
+    body: `${review.body}\n\n${reviewMarker}`,
+  };
+}
+
+function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): string {
+  const signature = createHmac('sha256', signingKey).update(reviewRunId).digest('base64url');
+  return `<!-- tribunal-review-run:v1:${reviewRunId}:${signature} -->`;
+}
+
 function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch {
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
@@ -916,7 +1121,7 @@ function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): numbe
 }
 
 function isReusableReviewRun(run: ReviewRunRecord): boolean {
-  return run.status === 'posted' || run.status === 'running';
+  return run.status === 'posted';
 }
 
 function compareAgentRuns(left: AgentRunRecord, right: AgentRunRecord): number {

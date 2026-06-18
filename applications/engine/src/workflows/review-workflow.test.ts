@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type {
   AgentEvent,
@@ -161,7 +162,7 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
-  it('hydrates running review state before creating external resources after restart', async () => {
+  it('hydrates running review state and skips duplicate posts when durable state shows comments already posted', async () => {
     const ports = createFakePorts();
     ports.state.seedReviewRun({
       id: 'run:42:7:previous:opened',
@@ -192,7 +193,7 @@ describe('ReviewWorkflowEngine', () => {
       status: 'running',
       sandboxId: 'sandbox-existing',
       checkRunId: 9001,
-      commentsPosted: 0,
+      commentsPosted: 1,
       costEstimateUsd: 0,
       startedAt: new Date('2026-06-17T11:59:00.000Z'),
     });
@@ -210,22 +211,454 @@ describe('ReviewWorkflowEngine', () => {
 
     await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
       id: 'run:42:7:aaa111:opened',
-      status: 'running',
+      status: 'posted',
     });
 
     expect(ports.sandbox.ensureCalls).toEqual([]);
     expect(ports.github.createdCheckRuns).toEqual([]);
+    expect(ports.sandbox.updateCalls).toEqual([
+      expect.objectContaining({ sandboxId: 'sandbox-existing', head: 'aaa111' }),
+    ]);
+    expect(ports.github.reviews).toEqual([]);
     expect(engine.snapshot().supervisors[0]).toMatchObject({
       sandboxId: 'sandbox-existing',
       activeRunId: 'run:42:7:aaa111:opened',
-      reviewedHeadShas: ['previous'],
+      reviewedHeadShas: ['previous', 'aaa111'],
     });
     expect(engine.snapshot().agentRuns).toEqual([
       expect.objectContaining({
         id: 'arun:run:42:7:aaa111:opened:agent_security',
-        status: 'running',
+        status: 'succeeded',
       }),
     ]);
+  });
+
+  it('hydrates running review state and retries review posts when durable state has no posted comments', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 1,
+    });
+
+    expect(ports.github.reviews).toHaveLength(1);
+    expect(ports.github.reviews[0]?.body).toContain(
+      '<!-- tribunal-review-run:v1:run:42:7:aaa111:opened:',
+    );
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 1,
+    });
+  });
+
+  it('does not repost reviews when retrying a failed durable run that already posted comments', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'failed',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 1,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:00:00.000Z'),
+      error: 'check update failed',
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 1,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 1,
+    });
+  });
+
+  it('does not regress a posted run or check when the final check update fails', async () => {
+    const ports = createFakePorts({ failCheckRunUpdatesRemaining: 1 });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'check run update failed',
+    );
+
+    expect(ports.github.reviews).toHaveLength(1);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 1,
+    });
+    expect(ports.state.reviewRuns.at(-1)?.error).toBeUndefined();
+    expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
+  it('backs off without failing the run when another worker owns the review post claim', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T12:00:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'running',
+      commentsPosted: 0,
+    });
+    expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
+  it('backs off without failing when claimed review marker lookup is unavailable', async () => {
+    const ports = createFakePorts({ failPostedReviewLookupsRemaining: 1 });
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T11:54:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:53:00.000Z'),
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'running',
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T11:54:00.000Z'),
+    });
+    expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
+  it('reclaims a stale review post claim after confirming GitHub has no run marker', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T11:54:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:53:00.000Z'),
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 1,
+    });
+
+    expect(ports.github.reviews).toHaveLength(1);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      commentsPosted: 1,
+      reviewPostClaimedAt: undefined,
+    });
+  });
+
+  it('uses durable posted state when stale claim recovery races with a completed post', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T11:54:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:53:00.000Z'),
+    });
+    ports.state.reportAlreadyPostedAfterClear(4);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 4,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+  });
+
+  it('backs off when stale claim recovery loses the reclaim race', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T11:54:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:53:00.000Z'),
+    });
+    ports.state.reportClaimedByOtherOnNextClaim();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+  });
+
+  it('fences review posting when claim ownership is lost before the GitHub write', async () => {
+    const ports = createFakePorts();
+    ports.state.failNextReviewPostOwnershipCheck();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'running',
+      commentsPosted: 0,
+    });
+  });
+
+  it('fences review posting when claim ownership is lost during marker reconciliation', async () => {
+    const ports = createFakePorts();
+    ports.state.failReviewPostOwnershipCheckAfter(2);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'running',
+      commentsPosted: 0,
+    });
+  });
+
+  it('fences review posting when claim ownership is lost during the pre-post refresh', async () => {
+    const ports = createFakePorts();
+    ports.state.failReviewPostClaimRefreshAfter(1);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'running',
+      commentsPosted: 0,
+      reviewPostClaimedAt: undefined,
+    });
+  });
+
+  it('clears the owned claim when marker reconciliation fails before posting', async () => {
+    const ports = createFakePorts({ failPostedReviewLookupsRemaining: 1 });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'posted review lookup failed',
+    );
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      commentsPosted: 0,
+      reviewPostClaimedAt: undefined,
+    });
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 1,
+    });
+    expect(ports.github.reviews).toHaveLength(1);
+  });
+
+  it('does not post when the signed marker appears after acquiring the claim', async () => {
+    const ports = createFakePorts();
+    ports.github.postedReviews.set(createExpectedReviewMarker('run:42:7:aaa111:opened'), 5);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 5,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'posted',
+      commentsPosted: 5,
+      reviewPostClaimedAt: undefined,
+    });
+  });
+
+  it('skips posting when the durable claim observes comments were already posted', async () => {
+    const ports = createFakePorts();
+    ports.state.reportAlreadyPostedOnNextClaim(3);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 3,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+      commentsPosted: 3,
+    });
+  });
+
+  it('keeps the review post claim after an attempted post fails with no GitHub-visible review', async () => {
+    const ports = createFakePorts({ failReviewPostsRemaining: 1 });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow('review post failed');
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'failed',
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Review post is already claimed',
+    );
+    expect(ports.github.reviews).toEqual([]);
+  });
+
+  it('records posted comments when a failed post is visible on GitHub by run marker', async () => {
+    const ports = createFakePorts({
+      failReviewPostsRemaining: 1,
+      publishFailedReviewBeforeThrowing: true,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 1,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      commentsPosted: 1,
+      reviewPostClaimedAt: undefined,
+    });
+  });
+
+  it('reconciles an already claimed review post when GitHub has the run marker', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: 1,
+      repositoryId: 42,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      reviewPostClaimedAt: new Date('2026-06-17T12:00:00.000Z'),
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    ports.github.postedReviews.set(createExpectedReviewMarker('run:42:7:aaa111:opened'), 2);
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 2,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      commentsPosted: 2,
+      reviewPostClaimedAt: undefined,
+    });
   });
 
   it('returns the existing synchronize run when the same head is signaled twice', async () => {
@@ -270,6 +703,18 @@ describe('ReviewWorkflowEngine', () => {
 
     ports.sandbox.failNextUpdate();
     await expect(engine.signalCommitPushed(updatedInput)).rejects.toThrow('sandbox update failed');
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      checkRunId: 9001,
+      installationId: 1001,
+      patch: {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review failed',
+          summary: 'Review run failed during setup. See Tribunal logs for details.',
+        },
+      },
+    });
     await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
       status: 'posted',
       headSha: 'bbb222',
@@ -603,6 +1048,13 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
   );
 }
 
+function createExpectedReviewMarker(reviewRunId: string): string {
+  const signature = createHmac('sha256', 'proxy-signing-key')
+    .update(reviewRunId)
+    .digest('base64url');
+  return `<!-- tribunal-review-run:v1:${reviewRunId}:${signature} -->`;
+}
+
 function createIntent(
   id: string,
   deliveryId: string,
@@ -644,8 +1096,12 @@ type FakePortOptions = {
   failAgentRuns?: boolean;
   failCheckRunCreation?: boolean;
   failCheckRunCreationsRemaining?: number;
+  failCheckRunUpdatesRemaining?: number;
   failAbortedAgentRuns?: boolean;
   failNextSandboxUpdate?: boolean;
+  failReviewPostsRemaining?: number;
+  failPostedReviewLookupsRemaining?: number;
+  publishFailedReviewBeforeThrowing?: boolean;
   multipleFindings?: boolean;
   spendAfterFirstEstimate?: number;
 };
@@ -684,9 +1140,41 @@ class FakeReviewIntentPort implements ReviewIntentPort {
 class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   readonly reviewRuns: ReviewRunRecord[] = [];
   readonly agentRuns: AgentRunRecord[] = [];
+  private alreadyPostedOnNextClaim: number | undefined;
+  private afterClearClaimResult:
+    | { status: 'already_posted'; commentsPosted: number }
+    | { status: 'claimed_by_other' }
+    | undefined;
+  private clearedClaimSinceLastClaim = false;
+  private ownershipCheckFailureCountdown: number | undefined;
+  private claimRefreshFailureCountdown: number | undefined;
 
   seedReviewRun(run: ReviewRunRecord): void {
     this.reviewRuns.push(run);
+  }
+
+  reportAlreadyPostedOnNextClaim(commentsPosted: number): void {
+    this.alreadyPostedOnNextClaim = commentsPosted;
+  }
+
+  reportClaimedByOtherOnNextClaim(): void {
+    this.afterClearClaimResult = { status: 'claimed_by_other' };
+  }
+
+  reportAlreadyPostedAfterClear(commentsPosted: number): void {
+    this.afterClearClaimResult = { status: 'already_posted', commentsPosted };
+  }
+
+  failNextReviewPostOwnershipCheck(): void {
+    this.failReviewPostOwnershipCheckAfter(1);
+  }
+
+  failReviewPostOwnershipCheckAfter(checks: number): void {
+    this.ownershipCheckFailureCountdown = checks;
+  }
+
+  failReviewPostClaimRefreshAfter(refreshes: number): void {
+    this.claimRefreshFailureCountdown = refreshes;
   }
 
   seedAgentRun(run: AgentRunRecord): void {
@@ -720,6 +1208,84 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
     this.reviewRuns[index] = { ...run };
   }
 
+  async claimReviewPost(reviewRunId: string, now: Date) {
+    if (this.alreadyPostedOnNextClaim !== undefined) {
+      const commentsPosted = this.alreadyPostedOnNextClaim;
+      this.alreadyPostedOnNextClaim = undefined;
+      return { status: 'already_posted' as const, commentsPosted };
+    }
+    if (this.clearedClaimSinceLastClaim && this.afterClearClaimResult !== undefined) {
+      this.clearedClaimSinceLastClaim = false;
+      const result = this.afterClearClaimResult;
+      this.afterClearClaimResult = undefined;
+      return result;
+    }
+    const run = this.reviewRuns.find((existingRun) => existingRun.id === reviewRunId);
+    if (run === undefined) return { status: 'claimed_by_other' as const };
+    if (run.commentsPosted > 0) {
+      return { status: 'already_posted' as const, commentsPosted: run.commentsPosted };
+    }
+    if (run.reviewPostClaimedAt !== undefined) {
+      return { status: 'claimed_by_other' as const, claimedAt: run.reviewPostClaimedAt };
+    }
+    run.reviewPostClaimedAt = now;
+    return { status: 'claimed' as const, claimedAt: now };
+  }
+
+  async clearReviewPostClaim(reviewRunId: string, claimedAt: Date): Promise<boolean> {
+    const run = this.reviewRuns.find((existingRun) => existingRun.id === reviewRunId);
+    if (
+      run === undefined ||
+      run.commentsPosted > 0 ||
+      run.reviewPostClaimedAt?.getTime() !== claimedAt.getTime()
+    ) {
+      return false;
+    }
+    run.reviewPostClaimedAt = undefined;
+    this.clearedClaimSinceLastClaim = true;
+    return true;
+  }
+
+  async refreshReviewPostClaim(
+    reviewRunId: string,
+    claimedAt: Date,
+    now: Date,
+  ): Promise<Date | undefined> {
+    if (this.claimRefreshFailureCountdown !== undefined) {
+      this.claimRefreshFailureCountdown -= 1;
+      if (this.claimRefreshFailureCountdown === 0) {
+        this.claimRefreshFailureCountdown = undefined;
+        return undefined;
+      }
+    }
+    const run = this.reviewRuns.find((existingRun) => existingRun.id === reviewRunId);
+    if (
+      run === undefined ||
+      run.commentsPosted > 0 ||
+      run.reviewPostClaimedAt?.getTime() !== claimedAt.getTime()
+    ) {
+      return undefined;
+    }
+    run.reviewPostClaimedAt = now;
+    return now;
+  }
+
+  async ownsReviewPostClaim(reviewRunId: string, claimedAt: Date): Promise<boolean> {
+    if (this.ownershipCheckFailureCountdown !== undefined) {
+      this.ownershipCheckFailureCountdown -= 1;
+      if (this.ownershipCheckFailureCountdown === 0) {
+        this.ownershipCheckFailureCountdown = undefined;
+        return false;
+      }
+    }
+    const run = this.reviewRuns.find((existingRun) => existingRun.id === reviewRunId);
+    return (
+      run !== undefined &&
+      run.commentsPosted === 0 &&
+      run.reviewPostClaimedAt?.getTime() === claimedAt.getTime()
+    );
+  }
+
   async upsertAgentRun(run: AgentRunRecord): Promise<void> {
     const index = this.agentRuns.findIndex((existingRun) => existingRun.id === run.id);
     if (index === -1) {
@@ -733,18 +1299,26 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
 class FakeGitHubPort implements GitHubPort {
   readonly checkRunPatches: Array<{
     repository: RepoRef;
+    installationId: number;
     checkRunId: number;
     patch: CheckRunPatch;
   }> = [];
   readonly reviews: ReviewPayload[] = [];
+  readonly postedReviews = new Map<string, number>();
   readonly mintReadTokenCalls: Array<{ repositoryId: number; installationId: number }> = [];
   readonly createdCheckRuns: string[] = [];
   private nextCheckRunId = 9000;
   private checkRunCreationFailuresRemaining: number;
+  private checkRunUpdateFailuresRemaining: number;
+  private reviewPostFailuresRemaining: number;
+  private postedReviewLookupFailuresRemaining: number;
 
   constructor(private readonly options: FakePortOptions = {}) {
     this.checkRunCreationFailuresRemaining =
       options.failCheckRunCreationsRemaining ?? (options.failCheckRunCreation ? Infinity : 0);
+    this.checkRunUpdateFailuresRemaining = options.failCheckRunUpdatesRemaining ?? 0;
+    this.reviewPostFailuresRemaining = options.failReviewPostsRemaining ?? 0;
+    this.postedReviewLookupFailuresRemaining = options.failPostedReviewLookupsRemaining ?? 0;
   }
 
   async mintReadToken(repositoryId: number, installationId: number): Promise<ScopedToken> {
@@ -754,6 +1328,7 @@ class FakeGitHubPort implements GitHubPort {
 
   async getDiffContext(
     repository: RepoRef,
+    _installationId: number,
     pullRequestNumber: number,
     head: string,
     previousHead?: string,
@@ -790,7 +1365,11 @@ class FakeGitHubPort implements GitHubPort {
     };
   }
 
-  async createCheckRun(_repository: RepoRef, headSha: string): Promise<{ checkRunId: number }> {
+  async createCheckRun(
+    _repository: RepoRef,
+    _installationId: number,
+    headSha: string,
+  ): Promise<{ checkRunId: number }> {
     if (this.checkRunCreationFailuresRemaining > 0) {
       this.checkRunCreationFailuresRemaining -= 1;
       throw new Error('check run creation failed');
@@ -802,19 +1381,49 @@ class FakeGitHubPort implements GitHubPort {
 
   async updateCheckRun(
     repository: RepoRef,
+    installationId: number,
     checkRunId: number,
     patch: CheckRunPatch,
   ): Promise<void> {
-    this.checkRunPatches.push({ repository, checkRunId, patch });
+    if (this.checkRunUpdateFailuresRemaining > 0) {
+      this.checkRunUpdateFailuresRemaining -= 1;
+      throw new Error('check run update failed');
+    }
+    this.checkRunPatches.push({ repository, installationId, checkRunId, patch });
   }
 
   async postReview(
     _repository: RepoRef,
+    _installationId: number,
     _pullRequestNumber: number,
     review: ReviewPayload,
   ): Promise<{ comments: number }> {
+    if (this.reviewPostFailuresRemaining > 0) {
+      this.reviewPostFailuresRemaining -= 1;
+      if (this.options.publishFailedReviewBeforeThrowing === true) {
+        const marker = /<!-- tribunal-review-run:v1:.+? -->/.exec(review.body);
+        if (marker !== null) this.postedReviews.set(marker[0], review.comments.length);
+      }
+      throw new Error('review post failed');
+    }
     this.reviews.push(review);
+    const marker = /<!-- tribunal-review-run:v1:.+? -->/.exec(review.body);
+    if (marker !== null) this.postedReviews.set(marker[0], review.comments.length);
     return { comments: review.comments.length };
+  }
+
+  async findPostedReview(
+    _repository: RepoRef,
+    _installationId: number,
+    _pullRequestNumber: number,
+    reviewMarker: string,
+  ): Promise<{ comments: number } | undefined> {
+    if (this.postedReviewLookupFailuresRemaining > 0) {
+      this.postedReviewLookupFailuresRemaining -= 1;
+      throw new Error('posted review lookup failed');
+    }
+    const comments = this.postedReviews.get(reviewMarker);
+    return comments === undefined ? undefined : { comments };
   }
 }
 

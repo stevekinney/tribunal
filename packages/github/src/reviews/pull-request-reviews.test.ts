@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { ValidationError } from '../error-taxonomy.js';
-import { postPullRequestReview } from './pull-request-reviews.js';
+import { findPostedPullRequestReview, postPullRequestReview } from './pull-request-reviews.js';
 
-function createContext(createReview: ReturnType<typeof vi.fn>): GithubServiceContext {
+function createContext(
+  createReview: ReturnType<typeof vi.fn>,
+  overrides: Partial<Octokit['rest']['pulls']> = {},
+): GithubServiceContext {
   return {
     db: {} as GithubServiceContext['db'],
     cache: {} as GithubServiceContext['cache'],
@@ -12,6 +15,7 @@ function createContext(createReview: ReturnType<typeof vi.fn>): GithubServiceCon
       rest: {
         pulls: {
           createReview,
+          ...overrides,
         },
       },
     } as unknown as Octokit),
@@ -69,6 +73,7 @@ describe('postPullRequestReview', () => {
       commit_id: 'abc123',
       event: 'COMMENT',
     });
+    expect(payload.request.signal).toBeInstanceOf(AbortSignal);
     expect(payload.comments).toEqual([
       {
         path: 'src/example.ts',
@@ -178,5 +183,65 @@ describe('postPullRequestReview', () => {
       }),
     ).rejects.toThrow(ValidationError);
     expect(createReview).not.toHaveBeenCalled();
+  });
+});
+
+describe('findPostedPullRequestReview', () => {
+  it('finds a Tribunal review marker and counts the review comments', async () => {
+    const reviewMarker = '<!-- tribunal-review-run:v1:run:42:7:aaa111:opened:signed-marker -->';
+    const listReviews = vi.fn().mockResolvedValue({
+      data: [
+        { id: 10, body: 'Other review' },
+        {
+          id: 11,
+          body: `Tribunal review\n\n${reviewMarker}`,
+        },
+      ],
+    });
+    const listCommentsForReview = vi.fn().mockResolvedValue({
+      data: [{ id: 1 }, { id: 2 }],
+    });
+    const context = createContext(vi.fn(), { listReviews, listCommentsForReview });
+
+    await expect(
+      findPostedPullRequestReview(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+        reviewMarker,
+      }),
+    ).resolves.toEqual({ id: 11, comments: 2 });
+
+    expect(listCommentsForReview).toHaveBeenCalledWith(expect.objectContaining({ review_id: 11 }));
+    const listReviewsSignal = listReviews.mock.calls[0][0].request.signal;
+    expect(listReviewsSignal).toBeInstanceOf(AbortSignal);
+    expect(listCommentsForReview).toHaveBeenCalledWith(
+      expect.objectContaining({ request: { signal: listReviewsSignal } }),
+    );
+  });
+
+  it('returns undefined when no review contains the run marker', async () => {
+    const reviewMarker = '<!-- tribunal-review-run:v1:run:42:7:aaa111:opened:signed-marker -->';
+    const listReviews = vi.fn().mockResolvedValue({
+      data: [
+        { id: 10, body: 'Other review' },
+        { id: 11, body: '<!-- tribunal-review-run:run:42:7:aaa111:opened -->' },
+      ],
+    });
+    const listCommentsForReview = vi.fn();
+    const context = createContext(vi.fn(), { listReviews, listCommentsForReview });
+
+    await expect(
+      findPostedPullRequestReview(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+        reviewMarker,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(listCommentsForReview).not.toHaveBeenCalled();
   });
 });

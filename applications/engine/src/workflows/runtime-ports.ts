@@ -1,6 +1,6 @@
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
-import { and, desc, eq, inArray } from '@tribunal/database/operators';
+import { and, desc, eq, inArray, isNull, ne, sql } from '@tribunal/database/operators';
 import {
   agentRun,
   githubInstallation,
@@ -13,7 +13,10 @@ import { createCache } from '@tribunal/github/cache';
 import { createCheckRun, updateCheckRun } from '@tribunal/github/reviews/check-runs';
 import { getDiffContext, getPullRequestMetadata } from '@tribunal/github/reviews/diff-context';
 import { mintSingleRepositoryReadToken } from '@tribunal/github/reviews/read-tokens';
-import { postPullRequestReview } from '@tribunal/github/reviews/pull-request-reviews';
+import {
+  findPostedPullRequestReview,
+  postPullRequestReview,
+} from '@tribunal/github/reviews/pull-request-reviews';
 import type { GithubServiceContext } from '@tribunal/github/context';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
@@ -33,6 +36,7 @@ import type {
   AgentRunRecord,
   ClaimedReviewIntent,
   PullRequestReviewInput,
+  ReviewPostClaimResult,
   ReviewRunRecord,
   ReviewWorkflowStatePort,
 } from './review-workflow';
@@ -180,7 +184,7 @@ export function createEngineGithubContext(
 }
 
 export function createEngineGitHubPort(
-  database: Database,
+  _database: Database,
   context: GithubServiceContext,
 ): GitHubPort {
   return {
@@ -190,11 +194,11 @@ export function createEngineGitHubPort(
     },
     async getDiffContext(
       repository: RepoRef,
+      installationId: number,
       pullRequestNumber: number,
       head: string,
       previousHead?: string,
     ): Promise<DiffContext> {
-      const installationId = await resolveInstallationId(database, repository);
       const [pullRequest, diffContext] = await Promise.all([
         getPullRequestMetadata(context, {
           installationId,
@@ -228,8 +232,7 @@ export function createEngineGitHubPort(
         },
       };
     },
-    async createCheckRun(repository: RepoRef, headSha: string) {
-      const installationId = await resolveInstallationId(database, repository);
+    async createCheckRun(repository: RepoRef, installationId: number, headSha: string) {
       const checkRun = await createCheckRun(context, {
         installationId,
         owner: repository.owner,
@@ -239,8 +242,12 @@ export function createEngineGitHubPort(
       });
       return { checkRunId: checkRun.id };
     },
-    async updateCheckRun(repository: RepoRef, checkRunId: number, patch: CheckRunPatch) {
-      const installationId = await resolveInstallationId(database, repository);
+    async updateCheckRun(
+      repository: RepoRef,
+      installationId: number,
+      checkRunId: number,
+      patch: CheckRunPatch,
+    ) {
       await updateCheckRun(context, {
         installationId,
         owner: repository.owner,
@@ -250,8 +257,12 @@ export function createEngineGitHubPort(
         completedAt: patch.status === 'completed' ? new Date().toISOString() : undefined,
       });
     },
-    async postReview(repository: RepoRef, pullRequestNumber: number, review: ReviewPayload) {
-      const installationId = await resolveInstallationId(database, repository);
+    async postReview(
+      repository: RepoRef,
+      installationId: number,
+      pullRequestNumber: number,
+      review: ReviewPayload,
+    ) {
       const posted = await postPullRequestReview(context, {
         installationId,
         owner: repository.owner,
@@ -262,6 +273,21 @@ export function createEngineGitHubPort(
         comments: review.comments,
       });
       return { comments: posted.id ? review.comments.length : 0 };
+    },
+    async findPostedReview(
+      repository: RepoRef,
+      installationId: number,
+      pullRequestNumber: number,
+      reviewMarker: string,
+    ) {
+      const posted = await findPostedPullRequestReview(context, {
+        installationId,
+        owner: repository.owner,
+        repository: repository.name,
+        pullRequestNumber,
+        reviewMarker,
+      });
+      return posted === undefined ? undefined : { comments: posted.comments };
     },
   };
 }
@@ -320,6 +346,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           sandboxId: run.sandboxId,
           checkRunId: run.checkRunId,
           commentsPosted: run.commentsPosted,
+          reviewPostClaimedAt: run.reviewPostClaimedAt ?? null,
           costEstimateUsd: String(run.costEstimateUsd),
           startedAt: run.startedAt,
           finishedAt: run.finishedAt,
@@ -328,15 +355,125 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
         .onConflictDoUpdate({
           target: reviewRun.id,
           set: {
-            status: run.status,
+            status: sql`CASE
+              WHEN ${reviewRun.status} = 'posted'
+                OR ${run.status} = 'posted'
+                OR ${reviewRun.commentsPosted} > 0
+                OR ${run.commentsPosted} > 0
+              THEN 'posted'
+              ELSE ${run.status}
+            END`,
             sandboxId: run.sandboxId,
             checkRunId: run.checkRunId,
-            commentsPosted: run.commentsPosted,
+            commentsPosted: sql`GREATEST(${reviewRun.commentsPosted}, ${run.commentsPosted})`,
+            reviewPostClaimedAt: sql`CASE
+              WHEN ${reviewRun.status} = 'posted'
+                OR ${run.status} = 'posted'
+                OR ${reviewRun.commentsPosted} > 0
+                OR ${run.commentsPosted} > 0
+              THEN NULL
+              WHEN ${run.reviewPostClaimedAt ?? null}::timestamp with time zone IS NOT NULL
+                AND ${reviewRun.reviewPostClaimedAt} IS NULL
+              THEN ${run.reviewPostClaimedAt ?? null}
+              ELSE ${reviewRun.reviewPostClaimedAt}
+            END`,
             costEstimateUsd: String(run.costEstimateUsd),
-            finishedAt: run.finishedAt,
-            error: run.error,
+            finishedAt: sql`CASE
+              WHEN ${reviewRun.status} = 'posted' AND ${reviewRun.finishedAt} IS NOT NULL
+              THEN ${reviewRun.finishedAt}
+              WHEN ${reviewRun.commentsPosted} > 0 AND ${reviewRun.finishedAt} IS NOT NULL
+              THEN ${reviewRun.finishedAt}
+              ELSE ${run.finishedAt ?? null}
+            END`,
+            error: sql`CASE
+              WHEN ${reviewRun.status} = 'posted'
+                OR ${run.status} = 'posted'
+                OR ${reviewRun.commentsPosted} > 0
+                OR ${run.commentsPosted} > 0
+              THEN NULL
+              ELSE ${run.error ?? null}
+            END`,
           },
         });
+    },
+    async claimReviewPost(reviewRunId: string, now: Date): Promise<ReviewPostClaimResult> {
+      const claimedRows = await database
+        .update(reviewRun)
+        .set({ reviewPostClaimedAt: now })
+        .where(
+          and(
+            eq(reviewRun.id, reviewRunId),
+            eq(reviewRun.commentsPosted, 0),
+            ne(reviewRun.status, 'posted'),
+            isNull(reviewRun.reviewPostClaimedAt),
+          ),
+        )
+        .returning({ id: reviewRun.id });
+      if (claimedRows.length > 0) return { status: 'claimed', claimedAt: now };
+
+      const [existingRun] = await database
+        .select({
+          status: reviewRun.status,
+          commentsPosted: reviewRun.commentsPosted,
+          reviewPostClaimedAt: reviewRun.reviewPostClaimedAt,
+        })
+        .from(reviewRun)
+        .where(eq(reviewRun.id, reviewRunId))
+        .limit(1);
+
+      if (
+        existingRun !== undefined &&
+        (existingRun.status === 'posted' || existingRun.commentsPosted > 0)
+      ) {
+        return { status: 'already_posted', commentsPosted: existingRun.commentsPosted };
+      }
+
+      return {
+        status: 'claimed_by_other',
+        claimedAt: existingRun?.reviewPostClaimedAt ?? undefined,
+      };
+    },
+    async refreshReviewPostClaim(reviewRunId: string, claimedAt: Date, now: Date) {
+      const rows = await database
+        .update(reviewRun)
+        .set({ reviewPostClaimedAt: now })
+        .where(
+          and(
+            eq(reviewRun.id, reviewRunId),
+            eq(reviewRun.commentsPosted, 0),
+            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+          ),
+        )
+        .returning({ reviewPostClaimedAt: reviewRun.reviewPostClaimedAt });
+      return rows[0]?.reviewPostClaimedAt ?? undefined;
+    },
+    async clearReviewPostClaim(reviewRunId: string, claimedAt: Date) {
+      const rows = await database
+        .update(reviewRun)
+        .set({ reviewPostClaimedAt: null })
+        .where(
+          and(
+            eq(reviewRun.id, reviewRunId),
+            eq(reviewRun.commentsPosted, 0),
+            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+          ),
+        )
+        .returning({ id: reviewRun.id });
+      return rows.length > 0;
+    },
+    async ownsReviewPostClaim(reviewRunId: string, claimedAt: Date) {
+      const [existingRun] = await database
+        .select({ id: reviewRun.id })
+        .from(reviewRun)
+        .where(
+          and(
+            eq(reviewRun.id, reviewRunId),
+            eq(reviewRun.commentsPosted, 0),
+            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+          ),
+        )
+        .limit(1);
+      return existingRun !== undefined;
     },
     async upsertAgentRun(run: AgentRunRecord) {
       await database
@@ -405,6 +542,7 @@ function toReviewRunRecord(row: typeof reviewRun.$inferSelect): ReviewRunRecord 
     sandboxId: row.sandboxId ?? '',
     checkRunId: row.checkRunId ?? undefined,
     commentsPosted: row.commentsPosted,
+    reviewPostClaimedAt: row.reviewPostClaimedAt ?? undefined,
     costEstimateUsd: Number(row.costEstimateUsd),
     startedAt: row.startedAt ?? new Date(0),
     finishedAt: row.finishedAt ?? undefined,

@@ -25,6 +25,7 @@ const getDiffContextMock = vi.fn();
 const getInstallationOctokitMock = vi.fn();
 const getPullRequestMetadataMock = vi.fn();
 const mintReadTokenMock = vi.fn();
+const findPostedReviewMock = vi.fn();
 const postReviewMock = vi.fn();
 const createCacheMock = vi.fn((getRedisUrl: () => string | undefined) => {
   getRedisUrl();
@@ -81,6 +82,7 @@ vi.mock('@tribunal/github/reviews/read-tokens', () => ({
 }));
 
 vi.mock('@tribunal/github/reviews/pull-request-reviews', () => ({
+  findPostedPullRequestReview: findPostedReviewMock,
   postPullRequestReview: postReviewMock,
 }));
 
@@ -394,6 +396,150 @@ describe('database review workflow state port', () => {
     await expect(testDatabase.db.select().from(reviewRun)).resolves.toHaveLength(1);
     await expect(testDatabase.db.select().from(agentRun)).resolves.toHaveLength(1);
   });
+
+  it('claims review posting atomically and reports posted or actively claimed runs', async () => {
+    const { repository: createdRepository, installation } = await createRepositoryInstallation();
+    const port = createDatabaseReviewWorkflowStatePort(testDatabase.db);
+    const run = {
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: installation.userId!,
+      repositoryId: createdRepository.id,
+      pullRequestNumber: 7,
+      headSha: 'aaa111',
+      trigger: 'opened' as const,
+      status: 'running' as const,
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T12:00:00.000Z'),
+    };
+    await port.upsertReviewRun(run);
+
+    await expect(
+      port.claimReviewPost(run.id, new Date('2026-06-17T12:01:00.000Z')),
+    ).resolves.toEqual({
+      status: 'claimed',
+      claimedAt: new Date('2026-06-17T12:01:00.000Z'),
+    });
+    await expect(
+      port.ownsReviewPostClaim(run.id, new Date('2026-06-17T12:01:00.000Z')),
+    ).resolves.toBe(true);
+    await expect(
+      port.ownsReviewPostClaim(run.id, new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBe(false);
+    await expect(
+      port.refreshReviewPostClaim(
+        run.id,
+        new Date('2026-06-17T12:00:00.000Z'),
+        new Date('2026-06-17T12:01:30.000Z'),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      port.refreshReviewPostClaim(
+        run.id,
+        new Date('2026-06-17T12:01:00.000Z'),
+        new Date('2026-06-17T12:01:30.000Z'),
+      ),
+    ).resolves.toEqual(new Date('2026-06-17T12:01:30.000Z'));
+    await expect(
+      port.claimReviewPost(run.id, new Date('2026-06-17T12:02:00.000Z')),
+    ).resolves.toEqual({
+      status: 'claimed_by_other',
+      claimedAt: new Date('2026-06-17T12:01:30.000Z'),
+    });
+    await expect(
+      port.claimReviewPost(run.id, new Date('2026-06-17T12:07:00.000Z')),
+    ).resolves.toEqual({
+      status: 'claimed_by_other',
+      claimedAt: new Date('2026-06-17T12:01:30.000Z'),
+    });
+    await expect(
+      port.clearReviewPostClaim(run.id, new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBe(false);
+    await expect(
+      port.clearReviewPostClaim(run.id, new Date('2026-06-17T12:01:00.000Z')),
+    ).resolves.toBe(false);
+    await expect(
+      port.clearReviewPostClaim(run.id, new Date('2026-06-17T12:01:30.000Z')),
+    ).resolves.toBe(true);
+    await expect(
+      port.claimReviewPost(run.id, new Date('2026-06-17T12:08:00.000Z')),
+    ).resolves.toEqual({
+      status: 'claimed',
+      claimedAt: new Date('2026-06-17T12:08:00.000Z'),
+    });
+
+    await port.upsertReviewRun({ ...run, status: 'failed', commentsPosted: 0 });
+    await expect(testDatabase.db.select().from(reviewRun)).resolves.toEqual([
+      expect.objectContaining({
+        commentsPosted: 0,
+        reviewPostClaimedAt: new Date('2026-06-17T12:08:00.000Z'),
+      }),
+    ]);
+
+    await port.upsertReviewRun({
+      ...run,
+      commentsPosted: 2,
+      reviewPostClaimedAt: undefined,
+      status: 'posted',
+      finishedAt: new Date('2026-06-17T12:08:00.000Z'),
+    });
+    await expect(
+      port.claimReviewPost(run.id, new Date('2026-06-17T12:09:00.000Z')),
+    ).resolves.toEqual({ status: 'already_posted', commentsPosted: 2 });
+
+    await port.upsertReviewRun({ ...run, status: 'failed', commentsPosted: 0 });
+    await expect(testDatabase.db.select().from(reviewRun)).resolves.toEqual([
+      expect.objectContaining({
+        commentsPosted: 2,
+        status: 'posted',
+        error: null,
+        reviewPostClaimedAt: null,
+      }),
+    ]);
+
+    await port.upsertReviewRun({
+      ...run,
+      id: 'run:42:7:bbb222:synchronize',
+      idempotencyKey: 'review:run:42:7:bbb222:synchronize',
+      headSha: 'bbb222',
+      trigger: 'synchronize',
+      status: 'posted',
+      commentsPosted: 0,
+      reviewPostClaimedAt: undefined,
+      finishedAt: new Date('2026-06-17T12:10:00.000Z'),
+    });
+    await port.upsertReviewRun({
+      ...run,
+      id: 'run:42:7:bbb222:synchronize',
+      idempotencyKey: 'review:run:42:7:bbb222:synchronize',
+      headSha: 'bbb222',
+      trigger: 'synchronize',
+      status: 'failed',
+      commentsPosted: 0,
+      error: 'stale failure',
+    });
+    await expect(
+      testDatabase.db
+        .select()
+        .from(reviewRun)
+        .where(eq(reviewRun.id, 'run:42:7:bbb222:synchronize')),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        commentsPosted: 0,
+        status: 'posted',
+        error: null,
+        finishedAt: new Date('2026-06-17T12:10:00.000Z'),
+        reviewPostClaimedAt: null,
+      }),
+    ]);
+    await expect(
+      port.claimReviewPost('run:42:7:bbb222:synchronize', new Date('2026-06-17T12:11:00.000Z')),
+    ).resolves.toEqual({ status: 'already_posted', commentsPosted: 0 });
+  });
 });
 
 describe('engine GitHub port', () => {
@@ -426,7 +572,13 @@ describe('engine GitHub port', () => {
       expiresAt: new Date('2026-06-17T12:00:00.000Z'),
     });
     await expect(
-      port.getDiffContext({ owner: 'lostgradient', name: 'tribunal' }, 7, 'head', 'base'),
+      port.getDiffContext(
+        { owner: 'lostgradient', name: 'tribunal' },
+        installation.installationId,
+        7,
+        'head',
+        'base',
+      ),
     ).resolves.toMatchObject({
       headSha: 'head',
       baseSha: 'base',
@@ -441,19 +593,37 @@ describe('engine GitHub port', () => {
       },
     });
     await expect(
-      port.createCheckRun({ owner: 'lostgradient', name: 'tribunal' }, 'head'),
+      port.createCheckRun(
+        { owner: 'lostgradient', name: 'tribunal' },
+        installation.installationId,
+        'head',
+      ),
     ).resolves.toEqual({ checkRunId: 88 });
-    await port.updateCheckRun({ owner: 'lostgradient', name: 'tribunal' }, 88, {
-      status: 'completed',
-      conclusion: 'success',
-      output: { title: 'Done', summary: 'Done' },
-    });
+    await port.updateCheckRun(
+      { owner: 'lostgradient', name: 'tribunal' },
+      installation.installationId,
+      88,
+      {
+        status: 'completed',
+        conclusion: 'success',
+        output: { title: 'Done', summary: 'Done' },
+      },
+    );
     await expect(
-      port.postReview({ owner: 'lostgradient', name: 'tribunal' }, 7, {
+      port.postReview({ owner: 'lostgradient', name: 'tribunal' }, installation.installationId, 7, {
         headSha: 'head',
         body: 'Review',
         comments: [{ path: 'src/example.ts', body: 'Comment', line: 1, side: 'RIGHT' }],
       }),
+    ).resolves.toEqual({ comments: 1 });
+    findPostedReviewMock.mockResolvedValue({ id: 100, comments: 1 });
+    await expect(
+      port.findPostedReview(
+        { owner: 'lostgradient', name: 'tribunal' },
+        installation.installationId,
+        7,
+        '<!-- tribunal-review-run:v1:run:42:7:head:opened:signed -->',
+      ),
     ).resolves.toEqual({ comments: 1 });
 
     expect(getDiffContextMock).toHaveBeenCalledWith(
@@ -481,6 +651,17 @@ describe('engine GitHub port', () => {
     ).rejects.toThrow('No active GitHub installation found');
   });
 
+  it('resolves an active installation id for a repository', async () => {
+    const { repository: createdRepository, installation } = await createRepositoryInstallation();
+
+    await expect(
+      resolveInstallationId(testDatabase.db, {
+        owner: createdRepository.owner,
+        name: createdRepository.name,
+      }),
+    ).resolves.toBe(installation.installationId);
+  });
+
   it('throws when pull request metadata cannot get an installation client', async () => {
     const { repository: createdRepository } = await createRepositoryInstallation();
     getPullRequestMetadataMock.mockRejectedValue(
@@ -491,6 +672,7 @@ describe('engine GitHub port', () => {
     await expect(
       port.getDiffContext(
         { owner: createdRepository.owner, name: createdRepository.name },
+        1001,
         7,
         'head',
       ),
