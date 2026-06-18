@@ -25,6 +25,11 @@ export const reviewIntent = pgTable(
     prState: text('pr_state'),
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
     processedAt: timestamp('processed_at', { withTimezone: true }),
+    failedAt: timestamp('failed_at', { withTimezone: true }),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+    deadLetteredAt: timestamp('dead_lettered_at', { withTimezone: true }),
+    failureCount: integer('failure_count').notNull().default(0),
+    lastError: text('last_error'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -37,7 +42,14 @@ export const reviewIntent = pgTable(
     index('review_intent_unprocessed_claimed_idx')
       .on(table.claimedAt)
       .where(sql`${table.processedAt} IS NULL`),
+    index('review_intent_next_attempt_idx')
+      .on(table.nextAttemptAt)
+      .where(sql`${table.processedAt} IS NULL AND ${table.deadLetteredAt} IS NULL`),
+    index('review_intent_ready_queue_idx')
+      .on(table.createdAt, table.id, table.claimedAt, table.nextAttemptAt)
+      .where(sql`${table.processedAt} IS NULL AND ${table.deadLetteredAt} IS NULL`),
     index('review_intent_repository_pr_idx').on(table.repositoryId, table.prNumber),
+    check('review_intent_failure_count_check', sql`${table.failureCount} >= 0`),
     check('review_intent_kind_check', sql`${table.kind} IN ('start','commit_pushed','pr_closed')`),
     check(
       'review_intent_pr_state_check',

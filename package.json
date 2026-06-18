@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "packageManager": "bun@1.3.2",
+  "packageManager": "bun@1.3.13",
   "workspaces": [
     "applications/*",
     "packages/*",
@@ -16,7 +16,7 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:coverage:review-engine": "bun run --cwd applications/engine test:coverage && bun run --cwd applications/proxy test:coverage && bun run --cwd packages/review-core test:coverage && bun run --cwd packages/agents test:coverage && bun run --cwd packages/sandbox test:coverage && bun run --cwd packages/cost test:coverage && bun run --cwd packages/github test:coverage:review-engine",
-    "prepare": "lefthook install",
+    "prepare": "bun run scripts/install-git-hooks.ts",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
     "precommit:tests": "bun run scripts/precommit-tests.ts",

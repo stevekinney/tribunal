@@ -176,6 +176,20 @@
       "when": 1781749349132,
       "tag": "0024_add-review-contract-tables",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1781789173797,
+      "tag": "0025_review-intent-failure-backoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1781790292834,
+      "tag": "0026_review-intent-ready-queue-index",
+      "breakpoints": true
     }
   ]
 }

@@ -3,11 +3,13 @@ import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { requirePolicy } from '../core/cache-policy.js';
+import { isNotModifiedError } from '../errors.js';
 import { ValidationError } from '../error-taxonomy.js';
-import { withGitHubWriteErrorClassification } from './errors.js';
+import { validateNonEmptyString, withGitHubWriteErrorClassification } from './errors.js';
 
 type PullRequestFile =
   Endpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/files']['response']['data'][number];
+type PullRequest = Endpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}']['response']['data'];
 type DiffSide = 'LEFT' | 'RIGHT';
 
 export interface CommentableLine {
@@ -31,6 +33,54 @@ export interface DiffContext {
   repository: string;
   pullRequestNumber: number;
   changedFiles: ChangedFileDiffContext[];
+}
+
+export interface PullRequestMetadata {
+  headSha: string;
+  baseSha: string;
+  title: string;
+  body: string;
+  labels: string[];
+  author: string;
+}
+
+export async function getPullRequestMetadata(
+  context: GithubServiceContext,
+  input: {
+    installationId: number;
+    owner: string;
+    repository: string;
+    pullRequestNumber: number;
+  },
+): Promise<PullRequestMetadata> {
+  validateDiffContextInput(input);
+  const octokit = await requireInstallationOctokit(context, input.installationId);
+  const policy = requirePolicy('get-pull-request');
+  const { value } = await cachedRead<PullRequest>(
+    context.cache,
+    policy,
+    async (etag) => {
+      try {
+        const response = await withGitHubWriteErrorClassification(() =>
+          octokit.rest.pulls.get({
+            owner: input.owner,
+            repo: input.repository,
+            pull_number: input.pullRequestNumber,
+            headers: etag === undefined ? undefined : { 'if-none-match': etag },
+          }),
+        );
+        return { data: response.data as PullRequest, etag: response.headers.etag };
+      } catch (error) {
+        if (etag !== undefined && isNotModifiedError(error)) {
+          return { notModified: true };
+        }
+        throw error;
+      }
+    },
+    [input.owner, input.repository, input.pullRequestNumber],
+  );
+
+  return toPullRequestMetadata(value);
 }
 
 export async function getDiffContext(
@@ -114,6 +164,17 @@ function toDiffContext(
   };
 }
 
+function toPullRequestMetadata(pullRequest: PullRequest): PullRequestMetadata {
+  return {
+    headSha: pullRequest.head.sha,
+    baseSha: pullRequest.base.sha,
+    title: pullRequest.title,
+    body: pullRequest.body ?? '',
+    labels: pullRequest.labels.map((label) => normalizeLabelName(label)).filter(isNonEmptyString),
+    author: pullRequest.user?.login ?? '',
+  };
+}
+
 export function parseCommentableLines(patch: string): CommentableLine[] {
   const lines: CommentableLine[] = [];
   let oldLine = 0;
@@ -171,8 +232,10 @@ function validateDiffContextInput(input: {
   }
 }
 
-function validateNonEmptyString(value: string, label: string): void {
-  if (value.trim().length === 0) {
-    throw new ValidationError(`${label} must be a non-empty string.`);
-  }
+function normalizeLabelName(label: { name?: string | null } | string): string {
+  return typeof label === 'string' ? label : (label.name ?? '');
+}
+
+function isNonEmptyString(value: string): boolean {
+  return value.trim().length > 0;
 }

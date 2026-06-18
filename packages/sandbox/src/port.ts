@@ -70,18 +70,35 @@ export function createSandboxPort(
         metadata: { managedBy: 'tribunal', name: prKey },
       });
     },
-    async update(sandboxId: string, repository: RepoRef, head: string, _runToken: string) {
-      const repositoryUrl = makeCredentiallessRepositoryUrl(repository);
-      const validation = validateCloneInput({ repositoryUrl, headSha: head });
+    async update(sandboxId: string, repository: RepoRef, head: string, runToken: string) {
+      const sourceRepositoryUrl = makeCredentiallessRepositoryUrl(repository);
+      const validation = validateCloneInput({ repositoryUrl: sourceRepositoryUrl, headSha: head });
       if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
+      const proxiedRepositoryUrl = makeProxiedRepositoryUrl(configuration.proxyUrl, repository);
 
-      await adapter.runCommand(sandboxId, 'git', [
-        '-c',
-        `http.proxy=${configuration.proxyUrl}`,
-        'clone-or-fetch',
-        repositoryUrl,
-        head,
-      ]);
+      await adapter.runCommand(
+        sandboxId,
+        'bash',
+        [
+          '-lc',
+          [
+            'set -euo pipefail',
+            'mkdir -p /workspace',
+            'git_with_token() { git -c "http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN" "$@"; }',
+            'if [ -d /workspace/repository/.git ]; then',
+            '  git_with_token -C /workspace/repository fetch origin "$TRIBUNAL_HEAD_SHA"',
+            'else',
+            '  git_with_token clone "$TRIBUNAL_REPOSITORY_URL" /workspace/repository',
+            'fi',
+            'git -C /workspace/repository checkout --detach "$TRIBUNAL_HEAD_SHA"',
+          ].join('\n'),
+        ],
+        {
+          TRIBUNAL_REPOSITORY_URL: proxiedRepositoryUrl,
+          TRIBUNAL_HEAD_SHA: head,
+          TRIBUNAL_RUN_TOKEN: runToken,
+        },
+      );
     },
     async runAgent(
       sandboxId: string,
@@ -134,6 +151,15 @@ export function createSandboxPort(
 
 function makeCredentiallessRepositoryUrl(repository: RepoRef): string {
   return `https://github.com/${repository.owner}/${repository.name}.git`;
+}
+
+function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string {
+  const url = new URL(proxyUrl);
+  const prefix = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+  url.pathname = `${prefix}/github/github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}.git`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
 }
 
 function createAgentProcessKey(sandboxId: string, agentRunId: string): string {

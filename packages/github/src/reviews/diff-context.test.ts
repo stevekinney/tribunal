@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { ValidationError } from '../error-taxonomy.js';
-import { getDiffContext, parseCommentableLines } from './diff-context.js';
+import { getDiffContext, getPullRequestMetadata, parseCommentableLines } from './diff-context.js';
 
 function createPullRequestFile(
   index: number,
@@ -18,6 +18,15 @@ function createPullRequestFile(
     patch,
   };
 }
+
+const pullRequestResponse = {
+  head: { sha: 'head-sha' },
+  base: { sha: 'base-sha' },
+  title: 'Review engine foundation',
+  body: null,
+  labels: [{ name: 'review-engine' }, { name: '' }],
+  user: { login: 'steve' },
+};
 
 function createContext(
   listFiles: ReturnType<typeof vi.fn>,
@@ -166,6 +175,119 @@ describe('getDiffContext', () => {
       }),
     ).rejects.toThrow(ValidationError);
     expect(listFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('getPullRequestMetadata', () => {
+  it('uses the cached pull request read policy', async () => {
+    const getPullRequest = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { etag: '"pull-request-etag"' },
+      data: pullRequestResponse,
+    });
+    const context = createContext(vi.fn(), {
+      rest: { pulls: { get: getPullRequest } },
+    } as unknown as Octokit);
+
+    const result = await getPullRequestMetadata(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+    });
+
+    expect(result).toEqual({
+      headSha: 'head-sha',
+      baseSha: 'base-sha',
+      title: 'Review engine foundation',
+      body: '',
+      labels: ['review-engine'],
+      author: 'steve',
+    });
+    expect(context.cache.setCache).toHaveBeenCalled();
+    expect(getPullRequest).toHaveBeenCalledWith({
+      owner: 'lostgradient',
+      repo: 'tribunal',
+      pull_number: 42,
+      headers: undefined,
+    });
+  });
+
+  it('returns cached pull request metadata without calling GitHub', async () => {
+    const getPullRequest = vi.fn();
+    const context = createContext(vi.fn(), {
+      rest: { pulls: { get: getPullRequest } },
+    } as unknown as Octokit);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: pullRequestResponse,
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    await expect(
+      getPullRequestMetadata(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+      }),
+    ).resolves.toMatchObject({ headSha: 'head-sha' });
+    expect(getPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('reuses cached pull request metadata when GitHub returns not modified', async () => {
+    const notModifiedError = Object.assign(new Error('Not Modified'), { status: 304 });
+    const getPullRequest = vi.fn().mockRejectedValue(notModifiedError);
+    const context = createContext(vi.fn(), {
+      rest: { pulls: { get: getPullRequest } },
+    } as unknown as Octokit);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: pullRequestResponse,
+      etag: '"pull-request-etag"',
+      fetchedAt: Date.now() - 60_000,
+      expiresAt: Date.now() - 1,
+      source: 'api',
+    });
+
+    await expect(
+      getPullRequestMetadata(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+      }),
+    ).resolves.toMatchObject({ headSha: 'head-sha' });
+    expect(getPullRequest).toHaveBeenCalledWith({
+      owner: 'lostgradient',
+      repo: 'tribunal',
+      pull_number: 42,
+      headers: { 'if-none-match': '"pull-request-etag"' },
+    });
+  });
+
+  it('propagates conditional pull request metadata errors that are not not-modified', async () => {
+    const unavailableError = Object.assign(new Error('Service unavailable'), { status: 503 });
+    const getPullRequest = vi.fn().mockRejectedValue(unavailableError);
+    const context = createContext(vi.fn(), {
+      rest: { pulls: { get: getPullRequest } },
+    } as unknown as Octokit);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: pullRequestResponse,
+      etag: '"pull-request-etag"',
+      fetchedAt: Date.now() - 60_000,
+      expiresAt: Date.now() - 1,
+      source: 'api',
+    });
+
+    await expect(
+      getPullRequestMetadata(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+      }),
+    ).rejects.toThrow('Service unavailable');
   });
 });
 

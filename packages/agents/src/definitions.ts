@@ -63,5 +63,5 @@ function resolveEffort(model: string, effort: Effort | undefined): Effort | null
 }
 
 function supportsExtraHighEffort(model: string): boolean {
-  return model === 'fable' || model.includes('fable');
+  return model.includes('fable') || model.includes('opus');
 }

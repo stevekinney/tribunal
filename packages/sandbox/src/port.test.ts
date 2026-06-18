@@ -24,8 +24,8 @@ function createFakeAdapter() {
       calls.push({ method: 'create', input });
       return { sandboxId: 'sandbox_1' };
     },
-    async runCommand(sandboxId, command, arguments_) {
-      calls.push({ method: 'runCommand', input: { sandboxId, command, arguments_ } });
+    async runCommand(sandboxId, command, arguments_, environment) {
+      calls.push({ method: 'runCommand', input: { sandboxId, command, arguments_, environment } });
       return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
     },
     async runTrackedCommand(sandboxId, command, arguments_, _environment, onProcessStart) {
@@ -86,9 +86,23 @@ describe('sandbox port', () => {
     );
 
     expect(calls[0]).toMatchObject({ method: 'runCommand' });
+    expect(calls[0]).toMatchObject({
+      input: {
+        command: 'bash',
+        environment: {
+          TRIBUNAL_REPOSITORY_URL:
+            'https://proxy.tribunal.local/github/github.com/stevekinney/tribunal.git',
+          TRIBUNAL_HEAD_SHA: 'a'.repeat(40),
+          TRIBUNAL_RUN_TOKEN: 'capability-token',
+        },
+      },
+    });
     const commandArguments = (calls[0]?.input as { arguments_: string[] }).arguments_;
-    expect(commandArguments.join(' ')).toContain('http.proxy=https://proxy.tribunal.local');
-    expect(commandArguments.join(' ')).toContain('https://github.com/stevekinney/tribunal.git');
+    expect(commandArguments.join(' ')).toContain('git -C /workspace/repository');
+    expect(commandArguments.join(' ')).toContain(
+      'http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN',
+    );
+    expect(commandArguments.join(' ')).not.toContain('clone-or-fetch');
     expect(commandArguments.join(' ')).not.toContain('capability-token');
   });
 

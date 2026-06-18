@@ -74,7 +74,7 @@ describe('createDatabaseReviewIntentPort', () => {
       },
     });
 
-    await port.markReviewIntentProcessed('intent_1', new Date('2026-06-17T12:01:00.000Z'));
+    await port.markReviewIntentProcessed('intent_1', now, new Date('2026-06-17T12:01:00.000Z'));
     const [intent] = await testDatabase.db
       .select()
       .from(reviewIntent)
@@ -122,8 +122,20 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toMatchObject({ id: 'intent_1', claimedAt: new Date('2026-06-17T12:00:00.000Z') });
   });
 
-  it('releases a failed unprocessed review intent for retry', async () => {
-    await createReviewIntentFixture();
+  it('records a failed unprocessed review intent and backs off retry', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
     await testDatabase.db
       .update(reviewIntent)
       .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
@@ -132,6 +144,7 @@ describe('createDatabaseReviewIntentPort', () => {
 
     await port.markReviewIntentFailed(
       'intent_1',
+      new Date('2026-06-17T12:00:00.000Z'),
       new Date('2026-06-17T12:01:00.000Z'),
       new Error('check run creation failed'),
     );
@@ -140,7 +153,54 @@ describe('createDatabaseReviewIntentPort', () => {
       .select()
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
-    expect(intent).toMatchObject({ claimedAt: null, processedAt: null });
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failedAt: new Date('2026-06-17T12:01:00.000Z'),
+      failureCount: 1,
+      lastError: 'check run creation failed',
+      nextAttemptAt: new Date('2026-06-17T12:02:00.000Z'),
+      deadLetteredAt: null,
+    });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:01:30.000Z')),
+    ).resolves.toBeNull();
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:02:00.000Z')),
+    ).resolves.toMatchObject({ id: 'intent_1' });
+  });
+
+  it('dead letters review intents after repeated failures', async () => {
+    await createReviewIntentFixture();
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    for (let index = 0; index < 5; index += 1) {
+      await testDatabase.db
+        .update(reviewIntent)
+        .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
+        .where(eq(reviewIntent.id, 'intent_1'));
+      await port.markReviewIntentFailed(
+        'intent_1',
+        new Date('2026-06-17T12:00:00.000Z'),
+        new Date(`2026-06-17T12:0${index}:00.000Z`),
+        `failure ${index + 1}`,
+      );
+    }
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      failureCount: 5,
+      lastError: 'failure 5',
+      nextAttemptAt: null,
+      deadLetteredAt: new Date('2026-06-17T12:04:00.000Z'),
+    });
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T13:00:00.000Z')),
+    ).resolves.toBeNull();
   });
 
   it('marks watched intents without assigned agents processed without returning work', async () => {
@@ -156,6 +216,95 @@ describe('createDatabaseReviewIntentPort', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent?.processedAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
+  });
+
+  it('does not let stale claim owners mark reclaimed review intents processed', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
+    const secondClaimedAt = new Date('2026-06-17T12:06:00.000Z');
+
+    await expect(port.claimNextReviewIntent(firstClaimedAt)).resolves.toMatchObject({
+      id: 'intent_1',
+      claimedAt: firstClaimedAt,
+    });
+    await expect(port.claimNextReviewIntent(secondClaimedAt)).resolves.toMatchObject({
+      id: 'intent_1',
+      claimedAt: secondClaimedAt,
+    });
+    await port.markReviewIntentProcessed(
+      'intent_1',
+      firstClaimedAt,
+      new Date('2026-06-17T12:07:00.000Z'),
+    );
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: secondClaimedAt,
+      processedAt: null,
+      failureCount: 0,
+    });
+  });
+
+  it('does not let stale claim owners clear a newer claim after failure', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
+    const secondClaimedAt = new Date('2026-06-17T12:06:00.000Z');
+
+    await expect(port.claimNextReviewIntent(firstClaimedAt)).resolves.toMatchObject({
+      id: 'intent_1',
+      claimedAt: firstClaimedAt,
+    });
+    await expect(port.claimNextReviewIntent(secondClaimedAt)).resolves.toMatchObject({
+      id: 'intent_1',
+      claimedAt: secondClaimedAt,
+    });
+    await port.markReviewIntentFailed(
+      'intent_1',
+      firstClaimedAt,
+      new Date('2026-06-17T12:07:00.000Z'),
+      new Error('stale failure'),
+    );
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: secondClaimedAt,
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+    });
   });
 
   it('maps closed intents to manual workflow triggers', async () => {

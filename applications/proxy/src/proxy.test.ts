@@ -15,6 +15,10 @@ const anthropicApiKey = 'sk-ant-test-secret';
 const githubReadToken = `ghs_${'read-token-'.repeat(10)}`;
 
 const rawEnvironment = {
+  DATABASE_URL: 'postgres://user:pass@localhost:5432/tribunal',
+  REDIS_URL: 'redis://localhost:6379',
+  GITHUB_APP_ID: '123',
+  GITHUB_APP_PRIVATE_KEY: 'private-key',
   ANTHROPIC_API_KEY: anthropicApiKey,
   TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.test',
   TRIBUNAL_PROXY_CIDR: '10.0.0.10/32',
@@ -570,6 +574,7 @@ function createClaims(overrides: Partial<CapabilityTokenClaims> = {}): Capabilit
     runId: 'review-run-1',
     userId: 42,
     repositoryId: 1001,
+    installationId: 2001,
     repositoryOwner: 'lostgradient',
     repositoryName: 'tribunal',
     permissions: ['github:read', 'anthropic:invoke'],

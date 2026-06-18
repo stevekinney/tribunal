@@ -21,7 +21,7 @@ const createCheckRunMock = vi.fn();
 const updateCheckRunMock = vi.fn();
 const getDiffContextMock = vi.fn();
 const getInstallationOctokitMock = vi.fn();
-const getPullRequestMock = vi.fn();
+const getPullRequestMetadataMock = vi.fn();
 const mintReadTokenMock = vi.fn();
 const postReviewMock = vi.fn();
 const createCacheMock = vi.fn((getRedisUrl: () => string | undefined) => {
@@ -71,6 +71,7 @@ vi.mock('@tribunal/github/reviews/check-runs', () => ({
 
 vi.mock('@tribunal/github/reviews/diff-context', () => ({
   getDiffContext: getDiffContextMock,
+  getPullRequestMetadata: getPullRequestMetadataMock,
 }));
 
 vi.mock('@tribunal/github/reviews/read-tokens', () => ({
@@ -113,18 +114,14 @@ beforeEach(async () => {
   });
   sandboxClientListMock.mockResolvedValue([]);
   sandboxClientCreateMock.mockResolvedValue({ sandboxId: 'sandbox_1' });
-  getInstallationOctokitMock.mockResolvedValue({
-    rest: { pulls: { get: getPullRequestMock } },
-  });
-  getPullRequestMock.mockResolvedValue({
-    data: {
-      head: { sha: 'head' },
-      base: { sha: 'base' },
-      title: 'Review engine foundation',
-      body: 'Pull request body',
-      labels: [{ name: 'review-engine' }, { name: '' }],
-      user: { login: 'steve' },
-    },
+  getInstallationOctokitMock.mockResolvedValue({});
+  getPullRequestMetadataMock.mockResolvedValue({
+    headSha: 'head',
+    baseSha: 'base',
+    title: 'Review engine foundation',
+    body: 'Pull request body',
+    labels: ['review-engine'],
+    author: 'steve',
   });
 });
 
@@ -207,7 +204,7 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent?.processedAt).toBeInstanceOf(Date);
   });
 
-  it('releases claimed review intents when bound workflow dispatch fails', async () => {
+  it('records failed review intents with backoff when bound workflow dispatch fails', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
     const result = vi.fn().mockRejectedValue(new Error('workflow failed'));
@@ -219,7 +216,13 @@ describe('runtime review intent consumer wiring', () => {
       .select()
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
-    expect(intent).toMatchObject({ claimedAt: null, processedAt: null });
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 1,
+      lastError: 'workflow failed',
+    });
+    expect(intent?.nextAttemptAt).toBeInstanceOf(Date);
   });
 });
 
@@ -287,11 +290,15 @@ describe('engine GitHub port', () => {
       context,
       expect.objectContaining({ installationId: installation.installationId }),
     );
-    expect(getPullRequestMock).toHaveBeenCalledWith({
-      owner: 'lostgradient',
-      repo: 'tribunal',
-      pull_number: 7,
-    });
+    expect(getPullRequestMetadataMock).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        installationId: installation.installationId,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 7,
+      }),
+    );
     expect(updateCheckRunMock).toHaveBeenCalledWith(
       context,
       expect.objectContaining({ completedAt: expect.any(String) }),
@@ -306,7 +313,9 @@ describe('engine GitHub port', () => {
 
   it('throws when pull request metadata cannot get an installation client', async () => {
     const { repository: createdRepository } = await createRepositoryInstallation();
-    getInstallationOctokitMock.mockResolvedValue(undefined);
+    getPullRequestMetadataMock.mockRejectedValue(
+      new Error('GitHub installation 1001 is not available.'),
+    );
     const port = createEngineGitHubPort(testDatabase.db, createGithubContext());
 
     await expect(
@@ -449,6 +458,7 @@ function runtimeEnvironment() {
     TRIBUNAL_SANDBOX_IMAGE: 'tribunal-reviewer',
     TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
     TRIBUNAL_PROXY_CIDR: '10.0.0.8/32',
+    PROXY_SIGNING_KEY: 'proxy-signing-key',
     MAX_CONCURRENT_AGENTS: '2',
     DEFAULT_DAILY_COST_CAP_USD: '25',
   };

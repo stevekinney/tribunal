@@ -16,6 +16,17 @@ import {
   isOctokitRequestError,
 } from '../errors.js';
 
+/**
+ * Validate that a value is a non-empty string, throwing a {@link ValidationError} otherwise.
+ * Shared across the GitHub review write paths (check runs, diff context) so the validation
+ * message and trim semantics stay consistent.
+ */
+export function validateNonEmptyString(value: string | undefined, label: string): void {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new ValidationError(`${label} must be a non-empty string.`);
+  }
+}
+
 export function classifyGitHubWriteError(error: unknown): Error {
   if (isRateLimitError(error)) {
     return new RateLimitError(

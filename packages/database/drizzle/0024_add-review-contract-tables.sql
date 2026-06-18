@@ -116,9 +116,15 @@ CREATE TABLE "review_intent" (
 	"pr_state" text,
 	"claimed_at" timestamp with time zone,
 	"processed_at" timestamp with time zone,
+	"failed_at" timestamp with time zone,
+	"next_attempt_at" timestamp with time zone,
+	"dead_lettered_at" timestamp with time zone,
+	"failure_count" integer DEFAULT 0 NOT NULL,
+	"last_error" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "review_intent_kind_check" CHECK ("review_intent"."kind" IN ('start','commit_pushed','pr_closed')),
-	CONSTRAINT "review_intent_pr_state_check" CHECK ("review_intent"."pr_state" IS NULL OR "review_intent"."pr_state" IN ('merged','closed'))
+	CONSTRAINT "review_intent_pr_state_check" CHECK ("review_intent"."pr_state" IS NULL OR "review_intent"."pr_state" IN ('merged','closed')),
+	CONSTRAINT "review_intent_failure_count_check" CHECK ("review_intent"."failure_count" >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "review_run" (
@@ -192,6 +198,7 @@ CREATE INDEX "finding_user_idx" ON "finding" USING btree ("user_id");--> stateme
 CREATE INDEX "repository_agent_agent_idx" ON "repository_agent" USING btree ("agent_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "review_intent_delivery_kind_repository_pr_idx" ON "review_intent" USING btree ("delivery_id","kind","repository_id","pr_number");--> statement-breakpoint
 CREATE INDEX "review_intent_unprocessed_claimed_idx" ON "review_intent" USING btree ("claimed_at") WHERE "review_intent"."processed_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "review_intent_next_attempt_idx" ON "review_intent" USING btree ("next_attempt_at") WHERE "review_intent"."processed_at" IS NULL AND "review_intent"."dead_lettered_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "review_intent_repository_pr_idx" ON "review_intent" USING btree ("repository_id","pr_number");--> statement-breakpoint
 CREATE UNIQUE INDEX "review_run_user_repository_pr_head_trigger_idx" ON "review_run" USING btree ("user_id","repository_id","pr_number","head_sha","trigger");--> statement-breakpoint
 CREATE INDEX "review_run_repository_pr_status_idx" ON "review_run" USING btree ("repository_id","pr_number","status");--> statement-breakpoint

@@ -1,4 +1,5 @@
-import type { AgentSpec } from '@tribunal/review-core';
+import { mintCapabilityToken } from '@tribunal/review-core/capability-token';
+import type { AgentSpec, RepoRef } from '@tribunal/review-core';
 
 export type PullRequestIdentity = {
   repositoryId: number;
@@ -38,6 +39,29 @@ export function createLlmEstimateIdempotencyKey(agentRunId: string): string {
   return `llm:${agentRunId}:estimate`;
 }
 
-export function createRunCapabilityToken(reviewRunId: string): string {
-  return `run-token:${reviewRunId}`;
+export type RunCapabilityTokenInput = {
+  reviewRunId: string;
+  userId: number;
+  repositoryId: number;
+  installationId: number;
+  repository: RepoRef;
+  expiresAt: Date;
+  signingKey: string;
+};
+
+export function createRunCapabilityToken(input: RunCapabilityTokenInput): string {
+  return mintCapabilityToken(
+    {
+      version: 1,
+      runId: input.reviewRunId,
+      userId: input.userId,
+      repositoryId: input.repositoryId,
+      installationId: input.installationId,
+      repositoryOwner: input.repository.owner,
+      repositoryName: input.repository.name,
+      permissions: ['github:read', 'anthropic:invoke'],
+      expiresAtEpochSeconds: Math.floor(input.expiresAt.getTime() / 1000),
+    },
+    input.signingKey,
+  );
 }

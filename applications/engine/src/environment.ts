@@ -10,6 +10,8 @@ export const engineEnvironmentSchema = z.object({
   WEFT_DATABASE_URL: z.string().url(),
   TENSORLAKE_API_KEY: z.string().min(1),
   TRIBUNAL_SANDBOX_IMAGE: z.string().min(1),
+  PROXY_SIGNING_KEY: z.string().min(1),
+  TRIBUNAL_ENGINE_CONTROL_TOKEN: z.string().min(1),
   TRIBUNAL_DEFAULT_MODEL: z.string().min(1),
   MAX_CONCURRENT_AGENTS: positiveIntegerString.transform(Number),
   PER_AGENT_BUDGET_USD: positiveDecimalString.transform(Number),

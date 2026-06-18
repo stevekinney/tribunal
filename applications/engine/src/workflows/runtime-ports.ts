@@ -9,7 +9,7 @@ import {
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
 import { createCheckRun, updateCheckRun } from '@tribunal/github/reviews/check-runs';
-import { getDiffContext } from '@tribunal/github/reviews/diff-context';
+import { getDiffContext, getPullRequestMetadata } from '@tribunal/github/reviews/diff-context';
 import { mintSingleRepositoryReadToken } from '@tribunal/github/reviews/read-tokens';
 import { postPullRequestReview } from '@tribunal/github/reviews/pull-request-reviews';
 import type { GithubServiceContext } from '@tribunal/github/context';
@@ -41,6 +41,7 @@ export type ReviewIntentRuntimeEnvironment = {
   TRIBUNAL_SANDBOX_IMAGE?: string;
   TRIBUNAL_PROXY_URL?: string;
   TRIBUNAL_PROXY_CIDR?: string;
+  PROXY_SIGNING_KEY?: string;
   MAX_CONCURRENT_AGENTS?: string;
   DEFAULT_DAILY_COST_CAP_USD?: string;
 };
@@ -81,6 +82,8 @@ export function createReviewIntentConsumer(
         'TRIBUNAL_SANDBOX_IMAGE',
       ),
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
+      proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
+      runTokenTtlSeconds: 60 * 60,
       maxConcurrentAgents: parsePositiveInteger(environment.MAX_CONCURRENT_AGENTS, 3),
     },
   );
@@ -101,10 +104,10 @@ export function createReviewIntentConsumer(
 
         try {
           await dispatchReviewIntentWorkflow(workflowEngine, intent);
-          await intentPort.markReviewIntentProcessed(intent.id, new Date());
+          await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
           processed += 1;
         } catch (error) {
-          await intentPort.markReviewIntentFailed(intent.id, new Date(), error);
+          await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
           throw error;
         }
       }
@@ -178,18 +181,20 @@ export function createEngineGitHubPort(
       previousHead?: string,
     ): Promise<DiffContext> {
       const installationId = await resolveInstallationId(database, repository);
-      const pullRequest = await getPullRequestMetadata(context, {
-        installationId,
-        owner: repository.owner,
-        repository: repository.name,
-        pullRequestNumber,
-      });
-      const diffContext = await getDiffContext(context, {
-        installationId,
-        owner: repository.owner,
-        repository: repository.name,
-        pullRequestNumber,
-      });
+      const [pullRequest, diffContext] = await Promise.all([
+        getPullRequestMetadata(context, {
+          installationId,
+          owner: repository.owner,
+          repository: repository.name,
+          pullRequestNumber,
+        }),
+        getDiffContext(context, {
+          installationId,
+          owner: repository.owner,
+          repository: repository.name,
+          pullRequestNumber,
+        }),
+      ]);
       return {
         headSha: pullRequest.headSha || head,
         baseSha: pullRequest.baseSha,
@@ -381,44 +386,6 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
   }
 }
 
-async function getPullRequestMetadata(
-  context: GithubServiceContext,
-  input: {
-    installationId: number;
-    owner: string;
-    repository: string;
-    pullRequestNumber: number;
-  },
-): Promise<{
-  headSha: string;
-  baseSha: string;
-  title: string;
-  body: string;
-  labels: string[];
-  author: string;
-}> {
-  const octokit = await context.getInstallationOctokit(input.installationId);
-  if (!octokit) {
-    throw new Error(`GitHub installation ${input.installationId} is not available.`);
-  }
-
-  const response = await octokit.rest.pulls.get({
-    owner: input.owner,
-    repo: input.repository,
-    pull_number: input.pullRequestNumber,
-  });
-  const pullRequest = response.data;
-
-  return {
-    headSha: pullRequest.head.sha,
-    baseSha: pullRequest.base.sha,
-    title: pullRequest.title,
-    body: pullRequest.body ?? '',
-    labels: pullRequest.labels.map((label) => normalizeLabelName(label)).filter(isNonEmptyString),
-    author: pullRequest.user?.login ?? '',
-  };
-}
-
 export async function resolveInstallationId(
   database: Database,
   repository: RepoRef,
@@ -459,14 +426,6 @@ function normalizeFileStatus(status: string): DiffContext['changedFiles'][number
 function requireEnvironmentValue(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is required for review intent processing.`);
   return value;
-}
-
-function normalizeLabelName(label: { name?: string | null } | string): string {
-  return typeof label === 'string' ? label : (label.name ?? '');
-}
-
-function isNonEmptyString(value: string): boolean {
-  return value.trim().length > 0;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {

@@ -5,6 +5,7 @@ import {
   workflow,
 } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
+import type { EngineHealthDependency } from '../health';
 
 const engineHeartbeat = workflow({ name: 'engine-heartbeat' }).execute(async function* () {
   return { ok: true };
@@ -13,6 +14,7 @@ const engineHeartbeat = workflow({ name: 'engine-heartbeat' }).execute(async fun
 export type EngineBootstrapOptions = {
   storage?: Storage;
   lock?: EngineSingletonLock;
+  healthDependencies?: EngineHealthDependency[];
   reviewIntentConsumer?: ReviewIntentConsumer;
   reviewIntentPollIntervalMs?: number;
   allowEphemeralStorageForTests?: boolean;
@@ -38,6 +40,7 @@ export type EngineSingletonLease = {
 
 export type EngineRuntime = {
   engine: unknown;
+  healthDependencies(): EngineHealthDependency[];
   drainReviewIntents(limit?: number): Promise<number>;
   release(): Promise<void>;
 };
@@ -58,6 +61,9 @@ export async function createEngineRuntime(
         'engine-heartbeat': engineHeartbeat,
         ...(options.reviewIntentConsumer?.workflows ?? {}),
       },
+      ownership: 'lease',
+      leaseWaitTimeout: '60s',
+      detectSecondInstance: true,
     });
     options.reviewIntentConsumer?.bindWorkflowEngine?.(engine as ReviewIntentWorkflowEngine);
 
@@ -68,6 +74,14 @@ export async function createEngineRuntime(
 
     return {
       engine,
+      healthDependencies() {
+        return (
+          options.healthDependencies ?? [
+            { name: 'weft_database', ok: true },
+            { name: 'singleton_lock', ok: true },
+          ]
+        );
+      },
       drainReviewIntents(limit?: number) {
         return options.reviewIntentConsumer?.drain(limit) ?? Promise.resolve(0);
       },

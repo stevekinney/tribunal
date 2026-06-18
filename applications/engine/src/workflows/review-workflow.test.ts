@@ -13,6 +13,7 @@ import type {
   SandboxPort,
   ScopedToken,
 } from '@tribunal/review-core';
+import { verifyCapabilityToken } from '@tribunal/review-core/capability-token';
 import {
   ReviewWorkflowEngine,
   type ClaimedReviewIntent,
@@ -252,6 +253,34 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('passes a signed scoped run token to sandbox operations', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    const runToken = ports.sandbox.updateCalls[0]?.runToken;
+    expect(runToken).toBeDefined();
+    expect(runToken).not.toContain('run-token:');
+    const verification = verifyCapabilityToken(
+      runToken!,
+      'proxy-signing-key',
+      new Date('2026-06-17T12:00:00.000Z'),
+    );
+    expect(verification).toEqual({
+      ok: true,
+      claims: expect.objectContaining({
+        runId: 'run:42:7:aaa111:opened',
+        repositoryId: 42,
+        installationId: 1001,
+        repositoryOwner: 'lostgradient',
+        repositoryName: 'tribunal',
+        permissions: ['github:read', 'anthropic:invoke'],
+      }),
+    });
+    expect(ports.sandbox.runAgentCalls[0]?.runToken).toBe(runToken);
+  });
+
   it('releases a claimed intent when downstream processing fails', async () => {
     const ports = createFakePorts({ failCheckRunCreation: true });
     ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
@@ -341,11 +370,17 @@ describe('ReviewWorkflowEngine', () => {
 });
 
 function createEngine(ports: FakePorts): ReviewWorkflowEngine {
-  return new ReviewWorkflowEngine(ports, {
-    sandboxImage: 'tribunal-reviewer:test',
-    proxyUrl: 'https://proxy.example.test',
-    maxConcurrentAgents: 2,
-  });
+  return new ReviewWorkflowEngine(
+    ports,
+    {
+      sandboxImage: 'tribunal-reviewer:test',
+      proxyUrl: 'https://proxy.example.test',
+      proxySigningKey: 'proxy-signing-key',
+      runTokenTtlSeconds: 60 * 60,
+      maxConcurrentAgents: 2,
+    },
+    () => new Date('2026-06-17T12:00:00.000Z'),
+  );
 }
 
 function createIntent(
@@ -405,11 +440,16 @@ class FakeReviewIntentPort implements ReviewIntentPort {
     return intent === undefined ? null : { ...intent, claimedAt: now };
   }
 
-  async markReviewIntentProcessed(intentId: string): Promise<void> {
+  async markReviewIntentProcessed(intentId: string, _claimedAt: Date, _now: Date): Promise<void> {
     this.processedIntentIds.push(intentId);
   }
 
-  async markReviewIntentFailed(intentId: string, _now: Date, error: unknown): Promise<void> {
+  async markReviewIntentFailed(
+    intentId: string,
+    _claimedAt: Date,
+    _now: Date,
+    error: unknown,
+  ): Promise<void> {
     this.failedIntentErrors.push({
       intentId,
       message: error instanceof Error ? error.message : 'Review intent processing failed.',

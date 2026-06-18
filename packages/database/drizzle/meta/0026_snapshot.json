@@ -1,6 +1,6 @@
 {
-  "id": "00adb400-5e28-41da-aa57-2383ccf4ecfc",
-  "prevId": "c72014ad-9926-4825-b172-85246329f94e",
+  "id": "3f29bc22-3f92-43b6-a838-5a50e3e391c0",
+  "prevId": "cbfb989b-1ec2-4fb3-8489-500a7d510bf5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2409,7 +2409,7 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "last_error": {
           "name": "last_error",
@@ -2491,6 +2491,40 @@
           "method": "btree",
           "with": {}
         },
+        "review_intent_ready_queue_idx": {
+          "name": "review_intent_ready_queue_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "claimed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"review_intent\".\"processed_at\" IS NULL AND \"review_intent\".\"dead_lettered_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "review_intent_repository_pr_idx": {
           "name": "review_intent_repository_pr_idx",
           "columns": [
@@ -2528,6 +2562,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "review_intent_failure_count_check": {
+          "name": "review_intent_failure_count_check",
+          "value": "\"review_intent\".\"failure_count\" >= 0"
+        },
         "review_intent_kind_check": {
           "name": "review_intent_kind_check",
           "value": "\"review_intent\".\"kind\" IN ('start','commit_pushed','pr_closed')"
@@ -2535,10 +2573,6 @@
         "review_intent_pr_state_check": {
           "name": "review_intent_pr_state_check",
           "value": "\"review_intent\".\"pr_state\" IS NULL OR \"review_intent\".\"pr_state\" IN ('merged','closed')"
-        },
-        "review_intent_failure_count_check": {
-          "name": "review_intent_failure_count_check",
-          "value": "\"review_intent\".\"failure_count\" >= 0"
         }
       },
       "isRLSEnabled": false

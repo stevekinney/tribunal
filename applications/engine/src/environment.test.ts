@@ -5,6 +5,8 @@ const fullEnvironment = {
   WEFT_DATABASE_URL: 'https://example.neon.tech/weft',
   TENSORLAKE_API_KEY: 'tensorlake-key',
   TRIBUNAL_SANDBOX_IMAGE: 'tribunal-reviewer:2026-06-17',
+  PROXY_SIGNING_KEY: 'proxy-signing-key',
+  TRIBUNAL_ENGINE_CONTROL_TOKEN: 'engine-control-token',
   TRIBUNAL_DEFAULT_MODEL: 'claude-sonnet-4-6',
   MAX_CONCURRENT_AGENTS: '3',
   PER_AGENT_BUDGET_USD: '1.25',

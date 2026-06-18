@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { parseProxyEnvironment } from './environment';
 
 const fullEnvironment = {
+  DATABASE_URL: 'postgres://user:pass@localhost:5432/tribunal',
+  REDIS_URL: 'redis://localhost:6379',
+  GITHUB_APP_ID: '123',
+  GITHUB_APP_PRIVATE_KEY: 'private-key',
   ANTHROPIC_API_KEY: 'anthropic-key',
   TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.test',
   TRIBUNAL_PROXY_CIDR: '10.0.0.10/32',

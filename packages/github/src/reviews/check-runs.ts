@@ -1,7 +1,7 @@
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { ValidationError } from '../error-taxonomy.js';
-import { withGitHubWriteErrorClassification } from './errors.js';
+import { validateNonEmptyString, withGitHubWriteErrorClassification } from './errors.js';
 
 const MAX_CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
 
@@ -222,12 +222,6 @@ async function requireInstallationOctokit(
 function validateRepositoryTarget(owner: string, repository: string): void {
   validateNonEmptyString(owner, 'owner');
   validateNonEmptyString(repository, 'repository');
-}
-
-function validateNonEmptyString(value: string | undefined, label: string): void {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ValidationError(`${label} must be a non-empty string.`);
-  }
 }
 
 function validatePositiveInteger(value: number | undefined, label: string): void {

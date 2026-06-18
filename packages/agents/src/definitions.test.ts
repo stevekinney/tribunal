@@ -44,6 +44,9 @@ describe('agent definitions', () => {
       toAgentDefinition({ ...agentSpec, model: 'fable', effort: 'xhigh' }, 'opus').effectiveEffort,
     ).toBe('xhigh');
     expect(
+      toAgentDefinition({ ...agentSpec, model: 'opus', effort: 'xhigh' }, 'sonnet').effectiveEffort,
+    ).toBe('xhigh');
+    expect(
       toAgentDefinition({ ...agentSpec, model: 'haiku', effort: 'max' }, 'opus').effectiveEffort,
     ).toBeNull();
     expect(

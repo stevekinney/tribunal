@@ -53,13 +53,20 @@ export type ClaimedReviewIntent = ReviewIntent & {
 
 export type ReviewIntentPort = {
   claimNextReviewIntent(now: Date): Promise<ClaimedReviewIntent | null>;
-  markReviewIntentProcessed(intentId: string, now: Date): Promise<void>;
-  markReviewIntentFailed(intentId: string, now: Date, error: unknown): Promise<void>;
+  markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date): Promise<void>;
+  markReviewIntentFailed(
+    intentId: string,
+    claimedAt: Date,
+    now: Date,
+    error: unknown,
+  ): Promise<void>;
 };
 
 export type ReviewWorkflowConfiguration = {
   sandboxImage: string;
   proxyUrl: string;
+  proxySigningKey: string;
+  runTokenTtlSeconds: number;
   maxConcurrentAgents: number;
 };
 
@@ -186,10 +193,15 @@ export class ReviewWorkflowEngine {
 
       try {
         await this.processClaimedReviewIntent(intent);
-        await this.ports.intents.markReviewIntentProcessed(intent.id, this.now());
+        await this.ports.intents.markReviewIntentProcessed(intent.id, intent.claimedAt, this.now());
         processed += 1;
       } catch (error) {
-        await this.ports.intents.markReviewIntentFailed(intent.id, this.now(), error);
+        await this.ports.intents.markReviewIntentFailed(
+          intent.id,
+          intent.claimedAt,
+          this.now(),
+          error,
+        );
         throw error;
       }
     }
@@ -458,7 +470,15 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
 
-    const runToken = createRunCapabilityToken(runId);
+    const runToken = createRunCapabilityToken({
+      reviewRunId: runId,
+      userId: input.userId,
+      repositoryId: input.repositoryId,
+      installationId: input.installationId,
+      repository: input.repository,
+      expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
+      signingKey: this.configuration.proxySigningKey,
+    });
     await this.ports.github.mintReadToken(input.repositoryId, input.installationId);
     await this.ports.sandbox.update(supervisor.sandboxId, input.repository, headSha, runToken);
     const diffContext = await this.ports.github.getDiffContext(

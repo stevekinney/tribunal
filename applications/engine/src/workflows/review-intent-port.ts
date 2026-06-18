@@ -21,6 +21,9 @@ import type {
 
 type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 
+const maxReviewIntentFailures = 5;
+const backoffMinutesByFailureCount = [1, 2, 4, 8] as const;
+
 type ClaimedReviewIntentRow = {
   id: string;
   deliveryId: string;
@@ -49,7 +52,7 @@ export function createDatabaseReviewIntentPort(
       const normalizedRow = normalizeClaimedReviewIntentRow(row);
       const pullRequest = await buildPullRequestReviewInput(database, normalizedRow, options);
       if (pullRequest === null) {
-        await markReviewIntentProcessed(database, normalizedRow.id, now);
+        await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
         return null;
       }
 
@@ -63,11 +66,11 @@ export function createDatabaseReviewIntentPort(
         claimedAt: normalizedRow.claimedAt,
       };
     },
-    markReviewIntentProcessed(intentId: string, now: Date) {
-      return markReviewIntentProcessed(database, intentId, now);
+    markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date) {
+      return markReviewIntentProcessed(database, intentId, claimedAt, now);
     },
-    markReviewIntentFailed(intentId: string) {
-      return markReviewIntentFailed(database, intentId);
+    markReviewIntentFailed(intentId: string, claimedAt: Date, now: Date, error: unknown) {
+      return markReviewIntentFailed(database, intentId, claimedAt, now, error);
     },
   };
 }
@@ -96,6 +99,11 @@ async function claimNextIntentRow(
         AND (
           ${reviewIntent.claimedAt} IS NULL
           OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
+        )
+        AND ${reviewIntent.deadLetteredAt} IS NULL
+        AND (
+          ${reviewIntent.nextAttemptAt} IS NULL
+          OR ${reviewIntent.nextAttemptAt} <= ${now}
         )
         AND ${repositoryReviewSettings.watched} = true
         AND ${userReviewSettings.reviewsEnabled} = true
@@ -205,21 +213,80 @@ async function buildPullRequestReviewInput(
 function markReviewIntentProcessed(
   database: ReviewIntentDatabase,
   intentId: string,
+  claimedAt: Date,
   now: Date,
 ): Promise<void> {
   return database
     .update(reviewIntent)
     .set({ processedAt: now })
-    .where(and(eq(reviewIntent.id, intentId), isNull(reviewIntent.processedAt)))
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        isNull(reviewIntent.processedAt),
+      ),
+    )
     .then(() => {});
 }
 
-function markReviewIntentFailed(database: ReviewIntentDatabase, intentId: string): Promise<void> {
-  return database
+async function markReviewIntentFailed(
+  database: ReviewIntentDatabase,
+  intentId: string,
+  claimedAt: Date,
+  now: Date,
+  error: unknown,
+): Promise<void> {
+  const [intent] = await database
+    .select({ failureCount: reviewIntent.failureCount })
+    .from(reviewIntent)
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        isNull(reviewIntent.processedAt),
+      ),
+    )
+    .limit(1);
+  if (intent === undefined) return;
+
+  const failureCount = intent.failureCount + 1;
+  const deadLetteredAt = failureCount >= maxReviewIntentFailures ? now : null;
+  const nextAttemptAt =
+    deadLetteredAt === null
+      ? new Date(now.getTime() + backoffMinutesForFailure(failureCount) * 60 * 1000)
+      : null;
+
+  await database
     .update(reviewIntent)
-    .set({ claimedAt: null })
-    .where(and(eq(reviewIntent.id, intentId), isNull(reviewIntent.processedAt)))
+    .set({
+      claimedAt: null,
+      failedAt: now,
+      failureCount,
+      lastError: serializeReviewIntentError(error),
+      nextAttemptAt,
+      deadLetteredAt,
+    })
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        isNull(reviewIntent.processedAt),
+      ),
+    )
     .then(() => {});
+}
+
+function backoffMinutesForFailure(failureCount: number): number {
+  return (
+    backoffMinutesByFailureCount[
+      Math.min(failureCount - 1, backoffMinutesByFailureCount.length - 1)
+    ] ?? backoffMinutesByFailureCount.at(-1)!
+  );
+}
+
+function serializeReviewIntentError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > 500 ? `${message.slice(0, 497)}...` : message;
 }
 
 function toReviewTrigger(kind: ReviewIntentKind): PullRequestReviewInput['trigger'] {

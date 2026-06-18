@@ -1,0 +1,1 @@
+CREATE INDEX "review_intent_ready_queue_idx" ON "review_intent" USING btree ("created_at","id","claimed_at","next_attempt_at") WHERE "review_intent"."processed_at" IS NULL AND "review_intent"."dead_lettered_at" IS NULL;
