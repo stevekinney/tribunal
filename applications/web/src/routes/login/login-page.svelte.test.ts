@@ -23,6 +23,10 @@ vi.mock('$lib/auth/neon-client', () => ({
   }),
 }));
 
+const keepGithubRedirectPending = () => {
+  mocks.signInSocial.mockReturnValueOnce(new Promise(() => {}));
+};
+
 describe('/login page', () => {
   beforeEach(() => {
     mocks.svelteKitPage.data = { neonAuthConfigured: true };
@@ -31,12 +35,7 @@ describe('/login page', () => {
   });
 
   it('starts Neon Auth GitHub sign-in with a sanitized callback URL', async () => {
-    mocks.signInSocial.mockResolvedValueOnce({
-      data: {
-        url: 'https://github.com/login/oauth/authorize?client_id=github-client-id',
-      },
-      error: null,
-    });
+    keepGithubRedirectPending();
 
     render(LoginPage);
 
@@ -66,12 +65,7 @@ describe('/login page', () => {
     mocks.svelteKitPage.url = new URL(
       'http://localhost/login?returnTo=/connect/github/account/callback?code=oauth-code&state=oauth-state',
     );
-    mocks.signInSocial.mockResolvedValueOnce({
-      data: {
-        url: 'https://github.com/login/oauth/authorize?client_id=github-client-id',
-      },
-      error: null,
-    });
+    keepGithubRedirectPending();
 
     render(LoginPage);
 
