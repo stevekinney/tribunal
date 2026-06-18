@@ -71,7 +71,10 @@ export function isRepositoryRelativePath(candidatePath: string): boolean {
 }
 
 function stripControlCharacters(value: string): string {
-  return value.replaceAll(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  return value.replaceAll(
+    new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]', 'g'),
+    '',
+  );
 }
 
 function containsUnsafeCommentAction(value: string): boolean {
