@@ -20,6 +20,7 @@ import {
   ReviewWorkflowEngine,
   type AgentRunRecord,
   type ClaimedReviewIntent,
+  type FindingRecord,
   type PullRequestReviewInput,
   type ReviewIntent,
   type ReviewIntentPort,
@@ -144,7 +145,7 @@ describe('ReviewWorkflowEngine', () => {
   });
 
   it('persists review and agent run state as the review progresses', async () => {
-    const ports = createFakePorts();
+    const ports = createFakePorts({ endLineOnlyFinding: true });
     const engine = createEngine(ports);
 
     await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
@@ -162,6 +163,16 @@ describe('ReviewWorkflowEngine', () => {
       modelUsed: 'sonnet',
       durationMs: 25,
     });
+    expect(ports.state.findings).toEqual([
+      expect.objectContaining({
+        agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+        path: 'src/example.ts',
+        fingerprint: 'ee0a9dfa578eb57fdc06d62203ffc97bee9d115d12360e4caf0367deb5263dcd',
+        anchored: true,
+        startLine: null,
+        endLine: 12,
+      }),
+    ]);
     expect(ports.state.agentEvents).toEqual([
       expect.objectContaining({
         agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
@@ -1127,13 +1138,14 @@ describe('ReviewWorkflowEngine', () => {
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForRunningAgent();
 
-    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
       stopped: true,
     });
     ports.sandbox.resolveHeldAgents();
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'operator' });
     expect(engine.snapshot().supervisors[0]).toMatchObject({ activeRunId: undefined });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: {
@@ -1295,6 +1307,7 @@ type FakePortOptions = {
   publishFailedReviewBeforeThrowing?: boolean;
   multipleFindings?: boolean;
   fileLevelFinding?: boolean;
+  endLineOnlyFinding?: boolean;
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
 };
@@ -1334,6 +1347,7 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   readonly reviewRuns: ReviewRunRecord[] = [];
   readonly agentRuns: AgentRunRecord[] = [];
   readonly agentEvents: AgentEvent[] = [];
+  readonly findings: FindingRecord[] = [];
   private alreadyPostedOnNextClaim: number | undefined;
   private afterClearClaimResult:
     | { status: 'already_posted'; commentsPosted: number }
@@ -1499,6 +1513,19 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
       return;
     }
     this.agentEvents[index] = { ...event };
+  }
+
+  async upsertFinding(finding: FindingRecord): Promise<void> {
+    const index = this.findings.findIndex(
+      (existingFinding) =>
+        existingFinding.agentRunId === finding.agentRunId &&
+        existingFinding.fingerprint === finding.fingerprint,
+    );
+    if (index === -1) {
+      this.findings.push({ ...finding });
+      return;
+    }
+    this.findings[index] = { ...finding };
   }
 }
 
@@ -1742,6 +1769,7 @@ class FakeSandboxPort implements SandboxPort {
       signal.aborted,
       this.options.multipleFindings,
       this.options.fileLevelFinding,
+      this.options.endLineOnlyFinding,
     );
   }
 
@@ -1831,6 +1859,7 @@ function createAgentResult(
   stopped: boolean,
   multipleFindings = false,
   fileLevelFinding = false,
+  endLineOnlyFinding = false,
 ): AgentResult {
   const findings = fileLevelFinding
     ? [
@@ -1844,56 +1873,68 @@ function createAgentResult(
           body: 'This cannot be anchored inline.',
         },
       ]
-    : multipleFindings
+    : endLineOnlyFinding
       ? [
           {
-            path: 'src/second.ts',
-            startLine: 1,
-            endLine: null,
-            side: 'RIGHT' as const,
-            severity: 'warning' as const,
-            title: 'Second file',
-            body: 'This should sort last by path.',
-          },
-          {
             path: 'src/example.ts',
-            startLine: 3,
-            endLine: null,
-            side: 'RIGHT' as const,
-            severity: 'warning' as const,
-            title: 'Earlier right side',
-            body: 'This should sort before the later right-side comment.',
-          },
-          {
-            path: 'src/example.ts',
-            startLine: 12,
-            endLine: null,
-            side: 'RIGHT' as const,
-            severity: 'warning' as const,
-            title: 'Right side',
-            body: 'This should sort after the left-side comment.',
-          },
-          {
-            path: 'src/example.ts',
-            startLine: 2,
-            endLine: null,
-            side: 'LEFT' as const,
-            severity: 'warning' as const,
-            title: 'Left side',
-            body: 'This should sort first within the file.',
-          },
-        ]
-      : [
-          {
-            path: 'src/example.ts',
-            startLine: 12,
-            endLine: null,
+            startLine: null,
+            endLine: 12,
             side: 'RIGHT' as const,
             severity: 'warning' as const,
             title: 'Check this change',
             body: 'This fake finding proves review posting stays outside the agent.',
           },
-        ];
+        ]
+      : multipleFindings
+        ? [
+            {
+              path: 'src/second.ts',
+              startLine: 1,
+              endLine: null,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'Second file',
+              body: 'This should sort last by path.',
+            },
+            {
+              path: 'src/example.ts',
+              startLine: 3,
+              endLine: null,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'Earlier right side',
+              body: 'This should sort before the later right-side comment.',
+            },
+            {
+              path: 'src/example.ts',
+              startLine: 12,
+              endLine: null,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'Right side',
+              body: 'This should sort after the left-side comment.',
+            },
+            {
+              path: 'src/example.ts',
+              startLine: 2,
+              endLine: null,
+              side: 'LEFT' as const,
+              severity: 'warning' as const,
+              title: 'Left side',
+              body: 'This should sort first within the file.',
+            },
+          ]
+        : [
+            {
+              path: 'src/example.ts',
+              startLine: 12,
+              endLine: null,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'Check this change',
+              body: 'This fake finding proves review posting stays outside the agent.',
+            },
+          ];
 
   return {
     agentSlug: agent.slug,

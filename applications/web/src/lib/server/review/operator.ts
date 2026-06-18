@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -65,6 +65,17 @@ export async function requireRepositoryOwnership(userId: number, repositoryId: n
   if (!(await userOwnsRepository(userId, repositoryId))) {
     error(403, 'You do not have access to this repository.');
   }
+}
+
+async function requireAgentMutationAccess(userId: number, agentId: string) {
+  const [row] = await db
+    .select({ userId: agent.userId })
+    .from(agent)
+    .where(eq(agent.id, agentId))
+    .limit(1);
+
+  if (!row) error(404, 'Agent not found.');
+  if (row.userId !== userId) error(403, 'You do not have access to this agent.');
 }
 
 export async function getRepositoryOperatorDetails(userId: number, repositoryIds: number[]) {
@@ -245,15 +256,8 @@ export async function saveAgent(userId: number, formData: FormData) {
     });
   }
 
-  const existing = id
-    ? await db
-        .select({ id: agent.id })
-        .from(agent)
-        .where(and(eq(agent.id, id), eq(agent.userId, userId)))
-        .limit(1)
-    : [];
-  if (id && existing.length === 0) {
-    return fail(404, { error: 'Agent not found.' });
+  if (id) {
+    await requireAgentMutationAccess(userId, id);
   }
 
   await db
@@ -278,6 +282,7 @@ export async function saveAgent(userId: number, formData: FormData) {
 export async function deleteAgent(userId: number, formData: FormData) {
   const id = String(formData.get('id') ?? '').trim();
   if (!id) return fail(400, { error: 'Agent id is required.' });
+  await requireAgentMutationAccess(userId, id);
 
   const deletedRows = await db
     .delete(agent)
@@ -294,6 +299,7 @@ export async function deleteAgent(userId: number, formData: FormData) {
 export async function setAgentEnabled(userId: number, formData: FormData) {
   const id = String(formData.get('id') ?? '').trim();
   if (!id) return fail(400, { error: 'Agent id is required.' });
+  await requireAgentMutationAccess(userId, id);
 
   const enabled = formData.get('enabled') === 'true';
   const updatedRows = await db
@@ -359,7 +365,15 @@ export async function getRunInspector(userId: number, runId: string) {
       .select({ finding })
       .from(finding)
       .innerJoin(agentRun, eq(agentRun.id, finding.agentRunId))
-      .where(and(eq(finding.userId, userId), eq(agentRun.reviewRunId, runId))),
+      .where(and(eq(finding.userId, userId), eq(agentRun.reviewRunId, runId)))
+      .orderBy(
+        finding.agentRunId,
+        finding.path,
+        asc(finding.startLine),
+        asc(finding.endLine),
+        finding.fingerprint,
+        finding.id,
+      ),
   ]);
 
   const agentRunIds = agentRows.map((row) => row.agentRun.id);

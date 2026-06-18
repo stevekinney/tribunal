@@ -6,6 +6,7 @@ import {
   agentEvent,
   agentRun,
   costEvent,
+  finding,
   githubInstallation,
   githubInstallationRepository,
   repository,
@@ -15,7 +16,15 @@ import {
   user,
 } from '@tribunal/database/schema';
 import { eq } from 'drizzle-orm';
-import { getCostOverview, getRunInspector, saveRepositoryWatchSettings, stopRun } from './operator';
+import {
+  deleteAgent,
+  getCostOverview,
+  getRunInspector,
+  saveAgent,
+  saveRepositoryWatchSettings,
+  setAgentEnabled,
+  stopRun,
+} from './operator';
 
 const mocks = vi.hoisted(() => ({
   env: {
@@ -121,6 +130,39 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {
+    const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
+    const updateFormData = new FormData();
+    updateFormData.set('id', reviewAgent.id);
+    updateFormData.set('slug', 'security');
+    updateFormData.set('description', 'Finds security issues');
+    updateFormData.set('body', 'Review for security issues.');
+    updateFormData.set('model', 'sonnet');
+    updateFormData.set('effort', 'medium');
+    updateFormData.set('enabled', 'true');
+    const enableFormData = new FormData();
+    enableFormData.set('id', reviewAgent.id);
+    enableFormData.set('enabled', 'false');
+    const deleteFormData = new FormData();
+    deleteFormData.set('id', reviewAgent.id);
+
+    await expect(
+      withTestDatabase(() => saveAgent(otherUser.id, updateFormData)),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      withTestDatabase(() => setAgentEnabled(otherUser.id, enableFormData)),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      withTestDatabase(() => deleteAgent(otherUser.id, deleteFormData)),
+    ).rejects.toMatchObject({ status: 403 });
+
+    const missingFormData = new FormData();
+    missingFormData.set('id', 'agent_missing');
+    await expect(
+      withTestDatabase(() => deleteAgent(owner.id, missingFormData)),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it('scopes run inspection and stop control to the owning user', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
     await testDb.db.insert(reviewRun).values({
@@ -165,6 +207,64 @@ describe('review operator server helpers', () => {
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
     expect(stoppedAgentRun.stoppedReason).toBe('operator');
+  });
+
+  it('returns run inspector findings in deterministic order', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_findings',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_findings',
+      userId: owner.id,
+      reviewRunId: 'run_findings',
+      agentId: reviewAgent.id,
+      status: 'succeeded',
+    });
+    await testDb.db.insert(finding).values([
+      {
+        id: 'finding_second',
+        userId: owner.id,
+        agentRunId: 'agent_run_findings',
+        path: 'src/b.ts',
+        startLine: 2,
+        endLine: null,
+        side: 'RIGHT',
+        severity: 'warning',
+        title: 'Second',
+        body: 'Second finding',
+        anchored: true,
+        fingerprint: 'fingerprint_second',
+      },
+      {
+        id: 'finding_first',
+        userId: owner.id,
+        agentRunId: 'agent_run_findings',
+        path: 'src/a.ts',
+        startLine: 10,
+        endLine: null,
+        side: 'RIGHT',
+        severity: 'warning',
+        title: 'First',
+        body: 'First finding',
+        anchored: true,
+        fingerprint: 'fingerprint_first',
+      },
+    ]);
+
+    const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_findings'));
+
+    expect(inspected.agentRuns[0]?.findings.map((row) => row.id)).toEqual([
+      'finding_first',
+      'finding_second',
+    ]);
   });
 
   it('signals the live engine after marking an owned run stopped when configured', async () => {

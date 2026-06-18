@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
+import { computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import type {
   AgentEvent,
@@ -137,6 +138,15 @@ export type AgentRunRecord = {
   error?: string;
 };
 
+export type FindingRecord = Finding & {
+  id: string;
+  userId: number;
+  agentRunId: string;
+  anchored: boolean;
+  githubCommentId?: number;
+  fingerprint: string;
+};
+
 export type PullRequestSupervisorSnapshot = {
   workflowId: string;
   repositoryId: number;
@@ -190,6 +200,7 @@ export type ReviewWorkflowStatePort = {
   upsertReviewRun(run: ReviewRunRecord): Promise<void>;
   upsertAgentRun(run: AgentRunRecord): Promise<void>;
   upsertAgentEvent?(event: AgentEvent): Promise<void>;
+  upsertFinding?(finding: FindingRecord): Promise<void>;
   claimReviewPost(reviewRunId: string, now: Date): Promise<ReviewPostClaimResult>;
   refreshReviewPostClaim(
     reviewRunId: string,
@@ -907,6 +918,12 @@ export class ReviewWorkflowEngine {
     agentRun.error = result.error;
     await this.persistAgentRun(agentRun);
 
+    await Promise.all(
+      result.findings.map((finding) =>
+        this.persistFinding(createFindingRecord(reviewRun.userId, agentRunId, finding)),
+      ),
+    );
+
     await this.ports.cost.recordLlmEstimate({
       userId: reviewRun.userId,
       repositoryId: reviewRun.repositoryId,
@@ -1047,6 +1064,10 @@ export class ReviewWorkflowEngine {
     await this.ports.state?.upsertAgentRun(run);
   }
 
+  private async persistFinding(finding: FindingRecord): Promise<void> {
+    await this.ports.state?.upsertFinding?.(finding);
+  }
+
   private async recordSandboxEstimate(run: ReviewRunRecord): Promise<void> {
     const runtimeSeconds = Math.max(
       1,
@@ -1065,6 +1086,18 @@ export class ReviewWorkflowEngine {
       idempotencyKey: `sandbox:${run.sandboxId}:${run.id}:final`,
     });
   }
+}
+
+function createFindingRecord(userId: number, agentRunId: string, finding: Finding): FindingRecord {
+  const fingerprint = computeCanonicalFindingFingerprint(finding);
+  return {
+    ...finding,
+    id: `${agentRunId}:${fingerprint}`,
+    userId,
+    agentRunId,
+    anchored: finding.startLine !== null || finding.endLine !== null,
+    fingerprint,
+  };
 }
 
 function repositoryExecutionContext(

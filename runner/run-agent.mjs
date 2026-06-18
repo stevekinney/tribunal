@@ -62,7 +62,15 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
       ...(effort ? { maxThinkingTokens: effortToThinkingBudget(effort) } : {}),
       permissionMode: 'dontAsk',
       allowedTools: [...ALLOWED_AGENT_TOOLS],
-      disallowedTools: ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch'],
+      disallowedTools: [
+        'Bash',
+        'Write',
+        'Edit',
+        'MultiEdit',
+        'NotebookEdit',
+        'WebFetch',
+        'WebSearch',
+      ],
       canUseTool: async (toolName, input, options) => {
         const decision = enforceReadOnlyToolUse({
           toolName,
@@ -71,13 +79,18 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
           diffContext,
         });
         const allowed = decision.permissionDecision === 'allow';
-        emitEvent('tool_pre', {
+        emitEvent(
+          'tool_pre',
+          {
+            toolName,
+            input,
+            allowed,
+            denied: !allowed,
+            reason:
+              decision.permissionDecision === 'deny' ? decision.reason : options.decisionReason,
+          },
           toolName,
-          input,
-          allowed,
-          reason:
-            decision.permissionDecision === 'deny' ? decision.reason : options.decisionReason,
-        });
+        );
         return allowed
           ? { behavior: 'allow', toolUseID: options.toolUseID }
           : {
@@ -160,7 +173,7 @@ function normalizeUsage(usage = {}) {
   };
 }
 
-function emitEvent(kind, detail = {}) {
+function emitEvent(kind, detail = {}, tool) {
   sequence += 1;
   process.stdout.write(
     `${JSON.stringify({
@@ -169,6 +182,7 @@ function emitEvent(kind, detail = {}) {
         agentRunId: process.env.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
         seq: sequence,
         kind,
+        ...(tool ? { tool } : {}),
         detail,
         at: new Date().toISOString(),
       },

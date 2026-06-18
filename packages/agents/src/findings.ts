@@ -29,24 +29,24 @@ export function sanitizeFinding(
     return { ok: false, reason: 'finding path escapes the repository' };
   }
 
-  if (containsUnsafeCommentAction(finding.body) || containsUnsafeCommentAction(finding.title)) {
-    return { ok: false, reason: 'finding contains an unsafe mention or slash command' };
-  }
-
   if (!isFindingOnChangedFile(finding, diffContext)) {
     return { ok: false, reason: 'finding does not point to a commentable diff line' };
   }
+
+  const body = sanitizeCommentText(finding.body).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
+  const title = sanitizeCommentText(finding.title);
+  const suggestion =
+    finding.suggestion === undefined
+      ? undefined
+      : sanitizeCommentText(finding.suggestion).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
 
   return {
     ok: true,
     finding: {
       ...finding,
-      body: stripControlCharacters(finding.body).slice(0, MAXIMUM_COMMENT_BODY_LENGTH),
-      title: stripControlCharacters(finding.title),
-      suggestion:
-        finding.suggestion === undefined
-          ? undefined
-          : stripControlCharacters(finding.suggestion).slice(0, MAXIMUM_COMMENT_BODY_LENGTH),
+      body,
+      title,
+      suggestion,
     },
   };
 }
@@ -87,8 +87,10 @@ function stripControlCharacters(value: string): string {
     .join('');
 }
 
-function containsUnsafeCommentAction(value: string): boolean {
-  return /(^|[^\w])@[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?\b/iu.test(value) || /^\s*\/\S+/m.test(value);
+function sanitizeCommentText(value: string): string {
+  return stripControlCharacters(value)
+    .replace(/(^|[^\w])@([a-z\d](?:[a-z\d-]{0,37}[a-z\d])?)\b/giu, '$1$2')
+    .replace(/^(\s*)\/(\S+)/gmu, '$1$2');
 }
 
 export function computeCanonicalFindingFingerprint(finding: Finding): string {

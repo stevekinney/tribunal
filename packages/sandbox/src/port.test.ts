@@ -423,7 +423,41 @@ describe('sandbox port', () => {
     ).rejects.toThrow(SyntaxError);
   });
 
-  it('rejects failed agent runner commands before parsing stdout', async () => {
+  it('rejects failed agent runner commands even when stdout contains a valid result', async () => {
+    const { adapter } = createFakeAdapter();
+    const failedCommandResult = { ...result, costEstimateUsd: 0.42 };
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 1,
+      stdout: `${JSON.stringify({ type: 'result', result: failedCommandResult })}\n`,
+      stderr: 'agent crashed',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        {
+          id: 'agent_1',
+          agentRunId: 'agent_run_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        () => {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('Agent runner failed with exit code 1: agent crashed');
+  });
+
+  it('rejects failed agent runner commands that do not produce a valid result', async () => {
     const { adapter } = createFakeAdapter();
     adapter.runTrackedCommand = async () => ({
       exitCode: 1,

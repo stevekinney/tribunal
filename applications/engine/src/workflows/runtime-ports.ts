@@ -4,6 +4,7 @@ import { and, desc, eq, inArray, isNull, ne, sql } from '@tribunal/database/oper
 import {
   agentRun,
   agentEvent,
+  finding,
   githubInstallation,
   githubInstallationRepository,
   repository as repositoryTable,
@@ -37,6 +38,7 @@ import { createReviewWorkflowDefinitions } from './review-workflow-definitions';
 import type {
   AgentRunRecord,
   ClaimedReviewIntent,
+  FindingRecord,
   PullRequestReviewInput,
   ReviewPostClaimResult,
   ReviewRunRecord,
@@ -151,7 +153,7 @@ export function createReviewIntentConsumer(
       return processed;
     },
     stopReviewRun(reviewRunId: string) {
-      return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
+      return reviewWorkflowEngine.stopRun(reviewRunId, 'operator');
     },
   };
 }
@@ -634,6 +636,41 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
             tool: event.tool,
             detail: event.detail ?? {},
             at: new Date(event.at),
+          },
+        });
+    },
+    async upsertFinding(findingRecord: FindingRecord) {
+      await database
+        .insert(finding)
+        .values({
+          id: findingRecord.id,
+          userId: findingRecord.userId,
+          agentRunId: findingRecord.agentRunId,
+          path: findingRecord.path,
+          startLine: findingRecord.startLine,
+          endLine: findingRecord.endLine,
+          side: findingRecord.side,
+          severity: findingRecord.severity,
+          title: findingRecord.title,
+          body: findingRecord.body,
+          suggestion: findingRecord.suggestion,
+          anchored: findingRecord.anchored,
+          githubCommentId: findingRecord.githubCommentId,
+          fingerprint: findingRecord.fingerprint,
+        })
+        .onConflictDoUpdate({
+          target: [finding.agentRunId, finding.fingerprint],
+          set: {
+            path: findingRecord.path,
+            startLine: findingRecord.startLine,
+            endLine: findingRecord.endLine,
+            side: findingRecord.side,
+            severity: findingRecord.severity,
+            title: findingRecord.title,
+            body: findingRecord.body,
+            suggestion: findingRecord.suggestion,
+            anchored: findingRecord.anchored,
+            githubCommentId: findingRecord.githubCommentId,
           },
         });
     },

@@ -65,6 +65,15 @@ const data = {
             detail: { denied: true },
             at: new Date('2026-06-17T12:00:01Z'),
           },
+          {
+            id: 2,
+            agentRunId: 'agent_run_1',
+            seq: 2,
+            kind: 'tool_pre',
+            tool: 'Glob',
+            detail: { allowed: false },
+            at: new Date('2026-06-17T12:00:02Z'),
+          },
         ],
         findings: [
           {
@@ -98,7 +107,8 @@ describe('/runs/[runId] page', () => {
     render(RunInspectorPage, { data });
 
     await expect.element(page.getByRole('button', { name: /stop/i })).toBeInTheDocument();
-    await expect.element(page.getByText('blocked')).toBeInTheDocument();
+    await expect.element(page.getByText('blocked').first()).toBeInTheDocument();
+    await expect.element(page.getByText('Glob')).toBeInTheDocument();
     await expect.element(page.getByText('Missing authorization check')).toBeInTheDocument();
   });
 });

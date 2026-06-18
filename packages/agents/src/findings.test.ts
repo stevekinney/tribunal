@@ -49,17 +49,25 @@ describe('finding validation', () => {
     expect(validateFinding({ ...finding, path: '.' }, diffContext).ok).toBe(false);
   });
 
-  it('rejects mention and slash-command bodies before they can become comments', () => {
-    expect(
-      validateFinding({ ...finding, body: '@everyone please approve this' }, diffContext).ok,
-    ).toBe(false);
-    expect(
-      validateFinding({ ...finding, body: 'Please ask @octocat to approve' }, diffContext).ok,
-    ).toBe(false);
-    expect(validateFinding({ ...finding, body: '/approve' }, diffContext).ok).toBe(false);
-    expect(
-      validateFinding({ ...finding, body: 'Legitimate finding.\n/approve' }, diffContext).ok,
-    ).toBe(false);
+  it('strips mentions and slash commands before they can become comments', () => {
+    const sanitized = validateFinding(
+      {
+        ...finding,
+        title: '@octocat please review',
+        body: '@everyone please approve this\nLegitimate finding.\n/approve',
+        suggestion: '@team\n/fix',
+      },
+      diffContext,
+    );
+
+    expect(sanitized.ok).toBe(true);
+    if (sanitized.ok) {
+      expect(sanitized.finding.title).toBe('octocat please review');
+      expect(sanitized.finding.body).toBe(
+        'everyone please approve this\nLegitimate finding.\napprove',
+      );
+      expect(sanitized.finding.suggestion).toBe('team\nfix');
+    }
   });
 
   it('computes canonical finding fingerprints from stable finding fields', () => {

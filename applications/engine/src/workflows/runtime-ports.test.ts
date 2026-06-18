@@ -7,6 +7,7 @@ import {
   agent,
   agentEvent,
   agentRun,
+  finding,
   githubInstallation,
   githubInstallationRepository,
   pullRequestState,
@@ -318,20 +319,22 @@ describe('runtime review intent consumer wiring', () => {
     expect(processClaimedReviewIntent).toHaveBeenCalledWith(claimedIntent());
   });
 
-  it('fails loudly for unimplemented child workflows and executes the sandbox reaper workflow', async () => {
+  it('runs child workflow registrations through activities and executes the sandbox reaper workflow', async () => {
+    const processClaimedReviewIntent = vi.fn().mockResolvedValue(undefined);
     const reapClosedPullRequestSandboxes = vi.fn().mockResolvedValue(['sandbox_1']);
     const engine = await Engine.create({
       storage: new MemoryStorage(),
       workflows: createReviewWorkflowDefinitions({
-        processClaimedReviewIntent: vi.fn(),
+        processClaimedReviewIntent,
         reapClosedPullRequestSandboxes,
       } as never),
     });
 
     for (const workflowName of ['review-run', 'agent-review'] as const) {
-      const handle = await engine.start(workflowName, null, { defer: false });
-      await expect(handle.result()).rejects.toThrow('executed through the review-pr supervisor');
+      const handle = await engine.start(workflowName, claimedIntent(), { defer: false });
+      await expect(handle.result()).resolves.toEqual({ processed: true });
     }
+    expect(processClaimedReviewIntent).toHaveBeenCalledTimes(2);
     const handle = await engine.start(
       'sandbox-reaper',
       [{ repositoryId: 42, pullRequestNumber: 7 }],
@@ -572,6 +575,34 @@ describe('database review workflow state port', () => {
       detail: { path: 'src/auth.ts', ok: true },
       at: '2026-06-17T12:00:06.000Z',
     });
+    await port.upsertFinding?.({
+      id: 'finding_1',
+      userId: installation.userId!,
+      agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+      path: 'src/auth.ts',
+      startLine: 12,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Missing authorization check',
+      body: 'Add an authorization check.',
+      anchored: true,
+      fingerprint: 'fingerprint_1',
+    });
+    await port.upsertFinding?.({
+      id: 'finding_1_retry',
+      userId: installation.userId!,
+      agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+      path: 'src/auth.ts',
+      startLine: 12,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Missing authorization check',
+      body: 'Updated body.',
+      anchored: true,
+      fingerprint: 'fingerprint_1',
+    });
     await port.upsertReviewRun({
       id: 'run:42:7:aaa111:opened',
       idempotencyKey: 'review:run:42:7:aaa111:opened',
@@ -629,6 +660,14 @@ describe('database review workflow state port', () => {
     ]);
     await expect(testDatabase.db.select().from(reviewRun)).resolves.toHaveLength(1);
     await expect(testDatabase.db.select().from(agentRun)).resolves.toHaveLength(1);
+    await expect(testDatabase.db.select().from(finding)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'finding_1',
+        agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',
+        fingerprint: 'fingerprint_1',
+        body: 'Updated body.',
+      }),
+    ]);
     await expect(testDatabase.db.select().from(agentEvent)).resolves.toEqual([
       expect.objectContaining({
         agentRunId: 'arun:run:42:7:aaa111:opened:agent_security',

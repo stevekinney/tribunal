@@ -1,9 +1,18 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
   import { Alert } from '@lostgradient/cinder/alert';
+  import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
 
   let { data } = $props();
+
+  const activeRuns = $derived(
+    data.runs.filter((run) => run.status === 'running' || run.status === 'queued'),
+  );
+  const failedRuns = $derived(
+    data.runs.filter((run) => run.status === 'failed' || run.status === 'cancelled'),
+  );
+  const latestRun = $derived(data.runs[0] ?? null);
 </script>
 
 <Page title="Workflow Inspector" subtitle="Durable Weft workflow state">
@@ -12,7 +21,7 @@
   {:else}
     <div class="surface-states" aria-label="Surface states">
       {#each data.surfaceStates as state (state)}
-        <span>{state}</span>
+        <Badge size="sm">{state}</Badge>
       {/each}
     </div>
     <div class="inspector-grid">
@@ -24,8 +33,10 @@
           <ol>
             {#each data.runs.slice(0, 10) as run (run.id)}
               <li>
-                <strong>{run.status}</strong>
+                <Badge size="sm">{run.status}</Badge>
+                <strong>review-pr:{run.repositoryId}:{run.prNumber}</strong>
                 <span>{run.repositoryOwner}/{run.repositoryName} #{run.prNumber}</span>
+                <small>review-run:{run.id}</small>
               </li>
             {/each}
           </ol>
@@ -33,14 +44,38 @@
       </Card>
       <Card>
         <h2>Signals and timers</h2>
-        <p class="muted">
-          {data.runs.filter((run) => run.status === 'running' || run.status === 'queued').length}
-          active workflow signals.
-        </p>
+        <dl>
+          <div>
+            <dt>Active signals</dt>
+            <dd>{activeRuns.length}</dd>
+          </div>
+          <div>
+            <dt>Failed or stopped</dt>
+            <dd>{failedRuns.length}</dd>
+          </div>
+          <div>
+            <dt>Latest timer</dt>
+            <dd>
+              {latestRun?.startedAt ? new Date(latestRun.startedAt).toLocaleString() : 'none'}
+            </dd>
+          </div>
+        </dl>
       </Card>
       <Card>
         <h2>Child tree</h2>
-        <p class="muted">{data.runs.length} review workflow records loaded.</p>
+        {#if data.runs.length === 0}
+          <p class="muted">No child workflow records loaded.</p>
+        {:else}
+          <ul>
+            {#each data.runs.slice(0, 10) as run (run.id)}
+              <li>
+                <strong>review-pr</strong>
+                <span>review-run:{run.id}</span>
+                <small>agent-review children visible from the run detail timeline.</small>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </Card>
     </div>
   {/if}
@@ -66,20 +101,42 @@
     margin-bottom: var(--space-4);
   }
 
-  .surface-states span {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-2);
-    color: var(--text-muted);
-  }
-
-  ol {
+  ol,
+  ul {
     display: grid;
     gap: var(--space-2);
     padding-left: var(--space-5);
   }
 
+  li {
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  dl {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  dl div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  dt,
   .muted {
+    color: var(--text-muted);
+  }
+
+  dd {
+    margin: 0;
+    font-weight: var(--font-semibold);
+    color: var(--text);
+  }
+
+  small {
     color: var(--text-muted);
   }
 </style>

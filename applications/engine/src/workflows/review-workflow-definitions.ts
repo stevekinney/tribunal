@@ -3,23 +3,30 @@ import type { ClaimedReviewIntent, ReviewWorkflowEngine } from './review-workflo
 
 type OpenPullRequestSandbox = { repositoryId: number; pullRequestNumber: number };
 
-const reviewRunWorkflow = workflow({ name: 'review-run' }).execute(async function* () {
-  yield* [];
-  throw new Error('review-run is executed through the review-pr supervisor workflow.');
-});
-
-const agentReviewWorkflow = workflow({ name: 'agent-review' }).execute(async function* () {
-  yield* [];
-  throw new Error('agent-review is executed through the review-pr supervisor workflow.');
-});
-
 export function createReviewWorkflowDefinitions(reviewWorkflowEngine: ReviewWorkflowEngine) {
+  const reviewActivities = {
+    processReviewIntent: async (intent: ClaimedReviewIntent) => {
+      await reviewWorkflowEngine.processClaimedReviewIntent(intent);
+      return { processed: true };
+    },
+  };
   const reviewPullRequestWorkflow = workflow({ name: 'review-pr' })
     .activities({
-      processReviewIntent: async (intent: ClaimedReviewIntent) => {
-        await reviewWorkflowEngine.processClaimedReviewIntent(intent);
-        return { processed: true };
-      },
+      processReviewIntent: reviewActivities.processReviewIntent,
+    })
+    .execute(async function* (ctx, intent: ClaimedReviewIntent) {
+      return yield* ctx.run('processReviewIntent', intent);
+    });
+  const reviewRunWorkflow = workflow({ name: 'review-run' })
+    .activities({
+      processReviewIntent: reviewActivities.processReviewIntent,
+    })
+    .execute(async function* (ctx, intent: ClaimedReviewIntent) {
+      return yield* ctx.run('processReviewIntent', intent);
+    });
+  const agentReviewWorkflow = workflow({ name: 'agent-review' })
+    .activities({
+      processReviewIntent: reviewActivities.processReviewIntent,
     })
     .execute(async function* (ctx, intent: ClaimedReviewIntent) {
       return yield* ctx.run('processReviewIntent', intent);

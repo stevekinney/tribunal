@@ -15,7 +15,12 @@
   const connected = $derived(run.status === 'running' || run.status === 'queued');
 
   function isDeniedToolEvent(detail: unknown): boolean {
-    return typeof detail === 'object' && detail !== null && 'denied' in detail;
+    return (
+      typeof detail === 'object' &&
+      detail !== null &&
+      (('denied' in detail && detail.denied === true) ||
+        ('allowed' in detail && detail.allowed === false))
+    );
   }
 
   onMount(() => {

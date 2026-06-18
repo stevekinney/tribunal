@@ -54,10 +54,29 @@ describe('agent security verification', () => {
     expect(mapped.definition.tools).not.toContain('Bash');
     expect(mapped.definition.tools).not.toContain('Write');
     expect(mapped.definition.tools).not.toContain('Edit');
+    expect(mapped.definition.tools).not.toContain('WebFetch');
+    expect(mapped.definition.tools).not.toContain('GitHubApprovePullRequest');
+    expect(mapped.definition.tools).not.toContain('GitHubUpdateCheckRun');
     expect(
       enforceReadOnlyToolUse({
         toolName: 'Bash',
         input: { command: 'curl https://evil.example.com' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'deny' });
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'WebFetch',
+        input: { url: 'https://evil.example.com' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'deny' });
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'GitHubApprovePullRequest',
+        input: { pullRequestNumber: 10 },
         repositoryRoot: '/workspace/repository',
         diffContext,
       }),
