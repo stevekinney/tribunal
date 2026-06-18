@@ -72,10 +72,18 @@ export function isRepositoryRelativePath(candidatePath: string): boolean {
 }
 
 function stripControlCharacters(value: string): string {
-  return value.replaceAll(
-    new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]', 'g'),
-    '',
-  );
+  return [...value]
+    .filter((character) => {
+      const codePoint = character.codePointAt(0);
+      return (
+        codePoint === undefined ||
+        codePoint === 0x09 ||
+        codePoint === 0x0a ||
+        codePoint === 0x0d ||
+        (codePoint >= 0x20 && codePoint !== 0x7f)
+      );
+    })
+    .join('');
 }
 
 function containsUnsafeCommentAction(value: string): boolean {

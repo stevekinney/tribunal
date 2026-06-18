@@ -71,6 +71,23 @@ describe('finding validation', () => {
     }
   });
 
+  it('strips unsafe control characters while preserving comment whitespace', () => {
+    const sanitized = sanitizeFinding(
+      {
+        ...finding,
+        body: 'keep\tline\nbreak\rtrim\u0000bell\u0007vertical\u000Bform\u000Cdelete\u007F',
+        title: 'Title\u001F',
+      },
+      diffContext,
+    );
+
+    expect(sanitized.ok).toBe(true);
+    if (sanitized.ok) {
+      expect(sanitized.finding.body).toBe('keep\tline\nbreak\rtrimbellverticalformdelete');
+      expect(sanitized.finding.title).toBe('Title');
+    }
+  });
+
   it('allows file-level findings and rejects unchanged or non-commentable lines', () => {
     expect(
       validateFinding({ ...finding, startLine: null, endLine: null }, diffContext),
