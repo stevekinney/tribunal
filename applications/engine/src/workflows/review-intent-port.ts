@@ -157,9 +157,14 @@ async function buildPullRequestReviewInput(
       headSha: reviewIntent.headSha,
       currentHeadSha: pullRequestState.headSha,
       dailyCostCapUsd: userReviewSettings.dailyCostCapUsd,
+      ignoreGlobs: repositoryReviewSettings.ignoreGlobs,
     })
     .from(reviewIntent)
     .innerJoin(repository, eq(repository.id, reviewIntent.repositoryId))
+    .innerJoin(
+      repositoryReviewSettings,
+      eq(repositoryReviewSettings.repositoryId, reviewIntent.repositoryId),
+    )
     .innerJoin(
       githubInstallationRepository,
       and(
@@ -235,6 +240,7 @@ async function buildPullRequestReviewInput(
       trigger: toReviewTrigger(intent.kind),
       agents: agents.map(toAgentSpec),
       dailyCostCapUsd: Number(target.dailyCostCapUsd ?? options.defaultDailyCostCapUsd),
+      ignoreGlobs: target.ignoreGlobs,
     },
   };
 }

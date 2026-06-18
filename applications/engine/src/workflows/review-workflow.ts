@@ -38,6 +38,7 @@ export type PullRequestReviewInput = {
   trigger: PullRequestReviewTrigger;
   agents: AgentSpec[];
   dailyCostCapUsd: number;
+  ignoreGlobs: string[];
 };
 
 export type ReviewIntent = {
@@ -614,6 +615,21 @@ export class ReviewWorkflowEngine {
       headSha,
       previousHeadSha,
     );
+    if (shouldSkipIgnoredDiff(diffContext, input.ignoreGlobs)) {
+      reviewRun.status = 'posted';
+      reviewRun.finishedAt = this.now();
+      supervisor.reviewedHeadShas.push(headSha);
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review skipped',
+          summary: 'Only ignored paths changed.',
+        },
+      });
+      return reviewRun;
+    }
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
     const { results: agentResults, quotaBlocked } = await this.runAgents(
       supervisor,
@@ -1101,6 +1117,33 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
       summary: `${agentResults.length} agents finished with ${findingsCount} findings. Estimated cost: $${costEstimateUsd.toFixed(4)}.`,
     },
   };
+}
+
+function shouldSkipIgnoredDiff(diffContext: DiffContext, ignoreGlobs: string[]): boolean {
+  if (ignoreGlobs.length === 0 || diffContext.changedFiles.length === 0) return false;
+
+  return diffContext.changedFiles.every((file) =>
+    ignoreGlobs.some((ignoreGlob) => matchesIgnoreGlob(file.path, ignoreGlob)),
+  );
+}
+
+function matchesIgnoreGlob(path: string, ignoreGlob: string): boolean {
+  const normalizedGlob = ignoreGlob.trim().replace(/^\/+/, '');
+  if (normalizedGlob === '') return false;
+  if (!normalizedGlob.includes('*')) return path === normalizedGlob;
+
+  const pattern = normalizedGlob
+    .split(/(\*\*)/u)
+    .map((part) => {
+      if (part === '**') return '.*';
+      return part.split('*').map(escapeRegExp).join('[^/]*');
+    })
+    .join('');
+  return new RegExp(`^${pattern}$`, 'u').test(path);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function createFailedAgentResult(agent: AgentSpec, error: unknown): AgentResult {

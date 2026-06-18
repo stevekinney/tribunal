@@ -623,7 +623,7 @@ function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
 }
 
 export class TensorlakeSandboxAdapter implements SandboxAdapter {
-  private readonly client: SandboxClient;
+  private client: SandboxClient | undefined;
   private readonly sandboxes = new Map<string, Sandbox>();
   private readonly createPromises = new Map<string, Promise<{ sandboxId: string }>>();
   private readonly apiKey: string;
@@ -634,11 +634,6 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
     this.apiKey = requireEnvironmentValue(environment.TENSORLAKE_API_KEY, 'TENSORLAKE_API_KEY');
     this.organizationId = environment.TENSORLAKE_ORGANIZATION_ID;
     this.projectId = environment.TENSORLAKE_PROJECT_ID;
-    this.client = SandboxClient.forCloud({
-      apiKey: this.apiKey,
-      organizationId: this.organizationId,
-      projectId: this.projectId,
-    });
   }
 
   async create(input: SandboxCreateInput) {
@@ -660,7 +655,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
       return { sandboxId: existing.sandboxId };
     }
 
-    const created = await this.client.create({
+    const created = await this.getClient().create({
       name: input.name,
       image: input.image,
       cpus: input.cpus,
@@ -755,8 +750,17 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
   }
 
   private async findSandboxByName(name: string) {
-    const sandboxes = await this.client.list();
+    const sandboxes = await this.getClient().list();
     return sandboxes.find((sandbox) => sandbox.name === name && sandbox.status !== 'terminated');
+  }
+
+  private getClient(): SandboxClient {
+    this.client ??= SandboxClient.forCloud({
+      apiKey: this.apiKey,
+      organizationId: this.organizationId,
+      projectId: this.projectId,
+    });
+    return this.client;
   }
 }
 

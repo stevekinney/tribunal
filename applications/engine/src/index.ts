@@ -29,7 +29,7 @@ if (import.meta.main) {
 
 export function createStorageConfigurationFromEnvironment(environment: {
   NODE_ENV?: string;
-  TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE?: string;
+  TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE?: string | boolean;
   WEFT_DATABASE_URL?: string;
 }): {
   storage: Storage | undefined;
@@ -45,6 +45,7 @@ export function createStorageConfigurationFromEnvironment(environment: {
   }
 
   const allowEphemeralStorageForTests =
+    environment.TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE === true ||
     environment.TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE === '1' ||
     environment.NODE_ENV !== 'production';
 
@@ -112,9 +113,4 @@ function hasValidControlToken(request: Request, expectedToken: string): boolean 
     return false;
   }
   return timingSafeEqual(Buffer.from(authorization), Buffer.from(expectedAuthorization));
-}
-
-function requireEnvironmentValue(value: string | undefined, name: string): string {
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }

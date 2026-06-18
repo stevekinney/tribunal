@@ -218,8 +218,22 @@ jobs:
             -p 4310:4310 tribunal-web:test
           docker run -d --rm --name tribunal-engine-test \
             -e PORT=4311 \
+            -e DATABASE_URL=postgresql://placeholder:placeholder@localhost:5432/placeholder \
+            -e GITHUB_APP_ID=12345 \
+            -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
+            -e TENSORLAKE_API_KEY=tl_ci_placeholder \
+            -e TRIBUNAL_SANDBOX_IMAGE=tribunal-reviewer:test \
+            -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
+            -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
+            -e PROXY_SIGNING_KEY=ci-placeholder \
             -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \
             -e TRIBUNAL_ENGINE_CONTROL_TOKEN=ci-engine-control-token \
+            -e TRIBUNAL_DEFAULT_MODEL=claude-sonnet-4-6 \
+            -e DEFAULT_DAILY_COST_CAP_USD=25 \
+            -e IDLE_SUSPEND_SECONDS=900 \
+            -e SANDBOX_REAP_INTERVAL=300 \
+            -e ENABLE_PROMPT_CACHING_1H=true \
+            -e ANTHROPIC_ADMIN_KEY=sk-ant-admin-ci-placeholder \
             -p 4311:4311 tribunal-engine:test
           docker run -d --rm --name tribunal-proxy-test \
             -e PORT=4312 \

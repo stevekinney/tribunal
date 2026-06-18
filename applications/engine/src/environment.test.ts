@@ -41,4 +41,16 @@ describe('parseEngineEnvironment', () => {
 
     expect(() => parseEngineEnvironment(missingDatabaseUrl)).toThrow();
   });
+
+  it('allows missing Weft storage only when ephemeral storage is explicitly enabled', () => {
+    const { WEFT_DATABASE_URL: _removed, ...ephemeralEnvironment } = fullEnvironment;
+
+    const parsedEnvironment = parseEngineEnvironment({
+      ...ephemeralEnvironment,
+      TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE: '1',
+    });
+
+    expect(parsedEnvironment.TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE).toBe(true);
+    expect(parsedEnvironment).not.toHaveProperty('WEFT_DATABASE_URL');
+  });
 });

@@ -739,6 +739,12 @@ describe('engine GitHub port', () => {
 });
 
 describe('Tensorlake sandbox adapter', () => {
+  it('does not construct the Tensorlake client until the first sandbox operation', () => {
+    new TensorlakeSandboxAdapter(runtimeEnvironment());
+
+    expect(sandboxClientForCloudMock).not.toHaveBeenCalled();
+  });
+
   it('creates, reuses, commands, stops, suspends, and terminates sandboxes', async () => {
     const sandbox = new MockSandbox('sandbox_1');
     MockSandbox.connect.mockResolvedValue(sandbox);

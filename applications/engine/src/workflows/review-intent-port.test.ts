@@ -523,6 +523,7 @@ describe('createDatabaseReviewIntentPort', () => {
       pullRequest: {
         headSha: 'b'.repeat(40),
         trigger: 'synchronize',
+        ignoreGlobs: ['docs/**'],
         agents: [{ id: 'agent_security', enabled: true }],
       },
     });
@@ -587,6 +588,7 @@ async function createReviewIntentFixture(
   await testDatabase.db.insert(repositoryReviewSettings).values({
     repositoryId: repository.id,
     watched: options.watched ?? true,
+    ignoreGlobs: ['docs/**'],
   });
   if (options.createPullRequestState !== false) {
     await testDatabase.db.insert(pullRequestState).values({

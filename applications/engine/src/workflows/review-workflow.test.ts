@@ -57,6 +57,7 @@ const baseInput: PullRequestReviewInput = {
   trigger: 'opened',
   agents: [reviewAgent],
   dailyCostCapUsd: 10,
+  ignoreGlobs: [],
 };
 
 describe('ReviewWorkflowEngine', () => {
@@ -936,6 +937,36 @@ describe('ReviewWorkflowEngine', () => {
     });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('skips agent execution when every changed file matches repository ignore globs', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        ignoreGlobs: ['src/**'],
+      }),
+    ).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+    });
+
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.cost.recordLlmEstimateCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review skipped',
+          summary: 'Only ignored paths changed.',
+        },
+      },
     });
   });
 

@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target bun --external tensorlake",
     "check": "tsc --noEmit",
     "test": "vitest run --config vitest.configuration.ts",
     "test:coverage": "vitest run --config vitest.configuration.ts --coverage",
