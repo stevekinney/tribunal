@@ -5,6 +5,8 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
+  import { invalidateAll } from '$app/navigation';
+  import { onMount } from 'svelte';
   import { Square } from 'lucide-svelte';
 
   let { data } = $props();
@@ -15,6 +17,12 @@
   function isDeniedToolEvent(detail: unknown): boolean {
     return typeof detail === 'object' && detail !== null && 'denied' in detail;
   }
+
+  onMount(() => {
+    if (!connected) return;
+    const timer = window.setInterval(() => void invalidateAll(), 2_500);
+    return () => window.clearInterval(timer);
+  });
 </script>
 
 <Page
@@ -44,7 +52,18 @@
     {/if}
   </Card>
 
+  <div class="surface-states" aria-label="Surface states">
+    {#each data.surfaceStates as state (state)}
+      <Badge size="sm">{state}</Badge>
+    {/each}
+  </div>
+
   <section class="agent-grid" aria-label="Agent timelines">
+    {#if run.agentRuns.length === 0}
+      <Card>
+        <p class="muted">No agent runs recorded.</p>
+      </Card>
+    {/if}
     {#each run.agentRuns as agentRun (agentRun.id)}
       <Card>
         <div class="agent-header">
@@ -120,6 +139,12 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
     gap: var(--space-4);
+  }
+
+  .surface-states {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   h2 {

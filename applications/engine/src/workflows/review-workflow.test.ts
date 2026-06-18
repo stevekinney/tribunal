@@ -1539,7 +1539,6 @@ class FakeGitHubPort implements GitHubPort {
 
   async getDiffContext(
     repository: RepoRef,
-    _installationId: number,
     pullRequestNumber: number,
     head: string,
     previousHead?: string,
@@ -1576,11 +1575,7 @@ class FakeGitHubPort implements GitHubPort {
     };
   }
 
-  async createCheckRun(
-    _repository: RepoRef,
-    _installationId: number,
-    headSha: string,
-  ): Promise<{ checkRunId: number }> {
+  async createCheckRun(_repository: RepoRef, headSha: string): Promise<{ checkRunId: number }> {
     if (this.checkRunCreationFailuresRemaining > 0) {
       this.checkRunCreationFailuresRemaining -= 1;
       throw new Error('check run creation failed');
@@ -1592,7 +1587,6 @@ class FakeGitHubPort implements GitHubPort {
 
   async updateCheckRun(
     repository: RepoRef,
-    installationId: number,
     checkRunId: number,
     patch: CheckRunPatch,
   ): Promise<void> {
@@ -1600,12 +1594,16 @@ class FakeGitHubPort implements GitHubPort {
       this.checkRunUpdateFailuresRemaining -= 1;
       throw new Error('check run update failed');
     }
-    this.checkRunPatches.push({ repository, installationId, checkRunId, patch });
+    this.checkRunPatches.push({
+      repository,
+      installationId: getInstallationId(repository),
+      checkRunId,
+      patch,
+    });
   }
 
   async postReview(
     _repository: RepoRef,
-    _installationId: number,
     _pullRequestNumber: number,
     review: ReviewPayload,
   ): Promise<{ comments: number }> {
@@ -1641,7 +1639,6 @@ class FakeGitHubPort implements GitHubPort {
 
   async findPostedReview(
     _repository: RepoRef,
-    _installationId: number,
     _pullRequestNumber: number,
     reviewMarker: string,
   ): Promise<{ comments: number } | undefined> {
@@ -1702,7 +1699,6 @@ class FakeSandboxPort implements SandboxPort {
 
   async runAgent(
     sandboxId: string,
-    _agentRunId: string,
     agent: AgentSpec,
     runToken: string,
     onEvent: (event: AgentEvent) => void,
@@ -1782,6 +1778,11 @@ class FakeSandboxPort implements SandboxPort {
   failNextUpdate(): void {
     this.options.failNextSandboxUpdate = true;
   }
+}
+
+function getInstallationId(repository: RepoRef): number {
+  const installationId = (repository as RepoRef & { installationId?: unknown }).installationId;
+  return typeof installationId === 'number' ? installationId : 1001;
 }
 
 class FakeCostPort implements CostPort {

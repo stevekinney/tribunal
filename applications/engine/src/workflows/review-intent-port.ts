@@ -192,7 +192,7 @@ async function buildPullRequestReviewInput(
 
   if (!target?.userId) return { status: 'missing_target' };
 
-  const agents = await database
+  const assignedAgents = await database
     .select({
       id: agent.id,
       userId: agent.userId,
@@ -213,6 +213,10 @@ async function buildPullRequestReviewInput(
       ),
     )
     .orderBy(asc(agent.slug));
+  const agents =
+    assignedAgents.length > 0
+      ? assignedAgents
+      : await selectEnabledUserAgents(database, target.userId);
 
   const headSha = intent.headSha ?? target.headSha ?? target.currentHeadSha;
   if (!headSha) {
@@ -302,21 +306,9 @@ async function markReviewIntentFailed(
     .where(and(eq(reviewIntent.id, intentId), eq(reviewIntent.claimedAt, claimedAt)))
     .limit(1);
   if (intent === undefined) return;
+  if (intent.processedAt !== null) return;
 
   const failureCount = intent.failureCount + 1;
-  if (intent.processedAt !== null) {
-    await database
-      .update(reviewIntent)
-      .set({
-        failedAt: now,
-        failureCount,
-        lastError: serializeReviewIntentError(error),
-      })
-      .where(and(eq(reviewIntent.id, intentId), eq(reviewIntent.claimedAt, claimedAt)))
-      .then(() => {});
-    return;
-  }
-
   const deadLetteredAt = failureCount >= maxReviewIntentFailures ? now : null;
   const nextAttemptAt =
     deadLetteredAt === null
@@ -341,6 +333,37 @@ async function markReviewIntentFailed(
       ),
     )
     .then(() => {});
+}
+
+function selectEnabledUserAgents(
+  database: ReviewIntentDatabase,
+  userId: number,
+): Promise<
+  Array<{
+    id: string;
+    userId: number;
+    slug: string;
+    description: string;
+    body: string;
+    model: string;
+    effort: string | null;
+    enabled: boolean;
+  }>
+> {
+  return database
+    .select({
+      id: agent.id,
+      userId: agent.userId,
+      slug: agent.slug,
+      description: agent.description,
+      body: agent.body,
+      model: agent.model,
+      effort: agent.effort,
+      enabled: agent.enabled,
+    })
+    .from(agent)
+    .where(and(eq(agent.userId, userId), eq(agent.enabled, true)))
+    .orderBy(asc(agent.slug));
 }
 
 function backoffMinutesForFailure(failureCount: number): number {

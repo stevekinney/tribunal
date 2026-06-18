@@ -291,6 +291,39 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toMatchObject({ id: 'intent_1' });
   });
 
+  it('does not clear processed review intents after a late failure', async () => {
+    await createReviewIntentFixture();
+    const claimedAt = new Date('2026-06-17T12:00:00.000Z');
+    const processedAt = new Date('2026-06-17T12:01:00.000Z');
+    await testDatabase.db
+      .update(reviewIntent)
+      .set({ claimedAt })
+      .where(eq(reviewIntent.id, 'intent_1'));
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    await port.markReviewIntentProcessed('intent_1', claimedAt, processedAt);
+    await port.markReviewIntentFailed(
+      'intent_1',
+      claimedAt,
+      new Date('2026-06-17T12:02:00.000Z'),
+      new Error('late failure'),
+    );
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt,
+      processedAt,
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      deadLetteredAt: null,
+    });
+  });
+
   it('dead letters review intents after repeated failures', async () => {
     await createReviewIntentFixture();
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
@@ -323,7 +356,39 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toBeNull();
   });
 
-  it('releases watched intents without assigned agents for retry', async () => {
+  it('falls back to all enabled user agents when no repository agents are assigned', async () => {
+    const { user } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_security',
+        userId: user.id,
+        slug: 'security-review',
+        description: 'Reviews security changes.',
+        body: 'Find security problems.',
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent_disabled',
+        userId: user.id,
+        slug: 'disabled-review',
+        description: 'Disabled.',
+        body: 'Skip.',
+        model: 'claude-sonnet-4-6',
+        enabled: false,
+      },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toMatchObject({
+      pullRequest: {
+        agents: [{ id: 'agent_security' }],
+      },
+    });
+  });
+
+  it('releases watched intents without any eligible agents for retry', async () => {
     await createReviewIntentFixture();
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
 
@@ -343,10 +408,6 @@ describe('createDatabaseReviewIntentPort', () => {
       nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
       deadLetteredAt: null,
     });
-
-    await expect(
-      port.claimNextReviewIntent(new Date('2026-06-17T12:00:30.000Z')),
-    ).resolves.toBeNull();
   });
 
   it('releases watched intents without a head SHA for retry', async () => {

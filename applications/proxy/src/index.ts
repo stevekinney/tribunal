@@ -1,4 +1,5 @@
 import { createDatabase } from '@tribunal/database';
+import { sql } from '@tribunal/database/operators';
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
 import type { GithubServiceContext } from '@tribunal/github/context';
@@ -20,12 +21,31 @@ if (import.meta.main) {
   const proxyHandler = createProxyHandler({
     environment,
     githubCredentialResolver: createProxyGitHubCredentialResolver(environment),
+    healthDependencies: createProxyHealthDependencies(environment),
   });
 
   Bun.serve({
     port,
     fetch: proxyHandler,
   });
+}
+
+export function createProxyHealthDependencies(environment: ProxyEnvironment) {
+  const database = createDatabase(environment.DATABASE_URL);
+  return async () => {
+    try {
+      await database.execute(sql`SELECT 1`);
+      return [{ name: 'database' as const, ok: true }];
+    } catch (error) {
+      return [
+        {
+          name: 'database' as const,
+          ok: false,
+          detail: error instanceof Error ? error.message : 'database probe failed',
+        },
+      ];
+    }
+  };
 }
 
 export function createProxyGitHubCredentialResolver(environment: ProxyEnvironment) {

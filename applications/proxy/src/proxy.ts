@@ -1,5 +1,5 @@
 import type { ProxyEnvironment } from './environment';
-import { createHealthResponse } from './health';
+import { createHealthResponse, type ProxyHealthDependency } from './health';
 import {
   type CapabilityTokenClaims,
   hasProxyPermission,
@@ -26,6 +26,7 @@ export type ProxyHandlerOptions = {
   upstreamFetch?: UpstreamFetch;
   auditSink?: AuditSink;
   githubCredentialResolver?: GitHubCredentialResolver;
+  healthDependencies?: () => Promise<ProxyHealthDependency[]>;
   now?: () => Date;
 };
 
@@ -57,6 +58,7 @@ export function createProxyHandler(
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
+      const externalDependencies = (await options.healthDependencies?.()) ?? [];
       return createHealthResponse({
         dependencies: [
           { name: 'configuration', ok: true },
@@ -68,6 +70,7 @@ export function createProxyHandler(
                 ? 'GitHub credential resolver is not configured'
                 : undefined,
           },
+          ...externalDependencies,
         ],
       });
     }

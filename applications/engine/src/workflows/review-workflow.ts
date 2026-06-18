@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
+import { sandboxCost } from '@tribunal/cost/pricing';
 import type {
   AgentEvent,
   AgentResult,
@@ -23,6 +24,16 @@ import {
   createReviewRunIdempotencyKey,
   createRunCapabilityToken,
 } from './identifiers';
+
+type RepositoryExecutionContext = RepoRef & { installationId: number };
+type AgentExecutionSpec = AgentSpec & { agentRunId: string; changedFiles: string[] };
+type ReviewLookupGitHubPort = GitHubPort & {
+  findPostedReview(
+    repository: RepoRef,
+    pullRequestNumber: number,
+    reviewMarker: string,
+  ): Promise<{ comments: number } | undefined>;
+};
 
 export type ReviewIntentKind = 'start' | 'commit_pushed' | 'pr_closed';
 
@@ -157,7 +168,7 @@ export type DurableReviewWorkflowState = {
 };
 
 export type ReviewWorkflowPorts = {
-  github: GitHubPort;
+  github: ReviewLookupGitHubPort;
   sandbox: SandboxPort;
   cost: CostPort;
   intents: ReviewIntentPort;
@@ -323,19 +334,14 @@ export class ReviewWorkflowEngine {
     }
 
     if (supervisor.checkRunId !== undefined) {
-      await this.ports.github.updateCheckRun(
-        input.repository,
-        input.installationId,
-        supervisor.checkRunId,
-        {
-          status: 'completed',
-          conclusion: prState === 'merged' ? 'success' : 'cancelled',
-          output: {
-            title: 'Tribunal review stopped',
-            summary: `Pull request ${prState}; stopped in-flight review work.`,
-          },
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: prState === 'merged' ? 'success' : 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: `Pull request ${prState}; stopped in-flight review work.`,
         },
-      );
+      });
     }
 
     await this.terminateSandboxOnce(supervisor.sandboxId);
@@ -467,8 +473,7 @@ export class ReviewWorkflowEngine {
       proxyUrl: this.configuration.proxyUrl,
     });
     const { checkRunId } = await this.ports.github.createCheckRun(
-      input.repository,
-      input.installationId,
+      repositoryExecutionContext(input),
       input.headSha,
     );
     const supervisor: SupervisorState = {
@@ -609,8 +614,7 @@ export class ReviewWorkflowEngine {
     });
     await this.ports.sandbox.update(supervisor.sandboxId, input.repository, headSha, runToken);
     const diffContext = await this.ports.github.getDiffContext(
-      input.repository,
-      input.installationId,
+      repositoryExecutionContext(input),
       input.pullRequestNumber,
       headSha,
       previousHeadSha,
@@ -637,6 +641,7 @@ export class ReviewWorkflowEngine {
       enabledAgents,
       runToken,
       input.dailyCostCapUsd,
+      diffContext,
     );
 
     if (isStoppedReviewRun(reviewRun)) return reviewRun;
@@ -734,8 +739,7 @@ export class ReviewWorkflowEngine {
             await this.persistReviewRun(reviewRun);
             attemptedReviewPost = true;
             const posted = await this.ports.github.postReview(
-              input.repository,
-              input.installationId,
+              repositoryExecutionContext(input),
               input.pullRequestNumber,
               withReviewRunMarker(
                 reviewPayload,
@@ -799,6 +803,7 @@ export class ReviewWorkflowEngine {
     agents: AgentSpec[],
     runToken: string,
     dailyCostCapUsd: number,
+    diffContext: DiffContext,
   ): Promise<{ results: AgentResult[]; quotaBlocked: boolean }> {
     const results: AgentResult[] = [];
 
@@ -812,7 +817,7 @@ export class ReviewWorkflowEngine {
         return { results, quotaBlocked: true };
       }
 
-      results.push(await this.runAgentReview(supervisor, reviewRun, agent, runToken));
+      results.push(await this.runAgentReview(supervisor, reviewRun, agent, runToken, diffContext));
     }
 
     return { results, quotaBlocked: false };
@@ -823,6 +828,7 @@ export class ReviewWorkflowEngine {
     reviewRun: ReviewRunRecord,
     agent: AgentSpec,
     runToken: string,
+    diffContext: DiffContext,
   ): Promise<AgentResult> {
     const agentRunId = createAgentRunId(reviewRun.id, agent);
     const mappedAgent = toAgentDefinition(agent, this.configuration.defaultModel);
@@ -848,10 +854,14 @@ export class ReviewWorkflowEngine {
     await this.persistAgentRun(agentRun);
 
     try {
+      const executionAgent: AgentExecutionSpec = {
+        ...effectiveAgent,
+        agentRunId,
+        changedFiles: diffContext.changedFiles.map((file) => file.path),
+      };
       const result = await this.ports.sandbox.runAgent(
         supervisor.sandboxId,
-        agentRunId,
-        effectiveAgent,
+        executionAgent,
         runToken,
         (event) => this.recordAgentEvent(agentRunId, event),
         controller.signal,
@@ -938,12 +948,7 @@ export class ReviewWorkflowEngine {
     patch: CheckRunPatch,
   ): Promise<void> {
     if (checkRunId === undefined) return;
-    await this.ports.github.updateCheckRun(
-      input.repository,
-      input.installationId,
-      checkRunId,
-      patch,
-    );
+    await this.ports.github.updateCheckRun(repositoryExecutionContext(input), checkRunId, patch);
   }
 
   private async claimReviewPost(reviewRun: ReviewRunRecord): Promise<ReviewPostClaimResult> {
@@ -971,8 +976,7 @@ export class ReviewWorkflowEngine {
     reviewRunId: string,
   ): Promise<{ comments: number } | undefined> {
     return this.ports.github.findPostedReview(
-      input.repository,
-      input.installationId,
+      repositoryExecutionContext(input),
       input.pullRequestNumber,
       createSignedReviewRunMarker(reviewRunId, this.configuration.proxySigningKey),
     );
@@ -1033,12 +1037,40 @@ export class ReviewWorkflowEngine {
 
   private async persistReviewRun(run: ReviewRunRecord | undefined): Promise<void> {
     if (run === undefined) return;
+    if (run.finishedAt !== undefined) {
+      await this.recordSandboxEstimate(run);
+    }
     await this.ports.state?.upsertReviewRun(run);
   }
 
   private async persistAgentRun(run: AgentRunRecord): Promise<void> {
     await this.ports.state?.upsertAgentRun(run);
   }
+
+  private async recordSandboxEstimate(run: ReviewRunRecord): Promise<void> {
+    const runtimeSeconds = Math.max(
+      1,
+      Math.ceil((run.finishedAt!.getTime() - run.startedAt.getTime()) / 1000),
+    );
+    const amountUsd = sandboxCost(
+      { runtimeSeconds },
+      { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+    );
+    await this.ports.cost.recordSandbox({
+      userId: run.userId,
+      repositoryId: run.repositoryId,
+      reviewRunId: run.id,
+      sandboxId: run.sandboxId,
+      amountUsd,
+      idempotencyKey: `sandbox:${run.sandboxId}:${run.id}:final`,
+    });
+  }
+}
+
+function repositoryExecutionContext(
+  input: Pick<PullRequestReviewInput, 'repository' | 'installationId'>,
+): RepositoryExecutionContext {
+  return { ...input.repository, installationId: input.installationId };
 }
 
 function buildReviewPayload(
@@ -1202,7 +1234,7 @@ function compareSupervisorSnapshots(
   left: PullRequestSupervisorSnapshot,
   right: PullRequestSupervisorSnapshot,
 ): number {
-  return left.workflowId < right.workflowId ? -1 : 1;
+  return left.workflowId < right.workflowId ? -1 : left.workflowId > right.workflowId ? 1 : 0;
 }
 
 function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): number {

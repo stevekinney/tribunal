@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { ALLOWED_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
 
 const [, , agentSlug] = process.argv;
 
@@ -25,6 +26,7 @@ if (resultPath) {
 const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
 const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
 const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
+const diffContext = createDiffContext();
 let sequence = 0;
 
 emitEvent('session_start', { agentSlug, model, effort });
@@ -59,16 +61,28 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
       model,
       ...(effort ? { maxThinkingTokens: effortToThinkingBudget(effort) } : {}),
       permissionMode: 'dontAsk',
-      allowedTools: ['Read', 'Grep', 'Glob'],
+      allowedTools: [...ALLOWED_AGENT_TOOLS],
       disallowedTools: ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch'],
       canUseTool: async (toolName, input, options) => {
-        const allowed = toolName === 'Read' || toolName === 'Grep' || toolName === 'Glob';
-        emitEvent('tool_pre', { toolName, input, allowed, reason: options.decisionReason });
+        const decision = enforceReadOnlyToolUse({
+          toolName,
+          input: isRecord(input) ? input : {},
+          repositoryRoot: repositoryPath,
+          diffContext,
+        });
+        const allowed = decision.permissionDecision === 'allow';
+        emitEvent('tool_pre', {
+          toolName,
+          input,
+          allowed,
+          reason:
+            decision.permissionDecision === 'deny' ? decision.reason : options.decisionReason,
+        });
         return allowed
           ? { behavior: 'allow', toolUseID: options.toolUseID }
           : {
               behavior: 'deny',
-              message: 'Tribunal review agents are read-only.',
+              message: decision.reason,
               toolUseID: options.toolUseID,
             };
       },
@@ -160,6 +174,39 @@ function emitEvent(kind, detail = {}) {
       },
     })}\n`,
   );
+}
+
+function createDiffContext() {
+  const changedFiles = parseChangedFiles();
+  return {
+    headSha: process.env.TRIBUNAL_HEAD_SHA ?? 'unknown',
+    baseSha: process.env.TRIBUNAL_BASE_SHA ?? 'unknown',
+    changedFiles: changedFiles.map((path) => ({
+      path,
+      status: 'modified',
+      commentableLines: [],
+    })),
+    pr: {
+      number: Number(process.env.TRIBUNAL_PULL_REQUEST_NUMBER ?? 0),
+      title: '',
+      body: '',
+      labels: [],
+      author: '',
+    },
+  };
+}
+
+function parseChangedFiles() {
+  try {
+    const parsed = JSON.parse(process.env.TRIBUNAL_CHANGED_FILES ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((path) => typeof path === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function elapsedMilliseconds() {

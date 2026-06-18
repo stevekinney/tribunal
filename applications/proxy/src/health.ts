@@ -1,5 +1,5 @@
 export type ProxyHealthDependency = {
-  name: 'configuration' | 'credential_resolver';
+  name: 'configuration' | 'credential_resolver' | 'database';
   ok: boolean;
   detail?: string;
 };

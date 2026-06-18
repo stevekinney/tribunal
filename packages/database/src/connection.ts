@@ -1,12 +1,26 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { drizzle as drizzleNeonHttp } from 'drizzle-orm/neon-http';
+import { drizzle as drizzleNodePostgres } from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 
-function connect(connectionString: string) {
-  return drizzle(connectionString, { schema });
+function connectNeonHttp(connectionString: string) {
+  return drizzleNeonHttp(connectionString, { schema });
 }
 
-export type Database = ReturnType<typeof connect>;
+export type Database = ReturnType<typeof connectNeonHttp>;
+
+function connect(connectionString: string): Database {
+  if (shouldUseNeonHttp(connectionString)) {
+    return connectNeonHttp(connectionString);
+  }
+
+  return drizzleNodePostgres(connectionString, { schema }) as unknown as Database;
+}
+
+function shouldUseNeonHttp(connectionString: string): boolean {
+  const parsed = new URL(connectionString);
+  return parsed.hostname.endsWith('.neon.tech') || parsed.hostname.endsWith('.neon.build');
+}
 
 const databaseOverride = new AsyncLocalStorage<Database>();
 

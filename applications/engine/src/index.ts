@@ -2,7 +2,12 @@ import { timingSafeEqual } from 'node:crypto';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
-import { createEngineRuntime, type EngineRuntime } from './workflows/bootstrap';
+import {
+  createEngineRuntime,
+  type EngineRuntime,
+  type EngineSingletonLock,
+} from './workflows/bootstrap';
+import { createPostgresAdvisoryLock } from './workflows/postgres-advisory-lock';
 import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
 import { parseEngineEnvironment } from './environment';
 
@@ -19,6 +24,7 @@ if (import.meta.main) {
 
   const runtime = await createEngineRuntime({
     storage: storageConfiguration.storage,
+    lock: storageConfiguration.lock,
     healthDependencies: storageConfiguration.healthDependencies,
     reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
     allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
@@ -33,14 +39,19 @@ export function createStorageConfigurationFromEnvironment(environment: {
   WEFT_DATABASE_URL?: string;
 }): {
   storage: Storage | undefined;
+  lock?: EngineSingletonLock;
   allowEphemeralStorageForTests: boolean;
   healthDependencies: EngineHealthDependency[];
 } {
   if (environment.WEFT_DATABASE_URL) {
     return {
       storage: new NeonStorage({ url: environment.WEFT_DATABASE_URL }),
+      lock: createPostgresAdvisoryLock(environment.WEFT_DATABASE_URL),
       allowEphemeralStorageForTests: false,
-      healthDependencies: [{ name: 'weft_database', ok: true }],
+      healthDependencies: [
+        { name: 'weft_database', ok: true },
+        { name: 'singleton_lock', ok: true, detail: 'Postgres advisory lock held' },
+      ],
     };
   }
 

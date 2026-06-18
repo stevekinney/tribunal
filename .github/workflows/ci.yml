@@ -194,6 +194,8 @@ jobs:
     name: Container Images
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TENSORLAKE_API_KEY: ${{ secrets.TENSORLAKE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -206,23 +208,55 @@ jobs:
           docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
           docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
           docker run --rm tribunal-reviewer:test
+      - name: Publish reviewer image to Tensorlake
+        if: ${{ env.TENSORLAKE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install tensorlake
+          published_image="$(tl sbx image create --image tribunal-reviewer:test)"
+          echo "TRIBUNAL_SANDBOX_IMAGE=${published_image}" >> "$GITHUB_ENV"
       - name: Boot images on injected ports
         shell: bash
         run: |
           set -euo pipefail
+          : "${TRIBUNAL_SANDBOX_IMAGE:=tribunal-reviewer:test}"
+
+          docker run -d --rm --name tribunal-postgres-test \
+            -e POSTGRES_USER=tribunal \
+            -e POSTGRES_PASSWORD=tribunal \
+            -e POSTGRES_DB=tribunal \
+            -p 5433:5432 postgres:16
+          docker run -d --rm --name tribunal-redis-test -p 6380:6379 redis:7
+          for attempt in 1 2 3 4 5; do
+            if docker exec tribunal-postgres-test pg_isready -U tribunal -d tribunal >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          for attempt in 1 2 3 4 5; do
+            if docker exec tribunal-redis-test redis-cli ping >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          database_url=postgres://tribunal:tribunal@host.docker.internal:5433/tribunal
+          redis_url=redis://host.docker.internal:6380
 
           docker run -d --rm --name tribunal-web-test \
+            --add-host=host.docker.internal:host-gateway \
             -e PORT=4310 \
-            -e DATABASE_URL=postgres://placeholder:placeholder@localhost:5432/placeholder \
-            -e REDIS_URL=redis://localhost:6379 \
+            -e DATABASE_URL="${database_url}" \
+            -e REDIS_URL="${redis_url}" \
             -p 4310:4310 tribunal-web:test
           docker run -d --rm --name tribunal-engine-test \
+            --add-host=host.docker.internal:host-gateway \
             -e PORT=4311 \
-            -e DATABASE_URL=postgresql://placeholder:placeholder@localhost:5432/placeholder \
+            -e DATABASE_URL="${database_url}" \
             -e GITHUB_APP_ID=12345 \
             -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
             -e TENSORLAKE_API_KEY=tl_ci_placeholder \
-            -e TRIBUNAL_SANDBOX_IMAGE=tribunal-reviewer:test \
+            -e TRIBUNAL_SANDBOX_IMAGE="${TRIBUNAL_SANDBOX_IMAGE}" \
             -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
             -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
             -e PROXY_SIGNING_KEY=ci-placeholder \
@@ -236,8 +270,9 @@ jobs:
             -e ANTHROPIC_ADMIN_KEY=sk-ant-admin-ci-placeholder \
             -p 4311:4311 tribunal-engine:test
           docker run -d --rm --name tribunal-proxy-test \
+            --add-host=host.docker.internal:host-gateway \
             -e PORT=4312 \
-            -e DATABASE_URL=postgres://placeholder:placeholder@localhost:5432/placeholder \
+            -e DATABASE_URL="${database_url}" \
             -e GITHUB_APP_ID=12345 \
             -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
             -e ANTHROPIC_API_KEY=sk-ant-ci-placeholder \
@@ -250,7 +285,7 @@ jobs:
             -p 4312:4312 tribunal-proxy:test
 
           cleanup() {
-            docker stop tribunal-web-test tribunal-engine-test tribunal-proxy-test >/dev/null 2>&1 || true
+            docker stop tribunal-web-test tribunal-engine-test tribunal-proxy-test tribunal-postgres-test tribunal-redis-test >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
@@ -258,7 +293,7 @@ jobs:
             name="${service%%:*}"
             port="${service##*:}"
             ready=0
-            for attempt in 1 2 3 4 5; do
+            for attempt in {1..30}; do
               if curl -sf "http://127.0.0.1:${port}/health" >/tmp/"${name}-health.json"; then
                 ready=1
                 break

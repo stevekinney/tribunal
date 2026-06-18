@@ -21,6 +21,7 @@ import {
 import type { GithubServiceContext } from '@tribunal/github/context';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
+import type { UsageCostApiClient, UsageCostApiEvent } from '@tribunal/cost/usage-cost-api';
 import type {
   CheckRunPatch,
   DiffContext,
@@ -37,11 +38,18 @@ import type {
   AgentRunRecord,
   ClaimedReviewIntent,
   PullRequestReviewInput,
-  ReviewIntentPort,
   ReviewPostClaimResult,
   ReviewRunRecord,
   ReviewWorkflowStatePort,
 } from './review-workflow';
+
+type EngineGitHubPort = GitHubPort & {
+  findPostedReview(
+    repository: RepoRef,
+    pullRequestNumber: number,
+    reviewMarker: string,
+  ): Promise<{ comments: number } | undefined>;
+};
 
 export type ReviewIntentRuntimeEnvironment = {
   DATABASE_URL?: string;
@@ -57,6 +65,7 @@ export type ReviewIntentRuntimeEnvironment = {
   PROXY_SIGNING_KEY?: string;
   TRIBUNAL_DEFAULT_MODEL?: string;
   DEFAULT_DAILY_COST_CAP_USD?: number | string;
+  ANTHROPIC_ADMIN_KEY?: string;
   REVIEWS_ENABLED?: boolean | string;
 };
 
@@ -93,7 +102,9 @@ export function createReviewIntentConsumer(
       github: createEngineGitHubPort(database, githubContext),
       sandbox: createEngineSandboxPort(environment),
       cost: createCostPort(database, {
-        usageCostApiClient: emptyUsageCostApiClient,
+        usageCostApiClient: createAnthropicUsageCostApiClient(
+          requireEnvironmentValue(environment.ANTHROPIC_ADMIN_KEY, 'ANTHROPIC_ADMIN_KEY'),
+        ),
       }),
       intents: intentPort,
       state: createDatabaseReviewWorkflowStatePort(database),
@@ -129,8 +140,8 @@ export function createReviewIntentConsumer(
 
         try {
           const handle = await dispatchReviewIntentWorkflow(workflowEngine, intent);
+          await handle.result();
           await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
-          observeReviewIntentWorkflowCompletion(handle, intent, intentPort);
           processed += 1;
         } catch (error) {
           await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
@@ -157,6 +168,83 @@ type ReviewIntentWorkflowEngine = {
   ): Promise<ReviewIntentWorkflowHandle>;
 };
 
+export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostApiClient {
+  return {
+    async listReviewRunCosts(reviewRunId: string) {
+      const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
+      url.searchParams.set(
+        'starting_at',
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      );
+      url.searchParams.set('ending_at', new Date().toISOString());
+      const response = await fetch(url, {
+        headers: {
+          'x-api-key': adminKey,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Anthropic cost report request failed with status ${response.status}`);
+      }
+      const payload = (await response.json()) as unknown;
+      return parseAnthropicCostReport(payload, reviewRunId);
+    },
+  };
+}
+
+function parseAnthropicCostReport(payload: unknown, reviewRunId: string): UsageCostApiEvent[] {
+  const rows = getCostReportRows(payload);
+  return rows.flatMap((row, index) => {
+    const metadata = getRecord(row.custom_metadata ?? row.metadata);
+    if (metadata?.review_run_id !== reviewRunId) return [];
+    const amountUsd = Number(row.amount_usd ?? row.amountUsd ?? row.cost_usd ?? row.costUsd ?? 0);
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
+    const userId = Number(metadata.user_id ?? row.user_id ?? 0);
+    if (!Number.isInteger(userId) || userId <= 0) return [];
+    return [
+      {
+        id: String(row.id ?? `${reviewRunId}:${index}`),
+        occurredAt: new Date(
+          String(row.starting_at ?? row.ending_at ?? row.occurred_at ?? Date.now()),
+        ),
+        amountUsd,
+        userId,
+        repositoryId: toNullableInteger(metadata.repository_id ?? row.repository_id),
+        reviewRunId,
+        agentRunId: toNullableString(metadata.agent_run_id ?? row.agent_run_id),
+        agentId: toNullableString(metadata.agent_id ?? row.agent_id),
+        metadata: metadata ?? {},
+      },
+    ];
+  });
+}
+
+function getCostReportRows(payload: unknown): Array<Record<string, unknown>> {
+  const record = getRecord(payload);
+  const rows = record?.data ?? record?.results ?? record?.items ?? payload;
+  return Array.isArray(rows)
+    ? rows.flatMap((row): Array<Record<string, unknown>> => {
+        const rowRecord = getRecord(row);
+        return rowRecord === undefined ? [] : [rowRecord];
+      })
+    : [];
+}
+
+function getRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function toNullableInteger(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function toNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 type ReviewIntentWorkflowHandle = {
   result(): Promise<unknown>;
 };
@@ -173,21 +261,6 @@ async function dispatchReviewIntentWorkflow(
     onTerminalConflict: 'start-new',
     defer: false,
   });
-}
-
-function observeReviewIntentWorkflowCompletion(
-  handle: ReviewIntentWorkflowHandle,
-  intent: ClaimedReviewIntent,
-  intentPort: ReviewIntentPort,
-): void {
-  void (async () => {
-    try {
-      await handle.result();
-      await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
-    } catch (error) {
-      await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
-    }
-  })();
 }
 
 export function createEngineGithubContext(
@@ -214,7 +287,7 @@ export function createEngineGithubContext(
 export function createEngineGitHubPort(
   _database: Database,
   context: GithubServiceContext,
-): GitHubPort {
+): EngineGitHubPort {
   return {
     async mintReadToken(repositoryId: number, installationId: number) {
       const token = await mintSingleRepositoryReadToken(context, { installationId, repositoryId });
@@ -222,11 +295,11 @@ export function createEngineGitHubPort(
     },
     async getDiffContext(
       repository: RepoRef,
-      installationId: number,
       pullRequestNumber: number,
       head: string,
       previousHead?: string,
     ): Promise<DiffContext> {
+      const installationId = getExecutionInstallationId(repository);
       const [pullRequest, diffContext] = await Promise.all([
         getPullRequestMetadata(context, {
           installationId,
@@ -260,7 +333,8 @@ export function createEngineGitHubPort(
         },
       };
     },
-    async createCheckRun(repository: RepoRef, installationId: number, headSha: string) {
+    async createCheckRun(repository: RepoRef, headSha: string) {
+      const installationId = getExecutionInstallationId(repository);
       const checkRun = await createCheckRun(context, {
         installationId,
         owner: repository.owner,
@@ -270,12 +344,8 @@ export function createEngineGitHubPort(
       });
       return { checkRunId: checkRun.id };
     },
-    async updateCheckRun(
-      repository: RepoRef,
-      installationId: number,
-      checkRunId: number,
-      patch: CheckRunPatch,
-    ) {
+    async updateCheckRun(repository: RepoRef, checkRunId: number, patch: CheckRunPatch) {
+      const installationId = getExecutionInstallationId(repository);
       await updateCheckRun(context, {
         installationId,
         owner: repository.owner,
@@ -285,12 +355,8 @@ export function createEngineGitHubPort(
         completedAt: patch.status === 'completed' ? new Date().toISOString() : undefined,
       });
     },
-    async postReview(
-      repository: RepoRef,
-      installationId: number,
-      pullRequestNumber: number,
-      review: ReviewPayload,
-    ) {
+    async postReview(repository: RepoRef, pullRequestNumber: number, review: ReviewPayload) {
+      const installationId = getExecutionInstallationId(repository);
       const posted = await postPullRequestReview(context, {
         installationId,
         owner: repository.owner,
@@ -302,12 +368,8 @@ export function createEngineGitHubPort(
       });
       return { comments: posted.id ? review.comments.length : 0 };
     },
-    async findPostedReview(
-      repository: RepoRef,
-      installationId: number,
-      pullRequestNumber: number,
-      reviewMarker: string,
-    ) {
+    async findPostedReview(repository: RepoRef, pullRequestNumber: number, reviewMarker: string) {
+      const installationId = getExecutionInstallationId(repository);
       const posted = await findPostedPullRequestReview(context, {
         installationId,
         owner: repository.owner,
@@ -318,6 +380,12 @@ export function createEngineGitHubPort(
       return posted === undefined ? undefined : { comments: posted.comments };
     },
   };
+}
+
+function getExecutionInstallationId(repository: RepoRef): number {
+  const installationId = (repository as RepoRef & { installationId?: unknown }).installationId;
+  if (typeof installationId === 'number') return installationId;
+  throw new Error('GitHub execution repository is missing installationId.');
 }
 
 export function createEngineSandboxPort(environment: ReviewIntentRuntimeEnvironment): SandboxPort {
@@ -698,6 +766,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
     arguments_: string[],
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
+    onStdoutLine?: (line: string) => void,
   ) {
     const sandbox = await this.getSandbox(sandboxId);
     const process = await sandbox.startProcess(command, {
@@ -713,6 +782,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
         stderr.push(event.line);
       } else {
         stdout.push(event.line);
+        onStdoutLine?.(event.line);
       }
     }
     const completedProcess = await sandbox.getProcess(process.pid);

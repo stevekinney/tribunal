@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Engine, MemoryStorage } from '@lostgradient/weft';
 import { eq } from '@tribunal/database/operators';
 import type { GithubServiceContext } from '@tribunal/github/context';
@@ -101,6 +101,7 @@ const {
   createDatabaseReviewWorkflowStatePort,
   createReviewIntentConsumer,
   createReviewIntentConsumerFromEnvironment,
+  createAnthropicUsageCostApiClient,
   emptyUsageCostApiClient,
   resolveInstallationId,
   TensorlakeSandboxAdapter,
@@ -130,6 +131,11 @@ beforeEach(async () => {
     labels: ['review-engine'],
     author: 'steve',
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('runtime review intent consumer wiring', () => {
@@ -162,6 +168,142 @@ describe('runtime review intent consumer wiring', () => {
     );
   });
 
+  it('fetches and parses Anthropic cost report rows for a review run', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'cost_1',
+            amount_usd: '1.25',
+            starting_at: '2026-06-17T12:00:00.000Z',
+            metadata: {
+              review_run_id: 'run_1',
+              user_id: '7',
+              repository_id: '42',
+              agent_run_id: 'agent_run_1',
+              agent_id: 'agent_security',
+            },
+          },
+          {
+            id: 'cost_other',
+            amount_usd: '3',
+            metadata: { review_run_id: 'run_other', user_id: '7' },
+          },
+          {
+            id: 'cost_zero',
+            amount_usd: '0',
+            metadata: { review_run_id: 'run_1', user_id: '7' },
+          },
+          {
+            id: 'cost_userless',
+            amount_usd: '2',
+            metadata: { review_run_id: 'run_1' },
+          },
+          'ignored',
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
+
+    const client = createAnthropicUsageCostApiClient('admin-key');
+    await expect(client.listReviewRunCosts('run_1')).resolves.toEqual([
+      {
+        id: 'cost_1',
+        occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+        amountUsd: 1.25,
+        userId: 7,
+        repositoryId: 42,
+        reviewRunId: 'run_1',
+        agentRunId: 'agent_run_1',
+        agentId: 'agent_security',
+        metadata: {
+          review_run_id: 'run_1',
+          user_id: '7',
+          repository_id: '42',
+          agent_run_id: 'agent_run_1',
+          agent_id: 'agent_security',
+        },
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        href: expect.stringContaining('/v1/organizations/cost_report'),
+      }),
+      {
+        headers: {
+          'x-api-key': 'admin-key',
+          'anthropic-version': '2023-06-01',
+        },
+      },
+    );
+    const url = fetchMock.mock.calls[0]?.[0] as URL;
+    expect(url.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(url.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
+  });
+
+  it('normalizes alternate Anthropic cost report row shapes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          results: [
+            {
+              amountUsd: 2.5,
+              ending_at: '2026-06-17T13:00:00.000Z',
+              custom_metadata: {
+                review_run_id: 'run_2',
+                user_id: 8,
+              },
+              repository_id: 55,
+              agent_run_id: '',
+              agent_id: 'agent_docs',
+            },
+          ],
+        }),
+      }),
+    );
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_2'),
+    ).resolves.toEqual([
+      {
+        id: 'run_2:0',
+        occurredAt: new Date('2026-06-17T13:00:00.000Z'),
+        amountUsd: 2.5,
+        userId: 8,
+        repositoryId: 55,
+        reviewRunId: 'run_2',
+        agentRunId: null,
+        agentId: 'agent_docs',
+        metadata: {
+          review_run_id: 'run_2',
+          user_id: 8,
+        },
+      },
+    ]);
+  });
+
+  it('throws when the Anthropic cost report request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+    ).rejects.toThrow('Anthropic cost report request failed with status 503');
+  });
+
   it('runs the registered review-pr workflow through the review workflow activity', async () => {
     const processClaimedReviewIntent = vi.fn().mockResolvedValue(undefined);
     const engine = await Engine.create({
@@ -176,18 +318,29 @@ describe('runtime review intent consumer wiring', () => {
     expect(processClaimedReviewIntent).toHaveBeenCalledWith(claimedIntent());
   });
 
-  it('registers executable review child and reaper workflows', async () => {
+  it('fails loudly for unimplemented child workflows and executes the sandbox reaper workflow', async () => {
+    const reapClosedPullRequestSandboxes = vi.fn().mockResolvedValue(['sandbox_1']);
     const engine = await Engine.create({
       storage: new MemoryStorage(),
       workflows: createReviewWorkflowDefinitions({
         processClaimedReviewIntent: vi.fn(),
+        reapClosedPullRequestSandboxes,
       } as never),
     });
 
-    for (const workflowName of ['review-run', 'agent-review', 'sandbox-reaper'] as const) {
+    for (const workflowName of ['review-run', 'agent-review'] as const) {
       const handle = await engine.start(workflowName, null, { defer: false });
-      await expect(handle.result()).resolves.toEqual({ registered: true });
+      await expect(handle.result()).rejects.toThrow('executed through the review-pr supervisor');
     }
+    const handle = await engine.start(
+      'sandbox-reaper',
+      [{ repositoryId: 42, pullRequestNumber: 7 }],
+      { defer: false },
+    );
+    await expect(handle.result()).resolves.toEqual({ reaped: true });
+    expect(reapClosedPullRequestSandboxes).toHaveBeenCalledWith([
+      { repositoryId: 42, pullRequestNumber: 7 },
+    ]);
   });
 
   it('dispatches claimed review intents through the bound Weft engine', async () => {
@@ -224,7 +377,7 @@ describe('runtime review intent consumer wiring', () => {
     const start = vi.fn().mockResolvedValue({ result });
     consumer.bindWorkflowEngine({ start });
 
-    await expect(consumer.drain(1)).resolves.toBe(1);
+    await expect(consumer.drain(1)).resolves.toBe(0);
     await waitForIntent('intent_1', (intent) => intent.failureCount === 1);
 
     const [intent] = await testDatabase.db
@@ -232,25 +385,41 @@ describe('runtime review intent consumer wiring', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent).toMatchObject({
-      processedAt: expect.any(Date),
+      claimedAt: null,
+      processedAt: null,
       failureCount: 1,
       lastError: 'workflow result failed',
+      nextAttemptAt: expect.any(Date),
     });
-    expect(intent?.claimedAt).toBeInstanceOf(Date);
-    expect(intent?.nextAttemptAt).toBeNull();
   });
 
-  it('does not reclaim a dispatched long-running review intent as stale', async () => {
+  it('marks bound review intents processed only after workflow completion', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
-    const result = vi.fn().mockReturnValue(new Promise(() => {}));
+    let completeWorkflow: (value: unknown) => void = () => {};
+    const result = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        completeWorkflow = resolve;
+      }),
+    );
     const start = vi.fn().mockResolvedValue({ result });
     consumer.bindWorkflowEngine({ start });
 
-    await expect(consumer.drain(1)).resolves.toBe(1);
-    await waitForIntent('intent_1', (intent) => intent.processedAt !== null);
+    const drain = consumer.drain(1);
+    await vi.waitFor(() => expect(result).toHaveBeenCalled());
 
-    await expect(consumer.drain(1)).resolves.toBe(0);
+    const [inProgressIntent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(inProgressIntent).toMatchObject({
+      processedAt: null,
+      failureCount: 0,
+    });
+
+    completeWorkflow({ processed: true });
+
+    await expect(drain).resolves.toBe(1);
     const [intent] = await testDatabase.db
       .select()
       .from(reviewIntent)
@@ -665,6 +834,11 @@ describe('engine GitHub port', () => {
     createCheckRunMock.mockResolvedValue({ id: 88 });
     updateCheckRunMock.mockResolvedValue({ id: 88 });
     postReviewMock.mockResolvedValue({ id: 99 });
+    const repositoryContext = {
+      owner: 'lostgradient',
+      name: 'tribunal',
+      installationId: installation.installationId,
+    };
 
     await expect(
       port.mintReadToken(createdRepository.id, installation.installationId),
@@ -672,15 +846,7 @@ describe('engine GitHub port', () => {
       token: 'github-token',
       expiresAt: new Date('2026-06-17T12:00:00.000Z'),
     });
-    await expect(
-      port.getDiffContext(
-        { owner: 'lostgradient', name: 'tribunal' },
-        installation.installationId,
-        7,
-        'head',
-        'base',
-      ),
-    ).resolves.toMatchObject({
+    await expect(port.getDiffContext(repositoryContext, 7, 'head', 'base')).resolves.toMatchObject({
       headSha: 'head',
       baseSha: 'base',
       changedFiles: [{ path: 'src/example.ts', status: 'modified' }],
@@ -693,25 +859,16 @@ describe('engine GitHub port', () => {
         author: 'steve',
       },
     });
+    await expect(port.createCheckRun(repositoryContext, 'head')).resolves.toEqual({
+      checkRunId: 88,
+    });
+    await port.updateCheckRun(repositoryContext, 88, {
+      status: 'completed',
+      conclusion: 'success',
+      output: { title: 'Done', summary: 'Done' },
+    });
     await expect(
-      port.createCheckRun(
-        { owner: 'lostgradient', name: 'tribunal' },
-        installation.installationId,
-        'head',
-      ),
-    ).resolves.toEqual({ checkRunId: 88 });
-    await port.updateCheckRun(
-      { owner: 'lostgradient', name: 'tribunal' },
-      installation.installationId,
-      88,
-      {
-        status: 'completed',
-        conclusion: 'success',
-        output: { title: 'Done', summary: 'Done' },
-      },
-    );
-    await expect(
-      port.postReview({ owner: 'lostgradient', name: 'tribunal' }, installation.installationId, 7, {
+      port.postReview(repositoryContext, 7, {
         headSha: 'head',
         body: 'Review',
         comments: [{ path: 'src/example.ts', body: 'Comment', line: 1, side: 'RIGHT' }],
@@ -720,8 +877,7 @@ describe('engine GitHub port', () => {
     findPostedReviewMock.mockResolvedValue({ id: 100, comments: 1 });
     await expect(
       port.findPostedReview(
-        { owner: 'lostgradient', name: 'tribunal' },
-        installation.installationId,
+        repositoryContext,
         7,
         '<!-- tribunal-review-run:v1:run:42:7:head:opened:signed -->',
       ),
@@ -752,6 +908,14 @@ describe('engine GitHub port', () => {
     ).rejects.toThrow('No active GitHub installation found');
   });
 
+  it('requires execution repository context for GitHub operations', async () => {
+    const port = createEngineGitHubPort(testDatabase.db, createGithubContext());
+
+    await expect(
+      port.createCheckRun({ owner: 'lostgradient', name: 'tribunal' }, 'head'),
+    ).rejects.toThrow('GitHub execution repository is missing installationId.');
+  });
+
   it('resolves an active installation id for a repository', async () => {
     const { repository: createdRepository, installation } = await createRepositoryInstallation();
 
@@ -772,8 +936,7 @@ describe('engine GitHub port', () => {
 
     await expect(
       port.getDiffContext(
-        { owner: createdRepository.owner, name: createdRepository.name },
-        1001,
+        { owner: createdRepository.owner, name: createdRepository.name, installationId: 1001 },
         7,
         'head',
       ),
@@ -980,6 +1143,7 @@ function runtimeEnvironment() {
     PROXY_SIGNING_KEY: 'proxy-signing-key',
     TRIBUNAL_DEFAULT_MODEL: 'sonnet',
     DEFAULT_DAILY_COST_CAP_USD: '25',
+    ANTHROPIC_ADMIN_KEY: 'sk-ant-admin-test',
   };
 }
 

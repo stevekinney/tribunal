@@ -1,6 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { redirect } from '@sveltejs/kit';
-import { operatorSurfaceStates } from '$lib/server/review/operator';
+import { getRunsOverview, operatorSurfaceStates } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -10,6 +10,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const enabled = env.WEFT_INSPECTOR === '1' && user.isPlatformAdministrator;
   return {
     enabled,
+    runs: enabled ? await getRunsOverview(user.id) : [],
     surfaceStates: operatorSurfaceStates,
   };
 };

@@ -37,6 +37,7 @@ export type SandboxAdapter = {
     arguments_: string[],
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
+    onStdoutLine?: (line: string) => void,
   ): Promise<SandboxCommandResult>;
   killProcess(sandboxId: string, processId: string): Promise<void>;
   suspend(sandboxId: string): Promise<void>;
@@ -105,16 +106,17 @@ export function createSandboxPort(
     },
     async runAgent(
       sandboxId: string,
-      agentRunId: string,
       agent: AgentSpec,
       runToken: string,
       onEvent: (event: AgentEvent) => void,
       _signal: AbortSignal,
     ): Promise<AgentResult> {
+      const agentRunId = getAgentRunId(agent);
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
       const execution: { processId?: string; stopRequested: boolean } = { stopRequested: false };
       runningAgentProcesses.set(processKey, execution);
       let commandResult: SandboxCommandResult;
+      let streamedEvents = false;
       try {
         commandResult = await adapter.runTrackedCommand(
           sandboxId,
@@ -126,6 +128,7 @@ export function createSandboxPort(
             TRIBUNAL_PROXY_URL: configuration.proxyUrl,
             ANTHROPIC_BASE_URL: makeProxiedAnthropicUrl(configuration.proxyUrl),
             TRIBUNAL_AGENT_MODEL: agent.model,
+            TRIBUNAL_CHANGED_FILES: JSON.stringify(getChangedFiles(agent)),
             ...(agent.effort ? { TRIBUNAL_AGENT_EFFORT: agent.effort } : {}),
           },
           async (processId) => {
@@ -134,6 +137,9 @@ export function createSandboxPort(
               await adapter.killProcess(sandboxId, processId);
             }
           },
+          (line) => {
+            if (emitAgentEventLine(line, onEvent)) streamedEvents = true;
+          },
         );
       } finally {
         runningAgentProcesses.delete(processKey);
@@ -141,7 +147,7 @@ export function createSandboxPort(
       if (commandResult.exitCode !== 0) {
         throw new Error(formatAgentCommandFailure(commandResult));
       }
-      return parseAgentRunnerOutput(commandResult.stdout, onEvent);
+      return parseAgentRunnerOutput(commandResult.stdout, onEvent, { emitEvents: !streamedEvents });
     },
     async stop(sandboxId: string, agentRunId: string) {
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -161,7 +167,23 @@ export function createSandboxPort(
   };
 }
 
-function parseAgentRunnerOutput(stdout: string, onEvent: (event: AgentEvent) => void): AgentResult {
+function getAgentRunId(agent: AgentSpec): string {
+  const agentRunId = (agent as AgentSpec & { agentRunId?: unknown }).agentRunId;
+  return typeof agentRunId === 'string' && agentRunId.length > 0 ? agentRunId : agent.id;
+}
+
+function getChangedFiles(agent: AgentSpec): string[] {
+  const changedFiles = (agent as AgentSpec & { changedFiles?: unknown }).changedFiles;
+  return Array.isArray(changedFiles) && changedFiles.every((path) => typeof path === 'string')
+    ? changedFiles
+    : [];
+}
+
+function parseAgentRunnerOutput(
+  stdout: string,
+  onEvent: (event: AgentEvent) => void,
+  options: { emitEvents: boolean } = { emitEvents: true },
+): AgentResult {
   const lines = stdout
     .split('\n')
     .map((line) => line.trim())
@@ -175,7 +197,7 @@ function parseAgentRunnerOutput(stdout: string, onEvent: (event: AgentEvent) => 
     const record = JSON.parse(line) as unknown;
     const event = parseAgentEventRecord(record);
     if (event !== undefined) {
-      onEvent(event);
+      if (options.emitEvents) onEvent(event);
       continue;
     }
 
@@ -193,6 +215,21 @@ function parseAgentRunnerOutput(stdout: string, onEvent: (event: AgentEvent) => 
   }
 
   return result;
+}
+
+function emitAgentEventLine(line: string, onEvent: (event: AgentEvent) => void): boolean {
+  const trimmedLine = line.trim();
+  if (trimmedLine.length === 0) return false;
+  let record: unknown;
+  try {
+    record = JSON.parse(trimmedLine) as unknown;
+  } catch {
+    return false;
+  }
+  const event = parseAgentEventRecord(record);
+  if (event === undefined) return false;
+  onEvent(event);
+  return true;
 }
 
 function parseAgentEventRecord(record: unknown): AgentEvent | undefined {

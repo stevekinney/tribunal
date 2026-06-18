@@ -33,9 +33,13 @@ function parseMajor(version: string): number | null {
   return Number.parseInt(match[1], 10);
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function withTimeout(
+  promise: PromiseLike<unknown>,
+  timeoutMs: number,
+  label: string,
+): Promise<unknown> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>((_resolve, reject) => {
+  const timeout = new Promise<never>((_resolve, reject) => {
     timeoutId = setTimeout(() => {
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs);

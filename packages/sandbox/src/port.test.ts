@@ -159,9 +159,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -218,9 +218,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -264,9 +264,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -280,6 +280,75 @@ describe('sandbox port', () => {
       ),
     ).resolves.toEqual(result);
     expect(events).toEqual([event]);
+  });
+
+  it('streams live event lines without replaying events from final stdout', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const event = {
+      agentRunId: 'agent_1',
+      seq: 1,
+      kind: 'tool_post',
+      tool: 'Read',
+      detail: { path: 'src/auth.ts' },
+      at: '2026-06-18T10:00:00.000Z',
+    } satisfies AgentEvent;
+    adapter.runTrackedCommand = async (
+      sandboxId,
+      command,
+      arguments_,
+      environment,
+      _onProcessStart,
+      onStdoutLine,
+    ) => {
+      calls.push({
+        method: 'runTrackedCommand',
+        input: { sandboxId, command, arguments_, environment },
+      });
+      onStdoutLine?.('');
+      onStdoutLine?.('not json');
+      onStdoutLine?.(JSON.stringify({ type: 'log', message: 'ignored' }));
+      onStdoutLine?.(JSON.stringify({ type: 'event', event }));
+      return {
+        exitCode: 0,
+        stdout: [JSON.stringify({ type: 'event', event }), JSON.stringify(result)].join('\n'),
+        stderr: '',
+      };
+    };
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+    const events: AgentEvent[] = [];
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+          changedFiles: ['src/auth.ts'],
+        },
+        'token',
+        (agentEvent) => events.push(agentEvent),
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual(result);
+
+    expect(events).toEqual([event]);
+    expect(calls[0]).toMatchObject({
+      input: {
+        environment: {
+          TRIBUNAL_AGENT_RUN_ID: 'agent_1',
+          TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts']),
+        },
+      },
+    });
   });
 
   it('rejects successful runner commands that never emit a final result', async () => {
@@ -304,9 +373,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -337,9 +406,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -370,9 +439,9 @@ describe('sandbox port', () => {
     await expect(
       port.runAgent(
         'sandbox_1',
-        'agent_run_1',
         {
           id: 'agent_1',
+          agentRunId: 'agent_run_1',
           userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
@@ -419,9 +488,9 @@ describe('sandbox port', () => {
 
     const run = port.runAgent(
       'sandbox_1',
-      'agent_run_1',
       {
         id: 'agent_1',
+        agentRunId: 'agent_run_1',
         userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
@@ -478,9 +547,9 @@ describe('sandbox port', () => {
 
     const run = port.runAgent(
       'sandbox_1',
-      'agent_run_1',
       {
         id: 'agent_1',
+        agentRunId: 'agent_run_1',
         userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',

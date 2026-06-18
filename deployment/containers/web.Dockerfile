@@ -20,5 +20,6 @@ ENV NODE_ENV=production
 ENV PORT=3000
 COPY --from=build /workspace/applications/web/build ./build
 COPY --from=build /workspace/applications/web/package.json ./package.json
+COPY --from=dependencies /workspace/node_modules ./node_modules
 EXPOSE 3000
 CMD ["bun", "build/index.js"]
