@@ -101,6 +101,17 @@ describe('createEngineServerOptions', () => {
 });
 
 describe('createStorageConfigurationFromEnvironment', () => {
+  it('reports configured durable storage without claiming runtime ownership', () => {
+    const configuration = createStorageConfigurationFromEnvironment({
+      NODE_ENV: 'production',
+      WEFT_DATABASE_URL: 'postgres://user:password@localhost:5432/tribunal',
+    });
+
+    expect(configuration.allowEphemeralStorageForTests).toBe(false);
+    expect(configuration.storage).toBeDefined();
+    expect(configuration.healthDependencies).toEqual([{ name: 'weft_database', ok: true }]);
+  });
+
   it('requires durable storage in production unless explicitly enabled for tests', () => {
     const configuration = createStorageConfigurationFromEnvironment({
       NODE_ENV: 'production',

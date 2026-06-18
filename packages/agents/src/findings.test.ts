@@ -92,6 +92,7 @@ describe('finding validation', () => {
     expect(isRepositoryRelativePath('src/auth.ts')).toBe(true);
     expect(isRepositoryRelativePath('')).toBe(false);
     expect(isRepositoryRelativePath('/etc/passwd')).toBe(false);
+    expect(isRepositoryRelativePath('src\\auth.ts')).toBe(false);
     expect(isRepositoryRelativePath('C:\\secrets.env')).toBe(false);
     expect(isRepositoryRelativePath('../secrets.env')).toBe(false);
     expect(isRepositoryRelativePath('.')).toBe(false);

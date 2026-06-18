@@ -228,7 +228,7 @@ export class ReviewWorkflowEngine {
         trigger: 'synchronize',
       });
       const existingRun = this.reviewRuns.get(existingRunId);
-      if (existingRun !== undefined) return existingRun;
+      if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
     }
 
     const previousHeadSha = supervisor.reviewedHeadShas.at(-1) ?? supervisor.headSha;
@@ -398,7 +398,7 @@ export class ReviewWorkflowEngine {
     if (existingPromise !== undefined) return existingPromise;
 
     const existingRun = this.reviewRuns.get(runId);
-    if (existingRun !== undefined && existingRun.status !== 'failed') return existingRun;
+    if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
 
     const runPromise = this.executeReviewRun(supervisor, runId, headSha, trigger, previousHeadSha)
       .catch((error) => {
@@ -759,6 +759,10 @@ function compareSupervisorSnapshots(
 
 function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): number {
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function isReusableReviewRun(run: ReviewRunRecord): boolean {
+  return run.status !== 'failed' && run.status !== 'quota_blocked';
 }
 
 function compareAgentRuns(left: AgentRunRecord, right: AgentRunRecord): number {

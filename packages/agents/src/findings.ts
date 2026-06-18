@@ -64,9 +64,10 @@ function isFindingOnChangedFile(finding: Finding, diffContext: DiffContext): boo
 
 export function isRepositoryRelativePath(candidatePath: string): boolean {
   if (candidatePath.length === 0) return false;
+  if (candidatePath.includes('\\')) return false;
   if (path.posix.isAbsolute(candidatePath) || path.win32.isAbsolute(candidatePath)) return false;
 
-  const normalizedPath = path.posix.normalize(candidatePath.replaceAll('\\', '/'));
+  const normalizedPath = path.posix.normalize(candidatePath);
   return normalizedPath !== '..' && !normalizedPath.startsWith('../') && normalizedPath !== '.';
 }
 

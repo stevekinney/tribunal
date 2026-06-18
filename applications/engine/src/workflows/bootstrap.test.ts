@@ -61,6 +61,20 @@ describe('createEngineRuntime', () => {
 
     await runtime.release();
   });
+
+  it('reports singleton ownership only after the runtime is created', async () => {
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      healthDependencies: [{ name: 'weft_database', ok: true }],
+    });
+
+    expect(runtime.healthDependencies()).toEqual([
+      { name: 'weft_database', ok: true },
+      { name: 'singleton_lock', ok: true, detail: 'runtime ownership active' },
+    ]);
+
+    await runtime.release();
+  });
 });
 
 class FakeEngineSingletonLock implements EngineSingletonLock {

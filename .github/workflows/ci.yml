@@ -219,9 +219,13 @@ jobs:
           docker run -d --rm --name tribunal-engine-test \
             -e PORT=4311 \
             -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \
+            -e TRIBUNAL_ENGINE_CONTROL_TOKEN=ci-engine-control-token \
             -p 4311:4311 tribunal-engine:test
           docker run -d --rm --name tribunal-proxy-test \
             -e PORT=4312 \
+            -e DATABASE_URL=postgres://placeholder:placeholder@localhost:5432/placeholder \
+            -e GITHUB_APP_ID=12345 \
+            -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
             -e ANTHROPIC_API_KEY=sk-ant-ci-placeholder \
             -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
             -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \

@@ -51,10 +51,7 @@ export function createStorageConfigurationFromEnvironment(environment: {
     return {
       storage: new NeonStorage({ url: environment.WEFT_DATABASE_URL }),
       allowEphemeralStorageForTests: false,
-      healthDependencies: [
-        { name: 'weft_database', ok: true },
-        { name: 'singleton_lock', ok: true },
-      ],
+      healthDependencies: [{ name: 'weft_database', ok: true }],
     };
   }
 

@@ -75,12 +75,7 @@ export async function createEngineRuntime(
     return {
       engine,
       healthDependencies() {
-        return (
-          options.healthDependencies ?? [
-            { name: 'weft_database', ok: true },
-            { name: 'singleton_lock', ok: true },
-          ]
-        );
+        return createRuntimeHealthDependencies(options.healthDependencies);
       },
       drainReviewIntents(limit?: number) {
         return options.reviewIntentConsumer?.drain(limit) ?? Promise.resolve(0);
@@ -94,6 +89,20 @@ export async function createEngineRuntime(
     await lease?.release();
     throw error;
   }
+}
+
+function createRuntimeHealthDependencies(
+  dependencies: EngineHealthDependency[] | undefined,
+): EngineHealthDependency[] {
+  const runtimeDependencies = dependencies ?? [{ name: 'weft_database', ok: true }];
+  if (runtimeDependencies.some((dependency) => dependency.name === 'singleton_lock')) {
+    return runtimeDependencies;
+  }
+
+  return [
+    ...runtimeDependencies,
+    { name: 'singleton_lock', ok: true, detail: 'runtime ownership active' },
+  ];
 }
 
 function createReviewIntentPoller(

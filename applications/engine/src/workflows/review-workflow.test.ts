@@ -133,6 +133,47 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.updateCalls.map((call) => call.head)).toEqual(['aaa111', 'bbb222']);
   });
 
+  it('retries a same-head synchronize run after the previous attempt failed', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    await engine.startPullRequestReview(baseInput);
+    const updatedInput = { ...baseInput, headSha: 'bbb222', trigger: 'synchronize' as const };
+
+    ports.cost.failNextReconcile();
+    await expect(engine.signalCommitPushed(updatedInput)).rejects.toThrow(
+      'crashed after posting review',
+    );
+    await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
+      status: 'posted',
+      headSha: 'bbb222',
+    });
+
+    expect(ports.cost.reconcileCalls).toEqual([
+      'run:42:7:aaa111:opened',
+      'run:42:7:bbb222:synchronize',
+      'run:42:7:bbb222:synchronize',
+    ]);
+  });
+
+  it('retries a same-head synchronize run after the previous attempt hit the cost cap', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    await engine.startPullRequestReview(baseInput);
+    const updatedInput = { ...baseInput, headSha: 'bbb222', trigger: 'synchronize' as const };
+
+    ports.cost.setSpendTodayEstimate(10);
+    await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
+      status: 'quota_blocked',
+      headSha: 'bbb222',
+    });
+
+    ports.cost.setSpendTodayEstimate(0);
+    await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
+      status: 'posted',
+      headSha: 'bbb222',
+    });
+  });
+
   it('stops multiple in-flight agents in deterministic agent-run order', async () => {
     const ports = createFakePorts({ holdAllAgentRuns: true });
     const engine = createEngine(ports);
@@ -640,9 +681,11 @@ class FakeCostPort implements CostPort {
   readonly reconcileCalls: string[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private reconcileFailuresRemaining: number;
+  private spendTodayEstimateValue: number;
 
   constructor(private readonly options: FakePortOptions) {
     this.reconcileFailuresRemaining = options.failFirstReconcile ? 1 : 0;
+    this.spendTodayEstimateValue = options.spendTodayEstimate ?? 0;
   }
 
   get llmEstimateKeys(): string[] {
@@ -669,7 +712,15 @@ class FakeCostPort implements CostPort {
   }
 
   async spendTodayEstimate(): Promise<number> {
-    return this.options.spendTodayEstimate ?? 0;
+    return this.spendTodayEstimateValue;
+  }
+
+  failNextReconcile(): void {
+    this.reconcileFailuresRemaining += 1;
+  }
+
+  setSpendTodayEstimate(value: number): void {
+    this.spendTodayEstimateValue = value;
   }
 }
 
