@@ -101,6 +101,10 @@ export type ReviewRunRecord = {
   error?: string;
 };
 
+export type StopReviewRunResult = {
+  stopped: boolean;
+};
+
 export type AgentRunRecord = {
   id: string;
   idempotencyKey: string;
@@ -166,6 +170,7 @@ export class ReviewWorkflowEngine {
   } as const;
 
   private readonly supervisors = new Map<string, SupervisorState>();
+  private readonly supervisorPromises = new Map<string, Promise<SupervisorState>>();
   private readonly reviewRuns = new Map<string, ReviewRunRecord>();
   private readonly agentRuns = new Map<string, AgentRunRecord>();
   private readonly agentEvents: AgentEvent[] = [];
@@ -202,7 +207,6 @@ export class ReviewWorkflowEngine {
           this.now(),
           error,
         );
-        throw error;
       }
     }
 
@@ -227,6 +231,9 @@ export class ReviewWorkflowEngine {
         headSha: input.headSha,
         trigger: 'synchronize',
       });
+      const existingPromise = supervisor.runPromises.get(existingRunId);
+      if (existingPromise !== undefined) return existingPromise;
+
       const existingRun = this.reviewRuns.get(existingRunId);
       if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
     }
@@ -299,6 +306,33 @@ export class ReviewWorkflowEngine {
     }
   }
 
+  async stopRun(
+    reviewRunId: string,
+    reason: NonNullable<AgentResult['stopped']> = 'timeout',
+  ): Promise<StopReviewRunResult> {
+    for (const supervisor of this.supervisors.values()) {
+      if (supervisor.activeRunId !== reviewRunId) continue;
+
+      await this.stopActiveAgents(supervisor, reason);
+      const run = this.reviewRuns.get(reviewRunId);
+      if (run?.status === 'running') {
+        run.status = 'cancelled';
+        run.finishedAt = this.now();
+      }
+      await this.updateCheckRun(supervisor.input.repository, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Review run stopped by operator.',
+        },
+      });
+      supervisor.activeRunId = undefined;
+      return { stopped: true };
+    }
+    return { stopped: false };
+  }
+
   async reapClosedPullRequestSandboxes(
     openPullRequests: Array<{ repositoryId: number; pullRequestNumber: number }>,
   ): Promise<string[]> {
@@ -353,7 +387,20 @@ export class ReviewWorkflowEngine {
     });
     const existingSupervisor = this.supervisors.get(workflowId);
     if (existingSupervisor !== undefined) return existingSupervisor;
+    const existingPromise = this.supervisorPromises.get(workflowId);
+    if (existingPromise !== undefined) return existingPromise;
 
+    const supervisorPromise = this.createSupervisor(workflowId, input).finally(() => {
+      this.supervisorPromises.delete(workflowId);
+    });
+    this.supervisorPromises.set(workflowId, supervisorPromise);
+    return supervisorPromise;
+  }
+
+  private async createSupervisor(
+    workflowId: string,
+    input: PullRequestReviewInput,
+  ): Promise<SupervisorState> {
     const sandboxKey = createPullRequestSandboxKey({
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
@@ -479,7 +526,6 @@ export class ReviewWorkflowEngine {
       expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       signingKey: this.configuration.proxySigningKey,
     });
-    await this.ports.github.mintReadToken(input.repositoryId, input.installationId);
     await this.ports.sandbox.update(supervisor.sandboxId, input.repository, headSha, runToken);
     const diffContext = await this.ports.github.getDiffContext(
       input.repository,
@@ -488,9 +534,32 @@ export class ReviewWorkflowEngine {
       previousHeadSha,
     );
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
-    const agentResults = await this.runAgents(supervisor, reviewRun, enabledAgents, runToken);
+    const { results: agentResults, quotaBlocked } = await this.runAgents(
+      supervisor,
+      reviewRun,
+      enabledAgents,
+      runToken,
+      input.dailyCostCapUsd,
+    );
 
     if (reviewRun.status === 'superseded' || reviewRun.status === 'cancelled') return reviewRun;
+    if (quotaBlocked) {
+      reviewRun.costEstimateUsd = agentResults.reduce(
+        (total, result) => total + result.costEstimateUsd,
+        0,
+      );
+      reviewRun.status = 'quota_blocked';
+      reviewRun.finishedAt = this.now();
+      await this.updateCheckRun(input.repository, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review quota blocked',
+          summary: 'Daily review cost cap reached before all enabled agents could run.',
+        },
+      });
+      return reviewRun;
+    }
 
     const findings = agentResults.flatMap((result) => result.findings);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
@@ -516,11 +585,6 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(agentResults),
     );
-    if (!this.reconciledReviewRunIds.has(reviewRun.id)) {
-      await this.ports.cost.reconcile(reviewRun.id);
-      this.reconciledReviewRunIds.add(reviewRun.id);
-    }
-
     return reviewRun;
   }
 
@@ -529,18 +593,24 @@ export class ReviewWorkflowEngine {
     reviewRun: ReviewRunRecord,
     agents: AgentSpec[],
     runToken: string,
-  ): Promise<AgentResult[]> {
+    dailyCostCapUsd: number,
+  ): Promise<{ results: AgentResult[]; quotaBlocked: boolean }> {
     const results: AgentResult[] = [];
 
-    for (let index = 0; index < agents.length; index += this.configuration.maxConcurrentAgents) {
-      const batch = agents.slice(index, index + this.configuration.maxConcurrentAgents);
-      const batchResults = await Promise.all(
-        batch.map((agent) => this.runAgentReview(supervisor, reviewRun, agent, runToken)),
-      );
-      results.push(...batchResults);
+    for (const agent of agents) {
+      if (reviewRun.status === 'superseded' || reviewRun.status === 'cancelled') {
+        return { results, quotaBlocked: false };
+      }
+
+      const spendTodayEstimate = await this.ports.cost.spendTodayEstimate(reviewRun.userId);
+      if (spendTodayEstimate >= dailyCostCapUsd) {
+        return { results, quotaBlocked: true };
+      }
+
+      results.push(await this.runAgentReview(supervisor, reviewRun, agent, runToken));
     }
 
-    return results;
+    return { results, quotaBlocked: false };
   }
 
   private async runAgentReview(
@@ -624,10 +694,7 @@ export class ReviewWorkflowEngine {
     supervisor: SupervisorState,
     reason: NonNullable<AgentResult['stopped']>,
   ): Promise<void> {
-    const executions = [...supervisor.activeAgents.values()].sort((left, right) =>
-      left.agentRunId < right.agentRunId ? -1 : left.agentRunId > right.agentRunId ? 1 : 0,
-    );
-    for (const execution of executions) {
+    for (const execution of supervisor.activeAgents.values()) {
       execution.stopReason = reason;
       execution.controller.abort();
       await this.ports.sandbox.stop(supervisor.sandboxId, execution.agentRunId);
@@ -762,7 +829,7 @@ function compareReviewRuns(left: ReviewRunRecord, right: ReviewRunRecord): numbe
 }
 
 function isReusableReviewRun(run: ReviewRunRecord): boolean {
-  return run.status !== 'failed' && run.status !== 'quota_blocked';
+  return run.status === 'posted';
 }
 
 function compareAgentRuns(left: AgentRunRecord, right: AgentRunRecord): number {

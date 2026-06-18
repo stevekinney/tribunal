@@ -46,6 +46,7 @@ describe('mapPullRequestEventToReviewIntentKind', () => {
     ['pr_reopened', 'start'],
     ['pr_ready_for_review', 'start'],
     ['pr_synchronized', 'commit_pushed'],
+    ['check_completed', 'commit_pushed'],
     ['pr_closed', 'pr_closed'],
   ] satisfies Array<[PullRequestEventType, string]>)('%s maps to %s', (eventType, kind) => {
     expect(mapPullRequestEventToReviewIntentKind(eventType)).toBe(kind);
@@ -63,7 +64,6 @@ describe('mapPullRequestEventToReviewIntentKind', () => {
       'issue_comment_created',
       'issue_comment_edited',
       'issue_comment_deleted',
-      'check_completed',
       'base_branch_updated',
       'manual',
     ] satisfies PullRequestEventType[];
@@ -138,6 +138,36 @@ describe('signalPullRequestEvent', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.deliveryId, 'delivery-2'));
     expect(rows[0]).toMatchObject({ kind: 'commit_pushed', headSha: 'def456' });
+  });
+
+  it('inserts a commit_pushed intent for check-completed events', async () => {
+    const repository = await testContext.factories.repository.create({ id: 50 });
+    const context = createGithubContext();
+
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 16,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'check_completed',
+      eventId: 'delivery-check-completed',
+      headSha: 'checkhead',
+    });
+
+    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-check-completed'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'commit_pushed',
+      repositoryId: repository.id,
+      prNumber: 16,
+      headSha: 'checkhead',
+    });
   });
 
   it('keeps same-delivery intents distinct for different pull requests', async () => {

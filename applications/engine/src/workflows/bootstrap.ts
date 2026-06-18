@@ -6,6 +6,7 @@ import {
 } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import type { EngineHealthDependency } from '../health';
+import type { StopReviewRunResult } from './review-workflow';
 
 const engineHeartbeat = workflow({ name: 'engine-heartbeat' }).execute(async function* () {
   yield* [];
@@ -25,6 +26,7 @@ export type ReviewIntentConsumer = {
   workflows?: Record<string, unknown>;
   bindWorkflowEngine?(engine: ReviewIntentWorkflowEngine): void;
   drain(limit?: number): Promise<number>;
+  stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
 };
 
 export type ReviewIntentWorkflowEngine = {
@@ -43,6 +45,7 @@ export type EngineRuntime = {
   engine: unknown;
   healthDependencies(): EngineHealthDependency[];
   drainReviewIntents(limit?: number): Promise<number>;
+  stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
   release(): Promise<void>;
 };
 
@@ -80,6 +83,12 @@ export async function createEngineRuntime(
       },
       drainReviewIntents(limit?: number) {
         return options.reviewIntentConsumer?.drain(limit) ?? Promise.resolve(0);
+      },
+      stopReviewRun(reviewRunId: string) {
+        return (
+          options.reviewIntentConsumer?.stopReviewRun?.(reviewRunId) ??
+          Promise.resolve({ stopped: false })
+        );
       },
       async release() {
         poller.stop();

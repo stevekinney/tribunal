@@ -301,9 +301,61 @@ describe('credential proxy', () => {
         headers: bearerHeaders(capabilityToken),
       }),
     );
+    const batchResponse = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages/batches', {
+        method: 'POST',
+        headers: bearerHeaders(capabilityToken),
+      }),
+    );
+    const countTokensResponse = await handler(
+      new Request(
+        'https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages/count_tokens',
+        {
+          method: 'POST',
+          headers: bearerHeaders(capabilityToken),
+        },
+      ),
+    );
 
     expect(getResponse.status).toBe(403);
     expect(pathResponse.status).toBe(403);
+    expect(batchResponse.status).toBe(403);
+    expect(countTokensResponse.status).toBe(403);
+    expect(upstreamRequests).toHaveLength(0);
+  });
+
+  it('rejects oversized upstream request bodies before forwarding', async () => {
+    const { handler, upstreamRequests } = createFixture();
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages', {
+        method: 'POST',
+        headers: {
+          ...bearerHeaders(capabilityToken),
+          'content-length': String(1024 * 1024 + 1),
+        },
+        body: '{}',
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(upstreamRequests).toHaveLength(0);
+  });
+
+  it('rejects oversized upstream request bodies without trusting content-length', async () => {
+    const { handler, upstreamRequests } = createFixture();
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages', {
+        method: 'POST',
+        headers: bearerHeaders(capabilityToken),
+        body: 'x'.repeat(1024 * 1024 + 1),
+      }),
+    );
+
+    expect(response.status).toBe(413);
     expect(upstreamRequests).toHaveLength(0);
   });
 

@@ -28,8 +28,11 @@ function createFakeAdapter() {
       calls.push({ method: 'runCommand', input: { sandboxId, command, arguments_, environment } });
       return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
     },
-    async runTrackedCommand(sandboxId, command, arguments_, _environment, onProcessStart) {
-      calls.push({ method: 'runTrackedCommand', input: { sandboxId, command, arguments_ } });
+    async runTrackedCommand(sandboxId, command, arguments_, environment, onProcessStart) {
+      calls.push({
+        method: 'runTrackedCommand',
+        input: { sandboxId, command, arguments_, environment },
+      });
       await onProcessStart('123');
       return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
     },
@@ -122,6 +125,29 @@ describe('sandbox port', () => {
     expect(calls).toEqual([]);
   });
 
+  it('rejects failed repository updates before agents run', async () => {
+    const { adapter } = createFakeAdapter();
+    adapter.runCommand = async () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr: 'fatal: could not fetch',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.update(
+        'sandbox_1',
+        { owner: 'stevekinney', name: 'tribunal' },
+        'a'.repeat(40),
+        'capability-token',
+      ),
+    ).rejects.toThrow('Sandbox repository update failed with exit code 128');
+  });
+
   it('validates runAgent output and delegates suspend and terminate calls', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
@@ -152,6 +178,48 @@ describe('sandbox port', () => {
     await port.terminate('sandbox_1');
 
     expect(calls.map((call) => call.method)).toEqual(['runTrackedCommand', 'suspend', 'terminate']);
+    expect(calls[0]).toMatchObject({
+      input: {
+        environment: {
+          TRIBUNAL_RUN_TOKEN: 'token',
+          TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
+          ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic/api.anthropic.com',
+        },
+      },
+    });
+  });
+
+  it('rejects failed agent runner commands before parsing stdout', async () => {
+    const { adapter } = createFakeAdapter();
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 1,
+      stdout: 'not json',
+      stderr: 'agent crashed',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        'agent_run_1',
+        {
+          id: 'agent_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        'token',
+        () => {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('Agent runner failed with exit code 1: agent crashed');
   });
 
   it('kills the tracked process for an active agent run', async () => {

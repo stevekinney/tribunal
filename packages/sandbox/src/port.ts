@@ -76,7 +76,7 @@ export function createSandboxPort(
       if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
       const proxiedRepositoryUrl = makeProxiedRepositoryUrl(configuration.proxyUrl, repository);
 
-      await adapter.runCommand(
+      const commandResult = await adapter.runCommand(
         sandboxId,
         'bash',
         [
@@ -99,6 +99,9 @@ export function createSandboxPort(
           TRIBUNAL_RUN_TOKEN: runToken,
         },
       );
+      if (commandResult.exitCode !== 0) {
+        throw new Error(formatGitCommandFailure(commandResult));
+      }
     },
     async runAgent(
       sandboxId: string,
@@ -117,7 +120,11 @@ export function createSandboxPort(
           sandboxId,
           'node',
           ['runner/run-agent.mjs', agent.slug],
-          { TRIBUNAL_RUN_TOKEN: runToken },
+          {
+            TRIBUNAL_RUN_TOKEN: runToken,
+            TRIBUNAL_PROXY_URL: configuration.proxyUrl,
+            ANTHROPIC_BASE_URL: makeProxiedAnthropicUrl(configuration.proxyUrl),
+          },
           async (processId) => {
             execution.processId = processId;
             if (execution.stopRequested) {
@@ -127,6 +134,9 @@ export function createSandboxPort(
         );
       } finally {
         runningAgentProcesses.delete(processKey);
+      }
+      if (commandResult.exitCode !== 0) {
+        throw new Error(formatAgentCommandFailure(commandResult));
       }
       const parsedOutput = JSON.parse(commandResult.stdout) as unknown;
       return agentResultSchema.parse(parsedOutput);
@@ -162,6 +172,25 @@ function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string
   return url.toString();
 }
 
+function makeProxiedAnthropicUrl(proxyUrl: string): string {
+  const url = new URL(proxyUrl);
+  const prefix = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+  url.pathname = `${prefix}/anthropic/api.anthropic.com`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 function createAgentProcessKey(sandboxId: string, agentRunId: string): string {
   return `${sandboxId}:${agentRunId}`;
+}
+
+function formatAgentCommandFailure(commandResult: SandboxCommandResult): string {
+  const detail = commandResult.stderr || commandResult.stdout || 'agent runner produced no output';
+  return `Agent runner failed with exit code ${commandResult.exitCode}: ${detail}`;
+}
+
+function formatGitCommandFailure(commandResult: SandboxCommandResult): string {
+  const detail = commandResult.stderr || commandResult.stdout || 'git command produced no output';
+  return `Sandbox repository update failed with exit code ${commandResult.exitCode}: ${detail}`;
 }

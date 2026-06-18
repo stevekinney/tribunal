@@ -72,6 +72,7 @@ export function mapPullRequestEventToReviewIntentKind(
     case 'pr_ready_for_review':
       return 'start';
     case 'pr_synchronized':
+    case 'check_completed':
       return 'commit_pushed';
     case 'pr_closed':
       return 'pr_closed';

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
@@ -100,6 +101,17 @@ export function createEngineServerOptions(
         const processed = await runtime.drainReviewIntents();
         return Response.json({ ok: true, processed });
       }
+      const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
+      if (stopMatch !== null && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const result = await runtime.stopReviewRun(decodeURIComponent(stopMatch[1]!));
+        if (!result.stopped) {
+          return Response.json({ ok: false, error: 'review_run_not_active' }, { status: 404 });
+        }
+        return Response.json({ ok: true, stopped: true });
+      }
       return new Response('Not found', { status: 404 });
     },
   };
@@ -107,7 +119,11 @@ export function createEngineServerOptions(
 
 function hasValidControlToken(request: Request, expectedToken: string): boolean {
   const authorization = request.headers.get('authorization');
-  return authorization === `Bearer ${expectedToken}`;
+  const expectedAuthorization = `Bearer ${expectedToken}`;
+  if (authorization === null || authorization.length !== expectedAuthorization.length) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(authorization), Buffer.from(expectedAuthorization));
 }
 
 function requireEnvironmentValue(value: string | undefined, name: string): string {

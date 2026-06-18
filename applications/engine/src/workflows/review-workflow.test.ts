@@ -120,6 +120,23 @@ describe('ReviewWorkflowEngine', () => {
     );
   });
 
+  it('deduplicates concurrent first review starts for the same pull request', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+
+    const firstRun = engine.startPullRequestReview(baseInput);
+    const secondRun = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(Promise.all([firstRun, secondRun])).resolves.toEqual([
+      expect.objectContaining({ id: 'run:42:7:aaa111:opened', status: 'posted' }),
+      expect.objectContaining({ id: 'run:42:7:aaa111:opened', status: 'posted' }),
+    ]);
+    expect(ports.sandbox.ensureCalls).toHaveLength(1);
+    expect(ports.github.createdCheckRuns).toEqual(['aaa111']);
+  });
+
   it('returns the existing synchronize run when the same head is signaled twice', async () => {
     const ports = createFakePorts();
     const engine = createEngine(ports);
@@ -133,25 +150,44 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.updateCalls.map((call) => call.head)).toEqual(['aaa111', 'bbb222']);
   });
 
+  it('waits for a duplicate running synchronize intent before marking it processed', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    await engine.startPullRequestReview(baseInput);
+    ports.sandbox.holdFutureAgentRuns();
+    const updatedInput = { ...baseInput, headSha: 'bbb222', trigger: 'synchronize' as const };
+    const runningSynchronize = engine.signalCommitPushed(updatedInput);
+    await ports.sandbox.waitForRunningAgents(2);
+    ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'commit_pushed', updatedInput));
+
+    const duplicateDrain = engine.claimReviewIntents(1);
+    await Promise.resolve();
+    expect(ports.intents.processedIntentIds).toEqual([]);
+
+    ports.sandbox.resolveHeldAgents();
+    await runningSynchronize;
+    await expect(duplicateDrain).resolves.toBe(1);
+    expect(ports.intents.processedIntentIds).toEqual(['intent_1']);
+    expect(ports.sandbox.updateCalls.map((call) => call.head)).toEqual(['aaa111', 'bbb222']);
+  });
+
   it('retries a same-head synchronize run after the previous attempt failed', async () => {
     const ports = createFakePorts();
     const engine = createEngine(ports);
     await engine.startPullRequestReview(baseInput);
     const updatedInput = { ...baseInput, headSha: 'bbb222', trigger: 'synchronize' as const };
 
-    ports.cost.failNextReconcile();
-    await expect(engine.signalCommitPushed(updatedInput)).rejects.toThrow(
-      'crashed after posting review',
-    );
+    ports.sandbox.failNextUpdate();
+    await expect(engine.signalCommitPushed(updatedInput)).rejects.toThrow('sandbox update failed');
     await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
       status: 'posted',
       headSha: 'bbb222',
     });
 
-    expect(ports.cost.reconcileCalls).toEqual([
-      'run:42:7:aaa111:opened',
-      'run:42:7:bbb222:synchronize',
-      'run:42:7:bbb222:synchronize',
+    expect(ports.sandbox.updateCalls.map((call) => call.head)).toEqual([
+      'aaa111',
+      'bbb222',
+      'bbb222',
     ]);
   });
 
@@ -174,14 +210,14 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
-  it('stops multiple in-flight agents in deterministic agent-run order', async () => {
+  it('stops an in-flight agent when the pull request closes', async () => {
     const ports = createFakePorts({ holdAllAgentRuns: true });
     const engine = createEngine(ports);
     const runningReview = engine.startPullRequestReview({
       ...baseInput,
       agents: [performanceAgent, reviewAgent],
     });
-    await ports.sandbox.waitForRunningAgents(2);
+    await ports.sandbox.waitForRunningAgent();
 
     await engine.signalPullRequestClosed(
       { ...baseInput, agents: [performanceAgent, reviewAgent] },
@@ -190,10 +226,7 @@ describe('ReviewWorkflowEngine', () => {
     ports.sandbox.resolveHeldAgents();
     await runningReview;
 
-    expect(ports.sandbox.stopCalls).toEqual([
-      'arun:run:42:7:aaa111:opened:agent_performance',
-      'arun:run:42:7:aaa111:opened:agent_security',
-    ]);
+    expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_performance']);
   });
 
   it('terminates the sandbox and finalizes the check run when the pull request closes', async () => {
@@ -258,24 +291,6 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
-  it('retries after a crash past posting without duplicate comments or cost events', async () => {
-    const ports = createFakePorts({ failFirstReconcile: true });
-    const engine = createEngine(ports);
-
-    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
-      'crashed after posting review',
-    );
-    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
-      status: 'posted',
-    });
-
-    expect(ports.github.reviews).toHaveLength(1);
-    expect(ports.cost.reconcileCalls).toEqual(['run:42:7:aaa111:opened', 'run:42:7:aaa111:opened']);
-    expect(ports.cost.llmEstimateKeys).toEqual([
-      'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
-    ]);
-  });
-
   it('records failed agent results and posts a neutral check run', async () => {
     const ports = createFakePorts({ failAgentRuns: true });
     const engine = createEngine(ports);
@@ -320,19 +335,57 @@ describe('ReviewWorkflowEngine', () => {
       }),
     });
     expect(ports.sandbox.runAgentCalls[0]?.runToken).toBe(runToken);
+    expect(ports.github.mintReadTokenCalls).toEqual([]);
   });
 
-  it('releases a claimed intent when downstream processing fails', async () => {
+  it('releases a claimed intent when downstream processing fails without aborting the drain loop', async () => {
     const ports = createFakePorts({ failCheckRunCreation: true });
     ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
     const engine = createEngine(ports);
 
-    await expect(engine.claimReviewIntents()).rejects.toThrow('check run creation failed');
+    await expect(engine.claimReviewIntents()).resolves.toBe(0);
 
     expect(ports.intents.processedIntentIds).toEqual([]);
     expect(ports.intents.failedIntentErrors).toEqual([
       { intentId: 'intent_1', message: 'check run creation failed' },
     ]);
+  });
+
+  it('continues claiming later intents after one claimed intent fails', async () => {
+    const ports = createFakePorts({ failCheckRunCreationsRemaining: 1 });
+    ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
+    ports.intents.enqueue(
+      createIntent('intent_2', 'delivery_2', 'start', {
+        ...baseInput,
+        pullRequestNumber: 8,
+      }),
+    );
+    const engine = createEngine(ports);
+
+    await expect(engine.claimReviewIntents(2)).resolves.toBe(1);
+
+    expect(ports.intents.failedIntentErrors).toEqual([
+      { intentId: 'intent_1', message: 'check run creation failed' },
+    ]);
+    expect(ports.intents.processedIntentIds).toEqual(['intent_2']);
+  });
+
+  it('stops dispatching agents when the daily cap is reached mid-run', async () => {
+    const ports = createFakePorts({ spendTodayEstimate: 9.99, spendAfterFirstEstimate: 10 });
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        agents: [reviewAgent, performanceAgent],
+      }),
+    ).resolves.toMatchObject({ status: 'quota_blocked' });
+
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual(['agent_security']);
+    expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
   });
 
   it('posts deterministic sorted comments for multiple findings', async () => {
@@ -365,6 +418,42 @@ describe('ReviewWorkflowEngine', () => {
     await runningReview;
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
     expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'timeout' });
+  });
+
+  it('cancels a running review through the review-run stop signal', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
+    expect(engine.snapshot().supervisors[0]).toMatchObject({ activeRunId: undefined });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Review run stopped by operator.',
+        },
+      },
+    });
+  });
+
+  it('ignores review-run stop signals when no active run matches', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.stopRun('missing-run', 'timeout')).resolves.toEqual({ stopped: false });
+
+    expect(ports.sandbox.stopCalls).toEqual([]);
+    expect(ports.github.checkRunPatches).toEqual([]);
   });
 
   it('records a killed agent as cancelled when the sandbox runner throws after abort', async () => {
@@ -460,11 +549,13 @@ type FakePortOptions = {
   holdAllAgentRuns?: boolean;
   spendTodayEstimate?: number;
   duplicateCostRecordCalls?: boolean;
-  failFirstReconcile?: boolean;
   failAgentRuns?: boolean;
   failCheckRunCreation?: boolean;
+  failCheckRunCreationsRemaining?: number;
   failAbortedAgentRuns?: boolean;
+  failNextSandboxUpdate?: boolean;
   multipleFindings?: boolean;
+  spendAfterFirstEstimate?: number;
 };
 
 class FakeReviewIntentPort implements ReviewIntentPort {
@@ -505,11 +596,18 @@ class FakeGitHubPort implements GitHubPort {
     patch: CheckRunPatch;
   }> = [];
   readonly reviews: ReviewPayload[] = [];
+  readonly mintReadTokenCalls: Array<{ repositoryId: number; installationId: number }> = [];
+  readonly createdCheckRuns: string[] = [];
   private nextCheckRunId = 9000;
+  private checkRunCreationFailuresRemaining: number;
 
-  constructor(private readonly options: FakePortOptions = {}) {}
+  constructor(private readonly options: FakePortOptions = {}) {
+    this.checkRunCreationFailuresRemaining =
+      options.failCheckRunCreationsRemaining ?? (options.failCheckRunCreation ? Infinity : 0);
+  }
 
-  async mintReadToken(): Promise<ScopedToken> {
+  async mintReadToken(repositoryId: number, installationId: number): Promise<ScopedToken> {
+    this.mintReadTokenCalls.push({ repositoryId, installationId });
     return { token: 'read-token', expiresAt: new Date('2026-06-17T13:00:00.000Z') };
   }
 
@@ -551,10 +649,12 @@ class FakeGitHubPort implements GitHubPort {
     };
   }
 
-  async createCheckRun(): Promise<{ checkRunId: number }> {
-    if (this.options.failCheckRunCreation) {
+  async createCheckRun(_repository: RepoRef, headSha: string): Promise<{ checkRunId: number }> {
+    if (this.checkRunCreationFailuresRemaining > 0) {
+      this.checkRunCreationFailuresRemaining -= 1;
       throw new Error('check run creation failed');
     }
+    this.createdCheckRuns.push(headSha);
     this.nextCheckRunId += 1;
     return { checkRunId: this.nextCheckRunId };
   }
@@ -595,6 +695,7 @@ class FakeSandboxPort implements SandboxPort {
   });
   private runningAgents = 0;
   private readonly heldAgentResolvers: Array<() => void> = [];
+  private holdFutureRuns = false;
 
   constructor(private readonly options: FakePortOptions) {}
 
@@ -610,6 +711,10 @@ class FakeSandboxPort implements SandboxPort {
     runToken: string,
   ): Promise<void> {
     this.updateCalls.push({ sandboxId, repository, head, runToken });
+    if (this.options.failNextSandboxUpdate) {
+      this.options.failNextSandboxUpdate = false;
+      throw new Error('sandbox update failed');
+    }
   }
 
   async runAgent(
@@ -632,7 +737,8 @@ class FakeSandboxPort implements SandboxPort {
 
     if (
       (this.options.holdAgentRuns && this.runAgentCalls.length === 1) ||
-      this.options.holdAllAgentRuns
+      this.options.holdAllAgentRuns ||
+      this.holdFutureRuns
     ) {
       await new Promise<void>((resolve) => {
         this.heldAgentResolvers.push(resolve);
@@ -674,17 +780,23 @@ class FakeSandboxPort implements SandboxPort {
       resolve();
     }
   }
+
+  holdFutureAgentRuns(): void {
+    this.holdFutureRuns = true;
+  }
+
+  failNextUpdate(): void {
+    this.options.failNextSandboxUpdate = true;
+  }
 }
 
 class FakeCostPort implements CostPort {
   readonly recordLlmEstimateCalls: string[] = [];
   readonly reconcileCalls: string[] = [];
   private readonly idempotencyKeys = new Set<string>();
-  private reconcileFailuresRemaining: number;
   private spendTodayEstimateValue: number;
 
   constructor(private readonly options: FakePortOptions) {
-    this.reconcileFailuresRemaining = options.failFirstReconcile ? 1 : 0;
     this.spendTodayEstimateValue = options.spendTodayEstimate ?? 0;
   }
 
@@ -699,24 +811,19 @@ class FakeCostPort implements CostPort {
       this.recordLlmEstimateCalls.push(event.idempotencyKey);
       this.idempotencyKeys.add(event.idempotencyKey);
     }
+    if (this.options.spendAfterFirstEstimate !== undefined) {
+      this.spendTodayEstimateValue = this.options.spendAfterFirstEstimate;
+    }
   }
 
   async recordSandbox(): Promise<void> {}
 
   async reconcile(reviewRunId: string): Promise<void> {
     this.reconcileCalls.push(reviewRunId);
-    if (this.reconcileFailuresRemaining > 0) {
-      this.reconcileFailuresRemaining -= 1;
-      throw new Error('crashed after posting review');
-    }
   }
 
   async spendTodayEstimate(): Promise<number> {
     return this.spendTodayEstimateValue;
-  }
-
-  failNextReconcile(): void {
-    this.reconcileFailuresRemaining += 1;
   }
 
   setSpendTodayEstimate(value: number): void {

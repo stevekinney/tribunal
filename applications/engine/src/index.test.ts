@@ -27,6 +27,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 3,
+        stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -56,6 +57,7 @@ describe('createEngineServerOptions', () => {
           drainCalled = true;
           return 3;
         },
+        stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -82,6 +84,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: false, detail: 'advisory lock not held' },
         ],
         drainReviewIntents: async () => 0,
+        stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -97,6 +100,99 @@ describe('createEngineServerOptions', () => {
         { name: 'singleton_lock', ok: false, detail: 'advisory lock not held' },
       ],
     });
+  });
+
+  it('stops review runs through the runtime endpoint', async () => {
+    const stoppedRunIds: string[] = [];
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [
+          { name: 'weft_database', ok: true },
+          { name: 'singleton_lock', ok: true },
+        ],
+        drainReviewIntents: async () => 0,
+        stopReviewRun: async (reviewRunId) => {
+          stoppedRunIds.push(reviewRunId);
+          return { stopped: true };
+        },
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-runs/run%3A42%3A7%3Ahead/stop', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(stoppedRunIds).toEqual(['run:42:7:head']);
+    await expect(response.json()).resolves.toEqual({ ok: true, stopped: true });
+  });
+
+  it('reports inactive review runs through the runtime stop endpoint', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [
+          { name: 'weft_database', ok: true },
+          { name: 'singleton_lock', ok: true },
+        ],
+        drainReviewIntents: async () => 0,
+        stopReviewRun: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-runs/run_1/stop', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'review_run_not_active',
+    });
+  });
+
+  it('rejects review run stop requests with same-length wrong control tokens', async () => {
+    let stopCalled = false;
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [
+          { name: 'weft_database', ok: true },
+          { name: 'singleton_lock', ok: true },
+        ],
+        drainReviewIntents: async () => 0,
+        stopReviewRun: async () => {
+          stopCalled = true;
+          return { stopped: true };
+        },
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-runs/run_1/stop', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-tokem' },
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(stopCalled).toBe(false);
   });
 });
 

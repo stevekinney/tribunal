@@ -97,6 +97,57 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent?.claimedAt).toBeNull();
   });
 
+  it('claims workflow input from an active installation when inactive installations are linked', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    const factories = createFactories(testDatabase.db);
+    const inactiveUser = await factories.user.create();
+    const inactiveInstallation = await factories.githubInstallation.createForUser(inactiveUser.id, {
+      installationId: 2002,
+      status: 'suspended',
+    });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: inactiveInstallation.installationId,
+      repositoryId: repository.id,
+      isActive: true,
+    });
+    await testDatabase.db.insert(userReviewSettings).values({
+      userId: inactiveUser.id,
+      dailyCostCapUsd: '1.00',
+      reviewsEnabled: true,
+    });
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_active',
+        userId: user.id,
+        slug: 'active-review',
+        description: 'Reviews active installations.',
+        body: 'Find active-installation problems.',
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent_inactive',
+        userId: inactiveUser.id,
+        slug: 'inactive-review',
+        description: 'Should not be selected.',
+        body: 'Do not use.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values([
+      { repositoryId: repository.id, agentId: 'agent_active' },
+      { repositoryId: repository.id, agentId: 'agent_inactive' },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest).toMatchObject({
+      userId: user.id,
+      installationId: 1001,
+      agents: [{ id: 'agent_active' }],
+    });
+  });
+
   it('reclaims stale unprocessed review intents', async () => {
     const { user, repository } = await createReviewIntentFixture();
     await testDatabase.db.insert(agent).values({

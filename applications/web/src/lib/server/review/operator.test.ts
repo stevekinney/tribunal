@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { runWithDatabase } from '$lib/server/database';
 import {
@@ -17,6 +17,17 @@ import {
 import { eq } from 'drizzle-orm';
 import { getCostOverview, getRunInspector, saveRepositoryWatchSettings, stopRun } from './operator';
 
+const mocks = vi.hoisted(() => ({
+  env: {
+    TRIBUNAL_ENGINE_URL: '',
+    TRIBUNAL_ENGINE_CONTROL_TOKEN: '',
+  },
+}));
+
+vi.mock('$env/dynamic/private', () => ({
+  env: mocks.env,
+}));
+
 describe('review operator server helpers', () => {
   let testDb: TestDatabase;
 
@@ -30,6 +41,9 @@ describe('review operator server helpers', () => {
 
   beforeEach(async () => {
     await testDb.reset();
+    mocks.env.TRIBUNAL_ENGINE_URL = '';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = '';
+    vi.restoreAllMocks();
   });
 
   function withTestDatabase<T>(operation: () => Promise<T>): Promise<T> {
@@ -146,6 +160,73 @@ describe('review operator server helpers', () => {
     await withTestDatabase(() => stopRun(owner.id, 'run_1'));
     const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
     expect(stoppedRun.status).toBe('cancelled');
+  });
+
+  it('signals the live engine after marking an owned run stopped when configured', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 22,
+      headSha: 'abc123',
+      trigger: 'manual',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      reviewRunId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+
+    await withTestDatabase(() => stopRun(owner.id, 'run_1'));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('https://engine.tribunal.test/review-runs/run_1/stop'),
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      },
+    );
+  });
+
+  it('keeps the persisted stop when the live engine stop signal fails', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 503 }));
+    const warnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 22,
+      headSha: 'abc123',
+      trigger: 'manual',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      reviewRunId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+
+    await expect(withTestDatabase(() => stopRun(owner.id, 'run_1'))).resolves.toEqual({
+      ok: true,
+    });
+
+    const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
+    expect(stoppedRun.status).toBe('cancelled');
+    expect(warnMock).toHaveBeenCalledWith('Engine stop signal failed with status 503.');
   });
 
   it('rolls up estimated costs and cache-token splits', async () => {

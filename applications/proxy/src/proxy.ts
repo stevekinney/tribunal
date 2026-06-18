@@ -44,6 +44,7 @@ type RouteValidationResult =
 
 const unsafeGitHubRestMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const safeGitHubRestMethods = new Set(['GET', 'HEAD']);
+const maxUpstreamRequestBodyBytes = 1024 * 1024;
 
 export function createProxyHandler(
   options: ProxyHandlerOptions,
@@ -205,7 +206,7 @@ function validateAnthropicRoute(
 }
 
 function isAllowedAnthropicPath(upstreamPath: string): boolean {
-  return upstreamPath === '/v1/messages' || upstreamPath.startsWith('/v1/messages/');
+  return upstreamPath === '/v1/messages';
 }
 
 function isGitHubPathAllowed(
@@ -298,7 +299,21 @@ async function forwardValidatedRequest(input: {
   }
 
   const upstreamRequest = await createUpstreamRequest(input.request, input.route, credential);
-  const upstreamResponse = await input.upstreamFetch(upstreamRequest);
+  if (!upstreamRequest.ok) {
+    await emitAudit(
+      input.auditSink,
+      auditEventForRequest(input.request, input.route, input.claims, {
+        outcome: 'blocked',
+        status: upstreamRequest.status,
+        reason: upstreamRequest.reason,
+        credentialInjected: false,
+      }),
+      input.options,
+      [input.capabilityToken],
+    );
+    return errorResponse(upstreamRequest.status, upstreamRequest.reason);
+  }
+  const upstreamResponse = await input.upstreamFetch(upstreamRequest.request);
 
   await emitAudit(
     input.auditSink,
@@ -318,7 +333,7 @@ async function createUpstreamRequest(
   request: Request,
   route: ValidatedRoute,
   credential: string,
-): Promise<Request> {
+): Promise<{ ok: true; request: Request } | { ok: false; status: number; reason: string }> {
   const headers = sanitizeForwardedHeaders(request.headers);
   if (route.service === 'github') {
     headers.set('authorization', `Bearer ${credential}`);
@@ -327,13 +342,37 @@ async function createUpstreamRequest(
   }
 
   const body =
-    route.method === 'GET' || route.method === 'HEAD' ? undefined : await request.arrayBuffer();
+    route.method === 'GET' || route.method === 'HEAD'
+      ? undefined
+      : await readBoundedRequestBody(request);
+  if (body instanceof Response) {
+    return { ok: false, status: body.status, reason: 'request_body_too_large' };
+  }
 
-  return new Request(route.upstreamUrl, {
-    method: route.method,
-    headers,
-    body,
-  });
+  return {
+    ok: true,
+    request: new Request(route.upstreamUrl, {
+      method: route.method,
+      headers,
+      body,
+    }),
+  };
+}
+
+async function readBoundedRequestBody(request: Request): Promise<ArrayBuffer | Response> {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    const parsedLength = Number(contentLength);
+    if (!Number.isFinite(parsedLength) || parsedLength > maxUpstreamRequestBodyBytes) {
+      return errorResponse(413, 'request_body_too_large');
+    }
+  }
+
+  const body = await request.arrayBuffer();
+  if (body.byteLength > maxUpstreamRequestBodyBytes) {
+    return errorResponse(413, 'request_body_too_large');
+  }
+  return body;
 }
 
 function sanitizeForwardedHeaders(headers: Headers): Headers {

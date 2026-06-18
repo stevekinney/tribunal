@@ -152,7 +152,10 @@ async function buildPullRequestReviewInput(
     )
     .innerJoin(
       githubInstallation,
-      eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+      and(
+        eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.status, 'active'),
+      ),
     )
     .innerJoin(userReviewSettings, eq(userReviewSettings.userId, githubInstallation.userId))
     .leftJoin(

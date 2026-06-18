@@ -49,6 +49,12 @@ export const emptyUsageCostApiClient = {
   listReviewRunCosts: async () => [],
 };
 
+export const unconfiguredUsageCostApiClient = {
+  listReviewRunCosts: async () => {
+    throw new Error('Authoritative usage cost reconciliation is not configured.');
+  },
+};
+
 export function createReviewIntentConsumerFromEnvironment(
   environment: ReviewIntentRuntimeEnvironment,
 ) {
@@ -71,7 +77,7 @@ export function createReviewIntentConsumer(
       github: createEngineGitHubPort(database, githubContext),
       sandbox: createEngineSandboxPort(environment),
       cost: createCostPort(database, {
-        usageCostApiClient: emptyUsageCostApiClient,
+        usageCostApiClient: unconfiguredUsageCostApiClient,
       }),
       intents: intentPort,
     },
@@ -107,11 +113,13 @@ export function createReviewIntentConsumer(
           processed += 1;
         } catch (error) {
           await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
-          throw error;
         }
       }
 
       return processed;
+    },
+    stopReviewRun(reviewRunId: string) {
+      return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
     },
   };
 }
@@ -263,6 +271,7 @@ export function createEngineSandboxPort(environment: ReviewIntentRuntimeEnvironm
 export class TensorlakeSandboxAdapter implements SandboxAdapter {
   private readonly client: SandboxClient;
   private readonly sandboxes = new Map<string, Sandbox>();
+  private readonly createPromises = new Map<string, Promise<{ sandboxId: string }>>();
   private readonly apiKey: string;
   private readonly organizationId: string | undefined;
   private readonly projectId: string | undefined;
@@ -279,6 +288,17 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
   }
 
   async create(input: SandboxCreateInput) {
+    const existingPromise = this.createPromises.get(input.name);
+    if (existingPromise !== undefined) return existingPromise;
+
+    const promise = this.createOnce(input).finally(() => {
+      this.createPromises.delete(input.name);
+    });
+    this.createPromises.set(input.name, promise);
+    return promise;
+  }
+
+  private async createOnce(input: SandboxCreateInput) {
     const existing = await this.findSandboxByName(input.name);
     if (existing) {
       const sandbox = await Sandbox.connect({ sandboxId: existing.sandboxId, apiKey: this.apiKey });
@@ -340,9 +360,10 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
       }
     }
     const completedProcess = await sandbox.getProcess(process.pid);
+    const exitCode = completedProcess.exitCode;
 
     return {
-      exitCode: completedProcess.exitCode ?? 0,
+      exitCode: typeof exitCode === 'number' ? exitCode : 1,
       stdout: stdout.join('\n'),
       stderr: stderr.join('\n'),
     };
@@ -401,7 +422,10 @@ export async function resolveInstallationId(
     )
     .innerJoin(
       githubInstallation,
-      eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+      and(
+        eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.status, 'active'),
+      ),
     )
     .where(
       and(eq(repositoryTable.owner, repository.owner), eq(repositoryTable.name, repository.name)),

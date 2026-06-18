@@ -15,6 +15,7 @@ import {
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { agentSpecSchema, effortSchema, agentModelSchema } from '@tribunal/review-core/schemas';
+import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
@@ -393,7 +394,26 @@ export async function stopRun(userId: number, runId: string) {
       AND ${agentRun.reviewRunId} IN (SELECT id FROM stopped_run)
   `);
 
+  await signalEngineStop(runId);
+
   return { ok: true };
+}
+
+async function signalEngineStop(runId: string): Promise<void> {
+  if (!env.TRIBUNAL_ENGINE_URL || !env.TRIBUNAL_ENGINE_CONTROL_TOKEN) return;
+
+  try {
+    const url = new URL(`/review-runs/${encodeURIComponent(runId)}/stop`, env.TRIBUNAL_ENGINE_URL);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.TRIBUNAL_ENGINE_CONTROL_TOKEN}` },
+    });
+    if (!response.ok && response.status !== 404) {
+      console.warn(`Engine stop signal failed with status ${response.status}.`);
+    }
+  } catch (error) {
+    console.warn('Engine stop signal failed.', error);
+  }
 }
 
 export async function getCostOverview(userId: number, source: 'estimate' | 'reconciled') {

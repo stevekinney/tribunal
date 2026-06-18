@@ -98,6 +98,7 @@ const {
   emptyUsageCostApiClient,
   resolveInstallationId,
   TensorlakeSandboxAdapter,
+  unconfiguredUsageCostApiClient,
 } = await import('./runtime-ports');
 const { createReviewWorkflowDefinitions } = await import('./review-workflow-definitions');
 
@@ -144,11 +145,15 @@ describe('runtime review intent consumer wiring', () => {
       'sandbox-reaper',
     ]);
     await expect(consumer.drain()).resolves.toBe(0);
+    await expect(consumer.stopReviewRun('missing-run')).resolves.toEqual({ stopped: false });
   });
 
   it('creates a consumer from DATABASE_URL and exposes an empty reconciliation client', async () => {
     expect(createReviewIntentConsumerFromEnvironment(runtimeEnvironment())).toBeDefined();
     await expect(emptyUsageCostApiClient.listReviewRunCosts()).resolves.toEqual([]);
+    await expect(unconfiguredUsageCostApiClient.listReviewRunCosts()).rejects.toThrow(
+      'Authoritative usage cost reconciliation is not configured.',
+    );
   });
 
   it('runs the registered review-pr workflow through the review workflow activity', async () => {
@@ -210,7 +215,7 @@ describe('runtime review intent consumer wiring', () => {
     const result = vi.fn().mockRejectedValue(new Error('workflow failed'));
     consumer.bindWorkflowEngine({ start: vi.fn().mockResolvedValue({ result }) });
 
-    await expect(consumer.drain(1)).rejects.toThrow('workflow failed');
+    await expect(consumer.drain(1)).resolves.toBe(0);
 
     const [intent] = await testDatabase.db
       .select()
@@ -223,6 +228,41 @@ describe('runtime review intent consumer wiring', () => {
       lastError: 'workflow failed',
     });
     expect(intent?.nextAttemptAt).toBeInstanceOf(Date);
+  });
+
+  it('continues draining later intents after one workflow dispatch fails', async () => {
+    await createRunnableReviewIntentFixture();
+    await testDatabase.db.insert(reviewIntent).values({
+      id: 'intent_2',
+      deliveryId: 'delivery_2',
+      kind: 'start',
+      repositoryId: 42,
+      prNumber: 8,
+      headSha: 'b'.repeat(40),
+    });
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: 42,
+      prNumber: 8,
+      state: 'open',
+      headSha: 'b'.repeat(40),
+    });
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const result = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('workflow failed'))
+      .mockResolvedValueOnce({ processed: true });
+    consumer.bindWorkflowEngine({ start: vi.fn().mockResolvedValue({ result }) });
+
+    await expect(consumer.drain(2)).resolves.toBe(1);
+
+    const rows = await testDatabase.db.select().from(reviewIntent).orderBy(reviewIntent.id);
+    expect(rows[0]).toMatchObject({
+      id: 'intent_1',
+      processedAt: null,
+      failureCount: 1,
+      lastError: 'workflow failed',
+    });
+    expect(rows[1]?.processedAt).toBeInstanceOf(Date);
   });
 });
 
@@ -420,6 +460,66 @@ describe('Tensorlake sandbox adapter', () => {
       }),
     ).resolves.toEqual({ sandboxId: 'sandbox_existing' });
     expect(sandboxClientCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates concurrent sandbox creates for the same name', async () => {
+    let resolveCreate: ((value: { sandboxId: string }) => void) | undefined;
+    sandboxClientCreateMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
+    const input = {
+      name: 'tribunal-pr-42-7',
+      image: 'tribunal-reviewer',
+      cpus: 2,
+      memoryMb: 4096,
+      diskMb: 20480,
+      timeoutSecs: 900,
+      allowInternetAccess: false as const,
+      allowOut: [],
+      secretNames: [] as [],
+      env: {},
+      metadata: {},
+    };
+    const firstCreate = adapter.create(input);
+    const secondCreate = adapter.create(input);
+    resolveCreate?.({ sandboxId: 'sandbox_1' });
+
+    await expect(Promise.all([firstCreate, secondCreate])).resolves.toEqual([
+      { sandboxId: 'sandbox_1' },
+      { sandboxId: 'sandbox_1' },
+    ]);
+    expect(sandboxClientCreateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats null tracked process exit codes as failures', async () => {
+    const sandbox = new MockSandbox('sandbox_1');
+    MockSandbox.connect.mockResolvedValue(sandbox);
+    sandbox.startProcess.mockResolvedValue({ pid: 123 });
+    sandbox.followOutput.mockImplementation(async function* () {
+      yield { line: 'partial output', stream: 'stdout' };
+    });
+    sandbox.getProcess.mockResolvedValue({ pid: 123, exitCode: null });
+    const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
+    await adapter.create({
+      name: 'tribunal-pr-42-7',
+      image: 'tribunal-reviewer',
+      cpus: 2,
+      memoryMb: 4096,
+      diskMb: 20480,
+      timeoutSecs: 900,
+      allowInternetAccess: false,
+      allowOut: [],
+      secretNames: [],
+      env: {},
+      metadata: {},
+    });
+
+    await expect(
+      adapter.runTrackedCommand('sandbox_1', 'node', ['runner.mjs'], undefined, async () => {}),
+    ).resolves.toMatchObject({ exitCode: 1, stdout: 'partial output' });
   });
 
   it('creates the review-core sandbox port over the Tensorlake adapter', async () => {
