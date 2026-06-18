@@ -169,6 +169,13 @@
       "when": 1781718794354,
       "tag": "0023_weft_action_items_reshape",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1781749349132,
+      "tag": "0024_add-review-contract-tables",
+      "breakpoints": true
     }
   ]
 }

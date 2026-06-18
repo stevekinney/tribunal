@@ -1,0 +1,45 @@
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+import { repository } from './repository';
+
+export const reviewIntent = pgTable(
+  'review_intent',
+  {
+    id: text('id').primaryKey(),
+    deliveryId: text('delivery_id').notNull(),
+    kind: text('kind').notNull(),
+    repositoryId: bigint('repository_id', { mode: 'number' })
+      .notNull()
+      .references(() => repository.id, { onDelete: 'cascade' }),
+    prNumber: integer('pr_number').notNull(),
+    headSha: text('head_sha'),
+    prState: text('pr_state'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('review_intent_delivery_kind_idx').on(table.deliveryId, table.kind),
+    index('review_intent_unprocessed_claimed_idx')
+      .on(table.claimedAt)
+      .where(sql`${table.processedAt} IS NULL`),
+    index('review_intent_repository_pr_idx').on(table.repositoryId, table.prNumber),
+    check('review_intent_kind_check', sql`${table.kind} IN ('start','commit_pushed','pr_closed')`),
+    check(
+      'review_intent_pr_state_check',
+      sql`${table.prState} IS NULL OR ${table.prState} IN ('merged','closed')`,
+    ),
+  ],
+);
+
+export type ReviewIntent = typeof reviewIntent.$inferSelect;
+export type NewReviewIntent = typeof reviewIntent.$inferInsert;

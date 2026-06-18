@@ -1,0 +1,24 @@
+{
+  "name": "@tribunal/proxy",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "check": "tsc --noEmit",
+    "test": "vitest run --config vitest.configuration.ts",
+    "lint": "oxlint . && eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@tribunal/review-core": "workspace:*",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@tribunal/typescript": "workspace:*",
+    "@types/node": "^25",
+    "bun-types": "^1.3.4",
+    "vitest": "^4.0.16"
+  }
+}
