@@ -26,11 +26,16 @@ export type ReviewIntentConsumer = {
   workflows?: Record<string, unknown>;
   bindWorkflowEngine?(engine: ReviewIntentWorkflowEngine): void;
   drain(limit?: number): Promise<number>;
+  reapClosedPullRequestSandboxes?(): Promise<unknown>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
 };
 
 export type ReviewIntentWorkflowEngine = {
-  start(workflowName: 'review-pr', input: unknown, options: unknown): Promise<unknown>;
+  start(
+    workflowName: 'review-pr' | 'sandbox-reaper',
+    input: unknown,
+    options: unknown,
+  ): Promise<unknown>;
 };
 
 export type EngineSingletonLock = {
@@ -45,6 +50,7 @@ export type EngineRuntime = {
   engine: unknown;
   healthDependencies(): EngineHealthDependency[];
   drainReviewIntents(limit?: number): Promise<number>;
+  reapClosedPullRequestSandboxes(): Promise<unknown>;
   stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
   release(): Promise<void>;
 };
@@ -87,6 +93,11 @@ export async function createEngineRuntime(
       },
       drainReviewIntents(limit?: number) {
         return options.reviewIntentConsumer?.drain(limit) ?? Promise.resolve(0);
+      },
+      reapClosedPullRequestSandboxes() {
+        return (
+          options.reviewIntentConsumer?.reapClosedPullRequestSandboxes?.() ?? Promise.resolve([])
+        );
       },
       stopReviewRun(reviewRunId: string) {
         return (

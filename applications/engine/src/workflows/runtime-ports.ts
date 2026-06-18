@@ -7,6 +7,7 @@ import {
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestState,
   repository as repositoryTable,
   reviewRun,
 } from '@tribunal/database/schema';
@@ -31,7 +32,7 @@ import type {
   ReviewPayload,
   SandboxPort,
 } from '@tribunal/review-core';
-import { ReviewWorkflowEngine } from './review-workflow';
+import { isReviewPostAlreadyClaimedError, ReviewWorkflowEngine } from './review-workflow';
 import { createDatabaseReviewIntentPort } from './review-intent-port';
 import { createPullRequestWorkflowId, createReviewRunIdempotencyKey } from './identifiers';
 import { createReviewWorkflowDefinitions } from './review-workflow-definitions';
@@ -143,9 +144,14 @@ export function createReviewIntentConsumer(
         try {
           const handle = await dispatchReviewIntentWorkflow(workflowEngine, intent);
           await handle.result();
-          await intentPort.markReviewIntentProcessed(intent.id, intent.claimedAt, new Date());
-          processed += 1;
+          const markedProcessed = await intentPort.markReviewIntentProcessed(
+            intent.id,
+            intent.claimedAt,
+            new Date(),
+          );
+          if (markedProcessed) processed += 1;
         } catch (error) {
+          if (isReviewPostAlreadyClaimedError(error)) continue;
           await intentPort.markReviewIntentFailed(intent.id, intent.claimedAt, new Date(), error);
         }
       }
@@ -155,13 +161,25 @@ export function createReviewIntentConsumer(
     stopReviewRun(reviewRunId: string) {
       return reviewWorkflowEngine.stopRun(reviewRunId, 'operator');
     },
+    async reapClosedPullRequestSandboxes() {
+      const openPullRequests = await listOpenPullRequestSandboxes(database);
+      if (workflowEngine === undefined) {
+        return reviewWorkflowEngine.reapClosedPullRequestSandboxes(openPullRequests);
+      }
+      const handle = await workflowEngine.start('sandbox-reaper', openPullRequests, {
+        id: 'sandbox-reaper',
+        onTerminalConflict: 'start-new',
+        defer: false,
+      });
+      return handle.result();
+    },
   };
 }
 
 type ReviewIntentWorkflowEngine = {
   start(
-    workflowName: 'review-pr',
-    intent: ClaimedReviewIntent,
+    workflowName: 'review-pr' | 'sandbox-reaper',
+    input: ClaimedReviewIntent | Array<{ repositoryId: number; pullRequestNumber: number }>,
     options: {
       id: string;
       onTerminalConflict: 'start-new';
@@ -169,6 +187,18 @@ type ReviewIntentWorkflowEngine = {
     },
   ): Promise<ReviewIntentWorkflowHandle>;
 };
+
+async function listOpenPullRequestSandboxes(
+  database: Database,
+): Promise<Array<{ repositoryId: number; pullRequestNumber: number }>> {
+  return database
+    .select({
+      repositoryId: pullRequestState.repositoryId,
+      pullRequestNumber: pullRequestState.prNumber,
+    })
+    .from(pullRequestState)
+    .where(eq(pullRequestState.state, 'open'));
+}
 
 export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostApiClient {
   return {

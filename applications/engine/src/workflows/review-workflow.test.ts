@@ -243,7 +243,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toEqual([]);
     expect(engine.snapshot().supervisors[0]).toMatchObject({
       sandboxId: 'sandbox-existing',
-      activeRunId: 'run:42:7:aaa111:opened',
+      activeRunId: undefined,
       reviewedHeadShas: ['previous', 'aaa111'],
     });
     expect(engine.snapshot().agentRuns).toEqual([
@@ -1048,6 +1048,29 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
+  it('does not count or fail an intent when its processed claim is stale', async () => {
+    const ports = createFakePorts({ processedIntentClaimMatches: false });
+    ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
+    const engine = createEngine(ports);
+
+    await expect(engine.claimReviewIntents()).resolves.toBe(0);
+
+    expect(ports.intents.processedIntentIds).toEqual([]);
+    expect(ports.intents.failedIntentErrors).toEqual([]);
+  });
+
+  it('backs off without failing the intent when another worker owns the review post claim', async () => {
+    const ports = createFakePorts();
+    ports.state.failNextReviewPostOwnershipCheck();
+    ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
+    const engine = createEngine(ports);
+
+    await expect(engine.claimReviewIntents()).resolves.toBe(0);
+
+    expect(ports.intents.processedIntentIds).toEqual([]);
+    expect(ports.intents.failedIntentErrors).toEqual([]);
+  });
+
   it('continues claiming later intents after one claimed intent fails', async () => {
     const ports = createFakePorts({ failCheckRunCreationsRemaining: 1 });
     ports.intents.enqueue(createIntent('intent_1', 'delivery_1', 'start', baseInput));
@@ -1100,6 +1123,40 @@ describe('ReviewWorkflowEngine', () => {
       'src/example.ts:RIGHT:3',
       'src/example.ts:RIGHT:12',
       'src/second.ts:RIGHT:1',
+    ]);
+  });
+
+  it('uses the end line as the GitHub review anchor for multi-line findings', async () => {
+    const ports = createFakePorts({ multiLineFinding: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.github.reviews[0]?.comments).toEqual([
+      expect.objectContaining({
+        path: 'src/example.ts',
+        line: 12,
+        startLine: 3,
+        side: 'RIGHT',
+        startSide: 'RIGHT',
+      }),
+    ]);
+  });
+
+  it('anchors end-line-only findings without emitting multi-line GitHub fields', async () => {
+    const ports = createFakePorts({ endLineOnlyFinding: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.github.reviews[0]?.comments).toEqual([
+      expect.objectContaining({
+        path: 'src/example.ts',
+        line: 12,
+        startLine: undefined,
+        side: 'RIGHT',
+        startSide: undefined,
+      }),
     ]);
   });
 
@@ -1194,6 +1251,45 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches).toEqual([]);
   });
 
+  it('does not cancel a finished review run from a late stop signal', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+    const patchCount = ports.github.checkRunPatches.length;
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
+      stopped: false,
+    });
+
+    expect(ports.github.checkRunPatches).toHaveLength(patchCount);
+    expect(ports.sandbox.stopCalls).toEqual([]);
+  });
+
+  it('clears a corrupted active run pointer without cancelling a finished check run', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+    const supervisor = (
+      engine as unknown as {
+        supervisors: Map<string, { activeRunId?: string }>;
+      }
+    ).supervisors.get('review:pr:42:7');
+    expect(supervisor).toBeDefined();
+    supervisor!.activeRunId = 'run:42:7:aaa111:opened';
+    const patchCount = ports.github.checkRunPatches.length;
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
+      stopped: false,
+    });
+
+    expect(engine.snapshot().supervisors[0]).toMatchObject({ activeRunId: undefined });
+    expect(ports.github.checkRunPatches).toHaveLength(patchCount);
+  });
+
   it('records a killed agent as cancelled when the sandbox runner throws after abort', async () => {
     const ports = createFakePorts({ holdAgentRuns: true, failAbortedAgentRuns: true });
     const engine = createEngine(ports);
@@ -1286,7 +1382,7 @@ function createFakePorts(options: FakePortOptions = {}): FakePorts {
     github: new FakeGitHubPort(options),
     sandbox: new FakeSandboxPort(options),
     cost: new FakeCostPort(options),
-    intents: new FakeReviewIntentPort(),
+    intents: new FakeReviewIntentPort(options),
     state: new FakeReviewWorkflowStatePort(),
   };
 }
@@ -1306,8 +1402,10 @@ type FakePortOptions = {
   failPostedReviewLookupsRemaining?: number;
   publishFailedReviewBeforeThrowing?: boolean;
   multipleFindings?: boolean;
+  multiLineFinding?: boolean;
   fileLevelFinding?: boolean;
   endLineOnlyFinding?: boolean;
+  processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
 };
@@ -1316,6 +1414,8 @@ class FakeReviewIntentPort implements ReviewIntentPort {
   private readonly intents: ReviewIntent[] = [];
   readonly processedIntentIds: string[] = [];
   readonly failedIntentErrors: Array<{ intentId: string; message: string }> = [];
+
+  constructor(private readonly options: FakePortOptions = {}) {}
 
   enqueue(intent: ReviewIntent): void {
     this.intents.push(intent);
@@ -1326,8 +1426,14 @@ class FakeReviewIntentPort implements ReviewIntentPort {
     return intent === undefined ? null : { ...intent, claimedAt: now };
   }
 
-  async markReviewIntentProcessed(intentId: string, _claimedAt: Date, _now: Date): Promise<void> {
+  async markReviewIntentProcessed(
+    intentId: string,
+    _claimedAt: Date,
+    _now: Date,
+  ): Promise<boolean> {
+    if (this.options.processedIntentClaimMatches === false) return false;
     this.processedIntentIds.push(intentId);
+    return true;
   }
 
   async markReviewIntentFailed(
@@ -1768,6 +1874,7 @@ class FakeSandboxPort implements SandboxPort {
       agent,
       signal.aborted,
       this.options.multipleFindings,
+      this.options.multiLineFinding,
       this.options.fileLevelFinding,
       this.options.endLineOnlyFinding,
     );
@@ -1858,6 +1965,7 @@ function createAgentResult(
   agent: AgentSpec,
   stopped: boolean,
   multipleFindings = false,
+  multiLineFinding = false,
   fileLevelFinding = false,
   endLineOnlyFinding = false,
 ): AgentResult {
@@ -1873,68 +1981,80 @@ function createAgentResult(
           body: 'This cannot be anchored inline.',
         },
       ]
-    : endLineOnlyFinding
+    : multiLineFinding
       ? [
           {
             path: 'src/example.ts',
-            startLine: null,
+            startLine: 3,
             endLine: 12,
             side: 'RIGHT' as const,
             severity: 'warning' as const,
-            title: 'Check this change',
-            body: 'This fake finding proves review posting stays outside the agent.',
+            title: 'Multi-line finding',
+            body: 'This finding should span the changed range.',
           },
         ]
-      : multipleFindings
+      : endLineOnlyFinding
         ? [
             {
-              path: 'src/second.ts',
-              startLine: 1,
-              endLine: null,
-              side: 'RIGHT' as const,
-              severity: 'warning' as const,
-              title: 'Second file',
-              body: 'This should sort last by path.',
-            },
-            {
               path: 'src/example.ts',
-              startLine: 3,
-              endLine: null,
-              side: 'RIGHT' as const,
-              severity: 'warning' as const,
-              title: 'Earlier right side',
-              body: 'This should sort before the later right-side comment.',
-            },
-            {
-              path: 'src/example.ts',
-              startLine: 12,
-              endLine: null,
-              side: 'RIGHT' as const,
-              severity: 'warning' as const,
-              title: 'Right side',
-              body: 'This should sort after the left-side comment.',
-            },
-            {
-              path: 'src/example.ts',
-              startLine: 2,
-              endLine: null,
-              side: 'LEFT' as const,
-              severity: 'warning' as const,
-              title: 'Left side',
-              body: 'This should sort first within the file.',
-            },
-          ]
-        : [
-            {
-              path: 'src/example.ts',
-              startLine: 12,
-              endLine: null,
+              startLine: null,
+              endLine: 12,
               side: 'RIGHT' as const,
               severity: 'warning' as const,
               title: 'Check this change',
               body: 'This fake finding proves review posting stays outside the agent.',
             },
-          ];
+          ]
+        : multipleFindings
+          ? [
+              {
+                path: 'src/second.ts',
+                startLine: 1,
+                endLine: null,
+                side: 'RIGHT' as const,
+                severity: 'warning' as const,
+                title: 'Second file',
+                body: 'This should sort last by path.',
+              },
+              {
+                path: 'src/example.ts',
+                startLine: 3,
+                endLine: null,
+                side: 'RIGHT' as const,
+                severity: 'warning' as const,
+                title: 'Earlier right side',
+                body: 'This should sort before the later right-side comment.',
+              },
+              {
+                path: 'src/example.ts',
+                startLine: 12,
+                endLine: null,
+                side: 'RIGHT' as const,
+                severity: 'warning' as const,
+                title: 'Right side',
+                body: 'This should sort after the left-side comment.',
+              },
+              {
+                path: 'src/example.ts',
+                startLine: 2,
+                endLine: null,
+                side: 'LEFT' as const,
+                severity: 'warning' as const,
+                title: 'Left side',
+                body: 'This should sort first within the file.',
+              },
+            ]
+          : [
+              {
+                path: 'src/example.ts',
+                startLine: 12,
+                endLine: null,
+                side: 'RIGHT' as const,
+                severity: 'warning' as const,
+                title: 'Check this change',
+                body: 'This fake finding proves review posting stays outside the agent.',
+              },
+            ];
 
   return {
     agentSlug: agent.slug,

@@ -346,6 +346,40 @@ describe('runtime review intent consumer wiring', () => {
     ]);
   });
 
+  it('runs sandbox reaping through the local workflow engine before Weft is bound', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+
+    await expect(consumer.reapClosedPullRequestSandboxes()).resolves.toEqual([]);
+  });
+
+  it('dispatches sandbox reaping through the bound Weft engine with open pull requests', async () => {
+    await createRunnableReviewIntentFixture();
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: 42,
+      prNumber: 8,
+      state: 'closed',
+      headSha: 'b'.repeat(40),
+    });
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const result = vi.fn().mockResolvedValue({ reaped: true });
+    const start = vi.fn().mockResolvedValue({ result });
+    consumer.bindWorkflowEngine({ start });
+
+    await expect(consumer.reapClosedPullRequestSandboxes()).resolves.toEqual({ reaped: true });
+
+    expect(start).toHaveBeenCalledWith(
+      'sandbox-reaper',
+      [{ repositoryId: 42, pullRequestNumber: 7 }],
+      {
+        id: 'sandbox-reaper',
+        onTerminalConflict: 'start-new',
+        defer: false,
+      },
+    );
+    expect(result).toHaveBeenCalled();
+  });
+
   it('dispatches claimed review intents through the bound Weft engine', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
@@ -396,6 +430,33 @@ describe('runtime review intent consumer wiring', () => {
     });
   });
 
+  it('does not fail bound review intents when another worker owns the review post claim', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const result = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Review post is already claimed for run:42:7:head:opened.'), {
+        name: 'ReviewPostAlreadyClaimedError',
+      }),
+    );
+    const start = vi.fn().mockResolvedValue({ result });
+    consumer.bindWorkflowEngine({ start });
+
+    await expect(consumer.drain(1)).resolves.toBe(0);
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: expect.any(Date),
+      processedAt: null,
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+  });
+
   it('marks bound review intents processed only after workflow completion', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
@@ -432,6 +493,47 @@ describe('runtime review intent consumer wiring', () => {
       failureCount: 0,
     });
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count or fail bound review intents when a stale claim loses processing', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    let completeWorkflow: (value: unknown) => void = () => {};
+    const result = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        completeWorkflow = resolve;
+      }),
+    );
+    const start = vi.fn().mockResolvedValue({ result });
+    consumer.bindWorkflowEngine({ start });
+
+    const drain = consumer.drain(1);
+    await vi.waitFor(() => expect(result).toHaveBeenCalled());
+    const [inProgressIntent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(inProgressIntent?.claimedAt).toBeInstanceOf(Date);
+    const secondClaimedAt = new Date(inProgressIntent!.claimedAt!.getTime() + 6 * 60 * 1_000);
+    await testDatabase.db
+      .update(reviewIntent)
+      .set({ claimedAt: secondClaimedAt })
+      .where(eq(reviewIntent.id, 'intent_1'));
+
+    completeWorkflow({ processed: true });
+
+    await expect(drain).resolves.toBe(0);
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: secondClaimedAt,
+      processedAt: null,
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+    });
   });
 
   it('records failed review intents with backoff when bound workflow dispatch fails', async () => {

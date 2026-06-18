@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createEngineServerOptions,
   createStorageConfigurationFromEnvironment,
   parsePort,
+  startSandboxReaper,
 } from './index';
 
 describe('parsePort', () => {
@@ -27,6 +28,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 3,
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
@@ -57,6 +59,7 @@ describe('createEngineServerOptions', () => {
           drainCalled = true;
           return 3;
         },
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
@@ -84,6 +87,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: false, detail: 'advisory lock not held' },
         ],
         drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
@@ -113,6 +117,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async (reviewRunId) => {
           stoppedRunIds.push(reviewRunId);
           return { stopped: true };
@@ -144,6 +149,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         release: async () => {},
       },
@@ -175,6 +181,7 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => {
           stopCalled = true;
           return { stopped: true };
@@ -193,6 +200,38 @@ describe('createEngineServerOptions', () => {
 
     expect(response.status).toBe(401);
     expect(stopCalled).toBe(false);
+  });
+});
+
+describe('startSandboxReaper', () => {
+  it('schedules sandbox cleanup on the configured interval', () => {
+    const runtime = {
+      reapClosedPullRequestSandboxes: vi.fn().mockResolvedValue([]),
+    };
+    const setIntervalFunction = vi.fn((callback: () => void, intervalMs: number) => {
+      expect(intervalMs).toBe(300_000);
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+
+    expect(setIntervalFunction).toHaveBeenCalledTimes(1);
+    expect(runtime.reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not schedule sandbox cleanup for non-positive intervals', () => {
+    const setIntervalFunction = vi.fn();
+
+    expect(
+      startSandboxReaper(
+        0,
+        { reapClosedPullRequestSandboxes: vi.fn() },
+        setIntervalFunction as unknown as typeof setInterval,
+      ),
+    ).toBeUndefined();
+
+    expect(setIntervalFunction).not.toHaveBeenCalled();
   });
 });
 

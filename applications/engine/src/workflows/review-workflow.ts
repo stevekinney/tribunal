@@ -68,7 +68,7 @@ export type ClaimedReviewIntent = ReviewIntent & {
 
 export type ReviewIntentPort = {
   claimNextReviewIntent(now: Date): Promise<ClaimedReviewIntent | null>;
-  markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date): Promise<void>;
+  markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date): Promise<boolean>;
   markReviewIntentFailed(
     intentId: string,
     claimedAt: Date,
@@ -218,6 +218,15 @@ class ReviewPostAlreadyClaimedError extends Error {
   }
 }
 
+export function isReviewPostAlreadyClaimedError(error: unknown): boolean {
+  if (error instanceof ReviewPostAlreadyClaimedError) return true;
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === 'ReviewPostAlreadyClaimedError' ||
+    error.message.startsWith('Review post is already claimed for ')
+  );
+}
+
 const staleReviewPostClaimMilliseconds = 5 * 60 * 1000;
 
 export type ReviewWorkflowSnapshot = {
@@ -265,9 +274,14 @@ export class ReviewWorkflowEngine {
 
       try {
         await this.processClaimedReviewIntent(intent);
-        await this.ports.intents.markReviewIntentProcessed(intent.id, intent.claimedAt, this.now());
-        processed += 1;
+        const markedProcessed = await this.ports.intents.markReviewIntentProcessed(
+          intent.id,
+          intent.claimedAt,
+          this.now(),
+        );
+        if (markedProcessed) processed += 1;
       } catch (error) {
+        if (isReviewPostAlreadyClaimedError(error)) continue;
         await this.ports.intents.markReviewIntentFailed(
           intent.id,
           intent.claimedAt,
@@ -383,13 +397,16 @@ export class ReviewWorkflowEngine {
     for (const supervisor of this.supervisors.values()) {
       if (supervisor.activeRunId !== reviewRunId) continue;
 
-      await this.stopActiveAgents(supervisor, reason);
       const run = this.reviewRuns.get(reviewRunId);
-      if (run?.status === 'running') {
-        run.status = 'cancelled';
-        run.finishedAt = this.now();
-        await this.persistReviewRun(run);
+      if (run?.status !== 'running') {
+        supervisor.activeRunId = undefined;
+        return { stopped: false };
       }
+
+      await this.stopActiveAgents(supervisor, reason);
+      run.status = 'cancelled';
+      run.finishedAt = this.now();
+      await this.persistReviewRun(run);
       await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
         status: 'completed',
         conclusion: 'cancelled',
@@ -556,6 +573,7 @@ export class ReviewWorkflowEngine {
         const run = this.reviewRuns.get(runId);
         if (run !== undefined && run.status !== 'running') {
           supervisor.runPromises.delete(runId);
+          if (supervisor.activeRunId === runId) supervisor.activeRunId = undefined;
         }
       });
     supervisor.runPromises.set(runId, runPromise);
@@ -1117,27 +1135,31 @@ function buildReviewPayload(
     ),
   );
   const comments = findings
-    .filter((finding) => {
-      if (finding.startLine === null) return false;
-      return commentableLines.has(`${finding.path}:${finding.side}:${finding.startLine}`);
+    .flatMap((finding) => {
+      const line = getFindingAnchorLine(finding);
+      if (line === null) return [];
+      if (!commentableLines.has(`${finding.path}:${finding.side}:${line}`)) return [];
+
+      return [
+        {
+          path: finding.path,
+          body: `**${finding.title}**\n\n${finding.body}`,
+          line,
+          side: finding.side,
+          startLine: finding.endLine === null ? undefined : (finding.startLine ?? undefined),
+          startSide:
+            finding.endLine === null || finding.startLine === null ? undefined : finding.side,
+        },
+      ];
     })
-    .map((finding) => ({
-      path: finding.path,
-      body: `**${finding.title}**\n\n${finding.body}`,
-      line: finding.startLine ?? 1,
-      side: finding.side,
-      startLine: finding.endLine === null ? undefined : (finding.startLine ?? undefined),
-      startSide: finding.endLine === null ? undefined : finding.side,
-    }))
     .sort(compareReviewComments);
   const inlineCommentKeys = new Set(
     comments.map((comment) => `${comment.path}:${comment.side}:${comment.line}`),
   );
-  const unanchoredFindings = findings.filter(
-    (finding) =>
-      finding.startLine === null ||
-      !inlineCommentKeys.has(`${finding.path}:${finding.side}:${finding.startLine}`),
-  );
+  const unanchoredFindings = findings.filter((finding) => {
+    const line = getFindingAnchorLine(finding);
+    return line === null || !inlineCommentKeys.has(`${finding.path}:${finding.side}:${line}`);
+  });
 
   return {
     headSha,
@@ -1155,6 +1177,10 @@ function buildReviewPayload(
           ].join('\n'),
     comments,
   };
+}
+
+function getFindingAnchorLine(finding: Finding): number | null {
+  return finding.endLine ?? finding.startLine;
 }
 
 function withReviewRunMarker(review: ReviewPayload, reviewMarker: string): ReviewPayload {

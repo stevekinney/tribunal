@@ -74,7 +74,9 @@ describe('createDatabaseReviewIntentPort', () => {
       },
     });
 
-    await port.markReviewIntentProcessed('intent_1', now, new Date('2026-06-17T12:01:00.000Z'));
+    await expect(
+      port.markReviewIntentProcessed('intent_1', now, new Date('2026-06-17T12:01:00.000Z')),
+    ).resolves.toBe(true);
     const [intent] = await testDatabase.db
       .select()
       .from(reviewIntent)
@@ -301,7 +303,9 @@ describe('createDatabaseReviewIntentPort', () => {
       .where(eq(reviewIntent.id, 'intent_1'));
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
 
-    await port.markReviewIntentProcessed('intent_1', claimedAt, processedAt);
+    await expect(port.markReviewIntentProcessed('intent_1', claimedAt, processedAt)).resolves.toBe(
+      true,
+    );
     await port.markReviewIntentFailed(
       'intent_1',
       claimedAt,
@@ -470,11 +474,13 @@ describe('createDatabaseReviewIntentPort', () => {
       id: 'intent_1',
       claimedAt: secondClaimedAt,
     });
-    await port.markReviewIntentProcessed(
-      'intent_1',
-      firstClaimedAt,
-      new Date('2026-06-17T12:07:00.000Z'),
-    );
+    await expect(
+      port.markReviewIntentProcessed(
+        'intent_1',
+        firstClaimedAt,
+        new Date('2026-06-17T12:07:00.000Z'),
+      ),
+    ).resolves.toBe(false);
 
     const [intent] = await testDatabase.db
       .select()
@@ -554,6 +560,18 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toMatchObject({
       kind: 'pr_closed',
       pullRequest: { trigger: 'manual', agents: [{ id: 'agent_security' }] },
+    });
+  });
+
+  it('claims closed intents without requiring eligible review agents', async () => {
+    await createReviewIntentFixture({ kind: 'pr_closed' });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toMatchObject({
+      kind: 'pr_closed',
+      pullRequest: { trigger: 'manual', agents: [] },
     });
   });
 

@@ -225,7 +225,7 @@ async function buildPullRequestReviewInput(
       reason: 'Review intent is waiting for a pull request head SHA.',
     };
   }
-  if (agents.length === 0) {
+  if (agents.length === 0 && intent.kind !== 'pr_closed') {
     return {
       status: 'temporarily_unavailable',
       reason: 'Review intent is waiting for an eligible review agent.',
@@ -254,8 +254,8 @@ function markReviewIntentProcessed(
   intentId: string,
   claimedAt: Date,
   now: Date,
-): Promise<void> {
-  return database
+): Promise<boolean> {
+  const update = database
     .update(reviewIntent)
     .set({ processedAt: now })
     .where(
@@ -264,8 +264,11 @@ function markReviewIntentProcessed(
         eq(reviewIntent.claimedAt, claimedAt),
         isNull(reviewIntent.processedAt),
       ),
-    )
-    .then(() => {});
+    );
+  if ('returning' in update && typeof update.returning === 'function') {
+    return update.returning({ id: reviewIntent.id }).then((rows) => rows.length > 0);
+  }
+  return Promise.resolve(update).then(() => true);
 }
 
 function deferReviewIntentRetry(

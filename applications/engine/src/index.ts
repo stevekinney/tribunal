@@ -30,7 +30,24 @@ if (import.meta.main) {
     allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
   });
 
+  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime);
   Bun.serve(createEngineServerOptions(port, runtime, environment.TRIBUNAL_ENGINE_CONTROL_TOKEN));
+}
+
+export function startSandboxReaper(
+  intervalSeconds: number,
+  runtime: Pick<EngineRuntime, 'reapClosedPullRequestSandboxes'>,
+  setIntervalFunction: typeof setInterval = setInterval,
+): ReturnType<typeof setInterval> | undefined {
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return undefined;
+
+  const timer = setIntervalFunction(() => {
+    void runtime.reapClosedPullRequestSandboxes().catch((error) => {
+      console.error('[engine] sandbox reaper failed', error);
+    });
+  }, intervalSeconds * 1_000);
+  timer.unref?.();
+  return timer;
 }
 
 export function createStorageConfigurationFromEnvironment(environment: {
