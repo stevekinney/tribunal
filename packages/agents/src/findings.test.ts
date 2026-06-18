@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest';
+import type { DiffContext, Finding } from '@tribunal/review-core/types';
+import { isRepositoryRelativePath, sanitizeFinding, validateFinding } from './findings';
+
+const diffContext: DiffContext = {
+  headSha: 'head',
+  baseSha: 'base',
+  changedFiles: [
+    {
+      path: 'src/auth.ts',
+      status: 'modified',
+      commentableLines: [
+        { side: 'RIGHT', line: 12 },
+        { side: 'RIGHT', line: 13 },
+      ],
+    },
+  ],
+  pr: { number: 12, title: 'Tighten auth', body: '', labels: [], author: 'octocat' },
+};
+
+const finding: Finding = {
+  path: 'src/auth.ts',
+  startLine: 12,
+  endLine: 12,
+  side: 'RIGHT',
+  severity: 'warning',
+  title: 'Missing authorization check',
+  body: 'This endpoint accepts untrusted input.',
+};
+
+describe('finding validation', () => {
+  it('accepts a valid structured finding', () => {
+    expect(validateFinding(finding, diffContext).ok).toBe(true);
+  });
+
+  it('rejects malformed findings and path traversal', () => {
+    expect(validateFinding({ ...finding, severity: 'critical' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: 'src/auth.ts' }, diffContext).ok).toBe(true);
+    expect(validateFinding({ ...finding, path: 'src\\auth.ts' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: '../secrets.env' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: '/etc/passwd' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: 'C:\\secrets.env' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: '' }, diffContext).ok).toBe(false);
+    expect(validateFinding({ ...finding, path: '.' }, diffContext).ok).toBe(false);
+  });
+
+  it('rejects mention and slash-command bodies before they can become comments', () => {
+    expect(
+      validateFinding({ ...finding, body: '@everyone please approve this' }, diffContext).ok,
+    ).toBe(false);
+    expect(validateFinding({ ...finding, body: '/approve' }, diffContext).ok).toBe(false);
+  });
+
+  it('clamps over-length bodies deterministically', () => {
+    const sanitized = sanitizeFinding(
+      {
+        ...finding,
+        body: `a\u0000${'a'.repeat(12_000)}`,
+        title: 'Unsafe\u0007 title',
+        suggestion: `b\u0001${'b'.repeat(12_000)}`,
+      },
+      diffContext,
+    );
+
+    expect(sanitized.ok).toBe(true);
+    if (sanitized.ok) {
+      expect(sanitized.finding.body).toHaveLength(8_000);
+      expect(sanitized.finding.body).not.toContain('\u0000');
+      expect(sanitized.finding.title).toBe('Unsafe title');
+      expect(sanitized.finding.suggestion).toHaveLength(8_000);
+    }
+  });
+
+  it('allows file-level findings and rejects unchanged or non-commentable lines', () => {
+    expect(
+      validateFinding({ ...finding, startLine: null, endLine: null }, diffContext),
+    ).toMatchObject({ ok: true });
+    expect(
+      validateFinding({ ...finding, startLine: null, endLine: 12 }, diffContext),
+    ).toMatchObject({ ok: true });
+    expect(validateFinding({ ...finding, path: 'src/other.ts' }, diffContext)).toMatchObject({
+      ok: false,
+    });
+    expect(
+      validateFinding({ ...finding, startLine: 99, endLine: null }, diffContext),
+    ).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it('classifies repository-relative paths without relying on changed-file context', () => {
+    expect(isRepositoryRelativePath('src/auth.ts')).toBe(true);
+    expect(isRepositoryRelativePath('')).toBe(false);
+    expect(isRepositoryRelativePath('/etc/passwd')).toBe(false);
+    expect(isRepositoryRelativePath('C:\\secrets.env')).toBe(false);
+    expect(isRepositoryRelativePath('../secrets.env')).toBe(false);
+    expect(isRepositoryRelativePath('.')).toBe(false);
+  });
+});

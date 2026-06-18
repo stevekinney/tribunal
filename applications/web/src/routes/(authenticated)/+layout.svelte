@@ -6,7 +6,18 @@
   import { Avatar } from '@lostgradient/cinder/avatar';
   import SkipLinks from '$lib/components/skip-links.svelte';
   import UserMenu from '$lib/components/user-menu.svelte';
-  import { LogOut, FolderGit2, Cat, Menu, X } from 'lucide-svelte';
+  import {
+    LogOut,
+    FolderGit2,
+    Cat,
+    Menu,
+    X,
+    Bot,
+    Activity,
+    CircleDollarSign,
+    Settings,
+    Workflow,
+  } from 'lucide-svelte';
 
   let { data, children } = $props();
 
@@ -16,6 +27,13 @@
   const repositoriesActive = $derived(
     page.url.pathname === '/repositories' || page.url.pathname.startsWith('/repositories/'),
   );
+  const agentsActive = $derived(page.url.pathname === '/agents');
+  const runsActive = $derived(
+    page.url.pathname === '/runs' || page.url.pathname.startsWith('/runs/'),
+  );
+  const costsActive = $derived(page.url.pathname === '/costs');
+  const settingsActive = $derived(page.url.pathname === '/settings');
+  const workflowInspectorActive = $derived(page.url.pathname === '/workflow-inspector');
 </script>
 
 <SkipLinks />
@@ -39,6 +57,32 @@
               <FolderGit2 class="icon-md" aria-hidden="true" />
               Repositories
             </NavigationItem>
+            <NavigationItem href="/agents" variant="vertical" active={agentsActive}>
+              <Bot class="icon-md" aria-hidden="true" />
+              Agents
+            </NavigationItem>
+            <NavigationItem href="/runs" variant="vertical" active={runsActive}>
+              <Activity class="icon-md" aria-hidden="true" />
+              Runs
+            </NavigationItem>
+            <NavigationItem href="/costs" variant="vertical" active={costsActive}>
+              <CircleDollarSign class="icon-md" aria-hidden="true" />
+              Costs
+            </NavigationItem>
+            <NavigationItem href="/settings" variant="vertical" active={settingsActive}>
+              <Settings class="icon-md" aria-hidden="true" />
+              Settings
+            </NavigationItem>
+            {#if data.user?.isPlatformAdministrator}
+              <NavigationItem
+                href="/workflow-inspector"
+                variant="vertical"
+                active={workflowInspectorActive}
+              >
+                <Workflow class="icon-md" aria-hidden="true" />
+                Workflows
+              </NavigationItem>
+            {/if}
 
             <div class="drawer-footer">
               {#if data.user}
@@ -60,6 +104,15 @@
             <NavigationItem href="/repositories" active={repositoriesActive}>
               Repositories
             </NavigationItem>
+            <NavigationItem href="/agents" active={agentsActive}>Agents</NavigationItem>
+            <NavigationItem href="/runs" active={runsActive}>Runs</NavigationItem>
+            <NavigationItem href="/costs" active={costsActive}>Costs</NavigationItem>
+            <NavigationItem href="/settings" active={settingsActive}>Settings</NavigationItem>
+            {#if data.user?.isPlatformAdministrator}
+              <NavigationItem href="/workflow-inspector" active={workflowInspectorActive}>
+                Workflows
+              </NavigationItem>
+            {/if}
           {/if}
         {/snippet}
 

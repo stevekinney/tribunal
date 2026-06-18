@@ -14,9 +14,11 @@ const baseData = {
     isPlatformAdministrator: false,
   },
   repositories: [],
+  agents: [],
   installations: [],
   needsConnect: false,
   loadError: null,
+  surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
 } satisfies PageData;
 
 describe('/repositories page', () => {

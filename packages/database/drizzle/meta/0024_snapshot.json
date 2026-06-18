@@ -2395,8 +2395,8 @@
         }
       },
       "indexes": {
-        "review_intent_delivery_kind_idx": {
-          "name": "review_intent_delivery_kind_idx",
+        "review_intent_delivery_kind_repository_pr_idx": {
+          "name": "review_intent_delivery_kind_repository_pr_idx",
           "columns": [
             {
               "expression": "delivery_id",
@@ -2406,6 +2406,18 @@
             },
             {
               "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repository_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pr_number",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

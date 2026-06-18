@@ -1,4 +1,5 @@
-import { createHealthResponse } from './health';
+import { parseProxyEnvironment } from './environment';
+import { createProxyHandler } from './proxy';
 
 export function parsePort(value: string | undefined, fallback: number): number {
   if (value === undefined || value === '') return fallback;
@@ -8,15 +9,11 @@ export function parsePort(value: string | undefined, fallback: number): number {
 
 if (import.meta.main) {
   const port = parsePort(Bun.env.PORT, 3002);
+  const environment = parseProxyEnvironment(Bun.env);
+  const proxyHandler = createProxyHandler({ environment });
 
   Bun.serve({
     port,
-    fetch(request) {
-      const url = new URL(request.url);
-      if (url.pathname === '/health') {
-        return createHealthResponse();
-      }
-      return new Response('Not found', { status: 404 });
-    },
+    fetch: proxyHandler,
   });
 }

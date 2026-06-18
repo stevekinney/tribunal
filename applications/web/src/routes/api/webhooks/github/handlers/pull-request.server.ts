@@ -13,14 +13,11 @@ import {
 
 /**
  * Handle pull_request webhook events.
- * Orchestrator-trigger actions (opened, reopened) throw on dispatch failure for 500 retry.
- * The synchronize action is not dispatched to the orchestrator (matches pre-refactor behavior).
- * Claiming is performed at the +server.ts level for all orchestrator events.
+ * Review-engine trigger actions throw on durable enqueue failure for 500 retry.
+ * Claiming is performed at the +server.ts level for all review-engine events.
  *
  * These dispatch through `signalPullRequestEvent` / `signalPullRequestClosed`,
- * which start-or-signal the registered `pull-request-orchestrator` Weft workflow
- * (sliding debounce, supersede, idle timeout, final-analysis-on-close). Dispatch
- * is a no-op success only when no durable engine is configured.
+ * which write idempotent `review_intent` rows for the durable engine to claim.
  */
 export async function handlePullRequestEvent(
   payload: PullRequestEvent,
@@ -31,8 +28,19 @@ export async function handlePullRequestEvent(
 
   switch (action) {
     case 'opened':
-    case 'reopened': {
-      // Orchestrator dispatch - must throw on failure for 500 response
+    case 'reopened':
+    case 'ready_for_review':
+    case 'synchronize': {
+      const eventType =
+        action === 'synchronize'
+          ? 'pr_synchronized'
+          : action === 'ready_for_review'
+            ? 'pr_ready_for_review'
+            : action === 'reopened'
+              ? 'pr_reopened'
+              : 'pr_opened';
+
+      // Durable enqueue - must throw on failure for 500 response.
       const result = await signalPullRequestEvent(githubContext, {
         workspaceId: 0,
         repositoryId,
@@ -40,15 +48,16 @@ export async function handlePullRequestEvent(
         installationId,
         owner: payload.repository.owner.login,
         repo: payload.repository.name,
-        eventType: 'pr_opened',
+        eventType,
         actorLogin: payload.sender?.login,
         // GitHub delivery GUID -> Weft signalId, so a 500-and-retry of this
         // delivery dedups to one signal instead of minting a fresh UUID.
         eventId: context.deliveryId,
+        headSha: payload.pull_request.head.sha,
       });
 
       if (!result.ok) {
-        console.error('[webhook] Failed to signal pull request event:', {
+        console.error('[webhook] Failed to enqueue pull request review intent:', {
           deliveryId: context.deliveryId,
           event: 'pull_request',
           workflowId: result.workflowId,
@@ -58,30 +67,37 @@ export async function handlePullRequestEvent(
           pullRequestNumber: payload.pull_request.number,
           sender: payload.sender?.login,
           action,
-          eventType: 'pr_opened',
+          eventType,
+          intentKind: result.intentKind,
           error: result.error,
           ...(context.hookId !== undefined ? { hookId: context.hookId } : {}),
         });
         throw new Error(
-          `Failed to signal PR ${action} for workflow ${result.workflowId}: ${result.error}`,
+          `Failed to enqueue PR ${action} intent for workflow ${result.workflowId}: ${result.error}`,
         );
       }
 
-      logger.info(`PR ${action} workflow signaled`);
+      logger.info({
+        message: `PR ${action} review intent enqueued`,
+        intentKind: result.intentKind,
+        enqueued: result.enqueued,
+      });
       break;
     }
 
     case 'closed': {
-      // Orchestrator dispatch - must throw on failure for 500 response
+      // Durable enqueue - must throw on failure for 500 response.
       const result = await signalPullRequestClosed(githubContext, {
         repositoryId,
         prNumber: payload.pull_request.number,
         merged: payload.pull_request.merged ?? false,
         actorLogin: payload.sender?.login,
+        eventId: context.deliveryId,
+        headSha: payload.pull_request.head.sha,
       });
 
       if (!result.ok) {
-        console.error('[webhook] Failed to signal PR closed:', {
+        console.error('[webhook] Failed to enqueue PR closed review intent:', {
           deliveryId: context.deliveryId,
           event: 'pull_request',
           workflowId: result.workflowId,
@@ -95,19 +111,17 @@ export async function handlePullRequestEvent(
           ...(context.hookId !== undefined ? { hookId: context.hookId } : {}),
         });
         throw new Error(
-          `Failed to signal PR closed for workflow ${result.workflowId}: ${result.error}`,
+          `Failed to enqueue PR closed intent for workflow ${result.workflowId}: ${result.error}`,
         );
       }
 
-      logger.info('PR closed workflow signaled');
+      logger.info({
+        message: 'PR closed review intent enqueued',
+        intentKind: result.intentKind,
+        enqueued: result.enqueued,
+      });
       break;
     }
-
-    case 'synchronize':
-      // synchronize events are not orchestrator-trigger events;
-      // they are handled via cache invalidation and PR state tracking only
-      logger.debug('PR synchronize handled via cache invalidation path');
-      break;
 
     default:
       logger.debug({ action }, 'Unhandled pull_request action');

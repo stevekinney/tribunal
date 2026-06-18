@@ -1,5 +1,5 @@
 /**
- * Pull request review thread webhook event handler (orchestrator dispatch).
+ * Pull request review thread webhook event handler (durable review intent dispatch).
  * Handles: pull_request_review_thread.resolved, unresolved.
  * This event type has no github-webhook-schemas Zod schema,
  * so it's dispatched outside the router.
@@ -46,8 +46,6 @@ async function signalReviewThread(
   eventType: PullRequestEventType,
   action: string | null,
 ): Promise<void> {
-  // Routes review-thread signals into the registered pull-request-orchestrator Weft
-  // workflow via signalPullRequestEvent (start-or-signal, coalesced).
   const { installationId, repositoryId, logger } = context;
 
   if (!data.pull_request.number) return;
@@ -71,5 +69,10 @@ async function signalReviewThread(
     );
   }
 
-  logger.info(`Review thread ${action} workflow signaled`);
+  if (!result.enqueued) {
+    logger.debug(`Review thread ${action} did not map to a durable review intent`);
+    return;
+  }
+
+  logger.info(`Review thread ${action} review intent enqueued`);
 }

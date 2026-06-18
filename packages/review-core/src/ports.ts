@@ -60,6 +60,7 @@ export interface SandboxPort {
   update(sandboxId: string, repository: RepoRef, head: string, runToken: string): Promise<void>;
   runAgent(
     sandboxId: string,
+    agentRunId: string,
     agent: AgentSpec,
     runToken: string,
     onEvent: (event: AgentEvent) => void,

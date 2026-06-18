@@ -23,3 +23,5 @@ dist/
 
 # Test results
 test-results/
+coverage/
+packages/database/.drizzle-consistency-check.config.ts

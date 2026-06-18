@@ -34,6 +34,8 @@ export const CACHE_KEYS = {
 
   GITHUB_PR_DETAIL: (owner: string, repo: string, pullNumber: number) =>
     `github:response:${owner}:${repo}:pr:${pullNumber}`,
+  GITHUB_PR_DIFF_CONTEXT: (repositoryId: number, pullNumber: number) =>
+    `github:response:repository:${repositoryId}:pr:${pullNumber}:diff-context`,
 
   GITHUB_REVIEW_COMMENTS_LIST: (
     owner: string,
@@ -65,6 +67,8 @@ export const CACHE_KEYS = {
     `github:response:${owner}:${repo}:checks:${headSha}`,
   GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string) =>
     `github:response:${owner}:${repo}:branch:${branch}:ci-status`,
+  GITHUB_SINGLE_REPOSITORY_READ_TOKEN: (installationId: number, repositoryId: number) =>
+    `github:installation:${installationId}:repository:${repositoryId}:read-token`,
 
   // Wildcard patterns for invalidation
   GITHUB_RESPONSE_ISSUE_PATTERN: (owner: string, repo: string, issueNumber: number) =>

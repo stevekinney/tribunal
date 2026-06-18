@@ -14,9 +14,10 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test": "vitest run --config vitest.configuration.ts",
+    "test:coverage": "vitest run --config vitest.configuration.ts --coverage",
     "lint": "oxlint . && eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --write --ignore-path ../../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
     "zod": "^4.2.1"

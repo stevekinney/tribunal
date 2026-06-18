@@ -190,7 +190,7 @@ CREATE UNIQUE INDEX "finding_agent_run_fingerprint_idx" ON "finding" USING btree
 CREATE INDEX "finding_agent_run_idx" ON "finding" USING btree ("agent_run_id");--> statement-breakpoint
 CREATE INDEX "finding_user_idx" ON "finding" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "repository_agent_agent_idx" ON "repository_agent" USING btree ("agent_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "review_intent_delivery_kind_idx" ON "review_intent" USING btree ("delivery_id","kind");--> statement-breakpoint
+CREATE UNIQUE INDEX "review_intent_delivery_kind_repository_pr_idx" ON "review_intent" USING btree ("delivery_id","kind","repository_id","pr_number");--> statement-breakpoint
 CREATE INDEX "review_intent_unprocessed_claimed_idx" ON "review_intent" USING btree ("claimed_at") WHERE "review_intent"."processed_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "review_intent_repository_pr_idx" ON "review_intent" USING btree ("repository_id","pr_number");--> statement-breakpoint
 CREATE UNIQUE INDEX "review_run_user_repository_pr_head_trigger_idx" ON "review_run" USING btree ("user_id","repository_id","pr_number","head_sha","trigger");--> statement-breakpoint

@@ -1,0 +1,536 @@
+import type { ProxyEnvironment } from './environment';
+import { createHealthResponse } from './health';
+import {
+  type CapabilityTokenClaims,
+  hasProxyPermission,
+  type ProxyPermission,
+  verifyCapabilityToken,
+} from './capability-token';
+import {
+  type AuditSink,
+  createConsoleAuditSink,
+  type ProxyAuditEvent,
+  redactAuditEvent,
+} from './audit';
+
+type ProxyService = 'github' | 'anthropic';
+
+type UpstreamFetch = (request: Request) => Promise<Response>;
+
+type GitHubCredentialResolver = (
+  claims: CapabilityTokenClaims,
+) => Promise<string | null> | string | null;
+
+export type ProxyHandlerOptions = {
+  environment: ProxyEnvironment;
+  upstreamFetch?: UpstreamFetch;
+  auditSink?: AuditSink;
+  githubCredentialResolver?: GitHubCredentialResolver;
+  now?: () => Date;
+};
+
+type ValidatedRoute = {
+  service: ProxyService;
+  method: string;
+  upstreamUrl: URL;
+  upstreamHost: string;
+  upstreamPath: string;
+  requiredPermission: ProxyPermission;
+};
+
+type RouteValidationResult =
+  | { ok: true; route: ValidatedRoute }
+  | { ok: false; status: number; reason: string; service?: ProxyService; upstreamHost?: string };
+
+const unsafeGitHubRestMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const safeGitHubRestMethods = new Set(['GET', 'HEAD']);
+
+export function createProxyHandler(
+  options: ProxyHandlerOptions,
+): (request: Request) => Promise<Response> {
+  const upstreamFetch = options.upstreamFetch ?? fetch;
+  const auditSink = options.auditSink ?? createConsoleAuditSink();
+  const now = options.now ?? (() => new Date());
+
+  return async (request) => {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/health') {
+      return createHealthResponse();
+    }
+
+    const token = extractBearerToken(request);
+    if (!token) {
+      await emitAudit(
+        auditSink,
+        unauthorizedAuditEvent(request, 'missing_capability_token'),
+        options,
+      );
+      return errorResponse(401, 'missing_capability_token');
+    }
+
+    const verification = verifyCapabilityToken(token, options.environment.PROXY_SIGNING_KEY, now());
+    if (!verification.ok) {
+      await emitAudit(
+        auditSink,
+        unauthorizedAuditEvent(request, `invalid_capability_token:${verification.reason}`),
+        options,
+        [token],
+      );
+      return errorResponse(403, 'invalid_capability_token');
+    }
+
+    const routeResult = validateProxyRoute(
+      url,
+      request.method,
+      verification.claims,
+      options.environment,
+    );
+    if (!routeResult.ok) {
+      await emitAudit(
+        auditSink,
+        blockedAuditEvent(request, routeResult, verification.claims),
+        options,
+        [token],
+      );
+      return errorResponse(routeResult.status, routeResult.reason);
+    }
+
+    if (!hasProxyPermission(verification.claims, routeResult.route.requiredPermission)) {
+      await emitAudit(
+        auditSink,
+        blockedAuditEvent(
+          request,
+          {
+            ok: false,
+            status: 403,
+            reason: 'capability_missing_permission',
+            service: routeResult.route.service,
+            upstreamHost: routeResult.route.upstreamHost,
+          },
+          verification.claims,
+        ),
+        options,
+        [token],
+      );
+      return errorResponse(403, 'capability_missing_permission');
+    }
+
+    return forwardValidatedRequest({
+      request,
+      route: routeResult.route,
+      claims: verification.claims,
+      options,
+      upstreamFetch,
+      auditSink,
+      capabilityToken: token,
+    });
+  };
+}
+
+function validateProxyRoute(
+  url: URL,
+  method: string,
+  claims: CapabilityTokenClaims,
+  environment: ProxyEnvironment,
+): RouteValidationResult {
+  const route = parseRoute(url);
+  if (!route) {
+    return { ok: false, status: 404, reason: 'unknown_proxy_route' };
+  }
+
+  const allowlist =
+    route.service === 'github'
+      ? environment.GITHUB_EGRESS_ALLOW
+      : environment.ANTHROPIC_EGRESS_ALLOW;
+
+  if (!isAllowedHost(route.upstreamHost, allowlist)) {
+    return {
+      ok: false,
+      status: 403,
+      reason: 'upstream_host_not_allowed',
+      service: route.service,
+      upstreamHost: route.upstreamHost,
+    };
+  }
+
+  if (route.service === 'github') {
+    return validateGitHubRoute(method, route, claims);
+  }
+
+  return validateAnthropicRoute(method, route);
+}
+
+function validateGitHubRoute(
+  method: string,
+  route: Omit<ValidatedRoute, 'method' | 'requiredPermission'>,
+  claims: CapabilityTokenClaims,
+): RouteValidationResult {
+  if (
+    !isGitHubPathAllowed(method, route.upstreamHost, route.upstreamPath, route.upstreamUrl, claims)
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      reason: 'github_request_not_allowed',
+      service: 'github',
+      upstreamHost: route.upstreamHost,
+    };
+  }
+
+  return {
+    ok: true,
+    route: { ...route, method, requiredPermission: 'github:read' },
+  };
+}
+
+function validateAnthropicRoute(
+  method: string,
+  route: Omit<ValidatedRoute, 'method' | 'requiredPermission'>,
+): RouteValidationResult {
+  if (method !== 'POST' || !isAllowedAnthropicPath(route.upstreamPath)) {
+    return {
+      ok: false,
+      status: 403,
+      reason: 'anthropic_request_not_allowed',
+      service: 'anthropic',
+      upstreamHost: route.upstreamHost,
+    };
+  }
+
+  return {
+    ok: true,
+    route: { ...route, method, requiredPermission: 'anthropic:invoke' },
+  };
+}
+
+function isAllowedAnthropicPath(upstreamPath: string): boolean {
+  return upstreamPath === '/v1/messages' || upstreamPath.startsWith('/v1/messages/');
+}
+
+function isGitHubPathAllowed(
+  method: string,
+  host: string,
+  upstreamPath: string,
+  upstreamUrl: URL,
+  claims: CapabilityTokenClaims,
+): boolean {
+  if (host === 'api.github.com') {
+    if (!safeGitHubRestMethods.has(method)) return false;
+    return isScopedGitHubRestPath(upstreamPath, claims);
+  }
+
+  if (host === 'github.com') {
+    return isScopedGitSmartHttpPath(method, upstreamPath, upstreamUrl, claims);
+  }
+
+  if (unsafeGitHubRestMethods.has(method)) {
+    return false;
+  }
+
+  return safeGitHubRestMethods.has(method) && isScopedGitHubRestPath(upstreamPath, claims);
+}
+
+function parseRoute(url: URL): Omit<ValidatedRoute, 'method' | 'requiredPermission'> | null {
+  const service = parseService(url.pathname);
+  if (!service) {
+    return null;
+  }
+
+  const prefix = `/${service}/`;
+  const routeTail = url.pathname.slice(prefix.length);
+  const hostSeparatorIndex = routeTail.indexOf('/');
+  if (hostSeparatorIndex <= 0) {
+    return null;
+  }
+
+  const upstreamHost = safeDecodeURIComponent(routeTail.slice(0, hostSeparatorIndex)).toLowerCase();
+  if (!isValidHost(upstreamHost)) {
+    return null;
+  }
+
+  const upstreamPath = routeTail.slice(hostSeparatorIndex);
+  const upstreamUrl = new URL(`https://${upstreamHost}${upstreamPath}${url.search}`);
+
+  return {
+    service,
+    upstreamUrl,
+    upstreamHost,
+    upstreamPath,
+  };
+}
+
+function parseService(pathname: string): ProxyService | null {
+  if (pathname.startsWith('/github/')) {
+    return 'github';
+  }
+
+  if (pathname.startsWith('/anthropic/')) {
+    return 'anthropic';
+  }
+
+  return null;
+}
+
+async function forwardValidatedRequest(input: {
+  request: Request;
+  route: ValidatedRoute;
+  claims: CapabilityTokenClaims;
+  options: ProxyHandlerOptions;
+  upstreamFetch: UpstreamFetch;
+  auditSink: AuditSink;
+  capabilityToken: string;
+}): Promise<Response> {
+  const credential = await resolveCredential(input.route.service, input.claims, input.options);
+  if (!credential) {
+    await emitAudit(
+      input.auditSink,
+      auditEventForRequest(input.request, input.route, input.claims, {
+        outcome: 'blocked',
+        status: 503,
+        reason: 'credential_not_available',
+        credentialInjected: false,
+      }),
+      input.options,
+      [input.capabilityToken],
+    );
+    return errorResponse(503, 'credential_not_available');
+  }
+
+  const upstreamRequest = await createUpstreamRequest(input.request, input.route, credential);
+  const upstreamResponse = await input.upstreamFetch(upstreamRequest);
+
+  await emitAudit(
+    input.auditSink,
+    auditEventForRequest(input.request, input.route, input.claims, {
+      outcome: 'forwarded',
+      status: upstreamResponse.status,
+      credentialInjected: true,
+    }),
+    input.options,
+    [input.capabilityToken, credential],
+  );
+
+  return sanitizeUpstreamResponse(upstreamResponse);
+}
+
+async function createUpstreamRequest(
+  request: Request,
+  route: ValidatedRoute,
+  credential: string,
+): Promise<Request> {
+  const headers = sanitizeForwardedHeaders(request.headers);
+  if (route.service === 'github') {
+    headers.set('authorization', `Bearer ${credential}`);
+  } else {
+    headers.set('x-api-key', credential);
+  }
+
+  const body =
+    route.method === 'GET' || route.method === 'HEAD' ? undefined : await request.arrayBuffer();
+
+  return new Request(route.upstreamUrl, {
+    method: route.method,
+    headers,
+    body,
+  });
+}
+
+function sanitizeForwardedHeaders(headers: Headers): Headers {
+  const forwardedHeaders = new Headers(headers);
+  const blockedHeaders = [
+    'authorization',
+    'cookie',
+    'connection',
+    'host',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+    'x-api-key',
+  ];
+
+  for (const header of blockedHeaders) {
+    forwardedHeaders.delete(header);
+  }
+
+  return forwardedHeaders;
+}
+
+function sanitizeUpstreamResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.delete('authorization');
+  headers.delete('proxy-authorization');
+  headers.delete('set-cookie');
+  headers.delete('x-api-key');
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function resolveCredential(
+  service: ProxyService,
+  claims: CapabilityTokenClaims,
+  options: ProxyHandlerOptions,
+): Promise<string | null> {
+  if (service === 'anthropic') {
+    return options.environment.ANTHROPIC_API_KEY;
+  }
+
+  return options.githubCredentialResolver?.(claims) ?? null;
+}
+
+function extractBearerToken(request: Request): string | null {
+  const authorization = request.headers.get('authorization');
+  if (!authorization) {
+    return null;
+  }
+
+  const match = /^Bearer (?<token>\S+)$/iu.exec(authorization);
+  return match?.groups?.token ?? null;
+}
+
+function isAllowedHost(host: string, allowlist: readonly string[]): boolean {
+  return allowlist.some((allowedHost) => allowedHost.toLowerCase() === host);
+}
+
+function isValidHost(host: string): boolean {
+  return /^[a-z0-9.-]+$/u.test(host) && !host.includes('..') && host.length <= 253;
+}
+
+function isScopedGitHubRestPath(pathname: string, claims: CapabilityTokenClaims): boolean {
+  const segments = decodePathSegments(pathname);
+  if (segments.length < 3 || segments[0] !== 'repos') {
+    return false;
+  }
+
+  return isSameRepository(segments[1], segments[2], claims);
+}
+
+function isScopedGitSmartHttpPath(
+  method: string,
+  pathname: string,
+  upstreamUrl: URL,
+  claims: CapabilityTokenClaims,
+): boolean {
+  const segments = decodePathSegments(pathname);
+  if (segments.length < 3 || !isSameRepository(segments[0], trimGitSuffix(segments[1]), claims)) {
+    return false;
+  }
+
+  if (method === 'GET') {
+    return (
+      segments[2] === 'info' &&
+      segments[3] === 'refs' &&
+      upstreamUrl.searchParams.get('service') === 'git-upload-pack'
+    );
+  }
+
+  return method === 'POST' && segments[2] === 'git-upload-pack';
+}
+
+function decodePathSegments(pathname: string): string[] {
+  return pathname
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => safeDecodeURIComponent(segment));
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
+
+function trimGitSuffix(repositoryName: string): string {
+  return repositoryName.endsWith('.git') ? repositoryName.slice(0, -'.git'.length) : repositoryName;
+}
+
+function isSameRepository(owner: string, name: string, claims: CapabilityTokenClaims): boolean {
+  return (
+    owner.toLowerCase() === claims.repositoryOwner.toLowerCase() &&
+    name.toLowerCase() === claims.repositoryName.toLowerCase()
+  );
+}
+
+function unauthorizedAuditEvent(request: Request, reason: string): ProxyAuditEvent {
+  return {
+    type: 'proxy_audit_event',
+    timestamp: new Date().toISOString(),
+    service: 'proxy',
+    outcome: 'rejected',
+    status: reason === 'missing_capability_token' ? 401 : 403,
+    method: request.method,
+    reason,
+  };
+}
+
+function blockedAuditEvent(
+  request: Request,
+  routeResult: Extract<RouteValidationResult, { ok: false }>,
+  claims: CapabilityTokenClaims,
+): ProxyAuditEvent {
+  return {
+    type: 'proxy_audit_event',
+    timestamp: new Date().toISOString(),
+    service: routeResult.service ?? 'proxy',
+    outcome: 'blocked',
+    status: routeResult.status,
+    method: request.method,
+    runId: claims.runId,
+    userId: claims.userId,
+    repositoryId: claims.repositoryId,
+    repository: `${claims.repositoryOwner}/${claims.repositoryName}`,
+    upstreamHost: routeResult.upstreamHost,
+    reason: routeResult.reason,
+  };
+}
+
+function auditEventForRequest(
+  request: Request,
+  route: ValidatedRoute,
+  claims: CapabilityTokenClaims,
+  patch: Pick<ProxyAuditEvent, 'outcome' | 'status'> &
+    Partial<Pick<ProxyAuditEvent, 'reason' | 'credentialInjected'>>,
+): ProxyAuditEvent {
+  return {
+    type: 'proxy_audit_event',
+    timestamp: new Date().toISOString(),
+    service: route.service,
+    method: request.method,
+    runId: claims.runId,
+    userId: claims.userId,
+    repositoryId: claims.repositoryId,
+    repository: `${claims.repositoryOwner}/${claims.repositoryName}`,
+    upstreamHost: route.upstreamHost,
+    upstreamPath: route.upstreamPath,
+    ...patch,
+  };
+}
+
+async function emitAudit(
+  auditSink: AuditSink,
+  event: ProxyAuditEvent,
+  options: ProxyHandlerOptions,
+  extraSecrets: readonly string[] = [],
+): Promise<void> {
+  const secrets = [
+    options.environment.ANTHROPIC_API_KEY,
+    options.environment.PROXY_SIGNING_KEY,
+    ...extraSecrets,
+  ];
+
+  await auditSink(redactAuditEvent(event, secrets));
+}
+
+function errorResponse(status: number, code: string): Response {
+  return Response.json({ ok: false, error: code }, { status });
+}

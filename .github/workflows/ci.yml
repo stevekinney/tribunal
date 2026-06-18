@@ -170,11 +170,11 @@ jobs:
           exit 1
         env:
           DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
-          GITHUB_APP_ID: "1"
-          GITHUB_APP_PRIVATE_KEY: "placeholder"
-          GITHUB_OAUTH_CLIENT_ID: "placeholder"
-          GITHUB_OAUTH_CLIENT_SECRET: "placeholder"
-          SESSION_SECRET: "placeholder-secret-at-least-32-chars-long"
+          GITHUB_APP_ID: '1'
+          GITHUB_APP_PRIVATE_KEY: 'placeholder'
+          GITHUB_OAUTH_CLIENT_ID: 'placeholder'
+          GITHUB_OAUTH_CLIENT_SECRET: 'placeholder'
+          SESSION_SECRET: 'placeholder-secret-at-least-32-chars-long'
 
   build:
     name: Build
@@ -189,6 +189,71 @@ jobs:
         run: bunx turbo run build ${{ github.event_name == 'pull_request' && '--affected' || '' }}
         env:
           DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
+
+  container-images:
+    name: Container Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Build container images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f deployment/containers/web.Dockerfile -t tribunal-web:test .
+          docker build -f deployment/containers/engine.Dockerfile -t tribunal-engine:test .
+          docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
+          docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
+          docker run --rm tribunal-reviewer:test
+      - name: Boot images on injected ports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run -d --rm --name tribunal-web-test \
+            -e PORT=4310 \
+            -e DATABASE_URL=postgres://placeholder:placeholder@localhost:5432/placeholder \
+            -e REDIS_URL=redis://localhost:6379 \
+            -p 4310:4310 tribunal-web:test
+          docker run -d --rm --name tribunal-engine-test \
+            -e PORT=4311 \
+            -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \
+            -p 4311:4311 tribunal-engine:test
+          docker run -d --rm --name tribunal-proxy-test \
+            -e PORT=4312 \
+            -e ANTHROPIC_API_KEY=sk-ant-ci-placeholder \
+            -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
+            -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
+            -e PROXY_CA_CERT=ci-placeholder \
+            -e PROXY_SIGNING_KEY=ci-placeholder \
+            -e GITHUB_EGRESS_ALLOW=github.com,api.github.com \
+            -e ANTHROPIC_EGRESS_ALLOW=api.anthropic.com \
+            -p 4312:4312 tribunal-proxy:test
+
+          cleanup() {
+            docker stop tribunal-web-test tribunal-engine-test tribunal-proxy-test >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for service in web:4310 engine:4311 proxy:4312; do
+            name="${service%%:*}"
+            port="${service##*:}"
+            ready=0
+            for attempt in 1 2 3 4 5; do
+              if curl -sf "http://127.0.0.1:${port}/health" >/tmp/"${name}-health.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "::error::${name} container did not become healthy on injected port ${port}"
+              docker logs "tribunal-${name}-test" || true
+              exit 1
+            fi
+            cat /tmp/"${name}-health.json"
+          done
 
   migration:
     name: Migration
@@ -348,7 +413,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [type-check, lint-format, test-unit, test-browser, build, migration]
+    needs: [type-check, lint-format, test-unit, test-browser, build, container-images, migration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
