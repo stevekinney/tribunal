@@ -5,8 +5,8 @@ import { costEvent, reviewRun } from '../schema';
 export type CostEventSource = 'estimate' | 'reconciled';
 
 export interface CostRollupOptions {
+  userId: number;
   source?: CostEventSource;
-  userId?: number;
 }
 
 export interface ReviewRunCostRollup {
@@ -54,14 +54,14 @@ function toDate(value: Date | string): Date {
 
 function rollupWhere(options: CostRollupOptions) {
   return and(
+    eq(costEvent.userId, options.userId),
     options.source ? eq(costEvent.source, options.source) : undefined,
-    options.userId === undefined ? undefined : eq(costEvent.userId, options.userId),
   );
 }
 
 export async function getCostPerReviewRun(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<ReviewRunCostRollup[]> {
   let query = database
     .select({ reviewRunId: costEvent.reviewRunId, amountUsd: amountSql })
@@ -77,7 +77,7 @@ export async function getCostPerReviewRun(
 
 export async function getCostPerPullRequest(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<PullRequestCostRollup[]> {
   let query = database
     .select({
@@ -104,7 +104,7 @@ export async function getCostPerPullRequest(
 
 export async function getCostPerRepository(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<RepositoryCostRollup[]> {
   let query = database
     .select({ repositoryId: costEvent.repositoryId, amountUsd: amountSql })
@@ -123,7 +123,7 @@ export async function getCostPerRepository(
 
 export async function getCostPerAgent(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<AgentCostRollup[]> {
   let query = database
     .select({ agentId: costEvent.agentId, amountUsd: amountSql })
@@ -139,7 +139,7 @@ export async function getCostPerAgent(
 
 export async function getCostPerAgentPerRepository(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<AgentRepositoryCostRollup[]> {
   let query = database
     .select({
@@ -165,7 +165,7 @@ export async function getCostPerAgentPerRepository(
 
 export async function getCostPerUserPerDay(
   database: Database,
-  options: CostRollupOptions = {},
+  options: CostRollupOptions,
 ): Promise<UserDayCostRollup[]> {
   const daySql = sql<Date | string>`date_trunc('day', ${costEvent.occurredAt})`;
   let query = database

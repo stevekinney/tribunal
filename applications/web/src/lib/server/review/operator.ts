@@ -235,7 +235,7 @@ export async function saveRepositoryWatchSettings(
         )
       RETURNING ${repositoryAgent.agentId}
     )
-    INSERT INTO "repository_agent" ("user_id", "repository_id", "agent_id")
+    INSERT INTO ${repositoryAgent} ("user_id", "repository_id", "agent_id")
     SELECT updated_settings."user_id", updated_settings."repository_id", selected_agents.agent_id
     FROM updated_settings, selected_agents
     ON CONFLICT DO NOTHING
