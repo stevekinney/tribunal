@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { computeCanonicalFindingFingerprint, deduplicateFindings } from '@tribunal/agents/findings';
+import { computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import type {
   AgentEvent,
@@ -706,9 +706,10 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
 
-    const findings = deduplicateFindings(agentResults.flatMap((result) => result.findings));
+    const deduplicatedAgentResults = deduplicateAgentResultFindings(agentResults);
+    const findings = deduplicatedAgentResults.flatMap((result) => result.findings);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
-    if (findings.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
+    if (reviewPayload.comments.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
       let ownedClaimedAt: Date | undefined;
       if (claimResult.status === 'already_posted') {
@@ -833,7 +834,7 @@ export class ReviewWorkflowEngine {
     await this.updateCheckRun(
       input,
       supervisor.checkRunId,
-      buildCompletedCheckRunPatch(agentResults),
+      buildCompletedCheckRunPatch(deduplicatedAgentResults, diffContext),
     );
     if (!this.reconciledReviewRunIds.has(reviewRun.id)) {
       await this.ports.cost.reconcile(reviewRun.id);
@@ -1163,9 +1164,15 @@ function createFindingRecord(userId: number, agentRunId: string, finding: Findin
 }
 
 function repositoryExecutionContext(
-  input: Pick<PullRequestReviewInput, 'repository' | 'installationId'>,
+  input: Pick<PullRequestReviewInput, 'repository' | 'installationId'> & {
+    repositoryId?: number;
+  },
 ): RepositoryExecutionContext {
-  return { ...input.repository, installationId: input.installationId };
+  return {
+    ...input.repository,
+    installationId: input.installationId,
+    repositoryId: input.repositoryId,
+  };
 }
 
 function buildReviewPayload(
@@ -1173,16 +1180,12 @@ function buildReviewPayload(
   diffContext: DiffContext,
   findings: Finding[],
 ): ReviewPayload {
-  const commentableLines = new Set(
-    diffContext.changedFiles.flatMap((file) =>
-      file.commentableLines.map((line) => `${file.path}:${line.side}:${line.line}`),
-    ),
-  );
+  const commentableLineKeys = createCommentableLineKeys(diffContext);
   const comments = findings
     .flatMap((finding) => {
       const line = getFindingAnchorLine(finding);
       if (line === null) return [];
-      if (!commentableLines.has(`${finding.path}:${finding.side}:${line}`)) return [];
+      if (!canAnchorFindingInDiff(commentableLineKeys, finding)) return [];
 
       return [
         {
@@ -1216,15 +1219,34 @@ function buildReviewPayload(
             'Unanchored findings:',
             ...unanchoredFindings.map(
               (finding) =>
-                `- **${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`}** ${finding.title}: ${finding.body}`,
+                `- **${formatFindingLocation(finding)}** ${finding.title}: ${finding.body}`,
             ),
           ].join('\n'),
     comments,
   };
 }
 
+function createCommentableLineKeys(diffContext: DiffContext): Set<string> {
+  return new Set(
+    diffContext.changedFiles.flatMap((file) =>
+      file.commentableLines.map((line) => `${file.path}:${line.side}:${line.line}`),
+    ),
+  );
+}
+
+function canAnchorFindingInDiff(commentableLineKeys: Set<string>, finding: Finding): boolean {
+  const line = getFindingAnchorLine(finding);
+  if (line === null) return false;
+  return commentableLineKeys.has(`${finding.path}:${finding.side}:${line}`);
+}
+
 function getFindingAnchorLine(finding: Finding): number | null {
   return finding.endLine ?? finding.startLine;
+}
+
+function formatFindingLocation(finding: Finding): string {
+  const line = getFindingAnchorLine(finding);
+  return `${finding.path}${line === null ? '' : `:${line}`}`;
 }
 
 function withReviewRunMarker(review: ReviewPayload, reviewMarker: string): ReviewPayload {
@@ -1239,19 +1261,113 @@ function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): s
   return `<!-- tribunal-review-run:v1:${reviewRunId}:${signature} -->`;
 }
 
-function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch {
+function buildCompletedCheckRunPatch(
+  agentResults: AgentResult[],
+  diffContext: DiffContext,
+): CheckRunPatch {
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
+  const commentableLineKeys = createCommentableLineKeys(diffContext);
+  const annotations = agentResults.flatMap((result) =>
+    result.findings.flatMap((finding) =>
+      createCheckRunAnnotation(result, finding, commentableLineKeys),
+    ),
+  );
+  const agentLines = agentResults.map((result) => {
+    const severityCounts = countSeverities(result.findings);
+    const effort = result.effortUsed ?? 'inherit';
+    const status = result.error === undefined ? 'completed' : `failed: ${result.error}`;
+    return `- ${result.agentSlug}: ${status}; model ${result.modelUsed}; effort ${effort}; findings ${result.findings.length} (${formatSeverityCounts(severityCounts)}); estimated cost $${result.costEstimateUsd.toFixed(4)}.`;
+  });
+  const unanchoredFindingLines = agentResults.flatMap((result) =>
+    result.findings
+      .filter((finding) => !canAnnotateFindingInCheckRun(commentableLineKeys, finding))
+      .map(
+        (finding) =>
+          `- ${result.agentSlug}: ${formatFindingLocation(finding)} ${finding.title}: ${finding.body}`,
+      ),
+  );
 
   return {
     status: 'completed',
     conclusion: failures.length > 0 ? 'neutral' : 'success',
     output: {
       title: 'Tribunal review complete',
-      summary: `${agentResults.length} agents finished with ${findingsCount} findings. Estimated cost: $${costEstimateUsd.toFixed(4)}.`,
+      summary: [
+        `${agentResults.length} agents finished with ${findingsCount} findings. Estimated cost: $${costEstimateUsd.toFixed(4)}.`,
+        '',
+        ...agentLines,
+      ].join('\n'),
+      text:
+        unanchoredFindingLines.length === 0
+          ? undefined
+          : ['Findings:', ...unanchoredFindingLines].join('\n'),
+      annotations,
     },
   };
+}
+
+function deduplicateAgentResultFindings(agentResults: AgentResult[]): AgentResult[] {
+  const seenFingerprints = new Set<string>();
+
+  return agentResults.map((result) => ({
+    ...result,
+    findings: result.findings.filter((finding) => {
+      const fingerprint = computeCanonicalFindingFingerprint(finding);
+      if (seenFingerprints.has(fingerprint)) return false;
+      seenFingerprints.add(fingerprint);
+      return true;
+    }),
+  }));
+}
+
+function canAnnotateFindingInCheckRun(commentableLineKeys: Set<string>, finding: Finding): boolean {
+  return finding.side !== 'LEFT' && canAnchorFindingInDiff(commentableLineKeys, finding);
+}
+
+function createCheckRunAnnotation(
+  result: AgentResult,
+  finding: Finding,
+  commentableLineKeys: Set<string>,
+) {
+  if (!canAnnotateFindingInCheckRun(commentableLineKeys, finding)) return [];
+  const line = getFindingAnchorLine(finding)!;
+  const startLine = finding.startLine ?? line;
+  const endLine = finding.endLine ?? line;
+  return [
+    {
+      path: finding.path,
+      startLine: Math.min(startLine, endLine),
+      endLine: Math.max(startLine, endLine),
+      annotationLevel: mapSeverityToAnnotationLevel(finding.severity),
+      message: finding.body,
+      title: `[${result.agentSlug}] ${finding.title}`,
+      rawDetails: `model=${result.modelUsed}; effort=${result.effortUsed ?? 'inherit'}; estimatedCostUsd=${result.costEstimateUsd.toFixed(4)}`,
+    },
+  ];
+}
+
+function mapSeverityToAnnotationLevel(
+  severity: Finding['severity'],
+): 'notice' | 'warning' | 'failure' {
+  if (severity === 'error') return 'failure';
+  if (severity === 'warning') return 'warning';
+  return 'notice';
+}
+
+function countSeverities(findings: Finding[]): Record<Finding['severity'], number> {
+  return findings.reduce(
+    (counts, finding) => ({
+      ...counts,
+      [finding.severity]: counts[finding.severity] + 1,
+    }),
+    { info: 0, warning: 0, error: 0 },
+  );
+}
+
+function formatSeverityCounts(counts: Record<Finding['severity'], number>): string {
+  return `info ${counts.info}, warning ${counts.warning}, error ${counts.error}`;
 }
 
 function shouldSkipIgnoredDiff(diffContext: DiffContext, ignoreGlobs: string[]): boolean {

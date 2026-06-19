@@ -85,7 +85,8 @@ export function isRateLimitError(error: unknown): boolean {
   // Primary rate limit (X-RateLimit-Remaining: 0)
   if (error.status === 403) {
     const message = error.response?.data?.message ?? '';
-    return message.toLowerCase().includes('rate limit');
+    const remaining = getHeader(error.response?.headers, 'x-ratelimit-remaining');
+    return remaining === '0' || message.toLowerCase().includes('rate limit');
   }
 
   return false;

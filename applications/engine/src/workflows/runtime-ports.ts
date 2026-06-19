@@ -400,20 +400,21 @@ export function createEngineGitHubPort(
       previousHead?: string,
     ): Promise<DiffContext> {
       const installationId = getExecutionInstallationId(repository);
-      const [pullRequest, diffContext] = await Promise.all([
-        getPullRequestMetadata(context, {
-          installationId,
-          owner: repository.owner,
-          repository: repository.name,
-          pullRequestNumber,
-        }),
-        getDiffContext(context, {
-          installationId,
-          owner: repository.owner,
-          repository: repository.name,
-          pullRequestNumber,
-        }),
-      ]);
+      const pullRequest = await getPullRequestMetadata(context, {
+        installationId,
+        owner: repository.owner,
+        repository: repository.name,
+        pullRequestNumber,
+      });
+      const diffContext = await getDiffContext(context, {
+        installationId,
+        owner: repository.owner,
+        repository: repository.name,
+        pullRequestNumber,
+        repositoryId: repository.repositoryId,
+        headSha: head,
+        currentHeadSha: pullRequest.headSha,
+      });
       return {
         headSha: pullRequest.headSha || head,
         baseSha: pullRequest.baseSha,

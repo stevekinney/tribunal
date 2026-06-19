@@ -97,8 +97,8 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'get-pull-request-diff-context',
-  keyFactory: (repositoryId: number, pullNumber: number) =>
-    CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber),
+  keyFactory: (repositoryId: number, pullNumber: number, headSha: string) =>
+    CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber, headSha),
   ttlSeconds: 30,
   supportsEtag: false,
 });

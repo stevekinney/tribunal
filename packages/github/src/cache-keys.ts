@@ -34,8 +34,8 @@ export const CACHE_KEYS = {
 
   GITHUB_PR_DETAIL: (owner: string, repo: string, pullNumber: number) =>
     `github:response:${owner}:${repo}:pr:${pullNumber}`,
-  GITHUB_PR_DIFF_CONTEXT: (repositoryId: number, pullNumber: number) =>
-    `github:response:repository:${repositoryId}:pr:${pullNumber}:diff-context`,
+  GITHUB_PR_DIFF_CONTEXT: (repositoryId: number, pullNumber: number, headSha: string) =>
+    `github:response:repository:${repositoryId}:pr:${pullNumber}:head:${headSha}:diff-context`,
 
   GITHUB_REVIEW_COMMENTS_LIST: (
     owner: string,

@@ -18,7 +18,10 @@ import {
   handleRepositoryMetadataEvents,
   isPullRequestWebhookEvent,
 } from '$lib/server/github/webhooks';
-import { claimWebhookDelivery } from '@tribunal/github/webhooks/claim-delivery';
+import {
+  claimWebhookDelivery,
+  releaseWebhookDeliveryClaim,
+} from '@tribunal/github/webhooks/claim-delivery';
 
 // Import typed webhook handlers
 import { handlePullRequestEvent } from './handlers/pull-request.server';
@@ -138,9 +141,9 @@ export const POST: RequestHandler = async (event) => {
 
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
 
-  // 3. Claim-Before-Processing Pattern for non-review-engine events
-  // Review-engine triggers defer claiming until after successful processing,
-  // so GitHub can retry on transient failures (500). All other events claim early.
+  // 3. Claim-Before-Processing Pattern
+  // Claim every delivery before side effects so GitHub redeliveries cannot enqueue
+  // duplicate review work or persist duplicate event records.
   const installation = data.installation as { id: number } | undefined;
   const repository = data.repository as { id: number } | undefined;
   const installationId = installation?.id;
@@ -148,7 +151,7 @@ export const POST: RequestHandler = async (event) => {
 
   const isReviewEngineTrigger = isPullRequestWebhookEvent(eventType, action, data);
 
-  if (deliveryId && eventType && !isReviewEngineTrigger) {
+  if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(
       githubContext,
       deliveryId,
@@ -242,7 +245,19 @@ export const POST: RequestHandler = async (event) => {
   } catch (e) {
     if (isReviewEngineTrigger) {
       console.error('[webhook] Review intent dispatch failed:', e);
-      // Return 500 so GitHub retries this delivery (review intent failures)
+      // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
+      const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      if (!claimReleased) {
+        console.error('[webhook] Failed to release review-engine delivery claim:', {
+          deliveryId,
+          eventType,
+          action,
+          installationId,
+          repositoryId,
+        });
+        error(500, 'Review intent dispatch failed and delivery claim could not be released');
+      }
+      // Return 500 so GitHub retries this delivery (review intent failures).
       error(500, 'Review intent dispatch failed');
     } else {
       // For non-review-engine events, the delivery may already be claimed. Log and continue
@@ -254,16 +269,6 @@ export const POST: RequestHandler = async (event) => {
         error: e,
       });
     }
-  }
-
-  // Claim review-engine events after successful processing.
-  // Runs for ALL review-engine triggers including no-op paths (no workspace, bot events,
-  // unassociated checks) to prevent unnecessary GitHub retries. Matches pre-refactor behavior.
-  // For review-engine triggers: error() in the catch always throws and exits, so this is only
-  // reached on success. For non-review-engine triggers: isReviewEngineTrigger is false, so
-  // this block is skipped regardless of whether the handler threw.
-  if (isReviewEngineTrigger) {
-    await claimWebhookDelivery(githubContext, deliveryId, eventType, installationId);
   }
 
   // 7. Handle repository rename/transfer events

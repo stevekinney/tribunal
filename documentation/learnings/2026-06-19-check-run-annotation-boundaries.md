@@ -1,0 +1,2 @@
+- Check Run annotations should be limited to findings that anchor on RIGHT-side diff lines; non-commentable right-side lines belong in Check Run text instead.
+- LEFT-side findings cannot become Check Run annotations, so completed Check Run text should include them even when they are also posted as pull request review comments.
