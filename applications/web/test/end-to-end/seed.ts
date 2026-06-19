@@ -240,18 +240,19 @@ export async function seedOperatorData(
   await db
     .insert(repositoryReviewSettings)
     .values({
+      userId: options.userId,
       repositoryId: options.repositoryId,
       watched: true,
       ignoreGlobs: ['dist/**'],
     })
     .onConflictDoUpdate({
-      target: repositoryReviewSettings.repositoryId,
+      target: [repositoryReviewSettings.userId, repositoryReviewSettings.repositoryId],
       set: { watched: true, ignoreGlobs: ['dist/**'], updatedAt: now },
     });
 
   await db
     .insert(repositoryAgent)
-    .values({ repositoryId: options.repositoryId, agentId })
+    .values({ userId: options.userId, repositoryId: options.repositoryId, agentId })
     .onConflictDoNothing();
 
   await db
