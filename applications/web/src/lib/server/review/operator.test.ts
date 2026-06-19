@@ -20,6 +20,7 @@ import { eq } from 'drizzle-orm';
 import {
   deleteAgent,
   estimateAgentDryRun,
+  getRepositoryOperatorDetails,
   getCostOverview,
   getRunInspector,
   saveAgent,
@@ -102,6 +103,71 @@ describe('review operator server helpers', () => {
     return { owner, otherUser, reviewAgent };
   }
 
+  async function seedSharedRepositoryOwnership() {
+    const [firstOwner] = await testDb.db
+      .insert(user)
+      .values({ username: 'first-owner' })
+      .returning();
+    const [secondOwner] = await testDb.db
+      .insert(user)
+      .values({ username: 'second-owner' })
+      .returning();
+    await testDb.db.insert(repository).values({
+      id: 9101,
+      owner: 'lost-gradient',
+      name: 'shared-tribunal',
+      uri: 'https://github.com/lost-gradient/shared-tribunal.git',
+      defaultBranch: 'main',
+    });
+    await testDb.db.insert(githubInstallation).values([
+      {
+        installationId: 7101,
+        userId: firstOwner.id,
+        accountLogin: 'lost-gradient',
+        accountType: 'Organization',
+        accountId: 7102,
+        repositorySelection: 'selected',
+      },
+      {
+        installationId: 7201,
+        userId: secondOwner.id,
+        accountLogin: 'lost-gradient',
+        accountType: 'Organization',
+        accountId: 7202,
+        repositorySelection: 'selected',
+      },
+    ]);
+    await testDb.db.insert(githubInstallationRepository).values([
+      { installationId: 7101, repositoryId: 9101, isActive: true },
+      { installationId: 7201, repositoryId: 9101, isActive: true },
+    ]);
+    const [firstAgent, secondAgent] = await testDb.db
+      .insert(agent)
+      .values([
+        {
+          id: 'agent_first_owner',
+          userId: firstOwner.id,
+          slug: 'first-owner-security',
+          description: 'Finds security issues',
+          body: 'Review for security issues.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        {
+          id: 'agent_second_owner',
+          userId: secondOwner.id,
+          slug: 'second-owner-tests',
+          description: 'Finds missing tests',
+          body: 'Review for missing tests.',
+          model: 'sonnet',
+          enabled: true,
+        },
+      ])
+      .returning();
+
+    return { firstOwner, secondOwner, firstAgent, secondAgent };
+  }
+
   it('persists repository watch settings only for the owning user', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
 
@@ -132,6 +198,74 @@ describe('review operator server helpers', () => {
         }),
       ),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('keeps watch settings and assignments separate for two users with the same repository', async () => {
+    const { firstOwner, secondOwner, firstAgent, secondAgent } =
+      await seedSharedRepositoryOwnership();
+
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(firstOwner.id, {
+        repositoryId: 9101,
+        watched: true,
+        ignoreGlobs: ['docs/**'],
+        agentIds: [firstAgent.id],
+      }),
+    );
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(secondOwner.id, {
+        repositoryId: 9101,
+        watched: false,
+        ignoreGlobs: ['src/generated/**'],
+        agentIds: [secondAgent.id],
+      }),
+    );
+
+    const firstDetails = await withTestDatabase(() =>
+      getRepositoryOperatorDetails(firstOwner.id, [9101]),
+    );
+    const secondDetails = await withTestDatabase(() =>
+      getRepositoryOperatorDetails(secondOwner.id, [9101]),
+    );
+
+    expect(firstDetails.get(9101)).toMatchObject({
+      watched: true,
+      ignoreGlobs: ['docs/**'],
+      agents: [{ id: firstAgent.id, slug: firstAgent.slug, enabled: true }],
+    });
+    expect(secondDetails.get(9101)).toMatchObject({
+      watched: false,
+      ignoreGlobs: ['src/generated/**'],
+      agents: [{ id: secondAgent.id, slug: secondAgent.slug, enabled: true }],
+    });
+  });
+
+  it('does not leave partial watch settings when assignment persistence fails', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    // This mock throws before Postgres receives the single CTE statement. It
+    // verifies error propagation, not Postgres-level CTE atomicity.
+    const executeSpy = vi
+      .spyOn(testDb.db, 'execute')
+      .mockRejectedValueOnce(new Error('assignment persistence failed'));
+
+    await expect(
+      withTestDatabase(() =>
+        saveRepositoryWatchSettings(owner.id, {
+          repositoryId: 9001,
+          watched: true,
+          ignoreGlobs: ['docs/**'],
+          agentIds: [reviewAgent.id],
+        }),
+      ),
+    ).rejects.toThrow('assignment persistence failed');
+
+    executeSpy.mockRestore();
+
+    const settings = await testDb.db.select().from(repositoryReviewSettings);
+    const assignments = await testDb.db.select().from(repositoryAgent);
+
+    expect(settings).toEqual([]);
+    expect(assignments).toEqual([]);
   });
 
   it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {
