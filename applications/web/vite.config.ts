@@ -117,6 +117,8 @@ export default defineConfig({
             '**/performance.test.{js,ts}',
             // Browser tests run in the client project with vitest-browser-svelte
             'test/browser/**',
+            // Playwright owns the end-to-end suite.
+            'test/end-to-end/**',
           ],
         },
       },

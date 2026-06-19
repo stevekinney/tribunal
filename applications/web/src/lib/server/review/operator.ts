@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -82,6 +82,7 @@ async function requireAgentMutationAccess(userId: number, agentId: string) {
 
 export async function getRepositoryOperatorDetails(userId: number, repositoryIds: number[]) {
   if (repositoryIds.length === 0) return new Map<number, RepositoryOperatorDetails>();
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
   const [settingsRows, assignmentRows, runRows, costRows] = await Promise.all([
     db
@@ -121,7 +122,7 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
         and(
           eq(costEvent.userId, userId),
           inArray(costEvent.repositoryId, repositoryIds),
-          sql`${costEvent.occurredAt} >= now() - interval '30 days'`,
+          gte(costEvent.occurredAt, thirtyDaysAgo),
         ),
       ),
   ]);

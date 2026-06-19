@@ -25,6 +25,7 @@ const checks: { name: string; command: string[]; continueOnError?: boolean }[] =
   { name: 'Type check', command: ['bun', 'run', 'check'] },
   { name: 'Format check', command: ['bun', 'run', 'format:check'] },
   { name: 'Lint', command: ['bun', 'run', 'lint'] },
+  { name: 'Database schema check', command: ['bun', 'run', 'db:check'] },
   {
     name: 'Unit tests (server)',
     command: ['bun', 'run', '--cwd', 'applications/web', 'test:unit:server', '--', '--run'],
@@ -36,6 +37,10 @@ const checks: { name: string; command: string[]; continueOnError?: boolean }[] =
   {
     name: 'Review engine coverage',
     command: ['bun', 'run', 'test:coverage:review-engine'],
+  },
+  {
+    name: 'End-to-end tests',
+    command: ['bun', 'run', '--cwd', 'applications/web', 'test:e2e'],
   },
   { name: 'Build', command: ['bun', 'run', 'build'] },
   {
