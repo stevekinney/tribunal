@@ -1,0 +1,1 @@
+- For paginated external API reads, compute request window parameters once per logical fetch and reuse them across every page request so cursor pagination cannot cross time-window boundaries.

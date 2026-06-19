@@ -209,15 +209,14 @@ export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostAp
   return {
     async listReviewRunCosts(reviewRunId: string) {
       const events: UsageCostApiEvent[] = [];
+      const endingAt = new Date();
+      const startingAt = new Date(endingAt.getTime() - 7 * 24 * 60 * 60 * 1000);
       let page: string | undefined;
 
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
-        url.searchParams.set(
-          'starting_at',
-          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-        );
-        url.searchParams.set('ending_at', new Date().toISOString());
+        url.searchParams.set('starting_at', startingAt.toISOString());
+        url.searchParams.set('ending_at', endingAt.toISOString());
         url.searchParams.append('group_by[]', 'workspace_id');
         url.searchParams.append('group_by[]', 'description');
         if (page !== undefined) url.searchParams.set('page', page);

@@ -332,7 +332,12 @@ describe('runtime review intent consumer wiring', () => {
         },
       },
     ]);
+    const firstUrl = fetchMock.mock.calls[0]?.[0] as URL;
     const secondUrl = fetchMock.mock.calls[1]?.[0] as URL;
+    expect(firstUrl.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(firstUrl.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
+    expect(secondUrl.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(secondUrl.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
     expect(secondUrl.searchParams.get('page')).toBe('page_2');
   });
 
