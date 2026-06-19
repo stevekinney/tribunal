@@ -260,6 +260,7 @@ jobs:
             -e TRIBUNAL_PROXY_URL=http://host.docker.internal:4312 \
             -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
             -e PROXY_SIGNING_KEY=ci-placeholder \
+            -e ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \
             -e TRIBUNAL_ENGINE_CONTROL_TOKEN=ci-engine-control-token \
             -e TRIBUNAL_DEFAULT_MODEL=claude-sonnet-4-6 \
@@ -280,6 +281,7 @@ jobs:
             -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
             -e PROXY_CA_CERT=ci-placeholder \
             -e PROXY_SIGNING_KEY=ci-placeholder \
+            -e ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             -e GITHUB_EGRESS_ALLOW=github.com,api.github.com \
             -e ANTHROPIC_EGRESS_ALLOW=api.anthropic.com \
             -p 4312:4312 tribunal-proxy:test
