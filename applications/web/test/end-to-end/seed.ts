@@ -10,7 +10,7 @@
  * and E2E_TEST_SECRET environment variables.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import {
   agent,
@@ -375,7 +375,7 @@ export async function applyFakeReviewLifecycleEvent(
   const now = new Date();
   const finishedAt = new Date(now.getTime() + 60_000);
   const existingRunRows = await db
-    .select({ id: reviewRun.id })
+    .select({ id: reviewRun.id, headSha: reviewRun.headSha })
     .from(reviewRun)
     .where(
       and(
@@ -383,8 +383,10 @@ export async function applyFakeReviewLifecycleEvent(
         eq(reviewRun.repositoryId, input.repositoryId),
         eq(reviewRun.prNumber, pullRequestNumber),
       ),
-    );
+    )
+    .orderBy(desc(reviewRun.startedAt));
   const existingRunIds = existingRunRows.map((row) => row.id);
+  const previousHeadSha = kind === 'synchronize' ? (existingRunRows[0]?.headSha ?? null) : null;
 
   if (kind === 'closed') {
     if (existingRunIds.length > 0) {
@@ -418,7 +420,7 @@ export async function applyFakeReviewLifecycleEvent(
         repositoryId: input.repositoryId,
         prNumber: pullRequestNumber,
         headSha,
-        prevHeadSha: kind === 'synchronize' ? 'e2e-open-sha' : null,
+        prevHeadSha: previousHeadSha,
         trigger,
         status: 'posted',
         workflowId: `review:pr:${input.repositoryId}:${pullRequestNumber}`,
