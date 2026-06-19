@@ -24,6 +24,7 @@ type ClaimedReviewIntentRow = {
   deliveryId: string;
   kind: ReviewIntentKind;
   repositoryId: number;
+  userId: number;
   prNumber: number;
   headSha: string | null;
   prState: 'merged' | 'closed' | null;
@@ -97,6 +98,7 @@ async function claimNextIntentRow(
       FROM ${reviewIntent}
       INNER JOIN ${repositoryReviewSettings}
         ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
+        AND ${repositoryReviewSettings.userId} = ${reviewIntent.userId}
       INNER JOIN ${repository}
         ON ${repository.id} = ${reviewIntent.repositoryId}
       INNER JOIN ${githubInstallationRepository}
@@ -104,8 +106,9 @@ async function claimNextIntentRow(
         AND ${githubInstallationRepository.isActive} = true
       INNER JOIN ${githubInstallation}
         ON ${githubInstallation.installationId} = ${githubInstallationRepository.installationId}
+        AND ${githubInstallation.userId} = ${reviewIntent.userId}
       INNER JOIN ${userReviewSettings}
-        ON ${userReviewSettings.userId} = ${githubInstallation.userId}
+        ON ${userReviewSettings.userId} = ${reviewIntent.userId}
       WHERE ${reviewIntent.processedAt} IS NULL
         AND (
           ${reviewIntent.claimedAt} IS NULL
@@ -132,6 +135,7 @@ async function claimNextIntentRow(
       ${reviewIntent.deliveryId} AS "deliveryId",
       ${reviewIntent.kind} AS "kind",
       ${reviewIntent.repositoryId} AS "repositoryId",
+      ${reviewIntent.userId} AS "userId",
       ${reviewIntent.prNumber} AS "prNumber",
       ${reviewIntent.headSha} AS "headSha",
       ${reviewIntent.prState} AS "prState",
@@ -148,7 +152,7 @@ async function buildPullRequestReviewInput(
 ): Promise<PullRequestReviewInputBuildResult> {
   const [target] = await database
     .select({
-      userId: githubInstallation.userId,
+      userId: reviewIntent.userId,
       installationId: githubInstallation.installationId,
       owner: repository.owner,
       name: repository.name,
@@ -158,10 +162,6 @@ async function buildPullRequestReviewInput(
     })
     .from(reviewIntent)
     .innerJoin(repository, eq(repository.id, reviewIntent.repositoryId))
-    .innerJoin(
-      repositoryReviewSettings,
-      eq(repositoryReviewSettings.repositoryId, reviewIntent.repositoryId),
-    )
     .innerJoin(
       githubInstallationRepository,
       and(
@@ -173,10 +173,18 @@ async function buildPullRequestReviewInput(
       githubInstallation,
       and(
         eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.userId, reviewIntent.userId),
         eq(githubInstallation.status, 'active'),
       ),
     )
-    .innerJoin(userReviewSettings, eq(userReviewSettings.userId, githubInstallation.userId))
+    .innerJoin(
+      repositoryReviewSettings,
+      and(
+        eq(repositoryReviewSettings.repositoryId, reviewIntent.repositoryId),
+        eq(repositoryReviewSettings.userId, reviewIntent.userId),
+      ),
+    )
+    .innerJoin(userReviewSettings, eq(userReviewSettings.userId, reviewIntent.userId))
     .leftJoin(
       pullRequestState,
       and(
@@ -184,7 +192,14 @@ async function buildPullRequestReviewInput(
         eq(pullRequestState.prNumber, reviewIntent.prNumber),
       ),
     )
-    .where(eq(reviewIntent.id, intent.id))
+    .where(
+      and(
+        eq(reviewIntent.id, intent.id),
+        eq(reviewIntent.userId, intent.userId),
+        eq(repositoryReviewSettings.watched, true),
+        eq(userReviewSettings.reviewsEnabled, true),
+      ),
+    )
     .orderBy(
       sql`CASE WHEN ${githubInstallation.installationId} = ${repository.installationId} THEN 0 ELSE 1 END`,
       asc(githubInstallation.installationId),
@@ -192,7 +207,7 @@ async function buildPullRequestReviewInput(
     )
     .limit(1);
 
-  if (!target?.userId) return { status: 'missing_target' };
+  if (!target) return { status: 'missing_target' };
 
   const assignedAgents = await database
     .select({
@@ -210,6 +225,7 @@ async function buildPullRequestReviewInput(
     .where(
       and(
         eq(repositoryAgent.repositoryId, intent.repositoryId),
+        eq(repositoryAgent.userId, target.userId),
         eq(agent.userId, target.userId),
         eq(agent.enabled, true),
       ),
