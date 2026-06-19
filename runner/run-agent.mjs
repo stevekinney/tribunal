@@ -108,6 +108,7 @@ export async function runAgentProcess({
       elapsedMilliseconds,
     });
   } catch (error) {
+    removeTerminateListener();
     emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
     await writeOnce(
       createResult({

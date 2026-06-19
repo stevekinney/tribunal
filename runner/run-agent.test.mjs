@@ -307,6 +307,30 @@ describe('run-agent runner', () => {
     expect(resultRecord.result.error).toBeUndefined();
   });
 
+  it('removes the SIGTERM listener after review failure before writing the error result', async () => {
+    const signalSource = new EventEmitter();
+    const stdout = createSignalOnResultWritable(signalSource);
+    const exit = vi.fn();
+
+    await runAgentProcess({
+      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit,
+      signalSource,
+      queryFunction: () => {
+        throw new Error('review failed');
+      },
+    });
+
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+    expect(exit).not.toHaveBeenCalledWith(143);
+    const resultRecord = stdout.records().find((record) => record.type === 'result');
+    expect(resultRecord).toBeDefined();
+    expect(resultRecord.result.error).toBe('review failed');
+  });
+
   it('preserves a successful result when the first result write fails', async () => {
     const stdout = createWritableThatFailsFirstResult();
 
