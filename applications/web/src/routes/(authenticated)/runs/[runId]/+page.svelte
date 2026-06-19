@@ -45,9 +45,16 @@
   }
 
   $effect(() => {
-    if (!canStopRun || typeof EventSource === 'undefined') {
+    if (!canStopRun) {
       connectionState = 'disconnected';
       return;
+    }
+
+    const fallbackRefresh = window.setInterval(() => void invalidateAll(), 10_000);
+
+    if (typeof EventSource === 'undefined') {
+      connectionState = 'disconnected';
+      return () => window.clearInterval(fallbackRefresh);
     }
 
     connectionState = 'connecting';
@@ -68,6 +75,7 @@
     };
 
     return () => {
+      window.clearInterval(fallbackRefresh);
       eventSource.close();
     };
   });

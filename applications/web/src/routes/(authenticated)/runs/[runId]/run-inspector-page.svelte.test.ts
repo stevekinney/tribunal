@@ -112,6 +112,7 @@ describe('/runs/[runId] page', () => {
   afterEach(() => {
     cleanup();
     invalidateAllMock.mockClear();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -133,6 +134,12 @@ describe('/runs/[runId] page', () => {
   });
 
   it('streams run updates through agent_event transport state', async () => {
+    let fallbackRefresh: TimerHandler | undefined;
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation((handler) => {
+      fallbackRefresh = handler;
+      return 123 as never;
+    });
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => undefined);
     const eventSources: Array<{
       url: string;
       onopen: (() => void) | null;
@@ -166,6 +173,7 @@ describe('/runs/[runId] page', () => {
 
     expect(eventSources).toHaveLength(1);
     expect(eventSources[0].url).toBe('/api/review/runs/run_1/events?after=2');
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
 
     eventSources[0].onopen?.();
     await expect
@@ -174,6 +182,9 @@ describe('/runs/[runId] page', () => {
 
     eventSources[0].listeners.get('agent_event')?.forEach((listener) => listener());
     expect(invalidateAllMock).toHaveBeenCalledOnce();
+    expect(fallbackRefresh).toBeTypeOf('function');
+    if (typeof fallbackRefresh === 'function') fallbackRefresh();
+    expect(invalidateAllMock).toHaveBeenCalledTimes(2);
 
     await rendered.rerender({
       data: {
@@ -187,6 +198,7 @@ describe('/runs/[runId] page', () => {
     });
 
     expect(eventSources[0].close).toHaveBeenCalledOnce();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(123);
     expect(eventSources).toHaveLength(1);
     await expect
       .element(page.getByLabelText('Run event stream state'))

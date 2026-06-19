@@ -229,6 +229,27 @@ describe('review operator server helpers', () => {
     });
   });
 
+  it('estimates explicit-model dry runs without requiring a concrete user default model', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db
+      .insert(userReviewSettings)
+      .values({ userId: owner.id, defaultModel: 'inherit' });
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'sonnet');
+    formData.set('effort', 'high');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result.dryRunEstimate).toMatchObject({
+      model: 'sonnet',
+      effort: 'high',
+    });
+  });
+
   it('scopes run inspection and stop control to the owning user', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
     await testDb.db.insert(reviewRun).values({

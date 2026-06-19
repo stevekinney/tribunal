@@ -363,12 +363,19 @@ export async function estimateAgentDryRun(userId: number, formData: FormData) {
     return fail(400, { error: 'Effort is invalid.', values });
   }
 
-  const [settings] = await getUserReviewSettings(userId);
-  const defaultModelValidation = agentModelSchema.safeParse(settings.defaultModel);
-  if (!defaultModelValidation.success || defaultModelValidation.data === 'inherit') {
-    return fail(400, { error: 'User default model is not configured.', values });
+  const submittedModel = modelValidation.data;
+  let defaultModel: Exclude<AgentModel, 'inherit'>;
+  if (submittedModel === 'inherit') {
+    const [settings] = await getUserReviewSettings(userId);
+    const defaultModelValidation = agentModelSchema.safeParse(settings.defaultModel);
+    if (!defaultModelValidation.success || defaultModelValidation.data === 'inherit') {
+      return fail(400, { error: 'User default model is not configured.', values });
+    }
+    defaultModel = defaultModelValidation.data;
+  } else {
+    defaultModel = submittedModel;
   }
-  const defaultModel: Exclude<AgentModel, 'inherit'> = defaultModelValidation.data;
+
   const definition = toAgentDefinition(
     {
       id: id || 'agent_dry_run',
@@ -376,7 +383,7 @@ export async function estimateAgentDryRun(userId: number, formData: FormData) {
       slug: slug || 'dry-run',
       description: description || 'Dry run estimate',
       body,
-      model: modelValidation.data,
+      model: submittedModel,
       effort: effortValidation?.data,
       enabled: true,
     },
