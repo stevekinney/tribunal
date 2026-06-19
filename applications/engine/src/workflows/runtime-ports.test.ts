@@ -314,8 +314,48 @@ describe('runtime review intent consumer wiring', () => {
         usageCostTarget({ reviewRunId: 'run_without_metadata', userId: 9, repositoryId: 77 }),
       ),
     ).rejects.toThrow(
-      'Anthropic cost report row is missing review_run_id metadata; cannot safely reconcile organization-level costs.',
+      'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
     );
+  });
+
+  it('skips unscoped Anthropic cost report rows when attributable rows exist', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '1.50',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_1',
+                  description: 'Unscoped Claude Usage',
+                },
+                {
+                  amount: '2.25',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_1',
+                  description: 'Tribunal Claude Usage',
+                  metadata: { review_run_id: 'run_1', user_id: '7', repository_id: '42' },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
+    ).resolves.toMatchObject([
+      { amountUsd: 2.25, userId: 7, repositoryId: 42, reviewRunId: 'run_1' },
+    ]);
   });
 
   it('follows documented Anthropic cost report pagination', async () => {

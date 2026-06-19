@@ -258,34 +258,42 @@ function parseAnthropicCostReport(
   pageIndex: number,
 ): UsageCostApiEvent[] {
   const rows = getCostReportRows(payload);
-  return rows.flatMap((row, index) => {
+  const events: UsageCostApiEvent[] = [];
+  let unsupportedCostReportRows = 0;
+
+  for (const [index, row] of rows.entries()) {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
-    if (row.currency !== undefined && row.currency !== 'USD') return [];
+    if (row.currency !== undefined && row.currency !== 'USD') continue;
     const amountUsd = parseUsdDecimal(row.amount);
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
     const rowReviewRunId = metadata?.review_run_id;
     if (rowReviewRunId === undefined) {
-      throw new Error(
-        'Anthropic cost report row is missing review_run_id metadata; cannot safely reconcile organization-level costs.',
-      );
+      unsupportedCostReportRows += 1;
+      continue;
     }
-    if (rowReviewRunId !== target.reviewRunId) return [];
+    if (rowReviewRunId !== target.reviewRunId) continue;
     const userId = toNullableInteger(metadata?.user_id ?? row.user_id) ?? target.userId;
-    return [
-      {
-        id: String(row.id ?? `${target.reviewRunId}:${pageIndex}:${index}`),
-        occurredAt: new Date(String(row.starting_at ?? row.ending_at ?? Date.now())),
-        amountUsd,
-        userId,
-        repositoryId:
-          toNullableInteger(metadata?.repository_id ?? row.repository_id) ?? target.repositoryId,
-        reviewRunId: target.reviewRunId,
-        agentRunId: toNullableString(metadata?.agent_run_id ?? row.agent_run_id),
-        agentId: toNullableString(metadata?.agent_id ?? row.agent_id),
-        metadata: metadata ?? {},
-      },
-    ];
-  });
+    events.push({
+      id: String(row.id ?? `${target.reviewRunId}:${pageIndex}:${index}`),
+      occurredAt: new Date(String(row.starting_at ?? row.ending_at ?? Date.now())),
+      amountUsd,
+      userId,
+      repositoryId:
+        toNullableInteger(metadata?.repository_id ?? row.repository_id) ?? target.repositoryId,
+      reviewRunId: target.reviewRunId,
+      agentRunId: toNullableString(metadata?.agent_run_id ?? row.agent_run_id),
+      agentId: toNullableString(metadata?.agent_id ?? row.agent_id),
+      metadata: metadata ?? {},
+    });
+  }
+
+  if (events.length === 0 && unsupportedCostReportRows > 0) {
+    throw new Error(
+      'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
+    );
+  }
+
+  return events;
 }
 
 function getCostReportRows(payload: unknown): Array<Record<string, unknown>> {
