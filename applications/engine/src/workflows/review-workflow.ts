@@ -1462,7 +1462,7 @@ function getPartialAgentResult(error: unknown): Partial<AgentResult> | undefined
   if (
     rawCostEstimateUsd === undefined ||
     rawCostEstimateUsd === null ||
-    rawCostEstimateUsd === ''
+    (typeof rawCostEstimateUsd === 'string' && rawCostEstimateUsd.trim() === '')
   ) {
     return undefined;
   }
