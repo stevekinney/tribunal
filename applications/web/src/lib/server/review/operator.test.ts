@@ -239,6 +239,8 @@ describe('review operator server helpers', () => {
 
   it('does not leave partial watch settings when assignment persistence fails', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
+    // This mock throws before Postgres receives the single CTE statement. It
+    // verifies error propagation, not Postgres-level CTE atomicity.
     const executeSpy = vi
       .spyOn(testDb.db, 'execute')
       .mockRejectedValueOnce(new Error('assignment persistence failed'));

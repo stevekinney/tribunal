@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import {
   githubInstallation,
   githubInstallationRepository,
@@ -33,6 +33,8 @@ type PullRequestEventType =
 
 export type { PullRequestEventType, ReviewIntentKind };
 
+export type ReviewIntentEnqueueStatus = 'enqueued' | 'duplicate' | 'no_watchers';
+
 export interface SignalPullRequestEventInput {
   workspaceId: number;
   repositoryId: number;
@@ -61,6 +63,7 @@ export interface SignalPullRequestResult {
   intentId?: string;
   intentKind?: ReviewIntentKind;
   enqueued: boolean;
+  enqueueStatus?: ReviewIntentEnqueueStatus;
   error?: string;
 }
 
@@ -103,14 +106,14 @@ async function enqueueReviewIntent(
     headSha?: string | null;
     prState?: 'merged' | 'closed' | null;
   },
-): Promise<{ enqueued: boolean; intent?: ReviewIntent }> {
+): Promise<{ status: ReviewIntentEnqueueStatus; intent?: ReviewIntent }> {
   if (!input.deliveryId) {
     throw new ValidationError('Cannot enqueue review intent without a GitHub delivery id.');
   }
   const deliveryId = input.deliveryId;
 
   const watchedUsers = await context.db
-    .select({ userId: githubInstallation.userId })
+    .selectDistinct({ userId: sql<number>`${githubInstallation.userId}` })
     .from(githubInstallationRepository)
     .innerJoin(
       githubInstallation,
@@ -140,12 +143,11 @@ async function enqueueReviewIntent(
         eq(githubInstallationRepository.isActive, true),
       ),
     )
-    .groupBy(githubInstallation.userId)
     .orderBy(asc(githubInstallation.userId));
 
-  const watchedUserIds = watchedUsers.flatMap(({ userId }) => (userId === null ? [] : [userId]));
+  const watchedUserIds = watchedUsers.map(({ userId }) => userId);
   if (watchedUserIds.length === 0) {
-    return { enqueued: false };
+    return { status: 'no_watchers' };
   }
 
   const intents = await context.db
@@ -167,7 +169,8 @@ async function enqueueReviewIntent(
     })
     .returning();
 
-  return { enqueued: intents.length > 0, intent: intents[0] };
+  if (intents.length === 0) return { status: 'duplicate' };
+  return { status: 'enqueued', intent: intents[0] };
 }
 
 export async function signalPullRequestEvent(
@@ -182,7 +185,7 @@ export async function signalPullRequestEvent(
   }
 
   try {
-    const { enqueued, intent } = await enqueueReviewIntent(context, {
+    const { status, intent } = await enqueueReviewIntent(context, {
       deliveryId: input.eventId,
       kind: intentKind,
       repositoryId: input.repositoryId,
@@ -195,7 +198,8 @@ export async function signalPullRequestEvent(
       workflowId,
       intentId: intent?.id,
       intentKind,
-      enqueued,
+      enqueued: status === 'enqueued',
+      enqueueStatus: status,
     };
   } catch (error) {
     return { ok: false, workflowId, intentKind, enqueued: false, error: formatError(error) };
@@ -209,7 +213,7 @@ export async function signalPullRequestClosed(
   const workflowId = buildPullRequestOrchestratorWorkflowId(input.repositoryId, input.prNumber);
 
   try {
-    const { enqueued, intent } = await enqueueReviewIntent(context, {
+    const { status, intent } = await enqueueReviewIntent(context, {
       deliveryId: input.eventId,
       kind: 'pr_closed',
       repositoryId: input.repositoryId,
@@ -223,7 +227,8 @@ export async function signalPullRequestClosed(
       workflowId,
       intentId: intent?.id,
       intentKind: 'pr_closed',
-      enqueued,
+      enqueued: status === 'enqueued',
+      enqueueStatus: status,
     };
   } catch (error) {
     return {

@@ -10,6 +10,9 @@ WHERE "user_id" IS NULL;--> statement-breakpoint
 UPDATE "repository_review_settings"
 SET "user_id" = "owner"."user_id"
 FROM (
+  -- Before this migration, repository_review_settings had at most one row per
+  -- repository, so choosing one active owner preserves the legacy row without
+  -- dropping any per-user settings that could not yet exist.
   SELECT DISTINCT ON ("github_installation_repository"."repository_id")
     "github_installation_repository"."repository_id",
     "github_installation"."user_id"

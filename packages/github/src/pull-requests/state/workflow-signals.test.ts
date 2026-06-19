@@ -105,8 +105,18 @@ describe('signalPullRequestEvent', () => {
     const first = await signalPullRequestEvent(context, input);
     const second = await signalPullRequestEvent(context, input);
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'start', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'start', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -140,7 +150,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'def456',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -165,7 +180,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'checkhead',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -207,8 +227,18 @@ describe('signalPullRequestEvent', () => {
       headSha: 'second',
     });
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -237,7 +267,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'shared-head',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'start', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -263,7 +298,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'unwatched-head',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'start', enqueued: false });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: false,
+      enqueueStatus: 'no_watchers',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -335,8 +375,18 @@ describe('signalPullRequestClosed', () => {
     const first = await signalPullRequestClosed(context, input);
     const second = await signalPullRequestClosed(context, input);
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -363,7 +413,12 @@ describe('signalPullRequestClosed', () => {
       headSha: null,
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
 
     const rows = await testContext.db
       .select()

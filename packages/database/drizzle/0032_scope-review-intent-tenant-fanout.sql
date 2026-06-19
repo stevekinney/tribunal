@@ -89,6 +89,8 @@ INNER JOIN (
     AND "user_review_settings"."reviews_enabled" = true
 ) AS "eligible"
   ON "eligible"."intent_id" = "review_intent"."id"
+-- Fan out only unprocessed intents. Already-processed legacy rows keep the
+-- single owner assigned above so migration does not re-run historical reviews.
 WHERE "review_intent"."processed_at" IS NULL
   AND "review_intent"."user_id" IS DISTINCT FROM "eligible"."user_id";--> statement-breakpoint
 DELETE FROM "review_intent"
