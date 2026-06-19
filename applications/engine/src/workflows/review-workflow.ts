@@ -1,10 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import {
-  anchorFindings,
-  computeCanonicalFindingFingerprint,
-  deduplicateFindings,
-} from '@tribunal/agents/findings';
+import { anchorFindings, computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import type {
