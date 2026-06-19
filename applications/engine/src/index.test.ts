@@ -30,6 +30,7 @@ describe('createEngineServerOptions', () => {
         drainReviewIntents: async () => 3,
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -61,6 +62,7 @@ describe('createEngineServerOptions', () => {
         },
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -89,6 +91,7 @@ describe('createEngineServerOptions', () => {
         drainReviewIntents: async () => 0,
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -122,6 +125,7 @@ describe('createEngineServerOptions', () => {
           stoppedRunIds.push(reviewRunId);
           return { stopped: true };
         },
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -151,6 +155,7 @@ describe('createEngineServerOptions', () => {
         drainReviewIntents: async () => 0,
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -186,6 +191,7 @@ describe('createEngineServerOptions', () => {
           stopCalled = true;
           return { stopped: true };
         },
+        stopReviewAgent: async () => ({ stopped: false }),
         release: async () => {},
       },
       'control-token',
@@ -200,6 +206,72 @@ describe('createEngineServerOptions', () => {
 
     expect(response.status).toBe(401);
     expect(stopCalled).toBe(false);
+  });
+
+  it('stops review agents through the runtime endpoint', async () => {
+    const stoppedAgents: Array<{ reviewRunId: string; agentId: string }> = [];
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [
+          { name: 'weft_database', ok: true },
+          { name: 'singleton_lock', ok: true },
+        ],
+        drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async (reviewRunId, agentId) => {
+          stoppedAgents.push({ reviewRunId, agentId });
+          return { stopped: true };
+        },
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-runs/run%3A42%3A7%3Ahead/agents/agent_security/stop', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(stoppedAgents).toEqual([{ reviewRunId: 'run:42:7:head', agentId: 'agent_security' }]);
+    await expect(response.json()).resolves.toEqual({ ok: true, stopped: true });
+  });
+
+  it('reports inactive review agents through the runtime stop endpoint', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [
+          { name: 'weft_database', ok: true },
+          { name: 'singleton_lock', ok: true },
+        ],
+        drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-runs/run_1/agents/agent_security/stop', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'agent_run_not_active',
+    });
   });
 });
 

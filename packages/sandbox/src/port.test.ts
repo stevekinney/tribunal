@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentEvent, AgentResult } from '@tribunal/review-core/types';
+import type { AgentEvent, AgentResult, DiffContext } from '@tribunal/review-core/types';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from './port';
 
 const result: AgentResult = {
@@ -15,6 +15,26 @@ const result: AgentResult = {
   },
   costEstimateUsd: 0.01,
   durationMs: 100,
+};
+
+const diffContext: DiffContext = {
+  headSha: 'head-sha',
+  baseSha: 'base-sha',
+  changedFiles: [
+    {
+      path: 'src/auth.ts',
+      status: 'modified',
+      patch: '@@ -10,2 +10,2 @@\n-old\n+new',
+      commentableLines: [{ side: 'RIGHT', line: 11 }],
+    },
+  ],
+  pr: {
+    number: 42,
+    title: 'Review engine foundation',
+    body: 'Pull request body',
+    labels: ['review-engine'],
+    author: 'steve',
+  },
 };
 
 function createFakeAdapter() {
@@ -170,6 +190,7 @@ describe('sandbox port', () => {
           effort: 'high',
           enabled: true,
         },
+        diffContext,
         'token',
         () => {},
         new AbortController().signal,
@@ -188,6 +209,8 @@ describe('sandbox port', () => {
           ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic/api.anthropic.com',
           TRIBUNAL_AGENT_MODEL: 'sonnet',
           TRIBUNAL_AGENT_EFFORT: 'high',
+          TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
+          TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts']),
         },
       },
     });
@@ -228,6 +251,7 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         (agentEvent) => events.push(agentEvent),
         new AbortController().signal,
@@ -274,6 +298,7 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         (agentEvent) => events.push(agentEvent),
         new AbortController().signal,
@@ -332,8 +357,8 @@ describe('sandbox port', () => {
           body: 'Review.',
           model: 'sonnet',
           enabled: true,
-          changedFiles: ['src/auth.ts'],
         },
+        diffContext,
         'token',
         (agentEvent) => events.push(agentEvent),
         new AbortController().signal,
@@ -345,13 +370,14 @@ describe('sandbox port', () => {
       input: {
         environment: {
           TRIBUNAL_AGENT_RUN_ID: 'agent_1',
+          TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
           TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts']),
         },
       },
     });
   });
 
-  it('rejects successful runner commands that never emit a final result', async () => {
+  it('returns a typed failed result when successful runner commands never emit a final result', async () => {
     const { adapter } = createFakeAdapter();
     const event = {
       agentRunId: 'agent_run_1',
@@ -383,14 +409,20 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         () => {},
         new AbortController().signal,
       ),
-    ).rejects.toThrow('Agent runner did not produce a result record.');
+    ).resolves.toMatchObject({
+      agentSlug: 'security-reviewer',
+      findings: [],
+      costEstimateUsd: 0,
+      error: 'Agent runner did not produce a result record.',
+    });
   });
 
-  it('rejects empty runner output', async () => {
+  it('returns a typed failed result for empty runner output', async () => {
     const { adapter } = createFakeAdapter();
     adapter.runTrackedCommand = async () => ({
       exitCode: 0,
@@ -416,14 +448,20 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         () => {},
         new AbortController().signal,
       ),
-    ).rejects.toThrow(SyntaxError);
+    ).resolves.toMatchObject({
+      agentSlug: 'security-reviewer',
+      findings: [],
+      costEstimateUsd: 0,
+      error: 'Agent runner produced no output.',
+    });
   });
 
-  it('rejects failed agent runner commands even when stdout contains a valid result', async () => {
+  it('returns partial cost from failed agent runner commands when stdout contains a valid result', async () => {
     const { adapter } = createFakeAdapter();
     const failedCommandResult = { ...result, costEstimateUsd: 0.42 };
     adapter.runTrackedCommand = async () => ({
@@ -450,14 +488,19 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         () => {},
         new AbortController().signal,
       ),
-    ).rejects.toThrow('Agent runner failed with exit code 1: agent crashed');
+    ).resolves.toMatchObject({
+      agentSlug: 'security-reviewer',
+      costEstimateUsd: 0.42,
+      error: 'Agent runner failed with exit code 1: agent crashed',
+    });
   });
 
-  it('rejects failed agent runner commands that do not produce a valid result', async () => {
+  it('returns a typed failed result when failed agent runner commands do not produce a valid result', async () => {
     const { adapter } = createFakeAdapter();
     adapter.runTrackedCommand = async () => ({
       exitCode: 1,
@@ -483,11 +526,17 @@ describe('sandbox port', () => {
           model: 'sonnet',
           enabled: true,
         },
+        diffContext,
         'token',
         () => {},
         new AbortController().signal,
       ),
-    ).rejects.toThrow('Agent runner failed with exit code 1: agent crashed');
+    ).resolves.toMatchObject({
+      agentSlug: 'security-reviewer',
+      findings: [],
+      costEstimateUsd: 0,
+      error: 'Agent runner failed with exit code 1: agent crashed',
+    });
   });
 
   it('kills the tracked process for an active agent run', async () => {
@@ -532,6 +581,7 @@ describe('sandbox port', () => {
         model: 'sonnet',
         enabled: true,
       },
+      diffContext,
       'token',
       () => {},
       new AbortController().signal,
@@ -591,6 +641,7 @@ describe('sandbox port', () => {
         model: 'sonnet',
         enabled: true,
       },
+      diffContext,
       'token',
       () => {},
       new AbortController().signal,

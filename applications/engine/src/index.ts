@@ -129,6 +129,20 @@ export function createEngineServerOptions(
         }
         return Response.json({ ok: true, stopped: true });
       }
+      const agentStopMatch = /^\/review-runs\/([^/]+)\/agents\/([^/]+)\/stop$/.exec(url.pathname);
+      if (agentStopMatch !== null && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const result = await runtime.stopReviewAgent(
+          decodeURIComponent(agentStopMatch[1]!),
+          decodeURIComponent(agentStopMatch[2]!),
+        );
+        if (!result.stopped) {
+          return Response.json({ ok: false, error: 'agent_run_not_active' }, { status: 404 });
+        }
+        return Response.json({ ok: true, stopped: true });
+      }
       return new Response('Not found', { status: 404 });
     },
   };

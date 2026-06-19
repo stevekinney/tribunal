@@ -159,6 +159,9 @@ describe('runtime review intent consumer wiring', () => {
     ]);
     await expect(consumer.drain()).resolves.toBe(0);
     await expect(consumer.stopReviewRun('missing-run')).resolves.toEqual({ stopped: false });
+    await expect(consumer.stopReviewAgent('missing-run', 'missing-agent')).resolves.toEqual({
+      stopped: false,
+    });
   });
 
   it('creates a consumer from DATABASE_URL and exposes an empty reconciliation client', async () => {

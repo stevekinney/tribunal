@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
+import { computeCanonicalFindingFingerprint, deduplicateFindings } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import type {
   AgentEvent,
@@ -27,7 +27,10 @@ import {
 } from './identifiers';
 
 type RepositoryExecutionContext = RepoRef & { installationId: number };
-type AgentExecutionSpec = AgentSpec & { agentRunId: string; changedFiles: string[] };
+type AgentExecutionSpec = AgentSpec & {
+  agentRunId: string;
+  enablePromptCaching1h?: boolean;
+};
 type ReviewLookupGitHubPort = GitHubPort & {
   findPostedReview(
     repository: RepoRef,
@@ -83,6 +86,7 @@ export type ReviewWorkflowConfiguration = {
   proxySigningKey: string;
   runTokenTtlSeconds: number;
   defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
+  enablePromptCaching1h: boolean;
 };
 
 export type ReviewRunStatus =
@@ -95,6 +99,7 @@ export type ReviewRunStatus =
   | 'quota_blocked';
 
 export type AgentRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type AgentRunStoppedReason = NonNullable<AgentResult['stopped']>;
 
 export type ReviewRunRecord = {
   id: string;
@@ -134,7 +139,7 @@ export type AgentRunRecord = {
   effortUsed?: AgentResult['effortUsed'];
   usage?: AgentResult['usage'];
   durationMs?: number;
-  stoppedReason?: AgentResult['stopped'];
+  stoppedReason?: AgentRunStoppedReason;
   error?: string;
 };
 
@@ -378,7 +383,7 @@ export class ReviewWorkflowEngine {
     reviewRunId: string,
     agentId: string,
     reason: NonNullable<AgentResult['stopped']>,
-  ): Promise<void> {
+  ): Promise<StopReviewRunResult> {
     const agentRunId = `arun:${reviewRunId}:${agentId}`;
     for (const supervisor of this.supervisors.values()) {
       const execution = supervisor.activeAgents.get(agentRunId);
@@ -386,8 +391,10 @@ export class ReviewWorkflowEngine {
         execution.stopReason = reason;
         execution.controller.abort();
         await this.ports.sandbox.stop(supervisor.sandboxId, agentRunId);
+        return { stopped: true };
       }
     }
+    return { stopped: false };
   }
 
   async stopRun(
@@ -693,7 +700,7 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
 
-    const findings = agentResults.flatMap((result) => result.findings);
+    const findings = deduplicateFindings(agentResults.flatMap((result) => result.findings));
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
     if (findings.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
@@ -886,11 +893,12 @@ export class ReviewWorkflowEngine {
       const executionAgent: AgentExecutionSpec = {
         ...effectiveAgent,
         agentRunId,
-        changedFiles: diffContext.changedFiles.map((file) => file.path),
+        enablePromptCaching1h: this.configuration.enablePromptCaching1h,
       };
       const result = await this.ports.sandbox.runAgent(
         supervisor.sandboxId,
         executionAgent,
+        diffContext,
         runToken,
         (event) => this.recordAgentEvent(agentRunId, event),
         controller.signal,
@@ -1087,23 +1095,51 @@ export class ReviewWorkflowEngine {
   }
 
   private async recordSandboxEstimate(run: ReviewRunRecord): Promise<void> {
-    const runtimeSeconds = Math.max(
-      1,
-      Math.ceil((run.finishedAt!.getTime() - run.startedAt.getTime()) / 1000),
-    );
-    const amountUsd = sandboxCost(
-      { runtimeSeconds },
-      { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
-    );
-    await this.ports.cost.recordSandbox({
-      userId: run.userId,
-      repositoryId: run.repositoryId,
-      reviewRunId: run.id,
-      sandboxId: run.sandboxId,
-      amountUsd,
-      idempotencyKey: `sandbox:${run.sandboxId}:${run.id}:final`,
-    });
+    for (const window of getSandboxBillingWindows(run.startedAt, run.finishedAt!)) {
+      const amountUsd = sandboxCost(
+        { runtimeSeconds: window.runtimeSeconds },
+        { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      );
+      await this.ports.cost.recordSandbox({
+        userId: run.userId,
+        repositoryId: run.repositoryId,
+        reviewRunId: run.id,
+        sandboxId: run.sandboxId,
+        amountUsd,
+        idempotencyKey: `sandbox:${run.sandboxId}:${window.window}`,
+      });
+    }
   }
+}
+
+function getSandboxBillingWindows(
+  startedAt: Date,
+  finishedAt: Date,
+): Array<{ window: string; runtimeSeconds: number }> {
+  const windows: Array<{ window: string; runtimeSeconds: number }> = [];
+  let cursor = startedAt.getTime();
+  const finishedTime = Math.max(finishedAt.getTime(), cursor + 1_000);
+
+  while (cursor < finishedTime) {
+    const windowStart = floorToUtcHour(new Date(cursor));
+    const nextWindowStart = windowStart.getTime() + 60 * 60 * 1000;
+    const segmentEnd = Math.min(finishedTime, nextWindowStart);
+    const runtimeSeconds = Math.max(1, Math.ceil((segmentEnd - cursor) / 1000));
+    windows.push({ window: formatSandboxBillingWindow(windowStart), runtimeSeconds });
+    cursor = segmentEnd;
+  }
+
+  return windows;
+}
+
+function floorToUtcHour(date: Date): Date {
+  const floored = new Date(date);
+  floored.setUTCMinutes(0, 0, 0);
+  return floored;
+}
+
+function formatSandboxBillingWindow(date: Date): string {
+  return date.toISOString().slice(0, 13);
 }
 
 function createFindingRecord(userId: number, agentRunId: string, finding: Finding): FindingRecord {

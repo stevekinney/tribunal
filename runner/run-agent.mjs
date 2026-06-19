@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { ALLOWED_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
+import { READ_ONLY_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
 
 const [, , agentSlug] = process.argv;
 
@@ -28,22 +28,39 @@ const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
 const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
 const diffContext = createDiffContext();
 let sequence = 0;
+let latestSdkResult;
+let resultWritten = false;
 
 emitEvent('session_start', { agentSlug, model, effort });
+process.once('SIGTERM', () => {
+  emitEvent('stop', { reason: 'terminated' });
+  writeResult(
+    createResult({
+      agentSlug,
+      modelUsed: model,
+      effortUsed: effort,
+      sdkResult: latestSdkResult,
+      durationMs: elapsedMilliseconds(),
+      error: 'Agent review stopped before completion.',
+    }),
+  );
+  process.exit(143);
+});
 
 try {
   const result = await runClaudeReview({ agentSlug, repositoryPath, model, effort });
-  process.stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+  writeResult(result);
 } catch (error) {
   emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
-  const result = createEmptyResult({
+  const result = createResult({
     agentSlug,
     modelUsed: model,
     effortUsed: effort,
+    sdkResult: latestSdkResult,
     durationMs: elapsedMilliseconds(),
     error: error instanceof Error ? error.message : 'Agent review failed.',
   });
-  process.stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+  writeResult(result);
 }
 
 async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
@@ -59,9 +76,12 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
     options: {
       cwd: repositoryPath,
       model,
-      ...(effort ? { maxThinkingTokens: effortToThinkingBudget(effort) } : {}),
+      ...(effort ? { effort } : {}),
+      settingSources: [],
+      strictMcpConfig: true,
+      mcpServers: {},
       permissionMode: 'dontAsk',
-      allowedTools: [...ALLOWED_AGENT_TOOLS],
+      allowedTools: [...READ_ONLY_AGENT_TOOLS],
       disallowedTools: [
         'Bash',
         'Write',
@@ -131,8 +151,10 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   });
 
   for await (const message of stream) {
-    if (message.type === 'result') sdkResult = message;
-    else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
+    if (message.type === 'result') {
+      sdkResult = message;
+      latestSdkResult = message;
+    } else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
     else if (message.type === 'system') emitEvent('notification', { subtype: message.subtype });
   }
 
@@ -151,14 +173,20 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   };
 }
 
-function createEmptyResult({ agentSlug, modelUsed, effortUsed, durationMs, error }) {
+function writeResult(result) {
+  if (resultWritten) return;
+  resultWritten = true;
+  process.stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+}
+
+function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs, error }) {
   return {
     agentSlug,
     findings: [],
     modelUsed,
     effortUsed,
-    usage: normalizeUsage(),
-    costEstimateUsd: 0,
+    usage: normalizeUsage(sdkResult?.usage),
+    costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
     durationMs,
     ...(error ? { error } : {}),
   };
@@ -191,6 +219,9 @@ function emitEvent(kind, detail = {}, tool) {
 }
 
 function createDiffContext() {
+  const parsedDiffContext = parseDiffContext();
+  if (parsedDiffContext !== null) return parsedDiffContext;
+
   const changedFiles = parseChangedFiles();
   return {
     headSha: process.env.TRIBUNAL_HEAD_SHA ?? 'unknown',
@@ -210,6 +241,59 @@ function createDiffContext() {
   };
 }
 
+function parseDiffContext() {
+  try {
+    const parsed = JSON.parse(process.env.TRIBUNAL_DIFF_CONTEXT ?? 'null');
+    if (!isRecord(parsed)) return null;
+    if (!Array.isArray(parsed.changedFiles)) return null;
+    if (!isRecord(parsed.pr)) return null;
+
+    return {
+      headSha: typeof parsed.headSha === 'string' ? parsed.headSha : 'unknown',
+      baseSha: typeof parsed.baseSha === 'string' ? parsed.baseSha : 'unknown',
+      ...(typeof parsed.prevHeadSha === 'string' ? { prevHeadSha: parsed.prevHeadSha } : {}),
+      changedFiles: parsed.changedFiles.map(normalizeChangedFile).filter(Boolean),
+      ...(Array.isArray(parsed.changedSinceLast)
+        ? { changedSinceLast: parsed.changedSinceLast.map(normalizeChangedFile).filter(Boolean) }
+        : {}),
+      pr: {
+        number: typeof parsed.pr.number === 'number' ? parsed.pr.number : 0,
+        title: typeof parsed.pr.title === 'string' ? parsed.pr.title : '',
+        body: typeof parsed.pr.body === 'string' ? parsed.pr.body : '',
+        labels: Array.isArray(parsed.pr.labels)
+          ? parsed.pr.labels.filter((label) => typeof label === 'string')
+          : [],
+        author: typeof parsed.pr.author === 'string' ? parsed.pr.author : '',
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeChangedFile(value) {
+  if (!isRecord(value) || typeof value.path !== 'string') return null;
+  return {
+    path: value.path,
+    status: normalizeChangedFileStatus(value.status),
+    ...(typeof value.patch === 'string' ? { patch: value.patch } : {}),
+    commentableLines: Array.isArray(value.commentableLines)
+      ? value.commentableLines.map(normalizeCommentableLine).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeChangedFileStatus(value) {
+  return ['added', 'modified', 'removed', 'renamed'].includes(value) ? value : 'modified';
+}
+
+function normalizeCommentableLine(value) {
+  if (!isRecord(value)) return null;
+  if (value.side !== 'LEFT' && value.side !== 'RIGHT') return null;
+  if (!Number.isInteger(value.line) || value.line < 1) return null;
+  return { side: value.side, line: value.line };
+}
+
 function parseChangedFiles() {
   try {
     const parsed = JSON.parse(process.env.TRIBUNAL_CHANGED_FILES ?? '[]');
@@ -225,13 +309,4 @@ function isRecord(value) {
 
 function elapsedMilliseconds() {
   return Math.max(0, Math.round(performance.now() - startedAt));
-}
-
-function effortToThinkingBudget(value) {
-  if (value === 'low') return 1_024;
-  if (value === 'medium') return 4_096;
-  if (value === 'high') return 8_192;
-  if (value === 'xhigh') return 16_384;
-  if (value === 'max') return 32_768;
-  return undefined;
 }

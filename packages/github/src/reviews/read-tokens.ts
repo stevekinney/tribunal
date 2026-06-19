@@ -24,7 +24,6 @@ export async function mintSingleRepositoryReadToken(
         repositoryIds: [input.repositoryId],
         permissions: {
           contents: 'read',
-          metadata: 'read',
         },
       });
 

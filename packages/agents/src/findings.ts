@@ -104,6 +104,20 @@ export function computeCanonicalFindingFingerprint(finding: Finding): string {
   return createHash('sha256').update(payload).digest('hex');
 }
 
+export function deduplicateFindings(findings: Finding[]): Finding[] {
+  const seenFingerprints = new Set<string>();
+  const deduplicatedFindings: Finding[] = [];
+
+  for (const finding of findings) {
+    const fingerprint = computeCanonicalFindingFingerprint(finding);
+    if (seenFingerprints.has(fingerprint)) continue;
+    seenFingerprints.add(fingerprint);
+    deduplicatedFindings.push(finding);
+  }
+
+  return deduplicatedFindings;
+}
+
 function normalizeFindingLine(finding: Finding): number {
   return finding.endLine ?? finding.startLine ?? 0;
 }

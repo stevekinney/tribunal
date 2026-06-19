@@ -28,6 +28,7 @@ export type ReviewIntentConsumer = {
   drain(limit?: number): Promise<number>;
   reapClosedPullRequestSandboxes?(): Promise<unknown>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
+  stopReviewAgent?(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
 };
 
 export type ReviewIntentWorkflowEngine = {
@@ -52,6 +53,7 @@ export type EngineRuntime = {
   drainReviewIntents(limit?: number): Promise<number>;
   reapClosedPullRequestSandboxes(): Promise<unknown>;
   stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
+  stopReviewAgent(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
   release(): Promise<void>;
 };
 
@@ -102,6 +104,12 @@ export async function createEngineRuntime(
       stopReviewRun(reviewRunId: string) {
         return (
           options.reviewIntentConsumer?.stopReviewRun?.(reviewRunId) ??
+          Promise.resolve({ stopped: false })
+        );
+      },
+      stopReviewAgent(reviewRunId: string, agentId: string) {
+        return (
+          options.reviewIntentConsumer?.stopReviewAgent?.(reviewRunId, agentId) ??
           Promise.resolve({ stopped: false })
         );
       },

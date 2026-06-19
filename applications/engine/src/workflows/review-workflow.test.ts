@@ -11,6 +11,7 @@ import type {
   LlmEstimateInput,
   RepoRef,
   ReviewPayload,
+  SandboxAgentExecutionOptions,
   SandboxOptions,
   SandboxPort,
   ScopedToken,
@@ -1028,11 +1029,29 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls[0]).toMatchObject({
       model: 'sonnet',
       effort: 'high',
+      enablePromptCaching1h: true,
+    });
+    expect(ports.sandbox.runAgentCalls[0]?.diffContext.changedFiles[0]).toMatchObject({
+      path: 'src/example.ts',
+      commentableLines: expect.arrayContaining([{ side: 'RIGHT', line: 12 }]),
     });
     expect(engine.snapshot().agentRuns[0]).toMatchObject({
       modelUsed: 'sonnet',
       effortUsed: 'high',
     });
+  });
+
+  it('records sandbox cost with a billing-window idempotency key', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.cost.sandboxCostEvents).toEqual([
+      expect.objectContaining({
+        idempotencyKey: 'sandbox:sandbox-tribunal-pr-42-7:2026-06-17T12',
+      }),
+    ]);
   });
 
   it('releases a claimed intent when downstream processing fails without aborting the drain loop', async () => {
@@ -1126,6 +1145,22 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
+  it('deduplicates byte-identical findings from different agents before posting', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [reviewAgent, performanceAgent],
+    });
+
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual([
+      'agent_security',
+      'agent_performance',
+    ]);
+    expect(ports.github.reviews[0]?.comments).toHaveLength(1);
+  });
+
   it('uses the end line as the GitHub review anchor for multi-line findings', async () => {
     const ports = createFakePorts({ multiLineFinding: true });
     const engine = createEngine(ports);
@@ -1181,12 +1216,23 @@ describe('ReviewWorkflowEngine', () => {
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForRunningAgent();
 
-    await engine.stopAgent('run:42:7:aaa111:opened', 'agent_security', 'timeout');
+    await expect(
+      engine.stopAgent('run:42:7:aaa111:opened', 'agent_security', 'timeout'),
+    ).resolves.toEqual({ stopped: true });
     ports.sandbox.resolveHeldAgents();
 
     await runningReview;
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
     expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'timeout' });
+  });
+
+  it('returns false when stopping an agent that is not running', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.stopAgent('run:42:7:aaa111:opened', 'agent_security', 'timeout'),
+    ).resolves.toEqual({ stopped: false });
   });
 
   it('cancels a running review through the review-run stop signal', async () => {
@@ -1195,14 +1241,14 @@ describe('ReviewWorkflowEngine', () => {
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForRunningAgent();
 
-    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
       stopped: true,
     });
     ports.sandbox.resolveHeldAgents();
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
-    expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'operator' });
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'timeout' });
     expect(engine.snapshot().supervisors[0]).toMatchObject({ activeRunId: undefined });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: {
@@ -1260,7 +1306,7 @@ describe('ReviewWorkflowEngine', () => {
     });
     const patchCount = ports.github.checkRunPatches.length;
 
-    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
       stopped: false,
     });
 
@@ -1282,7 +1328,7 @@ describe('ReviewWorkflowEngine', () => {
     supervisor!.activeRunId = 'run:42:7:aaa111:opened';
     const patchCount = ports.github.checkRunPatches.length;
 
-    await expect(engine.stopRun('run:42:7:aaa111:opened', 'operator')).resolves.toEqual({
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
       stopped: false,
     });
 
@@ -1342,6 +1388,7 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       proxySigningKey: 'proxy-signing-key',
       runTokenTtlSeconds: 60 * 60,
       defaultModel: 'sonnet',
+      enablePromptCaching1h: true,
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
   );
@@ -1795,9 +1842,11 @@ class FakeSandboxPort implements SandboxPort {
   readonly runAgentCalls: Array<{
     sandboxId: string;
     agentId: string;
+    diffContext: DiffContext;
     runToken: string;
     model: string;
     effort: string | undefined;
+    enablePromptCaching1h: boolean | undefined;
   }> = [];
   readonly stopCalls: string[] = [];
   readonly terminateCalls: string[] = [];
@@ -1832,7 +1881,8 @@ class FakeSandboxPort implements SandboxPort {
 
   async runAgent(
     sandboxId: string,
-    agent: AgentSpec,
+    agent: AgentSpec & SandboxAgentExecutionOptions,
+    diffContext: DiffContext,
     runToken: string,
     onEvent: (event: AgentEvent) => void,
     signal: AbortSignal,
@@ -1840,9 +1890,11 @@ class FakeSandboxPort implements SandboxPort {
     this.runAgentCalls.push({
       sandboxId,
       agentId: agent.id,
+      diffContext,
       runToken,
       model: agent.model,
       effort: agent.effort,
+      enablePromptCaching1h: agent.enablePromptCaching1h,
     });
     this.runningAgents += 1;
     onEvent({
@@ -1923,6 +1975,7 @@ function getInstallationId(repository: RepoRef): number {
 class FakeCostPort implements CostPort {
   readonly recordLlmEstimateCalls: string[] = [];
   readonly reconcileCalls: string[] = [];
+  readonly sandboxCostEvents: Array<{ idempotencyKey: string; amountUsd: number }> = [];
   private readonly idempotencyKeys = new Set<string>();
   private spendTodayEstimateValue: number;
 
@@ -1931,7 +1984,7 @@ class FakeCostPort implements CostPort {
   }
 
   get llmEstimateKeys(): string[] {
-    return [...this.idempotencyKeys].sort();
+    return [...this.idempotencyKeys].filter((key) => key.startsWith('llm:')).sort();
   }
 
   async recordLlmEstimate(event: LlmEstimateInput): Promise<void> {
@@ -1946,7 +1999,14 @@ class FakeCostPort implements CostPort {
     }
   }
 
-  async recordSandbox(): Promise<void> {}
+  async recordSandbox(event: { idempotencyKey: string; amountUsd: number }): Promise<void> {
+    if (this.idempotencyKeys.has(event.idempotencyKey)) return;
+    this.idempotencyKeys.add(event.idempotencyKey);
+    this.sandboxCostEvents.push({
+      idempotencyKey: event.idempotencyKey,
+      amountUsd: event.amountUsd,
+    });
+  }
 
   async reconcile(reviewRunId: string): Promise<void> {
     this.reconcileCalls.push(reviewRunId);

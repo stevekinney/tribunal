@@ -31,7 +31,7 @@ function octokitError(status: number, message: string, headers: Record<string, s
 }
 
 describe('mintSingleRepositoryReadToken', () => {
-  it('requests one repository with contents:read and metadata:read permissions', async () => {
+  it('requests one repository with contents:read permission', async () => {
     const createInstallationAccessToken = vi.fn().mockResolvedValue({
       data: {
         token: 'opaque-token-with-no-assumed-format',
@@ -60,7 +60,6 @@ describe('mintSingleRepositoryReadToken', () => {
       repository_ids: [456],
       permissions: {
         contents: 'read',
-        metadata: 'read',
       },
     });
   });

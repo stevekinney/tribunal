@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 
 type FakePullRequest = {
@@ -57,16 +58,16 @@ class FakeReviewLoadHarness {
   }
 
   async openPullRequest(pullRequest: FakePullRequest): Promise<void> {
-    this.metrics.webhookAckLatenciesMs.push(24);
-    await this.reviewPullRequest(pullRequest);
+    await this.measureWebhookAckLatency(() => this.reviewPullRequest(pullRequest));
   }
 
   async synchronizePullRequest(pullRequest: FakePullRequest): Promise<void> {
-    this.metrics.webhookAckLatenciesMs.push(27);
-    await this.reviewPullRequest({
-      ...pullRequest,
-      headSha: pullRequest.headSha.replace(/-a$/u, '-b'),
-    });
+    await this.measureWebhookAckLatency(() =>
+      this.reviewPullRequest({
+        ...pullRequest,
+        headSha: pullRequest.headSha.replace(/-a$/u, '-b'),
+      }),
+    );
   }
 
   closePullRequests(pullRequests: FakePullRequest[]): void {
@@ -77,6 +78,7 @@ class FakeReviewLoadHarness {
   }
 
   private async reviewPullRequest(pullRequest: FakePullRequest): Promise<void> {
+    const reviewStartedAt = performance.now();
     const sandboxKey = this.sandboxKey(pullRequest);
     const sandboxAlreadyLive = this.liveSandboxes.has(sandboxKey);
     if (!sandboxAlreadyLive) {
@@ -85,7 +87,9 @@ class FakeReviewLoadHarness {
       this.maxConcurrentSandboxes = Math.max(this.maxConcurrentSandboxes, this.activeSandboxes);
     }
 
-    this.metrics.timeToFirstCommentMs.push(480);
+    await Promise.resolve();
+
+    this.metrics.timeToFirstCommentMs.push(performance.now() - reviewStartedAt);
     for (const agent of pullRequest.agents.slice(0, 3)) {
       this.recordComment(
         `${pullRequest.repositoryId}:${pullRequest.pullRequestNumber}:${pullRequest.headSha}:${agent}`,
@@ -98,6 +102,12 @@ class FakeReviewLoadHarness {
     if (!sandboxAlreadyLive) {
       this.activeSandboxes -= 1;
     }
+  }
+
+  private async measureWebhookAckLatency(operation: () => Promise<void>): Promise<void> {
+    const startedAt = performance.now();
+    await operation();
+    this.metrics.webhookAckLatenciesMs.push(performance.now() - startedAt);
   }
 
   private recordComment(key: string): void {

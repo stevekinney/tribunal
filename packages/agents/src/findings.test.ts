@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DiffContext, Finding } from '@tribunal/review-core/types';
 import {
   computeCanonicalFindingFingerprint,
+  deduplicateFindings,
   isRepositoryRelativePath,
   sanitizeFinding,
   validateFinding,
@@ -91,6 +92,24 @@ describe('finding validation', () => {
     expect(fingerprint).toBe('760817880bb9ff443df0e200b90e7d0ea7b615c19ca0a82bbcab2e4ebf0b41ab');
     expect(sameFingerprint).toBe(fingerprint);
     expect(differentLineFingerprint).not.toBe(fingerprint);
+  });
+
+  it('deduplicates byte-identical findings while keeping the first occurrence', () => {
+    const duplicateFromAnotherAgent: Finding = {
+      ...finding,
+      body: 'A second agent reported the same canonical issue.',
+    };
+    const differentFinding: Finding = {
+      ...finding,
+      startLine: 13,
+      endLine: 13,
+      body: 'This finding has a different anchor.',
+    };
+
+    expect(deduplicateFindings([finding, duplicateFromAnotherAgent, differentFinding])).toEqual([
+      finding,
+      differentFinding,
+    ]);
   });
 
   it('clamps over-length bodies deterministically', () => {

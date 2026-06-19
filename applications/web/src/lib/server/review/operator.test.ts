@@ -23,6 +23,7 @@ import {
   saveAgent,
   saveRepositoryWatchSettings,
   setAgentEnabled,
+  stopAgent,
   stopRun,
 } from './operator';
 
@@ -198,6 +199,11 @@ describe('review operator server helpers', () => {
     await expect(withTestDatabase(() => stopRun(otherUser.id, 'run_1'))).rejects.toMatchObject({
       status: 403,
     });
+    await expect(
+      withTestDatabase(() => stopAgent(otherUser.id, 'run_1', reviewAgent.id)),
+    ).rejects.toMatchObject({
+      status: 403,
+    });
 
     await withTestDatabase(() => stopRun(owner.id, 'run_1'));
     const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
@@ -206,7 +212,86 @@ describe('review operator server helpers', () => {
       .select()
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
-    expect(stoppedAgentRun.stoppedReason).toBe('operator');
+    expect(stoppedAgentRun.stoppedReason).toBe('timeout');
+  });
+
+  it('stops one owned agent run and signals the live engine when configured', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agent).values({
+      id: 'agent_performance',
+      userId: owner.id,
+      slug: 'performance',
+      description: 'Finds performance issues',
+      body: 'Review for performance issues.',
+      model: 'sonnet',
+      enabled: true,
+    });
+    await testDb.db.insert(agentRun).values([
+      {
+        id: 'agent_run_security',
+        userId: owner.id,
+        reviewRunId: 'run_1',
+        agentId: reviewAgent.id,
+        status: 'running',
+      },
+      {
+        id: 'agent_run_performance',
+        userId: owner.id,
+        reviewRunId: 'run_1',
+        agentId: 'agent_performance',
+        status: 'running',
+      },
+    ]);
+
+    await expect(
+      withTestDatabase(() => stopAgent(owner.id, 'run_1', reviewAgent.id)),
+    ).resolves.toEqual({
+      ok: true,
+    });
+
+    const rows = await testDb.db.select().from(agentRun).orderBy(agentRun.id);
+    expect(rows).toMatchObject([
+      { id: 'agent_run_performance', status: 'running', stoppedReason: null },
+      { id: 'agent_run_security', status: 'cancelled', stoppedReason: 'timeout' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('https://engine.tribunal.test/review-runs/run_1/agents/agent_security/stop'),
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      },
+    );
+  });
+
+  it('returns not found when an owned run does not contain the requested agent run', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+
+    await expect(
+      withTestDatabase(() => stopAgent(owner.id, 'run_1', 'agent_missing')),
+    ).rejects.toMatchObject({ status: 404 });
   });
 
   it('returns run inspector findings in deterministic order', async () => {
@@ -265,6 +350,37 @@ describe('review operator server helpers', () => {
       'finding_first',
       'finding_second',
     ]);
+  });
+
+  it('links a superseded run to the replacement run derived from the previous head', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(reviewRun).values([
+      {
+        id: 'run_superseded',
+        userId: owner.id,
+        repositoryId: 9001,
+        prNumber: 12,
+        headSha: 'abc123',
+        trigger: 'opened',
+        status: 'superseded',
+        startedAt: new Date('2026-06-17T12:00:00Z'),
+      },
+      {
+        id: 'run_replacement',
+        userId: owner.id,
+        repositoryId: 9001,
+        prNumber: 12,
+        headSha: 'def456',
+        prevHeadSha: 'abc123',
+        trigger: 'synchronize',
+        status: 'running',
+        startedAt: new Date('2026-06-17T12:05:00Z'),
+      },
+    ]);
+
+    const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_superseded'));
+
+    expect(inspected.replacementRunId).toBe('run_replacement');
   });
 
   it('signals the live engine after marking an owned run stopped when configured', async () => {

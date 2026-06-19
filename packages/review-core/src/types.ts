@@ -13,6 +13,10 @@ export interface AgentSpec {
   enabled: boolean;
 }
 
+export interface SandboxAgentExecutionOptions {
+  enablePromptCaching1h?: boolean;
+}
+
 export interface Finding {
   path: string;
   startLine: number | null;
@@ -37,7 +41,7 @@ export interface AgentResult {
   };
   costEstimateUsd: number;
   durationMs: number;
-  stopped?: 'superseded' | 'pr_closed' | 'budget' | 'timeout' | 'operator';
+  stopped?: 'superseded' | 'pr_closed' | 'budget' | 'timeout';
   error?: string;
 }
 

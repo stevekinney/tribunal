@@ -54,7 +54,7 @@ export const agentRun = pgTable(
     ),
     check(
       'agent_run_stopped_reason_check',
-      sql`${table.stoppedReason} IS NULL OR ${table.stoppedReason} IN ('superseded','pr_closed','budget','timeout','operator')`,
+      sql`${table.stoppedReason} IS NULL OR ${table.stoppedReason} IN ('superseded','pr_closed','budget','timeout')`,
     ),
     check('agent_run_findings_count_check', sql`${table.findingsCount} >= 0`),
     check('agent_run_input_tokens_check', sql`${table.inputTokens} >= 0`),

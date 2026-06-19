@@ -27,8 +27,30 @@ describe('read-only hook policy', () => {
     ).toMatchObject({ permissionDecision: 'allow' });
   });
 
+  it('allows Tribunal read-only MCP tools without path input', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'mcp__tribunal__get_changed_files',
+        input: {},
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'allow' });
+  });
+
+  it('allows base-file reads for changed files only', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'mcp__tribunal__read_base_file',
+        input: { path: 'src/auth.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'allow' });
+  });
+
   it('blocks forbidden tools', () => {
-    for (const toolName of ['Write', 'Edit', 'Bash']) {
+    for (const toolName of ['Write', 'Edit', 'Bash', 'Grep', 'Glob']) {
       expect(
         enforceReadOnlyToolUse({
           toolName,
@@ -72,6 +94,32 @@ describe('read-only hook policy', () => {
       permissionDecision: 'deny',
       reason: 'read path is outside the pull request diff',
     });
+
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'mcp__tribunal__read_base_file',
+        input: { path: 'src/unchanged.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is outside the pull request diff',
+    });
+  });
+
+  it('requires scoped read tools to provide a path', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'mcp__tribunal__read_base_file',
+        input: {},
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is required',
+    });
   });
 
   it('blocks invalid record_finding calls', () => {
@@ -85,7 +133,7 @@ describe('read-only hook policy', () => {
     ).toMatchObject({ permissionDecision: 'deny' });
   });
 
-  it('allows valid record_finding calls and path-like keys used by read-only tools', () => {
+  it('allows valid record_finding calls', () => {
     const finding = {
       path: 'src/auth.ts',
       startLine: 4,
@@ -100,22 +148,6 @@ describe('read-only hook policy', () => {
       enforceReadOnlyToolUse({
         toolName: 'mcp__tribunal__record_finding',
         input: { finding },
-        repositoryRoot: '/workspace/repository',
-        diffContext,
-      }),
-    ).toMatchObject({ permissionDecision: 'allow' });
-    expect(
-      enforceReadOnlyToolUse({
-        toolName: 'Grep',
-        input: { pattern: 'authorize' },
-        repositoryRoot: '/workspace/repository',
-        diffContext,
-      }),
-    ).toMatchObject({ permissionDecision: 'allow' });
-    expect(
-      enforceReadOnlyToolUse({
-        toolName: 'Glob',
-        input: {},
         repositoryRoot: '/workspace/repository',
         diffContext,
       }),

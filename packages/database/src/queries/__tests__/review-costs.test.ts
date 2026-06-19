@@ -246,6 +246,18 @@ describe('review contract schema', () => {
     ).rejects.toThrow();
 
     await expect(
+      testDatabase.db.insert(agent).values({
+        id: 'agent_bad_effort',
+        userId: user.id,
+        slug: 'bad-effort',
+        description: 'Invalid effort.',
+        body: 'Invalid effort.',
+        model: 'inherit',
+        effort: 'extreme',
+      }),
+    ).rejects.toThrow();
+
+    await expect(
       testDatabase.db.insert(reviewRun).values({
         id: 'run_duplicate',
         userId: user.id,
@@ -253,6 +265,45 @@ describe('review contract schema', () => {
         prNumber: 12,
         headSha: 'abc',
         trigger: 'opened',
+      }),
+    ).rejects.toThrow();
+
+    await expect(
+      testDatabase.db.insert(agentRun).values({
+        id: 'arun_duplicate',
+        userId: user.id,
+        reviewRunId: 'run_1',
+        agentId: firstAgent.id,
+      }),
+    ).rejects.toThrow();
+
+    await testDatabase.db.insert(finding).values({
+      id: 'find_unique_1',
+      userId: user.id,
+      agentRunId: 'arun_1',
+      path: 'src/auth.ts',
+      startLine: 10,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Validate input',
+      body: 'The input needs validation.',
+      fingerprint: 'duplicate-fingerprint',
+    });
+
+    await expect(
+      testDatabase.db.insert(finding).values({
+        id: 'find_unique_2',
+        userId: user.id,
+        agentRunId: 'arun_1',
+        path: 'src/auth.ts',
+        startLine: 10,
+        endLine: null,
+        side: 'RIGHT',
+        severity: 'warning',
+        title: 'Validate input',
+        body: 'The input needs validation.',
+        fingerprint: 'duplicate-fingerprint',
       }),
     ).rejects.toThrow();
 

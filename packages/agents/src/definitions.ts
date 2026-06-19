@@ -1,6 +1,6 @@
 import type { AgentModel, AgentSpec, Effort } from '@tribunal/review-core/types';
 
-export const READ_ONLY_AGENT_TOOLS = ['Read', 'Grep', 'Glob'] as const;
+export const READ_ONLY_AGENT_TOOLS = ['Read'] as const;
 
 export const TRIBUNAL_READ_ONLY_TOOLS = [
   'mcp__tribunal__get_changed_files',

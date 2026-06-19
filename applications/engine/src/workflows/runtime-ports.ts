@@ -68,6 +68,7 @@ export type ReviewIntentRuntimeEnvironment = {
   PROXY_SIGNING_KEY?: string;
   TRIBUNAL_DEFAULT_MODEL?: string;
   DEFAULT_DAILY_COST_CAP_USD?: number | string;
+  ENABLE_PROMPT_CACHING_1H?: boolean | string;
   ANTHROPIC_ADMIN_KEY?: string;
   REVIEWS_ENABLED?: boolean | string;
 };
@@ -124,6 +125,7 @@ export function createReviewIntentConsumer(
         environment.TRIBUNAL_DEFAULT_MODEL,
         'TRIBUNAL_DEFAULT_MODEL',
       ) as Exclude<PullRequestReviewInput['agents'][number]['model'], 'inherit'>,
+      enablePromptCaching1h: isEnabledFlag(environment.ENABLE_PROMPT_CACHING_1H),
     },
   );
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
@@ -159,7 +161,10 @@ export function createReviewIntentConsumer(
       return processed;
     },
     stopReviewRun(reviewRunId: string) {
-      return reviewWorkflowEngine.stopRun(reviewRunId, 'operator');
+      return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
+    },
+    stopReviewAgent(reviewRunId: string, agentId: string) {
+      return reviewWorkflowEngine.stopAgent(reviewRunId, agentId, 'timeout');
     },
     async reapClosedPullRequestSandboxes() {
       const openPullRequests = await listOpenPullRequestSandboxes(database);
@@ -426,7 +431,12 @@ export function createEngineSandboxPort(environment: ReviewIntentRuntimeEnvironm
     image: requireEnvironmentValue(environment.TRIBUNAL_SANDBOX_IMAGE, 'TRIBUNAL_SANDBOX_IMAGE'),
     proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
     proxyCidr: requireEnvironmentValue(environment.TRIBUNAL_PROXY_CIDR, 'TRIBUNAL_PROXY_CIDR'),
+    enablePromptCaching1h: isEnabledFlag(environment.ENABLE_PROMPT_CACHING_1H),
   });
+}
+
+function isEnabledFlag(value: boolean | string | undefined): boolean {
+  return value === true || value === 'true' || value === '1';
 }
 
 export function createDatabaseReviewWorkflowStatePort(database: Database): ReviewWorkflowStatePort {

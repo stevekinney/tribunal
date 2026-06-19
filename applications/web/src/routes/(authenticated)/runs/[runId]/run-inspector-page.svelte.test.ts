@@ -35,6 +35,7 @@ const data = {
     error: null,
     repositoryOwner: 'lost-gradient',
     repositoryName: 'tribunal',
+    replacementRunId: null,
     agentRuns: [
       {
         id: 'agent_run_1',
@@ -106,9 +107,30 @@ describe('/runs/[runId] page', () => {
   it('renders blocked tool calls and stop control', async () => {
     render(RunInspectorPage, { data });
 
-    await expect.element(page.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Stop security' })).toBeInTheDocument();
     await expect.element(page.getByText('blocked').first()).toBeInTheDocument();
     await expect.element(page.getByText('Glob')).toBeInTheDocument();
     await expect.element(page.getByText('Missing authorization check')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'GitHub comment' }))
+      .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');
+  });
+
+  it('links superseded runs to their replacement run', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          status: 'superseded',
+          replacementRunId: 'run_2',
+        },
+      },
+    });
+
+    await expect
+      .element(page.getByRole('link', { name: 'Superseded by a newer run' }))
+      .toHaveAttribute('href', '/runs/run_2');
   });
 });

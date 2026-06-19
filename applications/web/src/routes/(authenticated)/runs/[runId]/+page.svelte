@@ -13,6 +13,9 @@
 
   const run = $derived(data.run);
   const connected = $derived(run.status === 'running' || run.status === 'queued');
+  const replacementRunHref = $derived(
+    run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
+  );
 
   function isDeniedToolEvent(detail: unknown): boolean {
     return (
@@ -21,6 +24,14 @@
       (('denied' in detail && detail.denied === true) ||
         ('allowed' in detail && detail.allowed === false))
     );
+  }
+
+  function canStopAgent(status: string): boolean {
+    return status === 'running' || status === 'queued';
+  }
+
+  function githubCommentHref(commentId: number): string {
+    return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
   }
 
   onMount(() => {
@@ -36,8 +47,8 @@
 >
   {#snippet actions()}
     <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
-      <Button type="submit" variant="danger" size="sm">
-        Stop
+      <Button type="submit" variant="danger" size="sm" disabled={!connected}>
+        Stop run
         {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
       </Button>
     </form>
@@ -49,7 +60,11 @@
       <span class:connected class="connection-dot" aria-hidden="true"></span>
       <span>{connected ? 'Streaming' : 'Disconnected'}</span>
       {#if run.status === 'superseded'}
-        <Link href="/runs">Superseded by a newer run</Link>
+        {#if replacementRunHref}
+          <Link href={replacementRunHref}>Superseded by a newer run</Link>
+        {:else}
+          <span>Superseded by a newer run</span>
+        {/if}
       {/if}
     </div>
     {#if run.error}
@@ -76,7 +91,24 @@
             <h2>{agentRun.slug}</h2>
             <p>{agentRun.description}</p>
           </div>
-          <Badge size="sm">{agentRun.status}</Badge>
+          <div class="agent-actions">
+            <Badge size="sm">{agentRun.status}</Badge>
+            <form
+              method="POST"
+              action={`/api/review/runs/${run.id}/agents/${agentRun.agentId}/stop`}
+            >
+              <Button
+                type="submit"
+                variant="danger"
+                size="sm"
+                disabled={!canStopAgent(agentRun.status)}
+                aria-label={`Stop ${agentRun.slug}`}
+              >
+                Stop
+                {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
+              </Button>
+            </form>
+          </div>
         </div>
 
         <ol class="timeline">
@@ -92,7 +124,7 @@
           {/each}
         </ol>
 
-        <details>
+        <details open>
           <summary>Findings</summary>
           {#if agentRun.findings.length === 0}
             <p class="muted">No findings recorded.</p>
@@ -103,7 +135,7 @@
                   <strong>{finding.title}</strong>
                   <span>{finding.path}:{finding.startLine ?? '?'}</span>
                   {#if finding.githubCommentId}
-                    <a href={`#comment-${finding.githubCommentId}`}>GitHub comment</a>
+                    <a href={githubCommentHref(finding.githubCommentId)}>GitHub comment</a>
                   {/if}
                 </li>
               {/each}
@@ -127,6 +159,12 @@
   .status-row {
     justify-content: flex-start;
     color: var(--text-muted);
+  }
+
+  .agent-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .connection-dot {

@@ -1,5 +1,5 @@
 import { agentResultSchema } from '@tribunal/review-core/schemas';
-import type { AgentEvent, AgentResult, AgentSpec } from '@tribunal/review-core/types';
+import type { AgentEvent, AgentResult, AgentSpec, DiffContext } from '@tribunal/review-core/types';
 import type { RepoRef, SandboxOptions, SandboxPort } from '@tribunal/review-core/ports';
 import { buildProxyOnlyEgressConfiguration, validateCloneInput } from './configuration';
 
@@ -48,6 +48,7 @@ export type SandboxPortConfiguration = {
   image: string;
   proxyUrl: string;
   proxyCidr: string;
+  enablePromptCaching1h?: boolean;
 };
 
 /** Creates the review-core SandboxPort over a fakeable Tensorlake-style adapter. */
@@ -107,6 +108,7 @@ export function createSandboxPort(
     async runAgent(
       sandboxId: string,
       agent: AgentSpec,
+      diffContext: DiffContext,
       runToken: string,
       onEvent: (event: AgentEvent) => void,
       _signal: AbortSignal,
@@ -128,8 +130,12 @@ export function createSandboxPort(
             TRIBUNAL_PROXY_URL: configuration.proxyUrl,
             ANTHROPIC_BASE_URL: makeProxiedAnthropicUrl(configuration.proxyUrl),
             TRIBUNAL_AGENT_MODEL: agent.model,
-            TRIBUNAL_CHANGED_FILES: JSON.stringify(getChangedFiles(agent)),
+            TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
+            TRIBUNAL_CHANGED_FILES: JSON.stringify(
+              diffContext.changedFiles.map((file) => file.path),
+            ),
             ...(agent.effort ? { TRIBUNAL_AGENT_EFFORT: agent.effort } : {}),
+            ...(configuration.enablePromptCaching1h ? { ENABLE_PROMPT_CACHING_1H: 'true' } : {}),
           },
           async (processId) => {
             execution.processId = processId;
@@ -144,10 +150,20 @@ export function createSandboxPort(
       } finally {
         runningAgentProcesses.delete(processKey);
       }
+      const parsedOutput = parseAgentRunnerOutput(commandResult.stdout, onEvent, {
+        emitEvents: !streamedEvents,
+      });
       if (commandResult.exitCode !== 0) {
-        throw new Error(formatAgentCommandFailure(commandResult));
+        const error = formatAgentCommandFailure(commandResult);
+        return parsedOutput.result === undefined
+          ? createFailedAgentResult(agent, error)
+          : withAgentResultError(parsedOutput.result, error);
       }
-      return parseAgentRunnerOutput(commandResult.stdout, onEvent, { emitEvents: !streamedEvents });
+      if (parsedOutput.result !== undefined) return parsedOutput.result;
+      return createFailedAgentResult(
+        agent,
+        parsedOutput.error ?? 'Agent runner did not produce a result record.',
+      );
     },
     async stop(sandboxId: string, agentRunId: string) {
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -172,29 +188,29 @@ function getAgentRunId(agent: AgentSpec): string {
   return typeof agentRunId === 'string' && agentRunId.length > 0 ? agentRunId : agent.id;
 }
 
-function getChangedFiles(agent: AgentSpec): string[] {
-  const changedFiles = (agent as AgentSpec & { changedFiles?: unknown }).changedFiles;
-  return Array.isArray(changedFiles) && changedFiles.every((path) => typeof path === 'string')
-    ? changedFiles
-    : [];
-}
-
 function parseAgentRunnerOutput(
   stdout: string,
   onEvent: (event: AgentEvent) => void,
   options: { emitEvents: boolean } = { emitEvents: true },
-): AgentResult {
+): { result?: AgentResult; error?: string } {
   const lines = stdout
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
   if (lines.length === 0) {
-    return agentResultSchema.parse(JSON.parse(stdout) as unknown);
+    return { error: 'Agent runner produced no output.' };
   }
 
   let result: AgentResult | undefined;
+  let parseError: string | undefined;
   for (const line of lines) {
-    const record = JSON.parse(line) as unknown;
+    let record: unknown;
+    try {
+      record = JSON.parse(line) as unknown;
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : 'Agent runner output was not JSON.';
+      continue;
+    }
     const event = parseAgentEventRecord(record);
     if (event !== undefined) {
       if (options.emitEvents) onEvent(event);
@@ -207,14 +223,17 @@ function parseAgentRunnerOutput(
       continue;
     }
 
-    result = agentResultSchema.parse(record);
+    const parsedResult = agentResultSchema.safeParse(record);
+    if (parsedResult.success) {
+      result = parsedResult.data;
+    }
   }
 
   if (result === undefined) {
-    throw new Error('Agent runner did not produce a result record.');
+    return { error: parseError ?? 'Agent runner did not produce a result record.' };
   }
 
-  return result;
+  return { result };
 }
 
 function emitAgentEventLine(line: string, onEvent: (event: AgentEvent) => void): boolean {
@@ -241,7 +260,8 @@ function parseAgentEventRecord(record: unknown): AgentEvent | undefined {
 
 function parseAgentResultRecord(record: unknown): AgentResult | undefined {
   if (isRecord(record) && record.type === 'result') {
-    return agentResultSchema.parse(record.result);
+    const parsedResult = agentResultSchema.safeParse(record.result);
+    return parsedResult.success ? parsedResult.data : undefined;
   }
   return undefined;
 }
@@ -291,6 +311,31 @@ function makeProxiedAnthropicUrl(proxyUrl: string): string {
 
 function createAgentProcessKey(sandboxId: string, agentRunId: string): string {
   return `${sandboxId}:${agentRunId}`;
+}
+
+function createFailedAgentResult(agent: AgentSpec, error: string): AgentResult {
+  return {
+    agentSlug: agent.slug,
+    findings: [],
+    modelUsed: agent.model,
+    effortUsed: agent.effort ?? null,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
+    costEstimateUsd: 0,
+    durationMs: 0,
+    error,
+  };
+}
+
+function withAgentResultError(result: AgentResult, error: string): AgentResult {
+  return {
+    ...result,
+    error: result.error ?? error,
+  };
 }
 
 function formatAgentCommandFailure(commandResult: SandboxCommandResult): string {

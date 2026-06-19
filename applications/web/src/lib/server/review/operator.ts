@@ -386,6 +386,8 @@ export async function getRunInspector(userId: number, runId: string) {
           .where(inArray(agentEvent.agentRunId, agentRunIds))
           .orderBy(agentEvent.agentRunId, agentEvent.seq);
 
+  const replacementRun = await getReplacementRun(userId, runRow.run);
+
   const findingsByAgentRun = new Map<string, typeof findingRows>();
   for (const row of findingRows) {
     const rows = findingsByAgentRun.get(row.finding.agentRunId) ?? [];
@@ -404,6 +406,7 @@ export async function getRunInspector(userId: number, runId: string) {
     ...runRow.run,
     repositoryOwner: runRow.repositoryOwner,
     repositoryName: runRow.repositoryName,
+    replacementRunId: replacementRun?.id ?? null,
     agentRuns: agentRows.map((row) => ({
       ...row.agentRun,
       slug: row.slug,
@@ -412,6 +415,29 @@ export async function getRunInspector(userId: number, runId: string) {
       findings: (findingsByAgentRun.get(row.agentRun.id) ?? []).map((entry) => entry.finding),
     })),
   };
+}
+
+async function getReplacementRun(
+  userId: number,
+  run: typeof reviewRun.$inferSelect,
+): Promise<{ id: string } | undefined> {
+  if (run.status !== 'superseded') return undefined;
+
+  const [replacementRun] = await db
+    .select({ id: reviewRun.id })
+    .from(reviewRun)
+    .where(
+      and(
+        eq(reviewRun.userId, userId),
+        eq(reviewRun.repositoryId, run.repositoryId),
+        eq(reviewRun.prNumber, run.prNumber),
+        eq(reviewRun.prevHeadSha, run.headSha),
+      ),
+    )
+    .orderBy(asc(reviewRun.startedAt), asc(reviewRun.id))
+    .limit(1);
+
+  return replacementRun;
 }
 
 export async function stopRun(userId: number, runId: string) {
@@ -438,12 +464,43 @@ export async function stopRun(userId: number, runId: string) {
     UPDATE ${agentRun}
     SET
       "status" = 'cancelled',
-      "stopped_reason" = 'operator'
+      "stopped_reason" = 'timeout'
     WHERE ${agentRun.userId} = ${userId}
       AND ${agentRun.reviewRunId} IN (SELECT id FROM stopped_run)
   `);
 
   await signalEngineStop(runId);
+
+  return { ok: true };
+}
+
+export async function stopAgent(userId: number, runId: string, agentId: string) {
+  const [existingRun] = await db
+    .select({ id: reviewRun.id })
+    .from(reviewRun)
+    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .limit(1);
+
+  if (!existingRun) error(403, 'You do not have access to this run.');
+
+  const updatedRows = await db
+    .update(agentRun)
+    .set({
+      status: 'cancelled',
+      stoppedReason: 'timeout',
+    })
+    .where(
+      and(
+        eq(agentRun.userId, userId),
+        eq(agentRun.reviewRunId, runId),
+        eq(agentRun.agentId, agentId),
+      ),
+    )
+    .returning({ id: agentRun.id });
+
+  if (updatedRows.length === 0) error(404, 'Agent run not found.');
+
+  await signalEngineStopAgent(runId, agentId);
 
   return { ok: true };
 }
@@ -462,6 +519,26 @@ async function signalEngineStop(runId: string): Promise<void> {
     }
   } catch (error) {
     console.warn('Engine stop signal failed.', error);
+  }
+}
+
+async function signalEngineStopAgent(runId: string, agentId: string): Promise<void> {
+  if (!env.TRIBUNAL_ENGINE_URL || !env.TRIBUNAL_ENGINE_CONTROL_TOKEN) return;
+
+  try {
+    const url = new URL(
+      `/review-runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}/stop`,
+      env.TRIBUNAL_ENGINE_URL,
+    );
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.TRIBUNAL_ENGINE_CONTROL_TOKEN}` },
+    });
+    if (!response.ok && response.status !== 404) {
+      console.warn(`Engine agent stop signal failed with status ${response.status}.`);
+    }
+  } catch (error) {
+    console.warn('Engine agent stop signal failed.', error);
   }
 }
 

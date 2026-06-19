@@ -32,15 +32,20 @@ export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicy
   if (requestedPath !== null && !isRepositoryRelativePath(requestedPath)) {
     return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
   }
-  if (
-    policyInput.toolName === 'Read' &&
-    requestedPath !== null &&
-    !policyInput.diffContext.changedFiles.some((file) => file.path === requestedPath)
-  ) {
-    return { permissionDecision: 'deny', reason: 'read path is outside the pull request diff' };
+  if (requiresChangedFileScope(policyInput.toolName)) {
+    if (requestedPath === null) {
+      return { permissionDecision: 'deny', reason: 'read path is required' };
+    }
+    if (!policyInput.diffContext.changedFiles.some((file) => file.path === requestedPath)) {
+      return { permissionDecision: 'deny', reason: 'read path is outside the pull request diff' };
+    }
   }
 
   return { permissionDecision: 'allow' };
+}
+
+function requiresChangedFileScope(toolName: string): boolean {
+  return toolName === 'Read' || toolName === 'mcp__tribunal__read_base_file';
 }
 
 function getRequestedPath(input: Record<string, unknown>): string | null {
