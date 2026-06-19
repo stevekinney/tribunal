@@ -2,11 +2,11 @@
 
 ## System Overview
 
-Tribunal is a SvelteKit web application plus a containerized review engine, proxy, and reviewer
-runner. A developer logs in with GitHub, installs the Tribunal GitHub App on their accounts and
-organizations, browses repositories and pull requests, configures review agents, and inspects review
-runs and estimated costs. GitHub remains the only product integration; Anthropic and Tensorlake are
-runtime dependencies of the review execution path.
+Tribunal is a SvelteKit web application plus an implemented containerized review engine, proxy, and
+reviewer runner. A developer logs in with GitHub, installs the Tribunal GitHub App on their accounts
+and organizations, browses repositories and pull requests, configures review agents, and inspects
+review runs and estimated costs. GitHub remains the only product integration; Anthropic and Tensorlake
+are runtime dependencies of the review execution path when that path is deployed.
 
 Core technologies:
 
@@ -17,7 +17,7 @@ Core technologies:
 - Turborepo (task orchestration): https://turbo.build/repo/docs
 - Weft durable workflows: https://github.com/lostgradient/weft
 
-There are three application containers in the MVP topology:
+The implemented MVP topology is designed around three application containers:
 
 - `applications/web`: SvelteKit web UI, authentication, GitHub webhooks, operator pages, and test-only E2E harness.
 - `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, GitHub review posting, and cost reconciliation.
@@ -130,7 +130,7 @@ imports resolve through Bun workspaces, not aliases.
 3. `@tribunal/database` owns all schema definitions. Other packages import from it; they never
    define their own tables.
 4. `applications/engine` owns review workflow execution and must run as a singleton. Health checks
-   include singleton lock status so deployment can prove only one engine owns the lease.
+   expose singleton lock status so deployment verification can confirm the active engine owns the lease.
 5. Reviewer sandbox code must remain read-only. `@tribunal/agents` enforces allowed tools and
    repository-relative file access; `applications/web/test/end-to-end/security/` covers the harness.
 6. The database connection in `packages/database/src/connection.ts` uses an `AsyncLocalStorage`

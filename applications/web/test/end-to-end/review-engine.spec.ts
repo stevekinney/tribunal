@@ -17,20 +17,35 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
     data: { ...baseEvent, kind: 'opened', headSha: 'open-sha', deliveryId: 'delivery-open' },
   });
   expect(opened.ok()).toBe(true);
-  await expect(opened.json()).resolves.toMatchObject({
+  const openedPayload = (await opened.json()) as {
+    runId: string;
+    status: string;
+    duplicateCostEvents: number;
+    totalCostUsd: number;
+  };
+  expect(openedPayload).toMatchObject({
     status: 'posted',
     duplicateCostEvents: 0,
   });
+  expect(openedPayload.totalCostUsd).toBeGreaterThan(0);
 
   const redelivered = await request.post('/__e2e__/review-lifecycle', {
     headers: e2eHeaders(session.workerId),
     data: { ...baseEvent, kind: 'redelivered', headSha: 'open-sha', deliveryId: 'delivery-open' },
   });
   expect(redelivered.ok()).toBe(true);
-  await expect(redelivered.json()).resolves.toMatchObject({
+  const redeliveredPayload = (await redelivered.json()) as {
+    runId: string;
+    status: string;
+    duplicateCostEvents: number;
+    totalCostUsd: number;
+  };
+  expect(redeliveredPayload).toMatchObject({
+    runId: openedPayload.runId,
     status: 'posted',
     duplicateCostEvents: 0,
   });
+  expect(redeliveredPayload.totalCostUsd).toBe(openedPayload.totalCostUsd);
 
   const synchronized = await request.post('/__e2e__/review-lifecycle', {
     headers: e2eHeaders(session.workerId),

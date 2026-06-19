@@ -1,6 +1,9 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 
-const e2eSecret = process.env.E2E_TEST_SECRET ?? 'tribunal-e2e-secret';
+const e2eSecret = process.env.E2E_TEST_SECRET;
+if (!e2eSecret) {
+  throw new Error('E2E_TEST_SECRET must be set before running Playwright E2E tests.');
+}
 
 export type E2ESession = {
   user: { id: number; username: string };

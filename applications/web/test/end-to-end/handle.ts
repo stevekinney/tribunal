@@ -397,9 +397,17 @@ async function handleE2EReviewLifecycle(event: RequestEvent): Promise<Response> 
     const userId = Number(body.userId);
     const repositoryId = Number(body.repositoryId);
 
-    const { applyFakeReviewLifecycleEvent, getE2EDatabase } =
+    const { applyFakeReviewLifecycleEvent, canUserAccessE2ERepository, getE2EDatabase } =
       await import('$testing/end-to-end/seed');
     const db = await getE2EDatabase(workerId);
+    const canAccessRepository = await canUserAccessE2ERepository(db, { userId, repositoryId });
+    if (!canAccessRepository) {
+      return new Response(JSON.stringify({ error: 'Repository is not available to this user.' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     const result = await applyFakeReviewLifecycleEvent(db, {
       userId,
       repositoryId,

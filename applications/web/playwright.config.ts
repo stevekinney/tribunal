@@ -1,8 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import { BASE_PORTS, getPortWithEnvOverride } from './scripts/lib/ports';
 
 const port = getPortWithEnvOverride('PLAYWRIGHT_PORT', BASE_PORTS.playwright);
-const e2eSecret = process.env.E2E_TEST_SECRET ?? 'tribunal-e2e-secret';
+const e2eSecret = process.env.E2E_TEST_SECRET ?? `tribunal-e2e-${randomUUID()}`;
+process.env.E2E_TEST_MODE = '1';
+process.env.E2E_TEST_SECRET = e2eSecret;
+process.env.VITE_PORT = String(port);
 
 export default defineConfig({
   testDir: './test/end-to-end',
@@ -16,7 +20,7 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command: `E2E_TEST_MODE=1 E2E_TEST_SECRET=${e2eSecret} VITE_PORT=${port} bun run dev -- --host 127.0.0.1`,
+    command: 'bun run dev -- --host 127.0.0.1',
     url: `http://127.0.0.1:${port}/login`,
     reuseExistingServer: false,
     timeout: 30_000,

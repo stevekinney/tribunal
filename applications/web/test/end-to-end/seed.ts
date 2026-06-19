@@ -10,7 +10,7 @@
  * and E2E_TEST_SECRET environment variables.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import {
   agent,
@@ -69,6 +69,30 @@ export interface FakeReviewLifecycleInput {
   headSha?: string;
   deliveryId?: string;
   kind?: 'opened' | 'synchronize' | 'closed' | 'redelivered';
+}
+
+export async function canUserAccessE2ERepository(
+  db: E2EDatabase,
+  input: { userId: number; repositoryId: number },
+): Promise<boolean> {
+  const rows = await db
+    .select({ repositoryId: githubInstallationRepository.repositoryId })
+    .from(githubInstallation)
+    .innerJoin(
+      githubInstallationRepository,
+      eq(githubInstallationRepository.installationId, githubInstallation.installationId),
+    )
+    .where(
+      and(
+        eq(githubInstallation.userId, input.userId),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.repositoryId, input.repositoryId),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .limit(1);
+
+  return rows.length > 0;
 }
 
 // Per-worker counters for unique ID generation within a test run
