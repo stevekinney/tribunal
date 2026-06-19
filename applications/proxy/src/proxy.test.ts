@@ -345,6 +345,69 @@ describe('credential proxy', () => {
     expect(upstreamRequests[0].headers.get('authorization')).toBeNull();
   });
 
+  it('accepts the Anthropic SDK api key header as the capability token', async () => {
+    const { handler, upstreamRequests } = createFixture();
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': capabilityToken,
+        },
+        body: JSON.stringify({ model: 'claude-test', messages: [] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstreamRequests).toHaveLength(1);
+    expect(upstreamRequests[0].headers.get('x-api-key')).toBe(anthropicApiKey);
+    expect(upstreamRequests[0].headers.get('authorization')).toBeNull();
+  });
+
+  it('prioritizes the Anthropic SDK api key header over bearer authorization', async () => {
+    const { handler, upstreamRequests } = createFixture();
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer not-a-valid-capability',
+          'content-type': 'application/json',
+          'x-api-key': capabilityToken,
+        },
+        body: JSON.stringify({ model: 'claude-test', messages: [] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(upstreamRequests).toHaveLength(1);
+    expect(upstreamRequests[0].headers.get('x-api-key')).toBe(anthropicApiKey);
+    expect(upstreamRequests[0].headers.get('authorization')).toBeNull();
+  });
+
+  it('rejects an invalid Anthropic SDK api key header before bearer authorization', async () => {
+    const { handler, upstreamRequests } = createFixture();
+    const capabilityToken = mintCapabilityToken(createClaims(), signingKey);
+
+    const response = await handler(
+      new Request('https://proxy.tribunal.test/anthropic/api.anthropic.test/v1/messages', {
+        method: 'POST',
+        headers: {
+          ...bearerHeaders(capabilityToken),
+          'content-type': 'application/json',
+          'x-api-key': 'not-a-valid-capability',
+        },
+        body: JSON.stringify({ model: 'claude-test', messages: [] }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(upstreamRequests).toHaveLength(0);
+  });
+
   it('blocks unsupported Anthropic methods and paths', async () => {
     const { handler, upstreamRequests } = createFixture();
     const capabilityToken = mintCapabilityToken(createClaims(), signingKey);

@@ -1,6 +1,5 @@
 import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
@@ -41,18 +40,15 @@ export async function main({
     return;
   }
 
-  const resultPath = environment.TRIBUNAL_AGENT_RESULT_FILE;
-
-  if (resultPath) {
-    stdout.write(await readFile(resultPath, 'utf8'));
-    exit(0);
-    return;
-  }
-
   const startedAt = performance.now();
   const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
   const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
   const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
+  // Keep SDK-required env, but replace any API key so traffic uses the scoped proxy token.
+  const sdkEnvironment = {
+    ...environment,
+    ANTHROPIC_API_KEY: environment.TRIBUNAL_RUN_TOKEN,
+  };
   const agentDescription =
     environment.TRIBUNAL_AGENT_DESCRIPTION ?? `Tribunal review agent ${agentSlug}`;
   const agentBody =
@@ -94,6 +90,7 @@ export async function main({
       agentBody,
       guidelines,
       diffContext,
+      sdkEnvironment,
       startedAt,
       emitEvent,
       onSdkResult: (sdkResult) => {
@@ -124,6 +121,7 @@ export async function runClaudeReview({
   agentBody,
   guidelines,
   diffContext,
+  sdkEnvironment,
   startedAt = performance.now(),
   emitEvent = () => {},
   onSdkResult = () => {},
@@ -161,6 +159,7 @@ export async function runClaudeReview({
       },
       cwd: repositoryPath,
       model,
+      env: sdkEnvironment,
       ...(effort ? { effort } : {}),
       settingSources: [],
       strictMcpConfig: true,

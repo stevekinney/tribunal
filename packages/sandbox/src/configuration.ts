@@ -49,13 +49,14 @@ export function buildProxyOnlyEgressConfiguration(input: {
   proxyUrl: string;
   proxyCidr: string;
 }): SandboxEgressConfiguration {
+  const proxyUrl = input.proxyUrl.replace(/\/+$/u, '');
   return {
     allowInternetAccess: false,
     allowOut: [input.proxyCidr],
     secretNames: [],
     env: {
-      TRIBUNAL_PROXY_URL: input.proxyUrl,
-      ANTHROPIC_BASE_URL: `${input.proxyUrl}/anthropic`,
+      TRIBUNAL_PROXY_URL: proxyUrl,
+      ANTHROPIC_BASE_URL: `${proxyUrl}/anthropic/api.anthropic.com`,
     },
   };
 }
