@@ -125,7 +125,7 @@ jobs:
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
           branch_name: preview/pr-${{ github.event.pull_request.number }}
-          parent_branch: ${{ vars.NEON_PARENT_BRANCH || 'main' }}
+          parent_branch: ${{ vars.NEON_PARENT_BRANCH }}
           database: ${{ vars.NEON_DATABASE_NAME || 'neondb' }}
           role: ${{ vars.NEON_DATABASE_ROLE || 'neondb_owner' }}
           suspend_timeout: ${{ vars.NEON_SUSPEND_TIMEOUT_SECONDS || '300' }}

@@ -57,9 +57,9 @@ through `.github/workflows/neon-pull-request-branches.yml`.
 - Retargeting a pull request also refreshes the branch if the pull request now
   targets `main`.
 - Retargeting a pull request away from `main` deletes the matching Neon branch.
-- Each create-and-migrate run resets the branch to its parent before applying
-  migrations, so validation runs against the current parent schema plus the pull
-  request's migrations.
+- Each create-and-migrate run resets the branch to its Neon parent before
+  applying migrations, so validation runs against the current parent schema plus
+  the pull request's migrations.
 - The workflow runs `bun run db:migrate` against that branch, then runs
   `bun run --cwd packages/database db:validate-invariants`.
 - Closing the pull request deletes the matching Neon branch. If the branch is
@@ -72,7 +72,7 @@ Required GitHub repository settings:
 
 Optional GitHub repository variables:
 
-- `NEON_PARENT_BRANCH` (defaults to `main`)
+- `NEON_PARENT_BRANCH` (defaults to the Neon project's primary branch)
 - `NEON_DATABASE_NAME` (defaults to `neondb`)
 - `NEON_DATABASE_ROLE` (defaults to `neondb_owner`)
 - `NEON_SUSPEND_TIMEOUT_SECONDS` (defaults to `300`)
