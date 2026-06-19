@@ -92,7 +92,7 @@ export type ReviewWorkflowConfiguration = {
   defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
 };
 
-const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 } as const;
+const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
 
 export type ReviewRunStatus =
   | 'queued'
