@@ -45,7 +45,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
     const now = new Date('2026-06-17T12:00:00.000Z');
 
     const claimed = await port.claimNextReviewIntent(now);
@@ -63,7 +63,6 @@ describe('createDatabaseReviewIntentPort', () => {
         pullRequestNumber: 7,
         headSha: 'a'.repeat(40),
         trigger: 'opened',
-        dailyCostCapUsd: 25,
         agents: [
           {
             id: 'agent_security',
@@ -87,7 +86,7 @@ describe('createDatabaseReviewIntentPort', () => {
 
   it('leaves unwatched review intents unclaimed', async () => {
     await createReviewIntentFixture({ watched: false });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -116,7 +115,6 @@ describe('createDatabaseReviewIntentPort', () => {
       agentId: 'agent_security',
     });
     const port = createDatabaseReviewIntentPort(testDatabase.db, {
-      defaultDailyCostCapUsd: 25,
       reviewsEnabled: false,
     });
 
@@ -165,7 +163,7 @@ describe('createDatabaseReviewIntentPort', () => {
       select: () => selectBuilder,
       update: () => updateThenable,
     };
-    const port = createDatabaseReviewIntentPort(database as never, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(database as never);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -212,7 +210,7 @@ describe('createDatabaseReviewIntentPort', () => {
       { userId: user.id, repositoryId: repository.id, agentId: 'agent_active' },
       { userId: inactiveUser.id, repositoryId: repository.id, agentId: 'agent_inactive' },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
 
@@ -263,7 +261,7 @@ describe('createDatabaseReviewIntentPort', () => {
       { userId: user.id, repositoryId: repository.id, agentId: 'agent_repository_installation' },
       { userId: otherUser.id, repositoryId: repository.id, agentId: 'agent_other_installation' },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
 
@@ -328,14 +326,13 @@ describe('createDatabaseReviewIntentPort', () => {
         agentId: 'agent_watched_installation',
       },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
 
     expect(claimed?.pullRequest).toMatchObject({
       userId: watchedUser.id,
       installationId: 1000,
-      dailyCostCapUsd: 1,
       ignoreGlobs: ['watched-user/**'],
       agents: [{ id: 'agent_watched_installation' }],
     });
@@ -396,7 +393,7 @@ describe('createDatabaseReviewIntentPort', () => {
       { userId: user.id, repositoryId: repository.id, agentId: 'agent_primary_user' },
       { userId: otherUser.id, repositoryId: repository.id, agentId: 'agent_other_user' },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
     const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
     const secondClaimedAt = new Date('2026-06-17T12:01:00.000Z');
 
@@ -410,7 +407,6 @@ describe('createDatabaseReviewIntentPort', () => {
     });
     expect(second?.pullRequest).toMatchObject({
       userId: otherUser.id,
-      dailyCostCapUsd: 5,
       ignoreGlobs: ['other-user/**'],
       agents: [{ id: 'agent_other_user' }],
     });
@@ -435,7 +431,7 @@ describe('createDatabaseReviewIntentPort', () => {
       .update(reviewIntent)
       .set({ claimedAt: new Date('2026-06-17T11:50:00.000Z') })
       .where(eq(reviewIntent.id, 'intent_1'));
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -461,7 +457,7 @@ describe('createDatabaseReviewIntentPort', () => {
       .update(reviewIntent)
       .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
       .where(eq(reviewIntent.id, 'intent_1'));
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await port.markReviewIntentFailed(
       'intent_1',
@@ -511,7 +507,7 @@ describe('createDatabaseReviewIntentPort', () => {
       .update(reviewIntent)
       .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
       .where(eq(reviewIntent.id, 'intent_1'));
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await port.markReviewIntentFailed(
       'intent_1',
@@ -551,7 +547,7 @@ describe('createDatabaseReviewIntentPort', () => {
       .update(reviewIntent)
       .set({ claimedAt })
       .where(eq(reviewIntent.id, 'intent_1'));
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(port.markReviewIntentProcessed('intent_1', claimedAt, processedAt)).resolves.toBe(
       true,
@@ -580,7 +576,7 @@ describe('createDatabaseReviewIntentPort', () => {
 
   it('dead letters review intents after repeated failures', async () => {
     await createReviewIntentFixture();
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     for (let index = 0; index < 5; index += 1) {
       await testDatabase.db
@@ -631,7 +627,7 @@ describe('createDatabaseReviewIntentPort', () => {
         enabled: false,
       },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -644,7 +640,7 @@ describe('createDatabaseReviewIntentPort', () => {
 
   it('releases watched intents without any eligible agents for retry', async () => {
     await createReviewIntentFixture();
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -679,7 +675,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -714,7 +710,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
     const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
     const secondClaimedAt = new Date('2026-06-17T12:06:00.000Z');
 
@@ -760,7 +756,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
     const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
     const secondClaimedAt = new Date('2026-06-17T12:06:00.000Z');
 
@@ -807,7 +803,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -819,7 +815,7 @@ describe('createDatabaseReviewIntentPort', () => {
 
   it('claims closed intents without requiring eligible review agents', async () => {
     await createReviewIntentFixture({ kind: 'pr_closed' });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -848,7 +844,7 @@ describe('createDatabaseReviewIntentPort', () => {
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -864,12 +860,9 @@ describe('createDatabaseReviewIntentPort', () => {
   });
 
   it('reads raw execute array results when claiming intents', async () => {
-    const port = createDatabaseReviewIntentPort(
-      {
-        execute: async () => [],
-      } as never,
-      { defaultDailyCostCapUsd: 25 },
-    );
+    const port = createDatabaseReviewIntentPort({
+      execute: async () => [],
+    } as never);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
@@ -877,12 +870,9 @@ describe('createDatabaseReviewIntentPort', () => {
   });
 
   it('returns null for unsupported raw execute results', async () => {
-    const port = createDatabaseReviewIntentPort(
-      {
-        execute: async () => ({}),
-      } as never,
-      { defaultDailyCostCapUsd: 25 },
-    );
+    const port = createDatabaseReviewIntentPort({
+      execute: async () => ({}),
+    } as never);
 
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),

@@ -155,7 +155,6 @@ function createIntent(
       headSha,
       trigger,
       agents: [],
-      dailyCostCapUsd: 25,
       ignoreGlobs: [],
     },
     prState: kind === 'pr_closed' ? 'closed' : undefined,

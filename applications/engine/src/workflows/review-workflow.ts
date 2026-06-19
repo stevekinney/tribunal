@@ -56,7 +56,6 @@ export type PullRequestReviewInput = {
   headSha: string;
   trigger: PullRequestReviewTrigger;
   agents: AgentSpec[];
-  dailyCostCapUsd: number;
   ignoreGlobs: string[];
 };
 
@@ -92,6 +91,8 @@ export type ReviewWorkflowConfiguration = {
   idleSuspendSeconds: number;
   defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
 };
+
+const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
 
 export type ReviewRunStatus =
   | 'queued'
@@ -243,6 +244,7 @@ export type ReviewWorkflowSnapshot = {
   reviewRuns: ReviewRunRecord[];
   agentRuns: AgentRunRecord[];
   agentEvents: AgentEvent[];
+  durableState: DurableReviewWorkflowState;
 };
 
 export class ReviewWorkflowEngine {
@@ -462,6 +464,11 @@ export class ReviewWorkflowEngine {
       reviewRuns: [...this.reviewRuns.values()].sort(compareReviewRuns),
       agentRuns: [...this.agentRuns.values()].sort(compareAgentRuns),
       agentEvents: [...this.agentEvents].sort((left, right) => left.seq - right.seq),
+      durableState: {
+        postedReviewRunIds: [...this.postedReviewRunIds].sort(),
+        reconciledReviewRunIds: [...this.reconciledReviewRunIds].sort(),
+        terminatedSandboxIds: [...this.terminatedSandboxIds].sort(),
+      },
     };
   }
 
@@ -628,8 +635,8 @@ export class ReviewWorkflowEngine {
     supervisor.activeRunId = runId;
     await this.persistReviewRun(reviewRun);
 
-    const spendTodayEstimate = await this.ports.cost.spendTodayEstimate(input.userId);
-    if (spendTodayEstimate >= input.dailyCostCapUsd) {
+    const dailyCapDecision = await this.ports.cost.enforceDailyCap(input.userId);
+    if (!dailyCapDecision.allowed) {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
       await this.persistReviewRun(reviewRun);
@@ -681,7 +688,6 @@ export class ReviewWorkflowEngine {
       reviewRun,
       enabledAgents,
       runToken,
-      input.dailyCostCapUsd,
       diffContext,
     );
 
@@ -835,7 +841,10 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(deduplicatedAgentResults, diffContext),
     );
-    await this.ports.cost.reconcile(reviewRun.id);
+    if (!this.reconciledReviewRunIds.has(reviewRun.id)) {
+      await this.ports.cost.reconcile(reviewRun.id);
+      this.reconciledReviewRunIds.add(reviewRun.id);
+    }
     return reviewRun;
   }
 
@@ -844,7 +853,6 @@ export class ReviewWorkflowEngine {
     reviewRun: ReviewRunRecord,
     agents: AgentSpec[],
     runToken: string,
-    dailyCostCapUsd: number,
     diffContext: DiffContext,
   ): Promise<{ results: AgentResult[]; quotaBlocked: boolean }> {
     const results: AgentResult[] = [];
@@ -854,8 +862,8 @@ export class ReviewWorkflowEngine {
         return { results, quotaBlocked: false };
       }
 
-      const spendTodayEstimate = await this.ports.cost.spendTodayEstimate(reviewRun.userId);
-      if (spendTodayEstimate >= dailyCostCapUsd) {
+      const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId);
+      if (!dailyCapDecision.allowed) {
         return { results, quotaBlocked: true };
       }
 
@@ -914,7 +922,7 @@ export class ReviewWorkflowEngine {
     } catch (error) {
       await this.flushAgentEventWrites();
       if (controller.signal.aborted) {
-        const stoppedResult = createStoppedAgentResult(effectiveAgent, execution.stopReason);
+        const stoppedResult = createStoppedAgentResult(effectiveAgent, execution.stopReason, error);
         await this.finishAgentRun(agentRunId, reviewRun, agent, stoppedResult);
         return stoppedResult;
       }
@@ -1102,16 +1110,16 @@ export class ReviewWorkflowEngine {
 
   private async recordSandboxEstimate(run: ReviewRunRecord): Promise<void> {
     for (const window of getSandboxBillingWindows(run.startedAt, run.finishedAt!)) {
-      const amountUsd = sandboxCost(
-        { runtimeSeconds: window.runtimeSeconds },
-        { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
-      );
+      const amountUsd = sandboxCost({ runtimeSeconds: window.runtimeSeconds }, SANDBOX_RESOURCES);
       await this.ports.cost.recordSandbox({
         userId: run.userId,
         repositoryId: run.repositoryId,
         reviewRunId: run.id,
         sandboxId: run.sandboxId,
+        window: window.window,
         amountUsd,
+        runtime: { runtimeSeconds: window.runtimeSeconds },
+        resources: SANDBOX_RESOURCES,
         idempotencyKey: `sandbox:${run.sandboxId}:${window.window}`,
       });
     }
@@ -1404,19 +1412,21 @@ function escapeRegExp(value: string): string {
 }
 
 function createFailedAgentResult(agent: AgentSpec, error: unknown): AgentResult {
+  const partialResult = getPartialAgentResult(error);
   return {
     agentSlug: agent.slug,
     findings: [],
-    modelUsed: typeof agent.model === 'string' ? agent.model : 'inherit',
-    effortUsed: agent.effort ?? null,
-    usage: {
+    modelUsed:
+      partialResult?.modelUsed ?? (typeof agent.model === 'string' ? agent.model : 'inherit'),
+    effortUsed: partialResult?.effortUsed ?? agent.effort ?? null,
+    usage: partialResult?.usage ?? {
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     },
-    costEstimateUsd: 0,
-    durationMs: 0,
+    costEstimateUsd: partialResult?.costEstimateUsd ?? 0,
+    durationMs: partialResult?.durationMs ?? 0,
     error: error instanceof Error ? error.message : 'Agent review failed.',
   };
 }
@@ -1424,22 +1434,78 @@ function createFailedAgentResult(agent: AgentSpec, error: unknown): AgentResult 
 function createStoppedAgentResult(
   agent: AgentSpec,
   stopped: NonNullable<AgentResult['stopped']>,
+  error?: unknown,
 ): AgentResult {
+  const partialResult = getPartialAgentResult(error);
   return {
     agentSlug: agent.slug,
     findings: [],
-    modelUsed: typeof agent.model === 'string' ? agent.model : 'inherit',
-    effortUsed: agent.effort ?? null,
-    usage: {
+    modelUsed:
+      partialResult?.modelUsed ?? (typeof agent.model === 'string' ? agent.model : 'inherit'),
+    effortUsed: partialResult?.effortUsed ?? agent.effort ?? null,
+    usage: partialResult?.usage ?? {
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     },
-    costEstimateUsd: 0,
-    durationMs: 0,
+    costEstimateUsd: partialResult?.costEstimateUsd ?? 0,
+    durationMs: partialResult?.durationMs ?? 0,
     stopped,
   };
+}
+
+function getPartialAgentResult(error: unknown): Partial<AgentResult> | undefined {
+  const record = getUnknownRecord(error);
+  const candidate = getUnknownRecord(record?.partialResult);
+  const rawCostEstimateUsd = candidate?.costEstimateUsd;
+  if (
+    rawCostEstimateUsd === undefined ||
+    rawCostEstimateUsd === null ||
+    (typeof rawCostEstimateUsd === 'string' && rawCostEstimateUsd.trim() === '')
+  ) {
+    return undefined;
+  }
+  const costEstimateUsd = Number(rawCostEstimateUsd);
+  if (!Number.isFinite(costEstimateUsd) || costEstimateUsd < 0) return undefined;
+
+  const usage = getUnknownRecord(candidate?.usage);
+  return {
+    costEstimateUsd,
+    durationMs: toNonnegativeFiniteNumber(candidate?.durationMs),
+    modelUsed: typeof candidate?.modelUsed === 'string' ? candidate.modelUsed : undefined,
+    effortUsed:
+      candidate?.effortUsed === 'low' ||
+      candidate?.effortUsed === 'medium' ||
+      candidate?.effortUsed === 'high' ||
+      candidate?.effortUsed === 'xhigh' ||
+      candidate?.effortUsed === 'max' ||
+      candidate?.effortUsed === null
+        ? candidate.effortUsed
+        : undefined,
+    usage: {
+      inputTokens: toNonnegativeInteger(usage?.inputTokens),
+      outputTokens: toNonnegativeInteger(usage?.outputTokens),
+      cacheReadTokens: toNonnegativeInteger(usage?.cacheReadTokens),
+      cacheCreationTokens: toNonnegativeInteger(usage?.cacheCreationTokens),
+    },
+  };
+}
+
+function getUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function toNonnegativeInteger(value: unknown): number {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : 0;
+}
+
+function toNonnegativeFiniteNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 function toSupervisorSnapshot(supervisor: SupervisorState): PullRequestSupervisorSnapshot {

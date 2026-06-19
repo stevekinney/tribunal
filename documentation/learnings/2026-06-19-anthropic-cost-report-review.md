@@ -1,0 +1,2 @@
+- Anthropic `cost_report` rows expose `amount` as decimal USD; do not convert it from cents before recording reconciled spend.
+- When cost metadata repeats operational sizing values, keep one local resources constant so estimates and recorded metadata cannot drift.

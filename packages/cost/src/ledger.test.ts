@@ -17,7 +17,7 @@ import {
   recordLlmEstimate,
   recordSandbox,
 } from './ledger';
-import { PRICING, sandboxCost } from './pricing';
+import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
 import type { UsageCostApiClient } from './usage-cost-api';
 
 let testDatabase: TestDatabase;
@@ -49,6 +49,8 @@ async function createCostFixture() {
       headSha: 'abc123',
       trigger: 'opened',
       status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:30:00.000Z'),
     })
     .returning()
     .then(([row]) => row);
@@ -153,8 +155,10 @@ describe('cost ledger', () => {
       amountUsd: 1.25,
       idempotencyKey: `llm:${run.id}:estimate`,
     });
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
     const client: UsageCostApiClient = {
-      async listReviewRunCosts(reviewRunId) {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
         return [
           {
             id: 'usage_2',
@@ -162,7 +166,7 @@ describe('cost ledger', () => {
             amountUsd: 1.1,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: run.id,
             agentId: reviewer.id,
             metadata: { invoiceLineItem: 'line_1' },
@@ -173,7 +177,7 @@ describe('cost ledger', () => {
             amountUsd: 0.05,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: null,
             agentId: null,
           },
@@ -183,6 +187,14 @@ describe('cost ledger', () => {
 
     await reconcile(testDatabase.db, client, review.id);
     await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget).toEqual({
+      reviewRunId: review.id,
+      userId: user.id,
+      repositoryId: repository.id,
+      startedAt: review.startedAt,
+      finishedAt: review.finishedAt,
+    });
 
     const rows = await testDatabase.db
       .select()
@@ -198,6 +210,76 @@ describe('cost ledger', () => {
         .map((row) => row.amountUsd)
         .sort(),
     ).toEqual(['0.05000000', '1.10000000']);
+  });
+
+  it('reconciles legacy review runs without startedAt using the estimate window', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .update(reviewRun)
+      .set({ startedAt: null })
+      .where(eq(reviewRun.id, review.id));
+    await recordLlmEstimate(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.25,
+      idempotencyKey: `llm:${run.id}:legacy-estimate`,
+    });
+
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
+    const client: UsageCostApiClient = {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
+        return [
+          {
+            id: 'usage_legacy',
+            occurredAt: new Date('2026-06-17T12:02:00.000Z'),
+            amountUsd: 0.2,
+            userId: user.id,
+            repositoryId: repository.id,
+            reviewRunId: target.reviewRunId,
+            agentRunId: run.id,
+            agentId: reviewer.id,
+          },
+        ];
+      },
+    };
+
+    await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget).toEqual({
+      reviewRunId: review.id,
+      userId: user.id,
+      repositoryId: repository.id,
+      startedAt: expect.any(Date),
+      finishedAt: review.finishedAt,
+    });
+    expect(receivedTarget?.startedAt).toEqual(expect.any(Date));
+  });
+
+  it('reconciles with a one-hour fallback window when the run start is not before finish', async () => {
+    const { review } = await createCostFixture();
+    await testDatabase.db
+      .update(reviewRun)
+      .set({
+        startedAt: new Date('2026-06-17T12:30:00.000Z'),
+        finishedAt: new Date('2026-06-17T12:30:00.000Z'),
+      })
+      .where(eq(reviewRun.id, review.id));
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
+    const client: UsageCostApiClient = {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
+        return [];
+      },
+    };
+
+    await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget?.startedAt).toEqual(new Date('2026-06-17T11:30:00.000Z'));
+    expect(receivedTarget?.finishedAt).toEqual(new Date('2026-06-17T12:30:00.000Z'));
   });
 
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
@@ -292,7 +374,7 @@ describe('cost ledger', () => {
   it('creates the review-core cost port over the ledger', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     const client: UsageCostApiClient = {
-      async listReviewRunCosts(reviewRunId) {
+      async listReviewRunCosts(target) {
         return [
           {
             id: 'usage_1',
@@ -300,7 +382,7 @@ describe('cost ledger', () => {
             amountUsd: 0.75,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: run.id,
             agentId: reviewer.id,
           },
@@ -326,20 +408,126 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       sandboxId: 'sandbox_1',
+      window: '2026-06-17T12:00:00.000Z',
       amountUsd: 0.2,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_1:manual',
     });
     await port.reconcile(review.id);
 
-    await expect(port.spendTodayEstimate(user.id)).resolves.toBe(1);
     await expect(getReviewRunCostComparison(testDatabase.db, review.id)).resolves.toMatchObject({
       estimateUsd: 1,
       reconciledUsd: 0.75,
+    });
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: true,
+      capUsd: 25,
+      spendUsd: 1,
+      remainingUsd: 24,
     });
     const rows = await testDatabase.db
       .select()
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, `llm:${run.id}:estimate`));
     expect(rows[0]?.repositoryId).toBe(repository.id);
+    const sandboxRows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
+    expect(sandboxRows[0]?.occurredAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
+    expect(sandboxRows[0]?.meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      sandboxId: 'sandbox_1',
+      window: '2026-06-17T12:00:00.000Z',
+    });
+  });
+
+  it('records sandbox cost port events at shorthand billing window starts', async () => {
+    const { user, repository, review } = await createCostFixture();
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:30:00.000Z'),
+    });
+
+    await port.recordSandbox({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      sandboxId: 'sandbox_2',
+      window: '2026-06-17T08',
+      amountUsd: 0.2,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      idempotencyKey: 'sandbox:sandbox_2:manual',
+    });
+
+    const rows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_2:manual'));
+    expect(rows[0]?.occurredAt).toEqual(new Date('2026-06-17T08:00:00.000Z'));
+  });
+
+  it('reports a blocked daily cap through the review-core cost port', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '1.00' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '1.00',
+      idempotencyKey: 'llm:estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: false,
+      capUsd: 1,
+      spendUsd: 1,
+      remainingUsd: 0,
+    });
+  });
+
+  it('uses the configured default daily cap when review settings do not exist', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '3.00',
+      idempotencyKey: 'llm:default-cap-estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+      defaultDailyCostCapUsd: 3,
+    });
+
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: false,
+      capUsd: 3,
+      spendUsd: 3,
+      remainingUsd: 0,
+    });
   });
 });

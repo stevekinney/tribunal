@@ -6,11 +6,13 @@ import type {
   AgentSpec,
   CheckRunPatch,
   CostPort,
+  DailyCapDecision,
   DiffContext,
   GitHubPort,
   LlmEstimateInput,
   RepoRef,
   ReviewPayload,
+  SandboxCostInput,
   SandboxOptions,
   SandboxPort,
   ScopedToken,
@@ -26,6 +28,7 @@ import {
   type ReviewIntentPort,
   type ReviewRunRecord,
   type ReviewWorkflowStatePort,
+  type DurableReviewWorkflowState,
 } from './review-workflow';
 
 const repository = { owner: 'lostgradient', name: 'tribunal' };
@@ -57,7 +60,6 @@ const baseInput: PullRequestReviewInput = {
   headSha: 'aaa111',
   trigger: 'opened',
   agents: [reviewAgent],
-  dailyCostCapUsd: 10,
   ignoreGlobs: [],
 };
 
@@ -182,6 +184,25 @@ describe('ReviewWorkflowEngine', () => {
       }),
     ]);
     expect(ports.cost.reconcileCalls).toEqual(['run:42:7:aaa111:opened']);
+    expect(engine.snapshot().durableState.reconciledReviewRunIds).toEqual([
+      'run:42:7:aaa111:opened',
+    ]);
+  });
+
+  it('does not reconcile a run again after hydrating reconciled durable state', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports, {
+      reconciledReviewRunIds: ['run:42:7:aaa111:opened'],
+    });
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+
+    expect(ports.cost.reconcileCalls).toEqual([]);
+    expect(engine.snapshot().durableState.reconciledReviewRunIds).toEqual([
+      'run:42:7:aaa111:opened',
+    ]);
   });
 
   it('hydrates running review state and skips duplicate posts when durable state shows comments already posted', async () => {
@@ -916,6 +937,7 @@ describe('ReviewWorkflowEngine', () => {
     });
 
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.cost.enforceDailyCapCalls).toEqual([1]);
     expect(ports.cost.llmEstimateKeys).toHaveLength(0);
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
@@ -949,6 +971,123 @@ describe('ReviewWorkflowEngine', () => {
     });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('records partial failed agent cost when the sandbox exposes it before throwing', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0.42,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0.42,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0.42,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+    expect(ports.cost.llmEstimates[0]).toMatchObject({ amountUsd: 0.42 });
+  });
+
+  it('preserves zero-cost partial failed agent details from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0,
+      durationMs: 25,
+      modelUsed: 'sonnet',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+  });
+
+  it('rejects empty-string partial failed agent cost from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: '',
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0,
+      durationMs: 0,
+      modelUsed: 'sonnet',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+  });
+
+  it('rejects whitespace-only partial failed agent cost from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: '   ',
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0,
+      durationMs: 0,
+      modelUsed: 'sonnet',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+  });
+
+  it('sanitizes invalid partial failed agent duration from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0.1,
+      failedAgentPartialDurationMs: -1,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0.1,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      durationMs: 0,
     });
   });
 
@@ -1051,6 +1190,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.sandboxCostEvents).toEqual([
       expect.objectContaining({
         idempotencyKey: 'sandbox:sandbox-tribunal-pr-42-7:2026-06-17T12',
+        window: '2026-06-17T12',
       }),
     ]);
   });
@@ -1528,6 +1668,28 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('records partial stopped agent cost when the sandbox exposes it after abort', async () => {
+    const ports = createFakePorts({
+      holdAgentRuns: true,
+      failAbortedAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0.21,
+    });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await engine.stopAgent('run:42:7:aaa111:opened', 'agent_security', 'timeout');
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ costEstimateUsd: 0.21 });
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'cancelled',
+      stoppedReason: 'timeout',
+      costEstimateUsd: 0.21,
+    });
+    expect(ports.cost.llmEstimates[0]).toMatchObject({ amountUsd: 0.21 });
+  });
+
   it('reaps closed pull request sandboxes and leaves open pull request sandboxes alone', async () => {
     const ports = createFakePorts();
     const engine = createEngine(ports);
@@ -1554,7 +1716,10 @@ describe('ReviewWorkflowEngine', () => {
   });
 });
 
-function createEngine(ports: FakePorts): ReviewWorkflowEngine {
+function createEngine(
+  ports: FakePorts,
+  durableState: DurableReviewWorkflowState = {},
+): ReviewWorkflowEngine {
   return new ReviewWorkflowEngine(
     ports,
     {
@@ -1566,6 +1731,7 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       defaultModel: 'sonnet',
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
+    durableState,
   );
 }
 
@@ -1633,6 +1799,8 @@ type FakePortOptions = {
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
+  failedAgentPartialCostEstimateUsd?: number | string;
+  failedAgentPartialDurationMs?: number;
 };
 
 class FakeReviewIntentPort implements ReviewIntentPort {
@@ -2100,10 +2268,10 @@ class FakeSandboxPort implements SandboxPort {
     }
 
     if (this.options.failAgentRuns) {
-      throw new Error('sandbox runner failed');
+      throw createSandboxFailure('sandbox runner failed', agent, this.options);
     }
     if (signal.aborted && this.options.failAbortedAgentRuns) {
-      throw new Error('process killed');
+      throw createSandboxFailure('process killed', agent, this.options, true);
     }
 
     return createAgentResult(
@@ -2153,6 +2321,26 @@ class FakeSandboxPort implements SandboxPort {
   }
 }
 
+function createSandboxFailure(
+  message: string,
+  agent: AgentSpec,
+  options: FakePortOptions,
+  stopped = false,
+): Error {
+  const error = new Error(message);
+  if (options.failedAgentPartialCostEstimateUsd !== undefined) {
+    const partialResult = createAgentResult(agent, stopped);
+    Object.assign(error, {
+      partialResult: {
+        ...partialResult,
+        costEstimateUsd: options.failedAgentPartialCostEstimateUsd,
+        durationMs: options.failedAgentPartialDurationMs ?? partialResult.durationMs,
+      },
+    });
+  }
+  return error;
+}
+
 function getInstallationId(repository: RepoRef): number {
   const installationId = (repository as RepoRef & { installationId?: unknown }).installationId;
   return typeof installationId === 'number' ? installationId : 1001;
@@ -2160,8 +2348,10 @@ function getInstallationId(repository: RepoRef): number {
 
 class FakeCostPort implements CostPort {
   readonly recordLlmEstimateCalls: string[] = [];
+  readonly llmEstimates: LlmEstimateInput[] = [];
   readonly reconcileCalls: string[] = [];
-  readonly sandboxCostEvents: Array<{ idempotencyKey: string; amountUsd: number }> = [];
+  readonly enforceDailyCapCalls: number[] = [];
+  readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private spendTodayEstimateValue: number;
 
@@ -2175,6 +2365,7 @@ class FakeCostPort implements CostPort {
 
   async recordLlmEstimate(event: LlmEstimateInput): Promise<void> {
     this.recordLlmEstimateCalls.push(event.idempotencyKey);
+    this.llmEstimates.push(event);
     this.idempotencyKeys.add(event.idempotencyKey);
     if (this.options.duplicateCostRecordCalls) {
       this.recordLlmEstimateCalls.push(event.idempotencyKey);
@@ -2185,21 +2376,26 @@ class FakeCostPort implements CostPort {
     }
   }
 
-  async recordSandbox(event: { idempotencyKey: string; amountUsd: number }): Promise<void> {
+  async recordSandbox(event: SandboxCostInput): Promise<void> {
     if (this.idempotencyKeys.has(event.idempotencyKey)) return;
     this.idempotencyKeys.add(event.idempotencyKey);
-    this.sandboxCostEvents.push({
-      idempotencyKey: event.idempotencyKey,
-      amountUsd: event.amountUsd,
-    });
+    this.sandboxCostEvents.push(event);
   }
 
   async reconcile(reviewRunId: string): Promise<void> {
     this.reconcileCalls.push(reviewRunId);
   }
 
-  async spendTodayEstimate(): Promise<number> {
-    return this.spendTodayEstimateValue;
+  async enforceDailyCap(userId: number): Promise<DailyCapDecision> {
+    this.enforceDailyCapCalls.push(userId);
+    const capUsd = 10;
+    const spendUsd = this.spendTodayEstimateValue;
+    return {
+      allowed: spendUsd < capUsd,
+      capUsd,
+      spendUsd,
+      remainingUsd: Math.max(0, capUsd - spendUsd),
+    };
   }
 
   setSpendTodayEstimate(value: number): void {

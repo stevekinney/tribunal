@@ -10,6 +10,14 @@ export type UsageCostApiEvent = {
   metadata?: Record<string, unknown>;
 };
 
+export type UsageCostReconciliationTarget = {
+  reviewRunId: string;
+  userId: number;
+  repositoryId: number;
+  startedAt: Date;
+  finishedAt: Date | null;
+};
+
 export type UsageCostApiClient = {
-  listReviewRunCosts(reviewRunId: string): Promise<UsageCostApiEvent[]>;
+  listReviewRunCosts(target: UsageCostReconciliationTarget): Promise<UsageCostApiEvent[]>;
 };

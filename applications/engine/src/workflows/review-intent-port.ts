@@ -38,13 +38,12 @@ type PullRequestReviewInputBuildResult =
   | { status: 'temporarily_unavailable'; reason: string };
 
 export type ReviewIntentPortOptions = {
-  defaultDailyCostCapUsd: number;
   reviewsEnabled?: boolean;
 };
 
 export function createDatabaseReviewIntentPort(
   database: ReviewIntentDatabase,
-  options: ReviewIntentPortOptions,
+  options: ReviewIntentPortOptions = {},
 ): ReviewIntentPort {
   return {
     async claimNextReviewIntent(now: Date) {
@@ -53,7 +52,7 @@ export function createDatabaseReviewIntentPort(
       if (row === null) return null;
 
       const normalizedRow = normalizeClaimedReviewIntentRow(row);
-      const result = await buildPullRequestReviewInput(database, normalizedRow, options);
+      const result = await buildPullRequestReviewInput(database, normalizedRow);
       if (result.status === 'missing_target') {
         await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
         return null;
@@ -150,7 +149,6 @@ async function claimNextIntentRow(
 async function buildPullRequestReviewInput(
   database: ReviewIntentDatabase,
   intent: ClaimedReviewIntentRow,
-  options: ReviewIntentPortOptions,
 ): Promise<PullRequestReviewInputBuildResult> {
   const [target] = await database
     .select({
@@ -160,7 +158,6 @@ async function buildPullRequestReviewInput(
       name: repository.name,
       headSha: reviewIntent.headSha,
       currentHeadSha: pullRequestState.headSha,
-      dailyCostCapUsd: userReviewSettings.dailyCostCapUsd,
       ignoreGlobs: repositoryReviewSettings.ignoreGlobs,
     })
     .from(reviewIntent)
@@ -264,7 +261,6 @@ async function buildPullRequestReviewInput(
       headSha,
       trigger: toReviewTrigger(intent.kind),
       agents: agents.map(toAgentSpec),
-      dailyCostCapUsd: Number(target.dailyCostCapUsd ?? options.defaultDailyCostCapUsd),
       ignoreGlobs: target.ignoreGlobs,
     },
   };
