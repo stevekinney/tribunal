@@ -6,15 +6,32 @@
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
   import { invalidateAll } from '$app/navigation';
-  import { onMount } from 'svelte';
   import { Square } from 'lucide-svelte';
+  import { untrack } from 'svelte';
 
   let { data } = $props();
 
   const run = $derived(data.run);
-  const connected = $derived(run.status === 'running' || run.status === 'queued');
+  let connectionState = $state<'connecting' | 'streaming' | 'disconnected'>('disconnected');
+  const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
+  const connected = $derived(canStopRun && connectionState === 'streaming');
+  const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
+  const latestAgentEventId = $derived.by(() => {
+    let latestId = 0;
+    for (const agentRun of run.agentRuns) {
+      for (const event of agentRun.events) {
+        if (event.id > latestId) latestId = event.id;
+      }
+    }
+    return latestId;
+  });
   const replacementRunHref = $derived(
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
+  );
+  const checkRunHref = $derived(
+    run.checkRunId === null
+      ? null
+      : `https://github.com/${run.repositoryOwner}/${run.repositoryName}/runs/${run.checkRunId}`,
   );
 
   function isDeniedToolEvent(detail: unknown): boolean {
@@ -34,10 +51,45 @@
     return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
   }
 
-  onMount(() => {
-    if (!connected) return;
-    const timer = window.setInterval(() => void invalidateAll(), 2_500);
-    return () => window.clearInterval(timer);
+  $effect(() => {
+    if (!canStopRun) {
+      connectionState = 'disconnected';
+      return;
+    }
+
+    const fallbackRefresh = window.setInterval(() => void invalidateAll(), 10_000);
+
+    if (typeof EventSource === 'undefined') {
+      connectionState = 'disconnected';
+      return () => window.clearInterval(fallbackRefresh);
+    }
+
+    connectionState = 'connecting';
+    const initialAgentEventId = untrack(() => latestAgentEventId);
+    let streamIsActive = true;
+    const eventSource = new EventSource(
+      `/api/review/runs/${run.id}/events?after=${initialAgentEventId}`,
+    );
+
+    eventSource.onopen = () => {
+      if (!streamIsActive) return;
+      connectionState = 'streaming';
+    };
+
+    eventSource.addEventListener('agent_event', () => {
+      void invalidateAll();
+    });
+
+    eventSource.onerror = () => {
+      if (!streamIsActive) return;
+      connectionState = 'disconnected';
+    };
+
+    return () => {
+      streamIsActive = false;
+      window.clearInterval(fallbackRefresh);
+      eventSource.close();
+    };
   });
 </script>
 
@@ -47,7 +99,7 @@
 >
   {#snippet actions()}
     <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
-      <Button type="submit" variant="danger" size="sm" disabled={!connected}>
+      <Button type="submit" variant="danger" size="sm" disabled={!canStopRun}>
         Stop run
         {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
       </Button>
@@ -58,7 +110,7 @@
     <div class="status-row">
       <Badge size="sm">{run.status}</Badge>
       <span class:connected class="connection-dot" aria-hidden="true"></span>
-      <span>{connected ? 'Streaming' : 'Disconnected'}</span>
+      <span aria-label="Run event stream state">{connectionLabel}</span>
       {#if run.status === 'superseded'}
         {#if replacementRunHref}
           <Link href={replacementRunHref}>Superseded by a newer run</Link>
@@ -70,6 +122,22 @@
     {#if run.error}
       <Alert variant="error">{run.error}</Alert>
     {/if}
+    <dl class="run-summary">
+      <div>
+        <dt>Estimated cost</dt>
+        <dd>${Number(run.costEstimateUsd).toFixed(2)}</dd>
+      </div>
+      <div>
+        <dt>Check Run</dt>
+        <dd>
+          {#if checkRunHref}
+            <Link href={checkRunHref}>Open GitHub Check Run</Link>
+          {:else}
+            <span>No Check Run recorded</span>
+          {/if}
+        </dd>
+      </div>
+    </dl>
   </Card>
 
   <div class="surface-states" aria-label="Surface states">
@@ -167,6 +235,34 @@
     gap: var(--space-2);
   }
 
+  .run-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .run-summary div {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--surface-overlay);
+  }
+
+  .run-summary dt {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .run-summary dd {
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+  }
+
   .connection-dot {
     width: 0.625rem;
     height: 0.625rem;
@@ -215,5 +311,11 @@
   .finding-list li {
     display: grid;
     gap: var(--space-1);
+  }
+
+  @media (max-width: 640px) {
+    .run-summary {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

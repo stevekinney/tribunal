@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import RunInspectorPage from './+page.svelte';
 import type { PageData } from './$types';
+
+const invalidateAllMock = vi.hoisted(() => vi.fn());
+
+vi.mock('$app/navigation', () => ({
+  invalidateAll: invalidateAllMock,
+}));
 
 const user = {
   id: 1,
@@ -26,7 +33,7 @@ const data = {
     status: 'running',
     workflowId: null,
     sandboxId: null,
-    checkRunId: null,
+    checkRunId: 123456,
     commentsPosted: 0,
     reviewPostClaimedAt: null,
     costEstimateUsd: '1.00',
@@ -102,7 +109,12 @@ const data = {
 } satisfies PageData;
 
 describe('/runs/[runId] page', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    invalidateAllMock.mockClear();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it('renders blocked tool calls and stop control', async () => {
     render(RunInspectorPage, { data });
@@ -112,9 +124,129 @@ describe('/runs/[runId] page', () => {
     await expect.element(page.getByText('blocked').first()).toBeInTheDocument();
     await expect.element(page.getByText('Glob')).toBeInTheDocument();
     await expect.element(page.getByText('Missing authorization check')).toBeInTheDocument();
+    await expect.element(page.getByText('$1.00')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Open GitHub Check Run' }))
+      .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/runs/123456');
     await expect
       .element(page.getByRole('link', { name: 'GitHub comment' }))
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');
+  });
+
+  it('streams run updates through agent_event transport state', async () => {
+    let fallbackRefresh: TimerHandler | undefined;
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation((handler) => {
+      fallbackRefresh = handler;
+      return 123 as never;
+    });
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => undefined);
+    const eventSources: Array<{
+      url: string;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      listeners: Map<string, Array<() => void>>;
+      close: () => void;
+    }> = [];
+
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        url: string;
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        listeners = new Map<string, Array<() => void>>();
+
+        constructor(url: string) {
+          this.url = url;
+          eventSources.push(this);
+        }
+
+        addEventListener(type: string, listener: () => void) {
+          this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+        }
+
+        close = vi.fn();
+      },
+    );
+
+    const rendered = render(RunInspectorPage, { data });
+
+    expect(eventSources).toHaveLength(1);
+    expect(eventSources[0].url).toBe('/api/review/runs/run_1/events?after=2');
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
+
+    eventSources[0].onopen?.();
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('streaming');
+
+    eventSources[0].listeners.get('agent_event')?.forEach((listener) => listener());
+    expect(invalidateAllMock).toHaveBeenCalledOnce();
+    expect(fallbackRefresh).toBeTypeOf('function');
+    if (typeof fallbackRefresh === 'function') fallbackRefresh();
+    expect(invalidateAllMock).toHaveBeenCalledTimes(2);
+
+    await rendered.rerender({
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          status: 'posted',
+          finishedAt: new Date('2026-06-17T12:00:10Z'),
+        },
+      },
+    });
+
+    expect(eventSources[0].close).toHaveBeenCalledOnce();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(123);
+    expect(eventSources).toHaveLength(1);
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('disconnected');
+  });
+
+  it('computes the event stream cursor without spreading all event ids', async () => {
+    const manyEvents = Array.from({ length: 10_000 }, (_, index) => ({
+      ...data.run.agentRuns[0].events[0],
+      id: index + 1,
+      seq: index + 1,
+    }));
+    const eventSources: Array<{ url: string }> = [];
+
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        url: string;
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        constructor(url: string) {
+          this.url = url;
+          eventSources.push(this);
+        }
+
+        addEventListener() {}
+
+        close = vi.fn();
+      },
+    );
+
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              events: manyEvents,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(eventSources[0]?.url).toBe('/api/review/runs/run_1/events?after=10000');
   });
 
   it('links superseded runs to their replacement run', async () => {

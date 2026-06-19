@@ -8,4 +8,12 @@ describe('review operator UI helpers', () => {
     );
     expect(getEffortFallbackNotice('opus', 'xhigh')).toBeNull();
   });
+
+  it('normalizes concrete Claude model ids before checking xhigh fallback eligibility', () => {
+    expect(getEffortFallbackNotice('claude-opus-4-20250514', 'xhigh')).toBeNull();
+    expect(getEffortFallbackNotice('claude-fable-20260601', 'xhigh')).toBeNull();
+    expect(getEffortFallbackNotice('claude-sonnet-4-20250514', 'xhigh')).toBe(
+      'xhigh will be stored, but this model falls back to high effort at runtime.',
+    );
+  });
 });
