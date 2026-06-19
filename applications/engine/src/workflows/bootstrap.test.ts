@@ -37,6 +37,58 @@ describe('createEngineRuntime', () => {
     await runtime.release();
   });
 
+  it('serializes manual review intent drains behind poller drains', async () => {
+    const firstDrain = createDeferred<number>();
+    const secondDrain = createDeferred<number>();
+    const consumer = {
+      drain: vi
+        .fn()
+        .mockReturnValueOnce(firstDrain.promise)
+        .mockReturnValueOnce(secondDrain.promise),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(1));
+    const manualDrain = runtime.drainReviewIntents(5);
+    await Promise.resolve();
+
+    expect(consumer.drain).toHaveBeenCalledTimes(1);
+    firstDrain.resolve(2);
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(2));
+    expect(consumer.drain).toHaveBeenLastCalledWith(5);
+    secondDrain.resolve(1);
+    await expect(manualDrain).resolves.toBe(1);
+
+    await runtime.release();
+  });
+
+  it('continues serialized review intent drains after a failed drain', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consumer = {
+      drain: vi.fn().mockRejectedValueOnce(new Error('drain failed')).mockResolvedValueOnce(4),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(1));
+    await expect(runtime.drainReviewIntents(5)).resolves.toBe(4);
+    expect(consumer.drain).toHaveBeenLastCalledWith(5);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[engine] review intent drain failed',
+      expect.any(Error),
+    );
+
+    consoleError.mockRestore();
+    await runtime.release();
+  });
+
   it('registers review workflows and binds the created Weft engine to the consumer', async () => {
     const bindWorkflowEngine = vi.fn();
     const reviewWorkflow = workflow({ name: 'review-pr' }).execute(async function* () {
@@ -113,4 +165,14 @@ class FakeEngineSingletonLock implements EngineSingletonLock {
       },
     };
   }
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }

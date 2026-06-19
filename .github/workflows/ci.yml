@@ -257,7 +257,7 @@ jobs:
             -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
             -e TENSORLAKE_API_KEY=tl_ci_placeholder \
             -e TRIBUNAL_SANDBOX_IMAGE="${TRIBUNAL_SANDBOX_IMAGE}" \
-            -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
+            -e TRIBUNAL_PROXY_URL=http://host.docker.internal:4312 \
             -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
             -e PROXY_SIGNING_KEY=ci-placeholder \
             -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \

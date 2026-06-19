@@ -82,9 +82,10 @@ export async function createEngineRuntime(
       detectSecondInstance: true,
     });
     options.reviewIntentConsumer?.bindWorkflowEngine?.(engine as ReviewIntentWorkflowEngine);
+    const drainReviewIntents = createSerializedReviewIntentDrain(options.reviewIntentConsumer);
 
     const poller = createReviewIntentPoller(
-      options.reviewIntentConsumer,
+      options.reviewIntentConsumer === undefined ? undefined : drainReviewIntents,
       options.reviewIntentPollIntervalMs ?? 1_000,
     );
 
@@ -94,7 +95,7 @@ export async function createEngineRuntime(
         return createRuntimeHealthDependencies(options.healthDependencies);
       },
       drainReviewIntents(limit?: number) {
-        return options.reviewIntentConsumer?.drain(limit) ?? Promise.resolve(0);
+        return drainReviewIntents(limit);
       },
       reapClosedPullRequestSandboxes() {
         return (
@@ -143,17 +144,17 @@ function createRuntimeHealthDependencies(
 }
 
 function createReviewIntentPoller(
-  consumer: ReviewIntentConsumer | undefined,
+  drainReviewIntents: (() => Promise<number>) | undefined,
   intervalMs: number,
 ): { stop(): void } {
-  if (consumer === undefined) return { stop() {} };
+  if (drainReviewIntents === undefined) return { stop() {} };
 
   let running = false;
   const drain = async () => {
     if (running) return;
     running = true;
     try {
-      await consumer.drain();
+      await drainReviewIntents();
     } catch (error) {
       console.error('[engine] review intent drain failed', error);
     } finally {
@@ -171,5 +172,22 @@ function createReviewIntentPoller(
     stop() {
       clearInterval(timer);
     },
+  };
+}
+
+function createSerializedReviewIntentDrain(
+  consumer: ReviewIntentConsumer | undefined,
+): (limit?: number) => Promise<number> {
+  if (consumer === undefined) return () => Promise.resolve(0);
+
+  let previousDrain: Promise<unknown> = Promise.resolve();
+
+  return (limit?: number) => {
+    const drain = previousDrain.catch(() => undefined).then(() => consumer.drain(limit));
+    previousDrain = drain.then(
+      () => undefined,
+      () => undefined,
+    );
+    return drain;
   };
 }
