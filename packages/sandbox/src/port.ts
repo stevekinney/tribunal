@@ -1,5 +1,5 @@
 import { agentResultSchema } from '@tribunal/review-core/schemas';
-import { redactRuntimeRecord, redactRuntimeText } from '@tribunal/review-core/redaction';
+import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import type { AgentEvent, AgentResult, AgentSpec, DiffContext } from '@tribunal/review-core/types';
 import type { RepoRef, SandboxOptions, SandboxPort } from '@tribunal/review-core/ports';
 import { buildProxyOnlyEgressConfiguration, validateCloneInput } from './configuration';
@@ -342,11 +342,9 @@ function withAgentResultError(result: AgentResult, error: string): AgentResult {
 }
 
 function formatAgentCommandFailure(commandResult: SandboxCommandResult): string {
-  const detail = commandResult.stderr || commandResult.stdout || 'agent runner produced no output';
-  return `Agent runner failed with exit code ${commandResult.exitCode}: ${redactRuntimeText(detail)}`;
+  return `Agent runner failed with exit code ${commandResult.exitCode}.`;
 }
 
 function formatGitCommandFailure(commandResult: SandboxCommandResult): string {
-  const detail = commandResult.stderr || commandResult.stdout || 'git command produced no output';
-  return `Sandbox repository update failed with exit code ${commandResult.exitCode}: ${redactRuntimeText(detail)}`;
+  return `Sandbox repository update failed with exit code ${commandResult.exitCode}.`;
 }

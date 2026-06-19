@@ -165,7 +165,7 @@ describe('sandbox port', () => {
         'a'.repeat(40),
         'capability-token',
       ),
-    ).rejects.toThrow('Sandbox repository update failed with exit code 128');
+    ).rejects.toThrow('Sandbox repository update failed with exit code 128.');
   });
 
   it('validates runAgent output and delegates suspend and terminate calls', async () => {
@@ -498,7 +498,7 @@ describe('sandbox port', () => {
     ).resolves.toMatchObject({
       agentSlug: 'security-reviewer',
       costEstimateUsd: 0.42,
-      error: 'Agent runner failed with exit code 1: agent crashed',
+      error: 'Agent runner failed with exit code 1.',
     });
   });
 
@@ -527,28 +527,27 @@ describe('sandbox port', () => {
     });
     const events: AgentEvent[] = [];
 
-    await expect(
-      port.runAgent(
-        'sandbox_1',
-        {
-          id: 'agent_1',
-          agentRunId: 'agent_run_1',
-          userId: 1,
-          slug: 'security-reviewer',
-          description: 'Find security issues',
-          body: 'Review.',
-          model: 'sonnet',
-          enabled: true,
-        },
-        diffContext,
-        'token',
-        (agentEvent) => events.push(agentEvent),
-        new AbortController().signal,
-      ),
-    ).resolves.toMatchObject({
-      error: expect.not.stringContaining('sk-ant-secret'),
-    });
+    const result = await port.runAgent(
+      'sandbox_1',
+      {
+        id: 'agent_1',
+        agentRunId: 'agent_run_1',
+        userId: 1,
+        slug: 'security-reviewer',
+        description: 'Find security issues',
+        body: 'Review.',
+        model: 'sonnet',
+        enabled: true,
+      },
+      diffContext,
+      'token',
+      (agentEvent) => events.push(agentEvent),
+      new AbortController().signal,
+    );
 
+    expect(result.error).toBe('Agent runner failed with exit code 1.');
+    expect(result.error).not.toContain('sk-ant-secret');
+    expect(result.error).not.toContain('github_pat_abcdefghijklmnopqrstuvwxyz');
     expect(events[0]?.detail).toEqual({
       token: '[REDACTED]',
       input: { content: '[REDACTED_CONTENT]' },
@@ -590,7 +589,7 @@ describe('sandbox port', () => {
       agentSlug: 'security-reviewer',
       findings: [],
       costEstimateUsd: 0,
-      error: 'Agent runner failed with exit code 1: agent crashed',
+      error: 'Agent runner failed with exit code 1.',
     });
   });
 
