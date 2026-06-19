@@ -75,7 +75,8 @@ export function createProxyHandler(
       });
     }
 
-    const token = extractBearerToken(request);
+    const service = parseService(url.pathname);
+    const token = extractCapabilityToken(request, service);
     if (!token) {
       await emitAudit(
         auditSink,
@@ -98,6 +99,7 @@ export function createProxyHandler(
 
     const routeResult = validateProxyRoute(
       url,
+      service,
       request.method,
       verification.claims,
       options.environment,
@@ -146,11 +148,12 @@ export function createProxyHandler(
 
 function validateProxyRoute(
   url: URL,
+  service: ProxyService | null,
   method: string,
   claims: CapabilityTokenClaims,
   environment: ProxyEnvironment,
 ): RouteValidationResult {
-  const route = parseRoute(url);
+  const route = parseRoute(url, service);
   if (!route) {
     return { ok: false, status: 404, reason: 'unknown_proxy_route' };
   }
@@ -247,8 +250,10 @@ function isGitHubPathAllowed(
   return safeGitHubRestMethods.has(method) && isScopedGitHubRestPath(upstreamPath, claims);
 }
 
-function parseRoute(url: URL): Omit<ValidatedRoute, 'method' | 'requiredPermission'> | null {
-  const service = parseService(url.pathname);
+function parseRoute(
+  url: URL,
+  service: ProxyService | null,
+): Omit<ValidatedRoute, 'method' | 'requiredPermission'> | null {
   if (!service) {
     return null;
   }
@@ -462,7 +467,12 @@ async function resolveCredential(
   return options.githubCredentialResolver?.(claims) ?? null;
 }
 
-function extractBearerToken(request: Request): string | null {
+function extractCapabilityToken(request: Request, service: ProxyService | null): string | null {
+  if (service === 'anthropic') {
+    const apiKey = request.headers.get('x-api-key');
+    if (apiKey) return apiKey;
+  }
+
   const authorization = request.headers.get('authorization');
   if (!authorization) {
     return null;
