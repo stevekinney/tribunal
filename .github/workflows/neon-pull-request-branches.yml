@@ -67,9 +67,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          encoded_branch_name="$(jq -nr --arg value "$NEON_BRANCH_NAME" '$value | @uri')"
           branches_response="$(curl -fsS \
             -H "Authorization: Bearer ${NEON_API_KEY}" \
-            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?limit=10000")"
+            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10")"
 
           branch_id="$(jq -r --arg name "$NEON_BRANCH_NAME" \
             '.branches[] | select(.name == $name) | .id' <<< "$branches_response" | head -n 1)"
@@ -241,9 +242,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          encoded_branch_name="$(jq -nr --arg value "$NEON_BRANCH_NAME" '$value | @uri')"
           branches_response="$(curl -fsS \
             -H "Authorization: Bearer ${NEON_API_KEY}" \
-            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?limit=10000")"
+            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10")"
 
           branch_id="$(jq -r --arg name "$NEON_BRANCH_NAME" \
             '.branches[] | select(.name == $name) | .id' <<< "$branches_response" | head -n 1)"
