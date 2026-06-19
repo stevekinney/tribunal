@@ -1278,6 +1278,7 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
 }
 
 function createCheckRunAnnotation(result: AgentResult, finding: Finding) {
+  if (finding.side === 'LEFT') return [];
   const line = getFindingAnchorLine(finding);
   if (line === null) return [];
   const startLine = finding.startLine ?? line;

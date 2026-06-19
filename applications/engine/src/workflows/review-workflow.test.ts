@@ -970,7 +970,9 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
     expect(ports.cost.recordLlmEstimateCalls).toHaveLength(0);
     expect(ports.github.reviews).toHaveLength(0);
-    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
         conclusion: 'success',
@@ -1205,7 +1207,9 @@ describe('ReviewWorkflowEngine', () => {
     });
 
     expect(ports.github.reviews).toEqual([]);
-    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
         conclusion: 'success',
@@ -1236,7 +1240,9 @@ describe('ReviewWorkflowEngine', () => {
       ],
     });
 
-    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
         conclusion: 'success',
@@ -1260,6 +1266,15 @@ describe('ReviewWorkflowEngine', () => {
         },
       },
     });
+    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(3);
+    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          startLine: 2,
+          title: '[security-review] Left side',
+        }),
+      ]),
+    );
   });
 
   it('supports operator stop for one running agent', async () => {
