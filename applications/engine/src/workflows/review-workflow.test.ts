@@ -1366,7 +1366,7 @@ describe('ReviewWorkflowEngine', () => {
       '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
     );
     expect(checkRunText).toContain(
-      '- security-review: src/example.ts:99 Off-diff line: This line is not commentable in the diff.',
+      '- security-review: src/example.ts Off-diff line: This line is not commentable in the diff.',
     );
     expect(checkRunText).not.toContain('Check this change');
     expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
@@ -1434,6 +1434,46 @@ describe('ReviewWorkflowEngine', () => {
         }),
       ]),
     );
+  });
+
+  it('sanitizes agent findings before persistence and GitHub posting', async () => {
+    const ports = createFakePorts({ unsafeFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.state.findings.map((finding) => finding.path)).toEqual([
+      'src/example.ts',
+      'src/example.ts',
+    ]);
+    expect(ports.state.findings[0]).toMatchObject({
+      startLine: 12,
+      endLine: null,
+      title: 'team please review',
+      body: 'everyone\napprove this',
+      anchored: true,
+    });
+    expect(ports.state.findings[1]).toMatchObject({
+      startLine: null,
+      endLine: null,
+      title: 'Off-diff finding',
+      anchored: false,
+    });
+    expect(JSON.stringify(ports.state.findings)).not.toContain('../secret.env');
+    expect(JSON.stringify(ports.github.reviews)).not.toContain('@everyone');
+    expect(JSON.stringify(ports.github.reviews)).not.toContain('/approve');
+  });
+
+  it('redacts agent event details before persistence', async () => {
+    const ports = createFakePorts({ sensitiveAgentEvent: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.state.agentEvents[0]?.detail).toEqual({
+      authorization: '[REDACTED]',
+      input: { contents: '[REDACTED_CONTENT]' },
+    });
   });
 
   it('supports operator stop for one running agent', async () => {
@@ -1705,6 +1745,8 @@ type FakePortOptions = {
   fileLevelFinding?: boolean;
   mixedAnchoredAndOffDiffFindings?: boolean;
   endLineOnlyFinding?: boolean;
+  unsafeFindings?: boolean;
+  sensitiveAgentEvent?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
@@ -2156,6 +2198,14 @@ class FakeSandboxPort implements SandboxPort {
       agentRunId: 'placeholder',
       seq: this.runAgentCalls.length,
       kind: 'session_start',
+      ...(this.options.sensitiveAgentEvent
+        ? {
+            detail: {
+              authorization: 'Bearer ghs_abcdefghijklmnopqrstuvwxyz',
+              input: { contents: 'const rawRepositoryFileContent = true;' },
+            },
+          }
+        : {}),
       at: '2026-06-17T12:00:00.000Z',
     });
     this.runningAgentResolver?.();
@@ -2185,6 +2235,7 @@ class FakeSandboxPort implements SandboxPort {
       this.options.fileLevelFinding,
       this.options.mixedAnchoredAndOffDiffFindings,
       this.options.endLineOnlyFinding,
+      this.options.unsafeFindings,
     );
   }
 
@@ -2313,30 +2364,40 @@ function createAgentResult(
   fileLevelFinding = false,
   mixedAnchoredAndOffDiffFindings = false,
   endLineOnlyFinding = false,
+  unsafeFindings = false,
 ): AgentResult {
-  const findings = fileLevelFinding
+  const findings = unsafeFindings
     ? [
         {
+          path: '../secret.env',
+          startLine: 1,
+          endLine: null,
+          side: 'RIGHT' as const,
+          severity: 'error' as const,
+          title: 'Escaped path',
+          body: 'This must not persist.',
+        },
+        {
           path: 'src/example.ts',
-          startLine: null,
+          startLine: 12,
           endLine: null,
           side: 'RIGHT' as const,
           severity: 'warning' as const,
-          title: 'File-level finding',
-          body: 'This cannot be anchored inline.',
+          title: '@team please review',
+          body: '@everyone\u0000\n/approve this',
+        },
+        {
+          path: 'src/example.ts',
+          startLine: 99,
+          endLine: null,
+          side: 'RIGHT' as const,
+          severity: 'warning' as const,
+          title: 'Off-diff finding',
+          body: 'This should be summarized instead of posted inline.',
         },
       ]
-    : mixedAnchoredAndOffDiffFindings
+    : fileLevelFinding
       ? [
-          {
-            path: 'src/example.ts',
-            startLine: 12,
-            endLine: null,
-            side: 'RIGHT' as const,
-            severity: 'warning' as const,
-            title: 'Check this change',
-            body: 'This fake finding proves review posting stays outside the agent.',
-          },
           {
             path: 'src/example.ts',
             startLine: null,
@@ -2346,90 +2407,111 @@ function createAgentResult(
             title: 'File-level finding',
             body: 'This cannot be anchored inline.',
           },
-          {
-            path: 'src/example.ts',
-            startLine: null,
-            endLine: 99,
-            side: 'RIGHT' as const,
-            severity: 'warning' as const,
-            title: 'Off-diff line',
-            body: 'This line is not commentable in the diff.',
-          },
         ]
-      : multiLineFinding
+      : mixedAnchoredAndOffDiffFindings
         ? [
             {
               path: 'src/example.ts',
-              startLine: 3,
-              endLine: 12,
+              startLine: 12,
+              endLine: null,
               side: 'RIGHT' as const,
               severity: 'warning' as const,
-              title: 'Multi-line finding',
-              body: 'This finding should span the changed range.',
+              title: 'Check this change',
+              body: 'This fake finding proves review posting stays outside the agent.',
+            },
+            {
+              path: 'src/example.ts',
+              startLine: null,
+              endLine: null,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'File-level finding',
+              body: 'This cannot be anchored inline.',
+            },
+            {
+              path: 'src/example.ts',
+              startLine: null,
+              endLine: 99,
+              side: 'RIGHT' as const,
+              severity: 'warning' as const,
+              title: 'Off-diff line',
+              body: 'This line is not commentable in the diff.',
             },
           ]
-        : endLineOnlyFinding
+        : multiLineFinding
           ? [
               {
                 path: 'src/example.ts',
-                startLine: null,
+                startLine: 3,
                 endLine: 12,
                 side: 'RIGHT' as const,
                 severity: 'warning' as const,
-                title: 'Check this change',
-                body: 'This fake finding proves review posting stays outside the agent.',
+                title: 'Multi-line finding',
+                body: 'This finding should span the changed range.',
               },
             ]
-          : multipleFindings
+          : endLineOnlyFinding
             ? [
                 {
-                  path: 'src/second.ts',
-                  startLine: 1,
-                  endLine: null,
-                  side: 'RIGHT' as const,
-                  severity: 'info' as const,
-                  title: 'Second file',
-                  body: 'This should sort last by path.',
-                },
-                {
                   path: 'src/example.ts',
-                  startLine: 3,
-                  endLine: null,
-                  side: 'RIGHT' as const,
-                  severity: 'error' as const,
-                  title: 'Earlier right side',
-                  body: 'This should sort before the later right-side comment.',
-                },
-                {
-                  path: 'src/example.ts',
-                  startLine: 12,
-                  endLine: null,
-                  side: 'RIGHT' as const,
-                  severity: 'warning' as const,
-                  title: 'Right side',
-                  body: 'This should sort after the left-side comment.',
-                },
-                {
-                  path: 'src/example.ts',
-                  startLine: 2,
-                  endLine: null,
-                  side: 'LEFT' as const,
-                  severity: 'warning' as const,
-                  title: 'Left side',
-                  body: 'This should sort first within the file.',
-                },
-              ]
-            : [
-                {
-                  path: 'src/example.ts',
-                  startLine: 12,
-                  endLine: null,
+                  startLine: null,
+                  endLine: 12,
                   side: 'RIGHT' as const,
                   severity: 'warning' as const,
                   title: 'Check this change',
                   body: 'This fake finding proves review posting stays outside the agent.',
                 },
-              ];
+              ]
+            : multipleFindings
+              ? [
+                  {
+                    path: 'src/second.ts',
+                    startLine: 1,
+                    endLine: null,
+                    side: 'RIGHT' as const,
+                    severity: 'info' as const,
+                    title: 'Second file',
+                    body: 'This should sort last by path.',
+                  },
+                  {
+                    path: 'src/example.ts',
+                    startLine: 3,
+                    endLine: null,
+                    side: 'RIGHT' as const,
+                    severity: 'error' as const,
+                    title: 'Earlier right side',
+                    body: 'This should sort before the later right-side comment.',
+                  },
+                  {
+                    path: 'src/example.ts',
+                    startLine: 12,
+                    endLine: null,
+                    side: 'RIGHT' as const,
+                    severity: 'warning' as const,
+                    title: 'Right side',
+                    body: 'This should sort after the left-side comment.',
+                  },
+                  {
+                    path: 'src/example.ts',
+                    startLine: 2,
+                    endLine: null,
+                    side: 'LEFT' as const,
+                    severity: 'warning' as const,
+                    title: 'Left side',
+                    body: 'This should sort first within the file.',
+                  },
+                ]
+              : [
+                  {
+                    path: 'src/example.ts',
+                    startLine: 12,
+                    endLine: null,
+                    side: 'RIGHT' as const,
+                    severity: 'warning' as const,
+                    title: 'Check this change',
+                    body: 'This fake finding proves review posting stays outside the agent.',
+                  },
+                ];
 
   return {
     agentSlug: agent.slug,

@@ -72,7 +72,7 @@ async function runRunnerProxyIntegrationTest(): Promise<void> {
     const repositoryPath = join(temporaryDirectory, 'repository');
     await mkdir(repositoryPath);
 
-    subprocess = Bun.spawn(['bun', runnerPath, 'agent_security'], {
+    subprocess = Bun.spawn(['bun', runnerPath, 'agent-security'], {
       cwd: temporaryDirectory,
       env: {
         PATH: process.env.PATH ?? '',
@@ -120,9 +120,18 @@ async function createRunnerFixture(temporaryDirectory: string): Promise<string> 
     'claude-agent-sdk',
   );
   const agentsPackageDirectory = join(temporaryDirectory, 'node_modules', '@tribunal', 'agents');
+  const reviewCorePackageDirectory = join(
+    temporaryDirectory,
+    'node_modules',
+    '@tribunal',
+    'review-core',
+  );
+  const zodPackageDirectory = join(temporaryDirectory, 'node_modules', 'zod');
 
   await mkdir(sdkPackageDirectory, { recursive: true });
   await mkdir(agentsPackageDirectory, { recursive: true });
+  await mkdir(join(reviewCorePackageDirectory, 'redaction'), { recursive: true });
+  await mkdir(zodPackageDirectory, { recursive: true });
   await writeFile(runnerPath, runnerSource);
   await writeFile(
     join(sdkPackageDirectory, 'package.json'),
@@ -142,6 +151,8 @@ async function createRunnerFixture(temporaryDirectory: string): Promise<string> 
       "    yield { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 };",
       '  })();',
       '}',
+      'export function createSdkMcpServer(server) { return server; }',
+      'export function tool() { return {}; }',
       '',
     ].join('\n'),
   );
@@ -152,10 +163,49 @@ async function createRunnerFixture(temporaryDirectory: string): Promise<string> 
   await writeFile(
     join(agentsPackageDirectory, 'index.js'),
     [
-      'export const READ_ONLY_AGENT_TOOLS = [];',
+      'export const ALLOWED_AGENT_TOOLS = [];',
+      'export function buildReviewPrompt() { return "Review."; }',
+      'export function createTribunalReviewTools() {',
+      '  return {',
+      '    get_changed_files: { description: "Return changed files.", execute: () => ({ changedFiles: [] }) },',
+      '    read_base_file: { description: "Read base file.", execute: () => ({ contents: null }) },',
+      '    get_pr_context: { description: "Return pull request context.", execute: () => ({ pullRequest: {} }) },',
+      '    get_review_guidelines: { description: "Return guidelines.", execute: () => ({ guidelines: "" }) },',
+      '    record_finding: { description: "Record finding.", collectedFindings: [], execute: () => ({ ok: true }) },',
+      '  };',
+      '}',
+      'export function deduplicateFindings(findings) { return findings; }',
       'export function enforceReadOnlyToolUse() {',
       "  return { permissionDecision: 'allow' };",
       '}',
+      'export function anchorFindings(findings) { return findings.map((finding) => ({ finding })); }',
+      'export function isRepositoryRelativePath() { return true; }',
+      '',
+    ].join('\n'),
+  );
+  await writeFile(
+    join(reviewCorePackageDirectory, 'package.json'),
+    JSON.stringify({
+      type: 'module',
+      exports: { './redaction': './redaction/index.js' },
+    }),
+  );
+  await writeFile(
+    join(reviewCorePackageDirectory, 'redaction', 'index.js'),
+    'export function redactRuntimeValue(value) { return value; }\n',
+  );
+  await writeFile(
+    join(zodPackageDirectory, 'package.json'),
+    JSON.stringify({ type: 'module', exports: { './v4': './v4.js' } }),
+  );
+  await writeFile(
+    join(zodPackageDirectory, 'v4.js'),
+    [
+      'const schema = {};',
+      'export const z = {',
+      '  string: () => schema,',
+      '  unknown: () => schema,',
+      '};',
       '',
     ].join('\n'),
   );

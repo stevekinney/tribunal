@@ -1482,7 +1482,13 @@ describe('Tensorlake sandbox adapter', () => {
   it('connects to an existing named sandbox before creating a duplicate', async () => {
     const sandbox = new MockSandbox('sandbox_existing');
     sandboxClientListMock.mockResolvedValue([
-      { sandboxId: 'sandbox_existing', name: 'tribunal-pr-42-7', status: 'running' },
+      {
+        sandboxId: 'sandbox_existing',
+        name: 'tribunal-pr-42-7',
+        status: 'running',
+        network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+        secretNames: [],
+      },
       { sandboxId: 'sandbox_terminated', name: 'tribunal-pr-42-7', status: 'terminated' },
     ]);
     MockSandbox.connect.mockResolvedValue(sandbox);
@@ -1497,12 +1503,43 @@ describe('Tensorlake sandbox adapter', () => {
         diskMb: 20480,
         timeoutSecs: 900,
         allowInternetAccess: false,
-        allowOut: [],
+        allowOut: ['10.0.0.8/32'],
         secretNames: [],
         env: {},
         metadata: {},
       }),
     ).resolves.toEqual({ sandboxId: 'sandbox_existing' });
+    expect(sandboxClientCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before reusing a named sandbox with unverified isolation', async () => {
+    sandboxClientListMock.mockResolvedValue([
+      {
+        sandboxId: 'sandbox_existing',
+        name: 'tribunal-pr-42-7',
+        status: 'running',
+        network: { allowInternetAccess: true, allowOut: ['0.0.0.0/0'] },
+        secretNames: [],
+      },
+    ]);
+    const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
+
+    await expect(
+      adapter.create({
+        name: 'tribunal-pr-42-7',
+        image: 'tribunal-reviewer',
+        cpus: 2,
+        memoryMb: 4096,
+        diskMb: 20480,
+        timeoutSecs: 900,
+        allowInternetAccess: false,
+        allowOut: ['10.0.0.8/32'],
+        secretNames: [],
+        env: {},
+        metadata: {},
+      }),
+    ).rejects.toThrow('existing sandbox isolation could not be verified');
+    expect(MockSandbox.connect).not.toHaveBeenCalled();
     expect(sandboxClientCreateMock).not.toHaveBeenCalled();
   });
 

@@ -22,6 +22,13 @@ const diffContext: DiffContext = {
       commentableLines: [{ side: 'RIGHT', line: 4 }],
     },
   ],
+  changedSinceLast: [
+    {
+      path: 'src/new-change.ts',
+      status: 'added',
+      commentableLines: [{ side: 'RIGHT', line: 1 }],
+    },
+  ],
   pr: {
     number: 1,
     title: 'Review me',
@@ -32,10 +39,14 @@ const diffContext: DiffContext = {
 };
 
 describe('review tools', () => {
-  it('marks all Tribunal tools as read-only', () => {
+  it('marks read tools as read-only and record_finding as stateful', () => {
     const tools = createTribunalReviewTools({ diffContext, guidelines: 'Be kind.' });
 
-    expect(Object.values(tools).every((tool) => tool.readOnlyHint)).toBe(true);
+    expect(tools.get_changed_files.readOnlyHint).toBe(true);
+    expect(tools.read_base_file.readOnlyHint).toBe(true);
+    expect(tools.get_pr_context.readOnlyHint).toBe(true);
+    expect(tools.get_review_guidelines.readOnlyHint).toBe(true);
+    expect(tools.record_finding.readOnlyHint).toBe(false);
   });
 
   it('returns changed files, pull request context, guidelines, and optional base files', () => {
@@ -47,6 +58,7 @@ describe('review tools', () => {
 
     expect(tools.get_changed_files.execute({})).toEqual({
       changedFiles: diffContext.changedFiles,
+      changedSinceLast: diffContext.changedSinceLast,
     });
     expect(tools.get_pr_context.execute({})).toEqual({
       pullRequest: diffContext.pr,
@@ -61,6 +73,24 @@ describe('review tools', () => {
     expect(tools.read_base_file.execute({ path: 'src/missing.ts' })).toEqual({
       path: 'src/missing.ts',
       contents: null,
+    });
+  });
+
+  it('defaults changed-since output to an empty list when no previous head exists', () => {
+    const diffContextWithoutIncrementalChanges: DiffContext = {
+      headSha: diffContext.headSha,
+      baseSha: diffContext.baseSha,
+      changedFiles: diffContext.changedFiles,
+      pr: diffContext.pr,
+    };
+    const tools = createTribunalReviewTools({
+      diffContext: diffContextWithoutIncrementalChanges,
+      guidelines: 'Be kind.',
+    });
+
+    expect(tools.get_changed_files.execute({})).toEqual({
+      changedFiles: diffContext.changedFiles,
+      changedSinceLast: [],
     });
   });
 
