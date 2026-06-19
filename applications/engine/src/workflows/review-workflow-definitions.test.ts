@@ -125,8 +125,11 @@ async function awaitTerminal(testEngine: TestEngineInstance, id: string) {
     await yieldToPortableEventLoop();
   }
 
-  const state = await testEngine.get(id);
-  throw new Error(`Workflow ${id} did not reach a terminal state after 5 attempts.`);
+  const finalState = await testEngine.get(id);
+  const status = finalState?.status ?? 'missing';
+  throw new Error(
+    `Workflow ${id} did not reach a terminal state after 5 attempts; status: ${status}.`,
+  );
 }
 
 function createIntent(
