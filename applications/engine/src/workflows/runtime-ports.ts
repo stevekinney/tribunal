@@ -97,8 +97,9 @@ export function createReviewIntentConsumer(
   environment: ReviewIntentRuntimeEnvironment,
 ) {
   const githubContext = createEngineGithubContext(database, environment);
+  const defaultDailyCostCapUsd = parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25);
   const intentPort = createDatabaseReviewIntentPort(database, {
-    defaultDailyCostCapUsd: parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25),
+    defaultDailyCostCapUsd,
     reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
   });
   const reviewWorkflowEngine = new ReviewWorkflowEngine(
@@ -109,6 +110,7 @@ export function createReviewIntentConsumer(
         usageCostApiClient: createAnthropicUsageCostApiClient(
           requireEnvironmentValue(environment.ANTHROPIC_ADMIN_KEY, 'ANTHROPIC_ADMIN_KEY'),
         ),
+        defaultDailyCostCapUsd,
       }),
       intents: intentPort,
       state: createDatabaseReviewWorkflowStatePort(database),
@@ -256,7 +258,7 @@ function parseAnthropicCostReport(
   return rows.flatMap((row, index) => {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
     if (metadata?.review_run_id !== reviewRunId) return [];
-    if (row.currency !== 'USD') return [];
+    if (row.currency !== undefined && row.currency !== 'USD') return [];
     const amountUsd = parseUsdDecimal(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
     const userId = Number(metadata.user_id ?? row.user_id ?? 0);

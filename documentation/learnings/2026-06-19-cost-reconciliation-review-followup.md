@@ -1,0 +1,2 @@
+- When two ports use the same environment default, compute the default once at wiring time and pass it into both ports so persisted settings fallbacks cannot drift.
+- Treat missing optional fields from external billing APIs as documented defaults only when an explicit contrary value is absent; keep rejecting explicit non-USD rows.

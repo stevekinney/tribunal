@@ -407,6 +407,35 @@ describe('runtime review intent consumer wiring', () => {
     ).resolves.toEqual([]);
   });
 
+  it('records Anthropic cost report rows with missing currency as USD', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '1.25',
+                  metadata: { review_run_id: 'run_1', user_id: '7' },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+    ).resolves.toMatchObject([{ amountUsd: 1.25, userId: 7, reviewRunId: 'run_1' }]);
+  });
+
   it('throws when the Anthropic cost report request fails', async () => {
     vi.stubGlobal(
       'fetch',

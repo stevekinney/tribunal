@@ -138,13 +138,17 @@ export async function reconcile(
   }
 }
 
-async function readDailyCostCap(database: CostDatabase, userId: number): Promise<number> {
+async function readDailyCostCap(
+  database: CostDatabase,
+  userId: number,
+  defaultDailyCostCapUsd: number,
+): Promise<number> {
   const [settings] = await database
     .select({ dailyCostCapUsd: userReviewSettings.dailyCostCapUsd })
     .from(userReviewSettings)
     .where(eq(userReviewSettings.userId, userId));
 
-  return toNumber(settings?.dailyCostCapUsd ?? 25);
+  return toNumber(settings?.dailyCostCapUsd ?? defaultDailyCostCapUsd);
 }
 
 /**
@@ -154,9 +158,10 @@ export async function enforceDailyCap(
   database: CostDatabase,
   userId: number,
   now = new Date(),
+  defaultDailyCostCapUsd = 25,
 ): Promise<DailyCapDecision> {
   const [capUsd, spendUsd] = await Promise.all([
-    readDailyCostCap(database, userId),
+    readDailyCostCap(database, userId, defaultDailyCostCapUsd),
     readSpendTodayEstimate(database as Database, userId, now),
   ]);
 
@@ -197,6 +202,7 @@ export async function getReviewRunCostComparison(
 export type CreateCostPortOptions = {
   usageCostApiClient: UsageCostApiClient;
   now?: () => Date;
+  defaultDailyCostCapUsd?: number;
 };
 
 /**
@@ -237,6 +243,12 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         idempotencyKey: event.idempotencyKey,
       }),
     reconcile: (reviewRunId) => reconcile(database, options.usageCostApiClient, reviewRunId),
-    enforceDailyCap: (userId) => enforceDailyCap(database, userId, options.now?.() ?? new Date()),
+    enforceDailyCap: (userId) =>
+      enforceDailyCap(
+        database,
+        userId,
+        options.now?.() ?? new Date(),
+        options.defaultDailyCostCapUsd ?? 25,
+      ),
   };
 }

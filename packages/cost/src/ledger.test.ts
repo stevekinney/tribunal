@@ -390,4 +390,32 @@ describe('cost ledger', () => {
       remainingUsd: 0,
     });
   });
+
+  it('uses the configured default daily cap when review settings do not exist', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '3.00',
+      idempotencyKey: 'llm:default-cap-estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+      defaultDailyCostCapUsd: 3,
+    });
+
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: false,
+      capUsd: 3,
+      spendUsd: 3,
+      remainingUsd: 0,
+    });
+  });
 });
