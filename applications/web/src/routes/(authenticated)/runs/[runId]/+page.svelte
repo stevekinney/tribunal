@@ -16,9 +16,15 @@
   const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
   const connected = $derived(canStopRun && connectionState === 'streaming');
   const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
-  const latestAgentEventId = $derived(
-    Math.max(0, ...run.agentRuns.flatMap((agentRun) => agentRun.events.map((event) => event.id))),
-  );
+  const latestAgentEventId = $derived.by(() => {
+    let latestId = 0;
+    for (const agentRun of run.agentRuns) {
+      for (const event of agentRun.events) {
+        if (event.id > latestId) latestId = event.id;
+      }
+    }
+    return latestId;
+  });
   const replacementRunHref = $derived(
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
   );

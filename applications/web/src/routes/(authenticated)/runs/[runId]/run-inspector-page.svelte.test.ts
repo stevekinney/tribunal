@@ -205,6 +205,50 @@ describe('/runs/[runId] page', () => {
       .toHaveTextContent('disconnected');
   });
 
+  it('computes the event stream cursor without spreading all event ids', async () => {
+    const manyEvents = Array.from({ length: 10_000 }, (_, index) => ({
+      ...data.run.agentRuns[0].events[0],
+      id: index + 1,
+      seq: index + 1,
+    }));
+    const eventSources: Array<{ url: string }> = [];
+
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        url: string;
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        constructor(url: string) {
+          this.url = url;
+          eventSources.push(this);
+        }
+
+        addEventListener() {}
+
+        close = vi.fn();
+      },
+    );
+
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              events: manyEvents,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(eventSources[0]?.url).toBe('/api/review/runs/run_1/events?after=10000');
+  });
+
   it('links superseded runs to their replacement run', async () => {
     render(RunInspectorPage, {
       data: {

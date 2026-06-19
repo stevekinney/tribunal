@@ -139,6 +139,22 @@ describe('/agents page', () => {
       .toBeInTheDocument();
   });
 
+  it('does not show inherited xhigh fallback warnings without a concrete default model', async () => {
+    render(AgentsPage, {
+      data: {
+        ...data,
+        defaultModel: 'inherit',
+      },
+      form: null,
+    });
+
+    await page.getByLabelText('Model').selectOptions('inherit');
+    await page.getByLabelText('Effort').selectOptions('xhigh');
+    await expect
+      .element(page.getByText('xhigh will be stored, but this model falls back to high effort'))
+      .not.toBeInTheDocument();
+  });
+
   it('hides stale dry-run estimates after model or effort changes', async () => {
     render(AgentsPage, {
       data,
