@@ -49,17 +49,17 @@ export function buildProxyOnlyEgressConfiguration(input: {
   };
 }
 
-/** Validates the credential-less GitHub clone URL and exact head SHA used in the sandbox. */
+/** Validates the proxied GitHub clone URL and exact head SHA used in the sandbox. */
 export function validateCloneInput(input: {
   repositoryUrl: string;
   headSha: string;
 }): CloneInputValidationResult {
   if (
-    !/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\.git)?$/.test(
+    !/^https:\/\/[^/]+\/(?:[^/]+\/)*github\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\.git)?$/.test(
       input.repositoryUrl,
     )
   ) {
-    return { ok: false, reason: 'repository URL must be a GitHub HTTPS clone URL' };
+    return { ok: false, reason: 'repository URL must be a proxied GitHub HTTPS clone URL' };
   }
 
   if (!/^[a-f0-9]{40}$/i.test(input.headSha)) {

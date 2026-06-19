@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import {
   emitEvent,
+  isMainModule,
   resolveEffortUsed,
   resolveModelUsed,
   runAgentProcess,
@@ -28,9 +29,12 @@ const baseEnvironment = {
 function createWritable() {
   let value = '';
   return {
-    write(chunk) {
+    write(chunk, callback) {
       value += chunk;
+      callback?.();
     },
+    once: vi.fn(),
+    off: vi.fn(),
     toString() {
       return value;
     },
@@ -49,6 +53,10 @@ async function* streamMessages(messages) {
 }
 
 describe('run-agent runner', () => {
+  it('recognizes the main module when invoked through a relative script path', () => {
+    expect(isMainModule(import.meta.url, 'run-agent.test.mjs')).toBe(true);
+  });
+
   it('only short-circuits TRIBUNAL_AGENT_RESULT_FILE in test mode', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tribunal-runner-'));
     const resultFile = join(directory, 'result.jsonl');

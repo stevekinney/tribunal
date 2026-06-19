@@ -1,4 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { READ_ONLY_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
 
@@ -52,16 +55,16 @@ export async function runAgentProcess({
   let latestSdkResult;
   let resultWritten = false;
   const elapsedMilliseconds = () => Math.max(0, Math.round(performanceNow() - startedAt));
-  const writeOnce = (result) => {
+  const writeOnce = async (result) => {
     if (resultWritten) return;
     resultWritten = true;
-    writeResult(stdout, result);
+    await writeResult(stdout, result);
   };
 
   emitEvent(context, 'session_start', { agentSlug, model, effort });
   signalSource.once?.('SIGTERM', () => {
     emitEvent(context, 'stop', { reason: 'terminated' });
-    writeOnce(
+    void writeOnce(
       createResult({
         agentSlug,
         modelUsed: resolveModelUsed(model, latestSdkResult),
@@ -70,8 +73,7 @@ export async function runAgentProcess({
         durationMs: elapsedMilliseconds(),
         error: 'Agent review stopped before completion.',
       }),
-    );
-    exit(143);
+    ).finally(() => exit(143));
   });
 
   try {
@@ -88,10 +90,10 @@ export async function runAgentProcess({
       },
       elapsedMilliseconds,
     });
-    writeOnce(result);
+    await writeOnce(result);
   } catch (error) {
     emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
-    writeOnce(
+    await writeOnce(
       createResult({
         agentSlug,
         modelUsed: resolveModelUsed(model, latestSdkResult),
@@ -238,7 +240,17 @@ export function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, dura
 }
 
 export function writeResult(stdout, result) {
-  stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+  return new Promise((resolveWrite, rejectWrite) => {
+    const handleError = (error) => {
+      stdout.off?.('error', handleError);
+      rejectWrite(error);
+    };
+    stdout.once?.('error', handleError);
+    stdout.write(`${JSON.stringify({ type: 'result', result })}\n`, () => {
+      stdout.off?.('error', handleError);
+      resolveWrite();
+    });
+  });
 }
 
 export function resolveModelUsed(requestedModel, sdkResult) {
@@ -375,7 +387,7 @@ function getNestedString(value, path) {
   return typeof current === 'string' && current.length > 0 ? current : undefined;
 }
 
-function isMainModule(moduleUrl, scriptPath) {
+export function isMainModule(moduleUrl, scriptPath) {
   if (!scriptPath) return false;
-  return moduleUrl === new URL(scriptPath, 'file:').href;
+  return moduleUrl === pathToFileURL(resolve(scriptPath)).href;
 }

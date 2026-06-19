@@ -858,13 +858,20 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
 
     const stdout: string[] = [];
     const stderr: string[] = [];
+    let abortPromise: Promise<void> | undefined;
     const abort = async () => {
-      await sandbox.killProcess(process.pid);
+      try {
+        await sandbox.killProcess(process.pid);
+      } catch (error) {
+        stderr.push(error instanceof Error ? error.message : 'Failed to kill sandbox process.');
+      }
     };
-    const abortListener = () => void abort();
+    const abortListener = () => {
+      abortPromise ??= abort();
+    };
     signal?.addEventListener('abort', abortListener, { once: true });
     try {
-      if (signal?.aborted) await abort();
+      if (signal?.aborted) abortPromise ??= abort();
       for await (const event of sandbox.followOutput(process.pid)) {
         if (signal?.aborted) break;
         if (event.stream === 'stderr') {
@@ -876,6 +883,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
       }
     } finally {
       signal?.removeEventListener('abort', abortListener);
+      await abortPromise;
     }
     const completedProcess = await sandbox.getProcess(process.pid);
     const exitCode = completedProcess.exitCode;

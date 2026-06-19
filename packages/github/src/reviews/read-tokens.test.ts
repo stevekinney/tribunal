@@ -117,6 +117,49 @@ describe('mintSingleRepositoryReadToken', () => {
     expect(app.octokit.rest.apps.createInstallationAccessToken).not.toHaveBeenCalled();
   });
 
+  it('evicts malformed cached tokens and mints a fresh encrypted token', async () => {
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: {
+        token: 'legacy-plaintext-token',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      },
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(context.cache.setCache).mock.calls.at(-1))).not.toContain(
+      'fresh-token',
+    );
+  });
+
   it('maps rate-limited token minting failures to RateLimitError', async () => {
     const app = {
       octokit: {
@@ -206,6 +249,16 @@ describe('mintSingleRepositoryReadToken', () => {
     ).toThrow('ENCRYPTION_KEY is required to cache GitHub tokens.');
 
     process.env.ENCRYPTION_KEY = 'a'.repeat(62);
+
+    expect(() =>
+      encryptInstallationToken({
+        token: 'x',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      }),
+    ).toThrow('ENCRYPTION_KEY must be 32 bytes');
+
+    process.env.ENCRYPTION_KEY = `${'a'.repeat(64)}zz`;
 
     expect(() =>
       encryptInstallationToken({

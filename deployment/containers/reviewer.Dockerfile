@@ -1,6 +1,6 @@
 FROM oven/bun:1.3.13
 
-WORKDIR /reviewer
+WORKDIR /workspace
 ARG PROXY_CA_CERT=""
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
@@ -11,7 +11,14 @@ RUN apt-get update \
 
 ENV NODE_ENV=production
 ENV TRIBUNAL_RUNNER_MODE=sandbox
-COPY runner/package.json ./runner/package.json
-RUN cd runner && bun install --production
+COPY package.json bun.lock turbo.json ./
+COPY applications/engine/package.json applications/engine/package.json
+COPY applications/proxy/package.json applications/proxy/package.json
+COPY applications/web/package.json applications/web/package.json
+COPY packages packages
+COPY runner/package.json runner/package.json
+COPY scripts/package.json scripts/package.json
+COPY scripts/install-git-hooks.ts scripts/install-git-hooks.ts
+RUN bun install --frozen-lockfile --production
 COPY runner ./runner
 CMD ["node", "runner/verify-image.mjs"]

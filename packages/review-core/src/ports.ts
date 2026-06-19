@@ -57,6 +57,7 @@ export interface GitHubPort {
 export interface SandboxOptions {
   image: string;
   proxyUrl: string;
+  idleSuspendSeconds: number;
 }
 
 export interface SandboxPort {

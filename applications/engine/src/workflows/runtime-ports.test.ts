@@ -1166,12 +1166,25 @@ describe('Tensorlake sandbox adapter', () => {
     MockSandbox.connect.mockResolvedValue(sandbox);
     sandbox.startProcess.mockResolvedValue({ pid: 321 });
     const controller = new AbortController();
+    let releaseKill!: () => void;
+    const killFinished = new Promise<void>((resolve) => {
+      releaseKill = resolve;
+    });
+    const calls: string[] = [];
+    sandbox.killProcess.mockImplementation(async () => {
+      calls.push('kill-started');
+      await killFinished;
+      calls.push('kill-finished');
+    });
     sandbox.followOutput.mockImplementation(async function* () {
       yield { line: 'before abort', stream: 'stdout' };
       controller.abort();
       yield { line: 'after abort', stream: 'stdout' };
     });
-    sandbox.getProcess.mockResolvedValue({ pid: 321, exitCode: 143 });
+    sandbox.getProcess.mockImplementation(async () => {
+      calls.push('get-process');
+      return { pid: 321, exitCode: 143 };
+    });
     const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
 
     const result = adapter.runTrackedCommand(
@@ -1184,8 +1197,37 @@ describe('Tensorlake sandbox adapter', () => {
       controller.signal,
     );
 
+    await waitFor(() => expect(calls).toEqual(['kill-started']));
+    releaseKill();
     await expect(result).resolves.toMatchObject({ exitCode: 143, stdout: 'before abort' });
+    expect(calls).toEqual(['kill-started', 'kill-finished', 'get-process']);
     expect(sandbox.killProcess).toHaveBeenCalledWith(321);
+  });
+
+  it('handles sandbox kill failures on abort without rejecting the tracked command', async () => {
+    const sandbox = new MockSandbox('sandbox_1');
+    MockSandbox.connect.mockResolvedValue(sandbox);
+    sandbox.startProcess.mockResolvedValue({ pid: 321 });
+    sandbox.killProcess.mockRejectedValue(new Error('kill failed'));
+    const controller = new AbortController();
+    sandbox.followOutput.mockImplementation(async function* () {
+      controller.abort();
+      yield { line: 'after abort', stream: 'stdout' };
+    });
+    sandbox.getProcess.mockResolvedValue({ pid: 321, exitCode: 1 });
+    const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
+
+    await expect(
+      adapter.runTrackedCommand(
+        'sandbox_1',
+        'node',
+        ['runner.mjs'],
+        undefined,
+        async () => {},
+        undefined,
+        controller.signal,
+      ),
+    ).resolves.toMatchObject({ exitCode: 1, stdout: '', stderr: 'kill failed' });
   });
 
   it('connects to an existing named sandbox before creating a duplicate', async () => {
@@ -1416,6 +1458,20 @@ async function waitForIntent(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error(`Review intent ${intentId} did not reach expected state.`);
+}
+
+async function waitFor(assertion: () => void) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  throw lastError;
 }
 
 function claimedIntent() {

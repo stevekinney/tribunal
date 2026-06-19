@@ -75,6 +75,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(snapshot.supervisors[0]?.workflowId).toBe('review:pr:42:7');
     expect(snapshot.reviewRuns.filter((run) => run.status === 'posted')).toHaveLength(1);
     expect(ports.sandbox.ensureCalls).toHaveLength(1);
+    expect(ports.sandbox.ensureCalls[0]?.options.idleSuspendSeconds).toBe(900);
     expect(ports.intents.processedIntentIds).toEqual(['intent_1', 'intent_2']);
   });
 

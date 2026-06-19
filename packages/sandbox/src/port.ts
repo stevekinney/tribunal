@@ -60,7 +60,7 @@ export function createSandboxPort(
   const runningAgentProcesses = new Map<string, { processId?: string; stopRequested: boolean }>();
 
   return {
-    async ensure(prKey: string, _options: SandboxOptions) {
+    async ensure(prKey: string, options: SandboxOptions) {
       const egress = buildProxyOnlyEgressConfiguration(configuration);
       return adapter.create({
         name: prKey,
@@ -68,14 +68,14 @@ export function createSandboxPort(
         cpus: 2,
         memoryMb: 4096,
         diskMb: 20_480,
-        timeoutSecs: 900,
+        timeoutSecs: options.idleSuspendSeconds,
         ...egress,
         metadata: { managedBy: 'tribunal', name: prKey },
       });
     },
     async update(sandboxId: string, repository: RepoRef, head: string, runToken: string) {
-      const sourceRepositoryUrl = makeCredentiallessRepositoryUrl(repository);
-      const validation = validateCloneInput({ repositoryUrl: sourceRepositoryUrl, headSha: head });
+      const proxiedRepositoryUrl = makeProxiedRepositoryUrl(configuration.proxyUrl, repository);
+      const validation = validateCloneInput({ repositoryUrl: proxiedRepositoryUrl, headSha: head });
       if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
 
       const commandResult = await adapter.runCommand(
@@ -86,19 +86,18 @@ export function createSandboxPort(
           [
             'set -euo pipefail',
             'mkdir -p /workspace',
-            'git_with_proxy() { git -c "http.proxy=$TRIBUNAL_PROXY_URL" "$@"; }',
+            'git_with_token() { git -c "http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN" "$@"; }',
             'if [ -d /workspace/repository/.git ]; then',
-            '  git_with_proxy -C /workspace/repository fetch origin "$TRIBUNAL_HEAD_SHA"',
+            '  git_with_token -C /workspace/repository fetch origin "$TRIBUNAL_HEAD_SHA"',
             'else',
-            '  git_with_proxy clone "$TRIBUNAL_REPOSITORY_URL" /workspace/repository',
+            '  git_with_token clone "$TRIBUNAL_REPOSITORY_URL" /workspace/repository',
             'fi',
             'git -C /workspace/repository checkout --detach "$TRIBUNAL_HEAD_SHA"',
           ].join('\n'),
         ],
         {
-          TRIBUNAL_REPOSITORY_URL: sourceRepositoryUrl,
+          TRIBUNAL_REPOSITORY_URL: proxiedRepositoryUrl,
           TRIBUNAL_HEAD_SHA: head,
-          TRIBUNAL_PROXY_URL: configuration.proxyUrl,
           TRIBUNAL_RUN_TOKEN: runToken,
         },
       );
@@ -289,8 +288,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function makeCredentiallessRepositoryUrl(repository: RepoRef): string {
-  return `https://github.com/${repository.owner}/${repository.name}.git`;
+function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string {
+  const url = new URL(proxyUrl);
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/github/github.com/${repository.owner}/${repository.name}.git`;
+  return url.toString();
 }
 
 function makeProxiedAnthropicUrl(proxyUrl: string): string {

@@ -506,6 +506,7 @@ export class ReviewWorkflowEngine {
     const { sandboxId } = await this.ports.sandbox.ensure(sandboxKey, {
       image: this.configuration.sandboxImage,
       proxyUrl: this.configuration.proxyUrl,
+      idleSuspendSeconds: this.configuration.idleSuspendSeconds,
     });
     const { checkRunId } = await this.ports.github.createCheckRun(
       repositoryExecutionContext(input),

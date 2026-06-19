@@ -13,6 +13,7 @@ const hostAllowlist = z
 export const proxyEnvironmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url().optional(),
+  ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
   GITHUB_APP_ID: z.string().min(1),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1),
   ANTHROPIC_API_KEY: z.string().min(1),

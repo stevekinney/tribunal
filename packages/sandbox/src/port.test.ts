@@ -87,13 +87,18 @@ describe('sandbox port', () => {
       proxyCidr: '10.0.0.8/32',
     });
 
-    await port.ensure('tribunal-pr-42-7', { image: 'ignored', proxyUrl: 'ignored' });
+    await port.ensure('tribunal-pr-42-7', {
+      image: 'ignored',
+      proxyUrl: 'ignored',
+      idleSuspendSeconds: 123,
+    });
 
     expect(calls[0]).toMatchObject({
       method: 'create',
       input: {
         name: 'tribunal-pr-42-7',
         image: 'tribunal-reviewer:latest',
+        timeoutSecs: 123,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
         secretNames: [],
@@ -101,7 +106,7 @@ describe('sandbox port', () => {
     });
   });
 
-  it('uses credential-less clone and proxy configuration for updates', async () => {
+  it('uses proxy clone URLs and run-token authorization for updates', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
       image: 'tribunal-reviewer:latest',
@@ -121,9 +126,9 @@ describe('sandbox port', () => {
       input: {
         command: 'bash',
         environment: {
-          TRIBUNAL_REPOSITORY_URL: 'https://github.com/stevekinney/tribunal.git',
+          TRIBUNAL_REPOSITORY_URL:
+            'https://proxy.tribunal.local/github/github.com/stevekinney/tribunal.git',
           TRIBUNAL_HEAD_SHA: 'a'.repeat(40),
-          TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
           TRIBUNAL_RUN_TOKEN: 'capability-token',
         },
       },
@@ -132,8 +137,10 @@ describe('sandbox port', () => {
     expect(firstCall).toBeDefined();
     const commandArguments = (firstCall!.input as { arguments_: string[] }).arguments_;
     expect(commandArguments.join(' ')).toContain('git -C /workspace/repository');
-    expect(commandArguments.join(' ')).toContain('http.proxy=$TRIBUNAL_PROXY_URL');
-    expect(commandArguments.join(' ')).not.toContain('http.extraHeader');
+    expect(commandArguments.join(' ')).toContain(
+      'http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN',
+    );
+    expect(commandArguments.join(' ')).not.toContain('http.proxy');
     expect(commandArguments.join(' ')).not.toContain('clone-or-fetch');
     expect(commandArguments.join(' ')).not.toContain('capability-token');
   });

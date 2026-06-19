@@ -22,34 +22,50 @@ export async function mintSingleRepositoryReadToken(
   input: MintSingleRepositoryReadTokenInput,
 ): Promise<InstallationToken> {
   const policy = requirePolicy('mint-single-repository-read-token');
-  const { value } = await cachedRead(
+  const fetchToken = async () => {
+    const result = await mintInstallationAccessToken(context, {
+      installationId: input.installationId,
+      repositoryIds: [input.repositoryId],
+      permissions: {
+        contents: 'read',
+      },
+    });
+
+    if (!result.ok) {
+      if (result.error.code === 'rate_limited') {
+        throw new RateLimitError(result.error.message, result.error.retryAfterSeconds);
+      }
+      if (isRetryableTokenError(result.error.code)) {
+        throw new ServiceUnavailableError('GitHub', result.error.message);
+      }
+      throw new ValidationError(result.error.message);
+    }
+
+    return { data: encryptInstallationToken(result.token) };
+  };
+  const { value } = await cachedRead(context.cache, policy, fetchToken, [
+    input.installationId,
+    input.repositoryId,
+  ]);
+
+  try {
+    return decryptInstallationToken(value);
+  } catch (error) {
+    if (!(error instanceof ValidationError)) throw error;
+  }
+
+  const cacheKey = policy.keyFactory(input.installationId, input.repositoryId);
+  await context.cache.deleteCache(cacheKey);
+  const fresh = await cachedRead(
     context.cache,
     policy,
-    async () => {
-      const result = await mintInstallationAccessToken(context, {
-        installationId: input.installationId,
-        repositoryIds: [input.repositoryId],
-        permissions: {
-          contents: 'read',
-        },
-      });
-
-      if (!result.ok) {
-        if (result.error.code === 'rate_limited') {
-          throw new RateLimitError(result.error.message, result.error.retryAfterSeconds);
-        }
-        if (isRetryableTokenError(result.error.code)) {
-          throw new ServiceUnavailableError('GitHub', result.error.message);
-        }
-        throw new ValidationError(result.error.message);
-      }
-
-      return { data: encryptInstallationToken(result.token) };
-    },
+    fetchToken,
     [input.installationId, input.repositoryId],
+    {
+      bypass: true,
+    },
   );
-
-  return decryptInstallationToken(value);
+  return decryptInstallationToken(fresh.value);
 }
 
 export function encryptInstallationToken(token: InstallationToken): EncryptedInstallationToken {
@@ -71,6 +87,9 @@ export function encryptInstallationToken(token: InstallationToken): EncryptedIns
 
 export function decryptInstallationToken(token: EncryptedInstallationToken): InstallationToken {
   const key = getTokenEncryptionKey();
+  if (typeof token.encryptedToken !== 'string') {
+    throw new ValidationError('Cached GitHub installation token is not encrypted.');
+  }
   const [initializationVectorHex, authenticationTagHex, encryptedToken] =
     token.encryptedToken.split(':');
   if (!initializationVectorHex || !authenticationTagHex || !encryptedToken) {
@@ -98,9 +117,8 @@ function getTokenEncryptionKey(): Buffer {
   if (!configuredKey)
     throw new ValidationError('ENCRYPTION_KEY is required to cache GitHub tokens.');
 
-  const key = Buffer.from(configuredKey, 'hex');
-  if (key.length !== 32) {
+  if (!/^[a-fA-F0-9]{64}$/.test(configuredKey)) {
     throw new ValidationError('ENCRYPTION_KEY must be 32 bytes (64 hex characters).');
   }
-  return key;
+  return Buffer.from(configuredKey, 'hex');
 }
