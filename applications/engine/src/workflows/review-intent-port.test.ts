@@ -326,7 +326,7 @@ describe('createDatabaseReviewIntentPort', () => {
         agentId: 'agent_watched_installation',
       },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
 
     const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
 
@@ -393,7 +393,7 @@ describe('createDatabaseReviewIntentPort', () => {
       { userId: user.id, repositoryId: repository.id, agentId: 'agent_primary_user' },
       { userId: otherUser.id, repositoryId: repository.id, agentId: 'agent_other_user' },
     ]);
-    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
     const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
     const secondClaimedAt = new Date('2026-06-17T12:01:00.000Z');
 
