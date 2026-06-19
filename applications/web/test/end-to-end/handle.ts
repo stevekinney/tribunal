@@ -396,6 +396,20 @@ async function handleE2EReviewLifecycle(event: RequestEvent): Promise<Response> 
     }
     const userId = Number(body.userId);
     const repositoryId = Number(body.repositoryId);
+    if (
+      body.kind !== undefined &&
+      body.kind !== 'opened' &&
+      body.kind !== 'synchronize' &&
+      body.kind !== 'closed' &&
+      body.kind !== 'redelivered'
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: 'kind must be opened, synchronize, closed, or redelivered when provided.',
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    }
 
     const { applyFakeReviewLifecycleEvent, canUserAccessE2ERepository, getE2EDatabase } =
       await import('$testing/end-to-end/seed');

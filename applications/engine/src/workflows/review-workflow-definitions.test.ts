@@ -30,7 +30,7 @@ describe('review workflow definitions with Weft TestEngine', () => {
       'sync-sha',
     );
     const duplicateIntent = createIntent('delivery-open', 'start', 'opened', 'open-sha');
-    const closeIntent = { ...createIntent('delivery-close', 'pr_closed', 'opened', 'sync-sha') };
+    const closeIntent = { ...createIntent('delivery-close', 'pr_closed', 'manual', 'sync-sha') };
 
     await runWorkflow(testEngine, 'review-pr-open', openIntent);
     await runWorkflow(testEngine, 'review-pr-synchronize', synchronizedIntent);
@@ -72,7 +72,7 @@ describe('review workflow definitions with Weft TestEngine', () => {
     await runWorkflow(
       testEngine,
       'review-run-stop-recording',
-      createIntent('delivery-stop-recording', 'pr_closed', 'opened', 'resume-sha'),
+      createIntent('delivery-stop-recording', 'pr_closed', 'manual', 'resume-sha'),
       'review-run',
     );
     await runReaper(testEngine, [{ repositoryId: 42, pullRequestNumber: 7 }]);

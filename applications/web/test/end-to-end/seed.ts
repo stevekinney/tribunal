@@ -10,7 +10,7 @@
  * and E2E_TEST_SECRET environment variables.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { PgliteDatabase } from 'drizzle-orm/pglite';
 import {
   agent,
@@ -197,7 +197,8 @@ export async function seedOperatorData(
   const agentId = `agent-e2e-${options.userId}`;
   const reviewRunId = `run-e2e-${options.repositoryId}-17-opened`;
   const agentRunId = `agent-run-e2e-${options.repositoryId}-security`;
-  const now = new Date('2026-06-19T12:00:00.000Z');
+  const now = new Date();
+  const finishedAt = new Date(now.getTime() + 60_000);
 
   await db
     .insert(githubInstallation)
@@ -282,7 +283,7 @@ export async function seedOperatorData(
       commentsPosted: 1,
       costEstimateUsd: '0.42',
       startedAt: now,
-      finishedAt: new Date('2026-06-19T12:01:00.000Z'),
+      finishedAt,
     })
     .onConflictDoNothing();
 
@@ -371,28 +372,42 @@ export async function applyFakeReviewLifecycleEvent(
   const agentId = `agent-e2e-${input.userId}`;
   const agentRunId = `agent-run-e2e-${input.repositoryId}-${pullRequestNumber}-${headSha}`;
   const deliveryId = input.deliveryId ?? `delivery-${kind}-${headSha}`;
-  const now = new Date('2026-06-19T12:05:00.000Z');
+  const now = new Date();
+  const finishedAt = new Date(now.getTime() + 60_000);
+  const existingRunRows = await db
+    .select({ id: reviewRun.id })
+    .from(reviewRun)
+    .where(
+      and(
+        eq(reviewRun.userId, input.userId),
+        eq(reviewRun.repositoryId, input.repositoryId),
+        eq(reviewRun.prNumber, pullRequestNumber),
+      ),
+    );
+  const existingRunIds = existingRunRows.map((row) => row.id);
 
   if (kind === 'closed') {
-    await db
-      .update(reviewRun)
-      .set({
-        status: 'cancelled',
-        finishedAt: now,
-        error: 'Pull request closed in fake E2E lifecycle.',
-      })
-      .where(eq(reviewRun.repositoryId, input.repositoryId));
+    if (existingRunIds.length > 0) {
+      await db
+        .update(reviewRun)
+        .set({
+          status: 'cancelled',
+          finishedAt: now,
+          error: 'Pull request closed in fake E2E lifecycle.',
+        })
+        .where(inArray(reviewRun.id, existingRunIds));
 
-    await db
-      .update(agentRun)
-      .set({ status: 'cancelled', stoppedReason: 'pr_closed' })
-      .where(eq(agentRun.userId, input.userId));
+      await db
+        .update(agentRun)
+        .set({ status: 'cancelled', stoppedReason: 'pr_closed' })
+        .where(inArray(agentRun.reviewRunId, existingRunIds));
+    }
   } else {
-    if (kind === 'synchronize') {
+    if (kind === 'synchronize' && existingRunIds.length > 0) {
       await db
         .update(reviewRun)
         .set({ status: 'superseded', finishedAt: now })
-        .where(eq(reviewRun.repositoryId, input.repositoryId));
+        .where(inArray(reviewRun.id, existingRunIds));
     }
 
     await db
@@ -412,7 +427,7 @@ export async function applyFakeReviewLifecycleEvent(
         commentsPosted: 1,
         costEstimateUsd: '0.31',
         startedAt: now,
-        finishedAt: new Date('2026-06-19T12:06:00.000Z'),
+        finishedAt,
       })
       .onConflictDoNothing();
 
@@ -466,7 +481,7 @@ export async function applyFakeReviewLifecycleEvent(
 
   return {
     runId,
-    status: currentRun?.status ?? 'closed',
+    status: kind === 'closed' ? 'cancelled' : (currentRun?.status ?? 'posted'),
     duplicateCostEvents: Array.from(costKeys.values()).filter((count) => count > 1).length,
     totalCostUsd: costRows.reduce((sum, row) => sum + Number(row.amountUsd), 0),
   };

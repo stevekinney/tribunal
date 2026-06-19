@@ -12,6 +12,12 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
     pullRequestNumber: 23,
   };
 
+  const invalidKind = await request.post('/__e2e__/review-lifecycle', {
+    headers: e2eHeaders(session.workerId),
+    data: { ...baseEvent, kind: 'reopened', headSha: 'invalid-sha' },
+  });
+  expect(invalidKind.status()).toBe(400);
+
   const opened = await request.post('/__e2e__/review-lifecycle', {
     headers: e2eHeaders(session.workerId),
     data: { ...baseEvent, kind: 'opened', headSha: 'open-sha', deliveryId: 'delivery-open' },
@@ -65,7 +71,7 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
     data: { ...baseEvent, kind: 'closed', headSha: 'closed-sha', deliveryId: 'delivery-close' },
   });
   expect(closed.ok()).toBe(true);
-  await expect(closed.json()).resolves.toMatchObject({ status: 'closed' });
+  await expect(closed.json()).resolves.toMatchObject({ status: 'cancelled' });
 
   await page.goto('/runs');
   await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('cancelled');
