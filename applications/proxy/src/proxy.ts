@@ -99,6 +99,7 @@ export function createProxyHandler(
 
     const routeResult = validateProxyRoute(
       url,
+      service,
       request.method,
       verification.claims,
       options.environment,
@@ -147,11 +148,12 @@ export function createProxyHandler(
 
 function validateProxyRoute(
   url: URL,
+  service: ProxyService | null,
   method: string,
   claims: CapabilityTokenClaims,
   environment: ProxyEnvironment,
 ): RouteValidationResult {
-  const route = parseRoute(url);
+  const route = parseRoute(url, service);
   if (!route) {
     return { ok: false, status: 404, reason: 'unknown_proxy_route' };
   }
@@ -248,8 +250,10 @@ function isGitHubPathAllowed(
   return safeGitHubRestMethods.has(method) && isScopedGitHubRestPath(upstreamPath, claims);
 }
 
-function parseRoute(url: URL): Omit<ValidatedRoute, 'method' | 'requiredPermission'> | null {
-  const service = parseService(url.pathname);
+function parseRoute(
+  url: URL,
+  service: ProxyService | null,
+): Omit<ValidatedRoute, 'method' | 'requiredPermission'> | null {
   if (!service) {
     return null;
   }

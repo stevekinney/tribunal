@@ -1,10 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { strict as assert } from 'node:assert';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { describe, expect, it } from 'vitest';
 import { mintCapabilityToken } from './capability-token';
 import { parseProxyEnvironment } from './environment';
 import { createProxyHandler } from './proxy';
@@ -12,26 +9,32 @@ import { createProxyHandler } from './proxy';
 const fixedNow = new Date('2026-06-17T12:00:00.000Z');
 const signingKey = 'proxy-signing-key';
 const anthropicApiKey = 'sk-ant-test-secret';
+const runnerTimeoutMilliseconds = 5_000;
 
-describe('runner and proxy integration', () => {
-  it('passes the run token through the SDK Anthropic request without a 401', async () => {
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'tribunal-runner-proxy-'));
-    const upstreamRequests: Request[] = [];
-    const capabilityToken = mintCapabilityToken(
-      {
-        version: 1,
-        runId: 'review-run-1',
-        userId: 42,
-        repositoryId: 1001,
-        installationId: 2001,
-        repositoryOwner: 'lostgradient',
-        repositoryName: 'tribunal',
-        permissions: ['github:read', 'anthropic:invoke'],
-        expiresAtEpochSeconds: Math.floor(fixedNow.getTime() / 1000) + 60,
-      },
-      signingKey,
-    );
+await runRunnerProxyIntegrationTest();
 
+async function runRunnerProxyIntegrationTest(): Promise<void> {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'tribunal-runner-proxy-'));
+  const upstreamRequests: Request[] = [];
+  let closeServer = async () => {};
+  let subprocess: ReturnType<typeof Bun.spawn> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const capabilityToken = mintCapabilityToken(
+    {
+      version: 1,
+      runId: 'review-run-1',
+      userId: 42,
+      repositoryId: 1001,
+      installationId: 2001,
+      repositoryOwner: 'lostgradient',
+      repositoryName: 'tribunal',
+      permissions: ['github:read', 'anthropic:invoke'],
+      expiresAtEpochSeconds: Math.floor(fixedNow.getTime() / 1000) + 60,
+    },
+    signingKey,
+  );
+
+  try {
     const handler = createProxyHandler({
       auditSink: async () => {},
       environment: parseProxyEnvironment({
@@ -63,41 +66,49 @@ describe('runner and proxy integration', () => {
         });
       },
     });
-    const { closeServer, proxyUrl } = await startProxyServer(handler);
+    const server = await startProxyServer(handler);
+    closeServer = server.closeServer;
+    const runnerPath = await createRunnerFixture(temporaryDirectory);
+    const repositoryPath = join(temporaryDirectory, 'repository');
+    await mkdir(repositoryPath);
 
-    try {
-      const runnerPath = await createRunnerFixture(temporaryDirectory);
-      const repositoryPath = join(temporaryDirectory, 'repository');
-      await mkdir(repositoryPath);
+    subprocess = Bun.spawn(['bun', runnerPath, 'agent_security'], {
+      cwd: temporaryDirectory,
+      env: {
+        ...process.env,
+        ANTHROPIC_BASE_URL: `${server.proxyUrl}/anthropic/api.anthropic.test`,
+        TRIBUNAL_AGENT_RUN_ID: 'agent-run-1',
+        TRIBUNAL_REPOSITORY_PATH: repositoryPath,
+        TRIBUNAL_RUN_TOKEN: capabilityToken,
+      },
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    const timeoutResult = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        subprocess?.kill();
+        reject(new Error('Runner subprocess timed out.'));
+      }, runnerTimeoutMilliseconds);
+    });
+    const exitCode = await Promise.race([subprocess.exited, timeoutResult]);
+    const [standardOutput, standardError] = await Promise.all([
+      readStream(subprocess.stdout),
+      readStream(subprocess.stderr),
+    ]);
 
-      const subprocess = spawn('bun', [runnerPath, 'agent_security'], {
-        cwd: temporaryDirectory,
-        env: {
-          ...process.env,
-          ANTHROPIC_BASE_URL: `${proxyUrl}/anthropic/api.anthropic.test`,
-          TRIBUNAL_AGENT_RUN_ID: 'agent-run-1',
-          TRIBUNAL_REPOSITORY_PATH: repositoryPath,
-          TRIBUNAL_RUN_TOKEN: capabilityToken,
-        },
-      });
-      const [exitCodeResult, standardOutput, standardError] = await Promise.all([
-        once(subprocess, 'exit'),
-        readStream(subprocess.stdout),
-        readStream(subprocess.stderr),
-      ]);
-      const [exitCode] = exitCodeResult;
-
-      expect(exitCode, standardError).toBe(0);
-      expect(standardOutput).toContain('"type":"result"');
-      expect(upstreamRequests).toHaveLength(1);
-      expect(upstreamRequests[0].headers.get('x-api-key')).toBe(anthropicApiKey);
-      expect(upstreamRequests[0].headers.get('authorization')).toBeNull();
-    } finally {
-      await closeServer();
-      await rm(temporaryDirectory, { force: true, recursive: true });
-    }
-  });
-});
+    assert.equal(exitCode, 0, standardError);
+    assert.match(standardOutput, /"type":"result"/u);
+    assert.equal(upstreamRequests.length, 1);
+    assert.equal(upstreamRequests[0].headers.get('x-api-key'), anthropicApiKey);
+    assert.equal(upstreamRequests[0].headers.get('authorization'), null);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    subprocess?.kill();
+    await subprocess?.exited.catch(() => {});
+    await closeServer();
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+}
 
 async function createRunnerFixture(temporaryDirectory: string): Promise<string> {
   const runnerSource = await readFile(new URL('../../../runner/run-agent.mjs', import.meta.url));
@@ -155,60 +166,21 @@ async function createRunnerFixture(temporaryDirectory: string): Promise<string> 
 async function startProxyServer(
   handler: (request: Request) => Promise<Response>,
 ): Promise<{ closeServer: () => Promise<void>; proxyUrl: string }> {
-  const server = createServer(async (incomingRequest, serverResponse) => {
-    const request = await createRequest(incomingRequest);
-    const response = await handler(request);
-    await writeResponse(serverResponse, response);
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: handler,
   });
 
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('Proxy test server did not bind to a TCP port.');
-  }
-
   return {
-    closeServer: () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
-    proxyUrl: `http://127.0.0.1:${address.port}`,
+    closeServer: async () => {
+      await server.stop(true);
+    },
+    proxyUrl: `http://127.0.0.1:${server.port}`,
   };
 }
 
-async function createRequest(incomingRequest: IncomingMessage): Promise<Request> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of incomingRequest) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  const headers = new Headers();
-  for (const [header, value] of Object.entries(incomingRequest.headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(header, item);
-    } else if (value !== undefined) {
-      headers.set(header, value);
-    }
-  }
-
-  return new Request(`http://${incomingRequest.headers.host}${incomingRequest.url}`, {
-    method: incomingRequest.method,
-    headers,
-    body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
-  });
-}
-
-async function writeResponse(serverResponse: ServerResponse, response: Response): Promise<void> {
-  serverResponse.statusCode = response.status;
-  response.headers.forEach((value, header) => serverResponse.setHeader(header, value));
-  serverResponse.end(Buffer.from(await response.arrayBuffer()));
-}
-
-async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString('utf8');
+async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!stream) return '';
+  return new Response(stream).text();
 }

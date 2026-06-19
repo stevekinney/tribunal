@@ -26,6 +26,7 @@ if (resultPath) {
 const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
 const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
 const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
+// Keep SDK-required env, but replace any API key so traffic uses the scoped proxy token.
 const sdkEnvironment = {
   ...process.env,
   ANTHROPIC_API_KEY: process.env.TRIBUNAL_RUN_TOKEN,
