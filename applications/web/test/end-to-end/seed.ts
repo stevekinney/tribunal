@@ -414,7 +414,7 @@ export async function applyFakeReviewLifecycleEvent(
         .where(inArray(reviewRun.id, existingRunIds));
     }
 
-    await db
+    const insertedRuns = await db
       .insert(reviewRun)
       .values({
         id: runId,
@@ -433,43 +433,46 @@ export async function applyFakeReviewLifecycleEvent(
         startedAt: now,
         finishedAt,
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ id: reviewRun.id });
 
-    await db
-      .insert(agentRun)
-      .values({
-        id: agentRunId,
-        userId: input.userId,
-        reviewRunId: runId,
-        agentId,
-        modelUsed: 'sonnet',
-        effortUsed: 'medium',
-        status: 'succeeded',
-        findingsCount: 1,
-        inputTokens: 900,
-        outputTokens: 180,
-        costEstimateUsd: '0.31',
-        durationMs: 1100,
-      })
-      .onConflictDoNothing();
+    if (insertedRuns.length > 0) {
+      await db
+        .insert(agentRun)
+        .values({
+          id: agentRunId,
+          userId: input.userId,
+          reviewRunId: runId,
+          agentId,
+          modelUsed: 'sonnet',
+          effortUsed: 'medium',
+          status: 'succeeded',
+          findingsCount: 1,
+          inputTokens: 900,
+          outputTokens: 180,
+          costEstimateUsd: '0.31',
+          durationMs: 1100,
+        })
+        .onConflictDoNothing();
 
-    await db
-      .insert(costEvent)
-      .values({
-        id: `cost-e2e-${deliveryId}`,
-        userId: input.userId,
-        kind: 'llm',
-        source: 'estimate',
-        repositoryId: input.repositoryId,
-        reviewRunId: runId,
-        agentRunId,
-        agentId,
-        amountUsd: '0.31',
-        meta: { deliveryId },
-        occurredAt: now,
-        idempotencyKey: `fake-review:${deliveryId}:cost`,
-      })
-      .onConflictDoNothing();
+      await db
+        .insert(costEvent)
+        .values({
+          id: `cost-e2e-${deliveryId}`,
+          userId: input.userId,
+          kind: 'llm',
+          source: 'estimate',
+          repositoryId: input.repositoryId,
+          reviewRunId: runId,
+          agentRunId,
+          agentId,
+          amountUsd: '0.31',
+          meta: { deliveryId },
+          occurredAt: now,
+          idempotencyKey: `fake-review:${deliveryId}:cost`,
+        })
+        .onConflictDoNothing();
+    }
   }
 
   const costRows = await db

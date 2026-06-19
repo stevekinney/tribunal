@@ -53,6 +53,29 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
   });
   expect(redeliveredPayload.totalCostUsd).toBe(openedPayload.totalCostUsd);
 
+  const duplicateOpened = await request.post('/__e2e__/review-lifecycle', {
+    headers: e2eHeaders(session.workerId),
+    data: {
+      ...baseEvent,
+      kind: 'opened',
+      headSha: 'open-sha',
+      deliveryId: 'delivery-open-duplicate',
+    },
+  });
+  expect(duplicateOpened.ok()).toBe(true);
+  const duplicateOpenedPayload = (await duplicateOpened.json()) as {
+    runId: string;
+    status: string;
+    duplicateCostEvents: number;
+    totalCostUsd: number;
+  };
+  expect(duplicateOpenedPayload).toMatchObject({
+    runId: openedPayload.runId,
+    status: 'posted',
+    duplicateCostEvents: 0,
+  });
+  expect(duplicateOpenedPayload.totalCostUsd).toBe(openedPayload.totalCostUsd);
+
   const synchronized = await request.post('/__e2e__/review-lifecycle', {
     headers: e2eHeaders(session.workerId),
     data: {
