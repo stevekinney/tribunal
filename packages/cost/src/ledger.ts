@@ -129,16 +129,18 @@ export async function reconcile(
   if (target === undefined) {
     throw new Error(`Review run ${reviewRunId} was not found for cost reconciliation.`);
   }
-  if (target.startedAt === null) {
-    throw new Error(`Review run ${reviewRunId} is missing startedAt for cost reconciliation.`);
-  }
+
+  const fallbackStartedAt =
+    target.startedAt ?? (await readReviewRunEstimateStartedAt(database, reviewRunId));
+  const finishedAt = target.finishedAt ?? new Date();
+  const startedAt = resolveReconciliationStartedAt(fallbackStartedAt, finishedAt);
 
   const events = await usageCostApiClient.listReviewRunCosts({
     reviewRunId: target.reviewRunId,
     userId: target.userId,
     repositoryId: target.repositoryId,
-    startedAt: target.startedAt,
-    finishedAt: target.finishedAt,
+    startedAt,
+    finishedAt,
   });
   const orderedEvents = [...events].sort((left, right) =>
     left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
@@ -160,6 +162,30 @@ export async function reconcile(
       idempotencyKey: reconcileIdempotencyKey(event),
     });
   }
+}
+
+async function readReviewRunEstimateStartedAt(
+  database: CostDatabase,
+  reviewRunId: string,
+): Promise<Date | null> {
+  const [row] = await database
+    .select({ startedAt: sql<Date | string | null>`min(${costEvent.occurredAt})` })
+    .from(costEvent)
+    .where(and(eq(costEvent.reviewRunId, reviewRunId), eq(costEvent.source, 'estimate')));
+
+  return toDate(row?.startedAt);
+}
+
+function resolveReconciliationStartedAt(startedAt: Date | null, finishedAt: Date): Date {
+  if (startedAt !== null && startedAt.getTime() < finishedAt.getTime()) return startedAt;
+  return new Date(finishedAt.getTime() - 1);
+}
+
+function toDate(value: Date | string | null | undefined): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== 'string') return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 async function readDailyCostCap(

@@ -212,6 +212,53 @@ describe('cost ledger', () => {
     ).toEqual(['0.05000000', '1.10000000']);
   });
 
+  it('reconciles legacy review runs without startedAt using the estimate window', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .update(reviewRun)
+      .set({ startedAt: null })
+      .where(eq(reviewRun.id, review.id));
+    await recordLlmEstimate(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.25,
+      idempotencyKey: `llm:${run.id}:legacy-estimate`,
+    });
+
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
+    const client: UsageCostApiClient = {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
+        return [
+          {
+            id: 'usage_legacy',
+            occurredAt: new Date('2026-06-17T12:02:00.000Z'),
+            amountUsd: 0.2,
+            userId: user.id,
+            repositoryId: repository.id,
+            reviewRunId: target.reviewRunId,
+            agentRunId: run.id,
+            agentId: reviewer.id,
+          },
+        ];
+      },
+    };
+
+    await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget).toEqual({
+      reviewRunId: review.id,
+      userId: user.id,
+      repositoryId: repository.id,
+      startedAt: expect.any(Date),
+      finishedAt: review.finishedAt,
+    });
+    expect(receivedTarget?.startedAt).toEqual(expect.any(Date));
+  });
+
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
     const { user, review, reviewer, run } = await createCostFixture();
     await testDatabase.db
