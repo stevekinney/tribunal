@@ -75,7 +75,7 @@ async function runRunnerProxyIntegrationTest(): Promise<void> {
     subprocess = Bun.spawn(['bun', runnerPath, 'agent_security'], {
       cwd: temporaryDirectory,
       env: {
-        ...process.env,
+        PATH: process.env.PATH ?? '',
         ANTHROPIC_BASE_URL: `${server.proxyUrl}/anthropic/api.anthropic.test`,
         TRIBUNAL_AGENT_RUN_ID: 'agent-run-1',
         TRIBUNAL_REPOSITORY_PATH: repositoryPath,

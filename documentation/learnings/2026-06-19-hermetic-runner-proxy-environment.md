@@ -1,0 +1,1 @@
+- Proxy integration tests that spawn runners should pass a minimal explicit environment instead of forwarding the parent process environment.
