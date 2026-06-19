@@ -184,4 +184,27 @@ describe('GitHub webhook route', () => {
       claimWebhookDeliveryMock.mock.invocationCallOrder[1],
     );
   });
+
+  it('surfaces release failures when review-engine dispatch fails after claiming', async () => {
+    expect.assertions(4);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
+    releaseWebhookDeliveryClaimMock.mockRejectedValueOnce(new Error('release failed'));
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
+      status: 500,
+      body: {
+        message: 'Review intent dispatch failed and delivery claim could not be released',
+      },
+    });
+
+    expect(claimWebhookDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(handlePullRequestEventMock).toHaveBeenCalledTimes(1);
+    expect(releaseWebhookDeliveryClaimMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      'delivery-1',
+      'pull_request',
+    );
+  });
 });

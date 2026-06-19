@@ -1,2 +1,3 @@
 - Claim-before-processing webhook delivery guards still need an explicit release path when a review-engine dispatch failure returns 500, otherwise GitHub redelivery can be deduplicated before the durable review intent is retried.
+- If the release path itself fails, return a distinct 500 and log delivery metadata so operators know the delivery may need manual claim cleanup.
 - Check Run annotations anchor to the reviewed head commit, so LEFT-side/base-diff findings should stay in Check Run text but not become annotations.
