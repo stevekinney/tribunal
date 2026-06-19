@@ -4,6 +4,7 @@ import {
   makeSandboxMetadata,
   makeSandboxName,
   validateCloneInput,
+  verifySandboxReuseIsolation,
 } from './configuration';
 
 describe('sandbox configuration', () => {
@@ -36,6 +37,85 @@ describe('sandbox configuration', () => {
         ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic/api.anthropic.com',
       },
     });
+  });
+
+  it('verifies existing sandbox isolation before named sandbox reuse', () => {
+    const expected = buildProxyOnlyEgressConfiguration({
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: [],
+        },
+        expected,
+      ),
+    ).toEqual({ ok: true });
+    expect(verifySandboxReuseIsolation({}, expected)).toMatchObject({ ok: false });
+    expect(
+      verifySandboxReuseIsolation(
+        { network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] } },
+        expected,
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: 'ANTHROPIC_API_KEY',
+        },
+        expected,
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
+    expect(
+      verifySandboxReuseIsolation(
+        { network: { allowInternetAccess: true, allowOut: ['10.0.0.8/32'] }, secretNames: [] },
+        expected,
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      verifySandboxReuseIsolation(
+        { network: { allowInternetAccess: false, allowOut: [] }, secretNames: [] },
+        expected,
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: ['ANTHROPIC_API_KEY'],
+        },
+        expected,
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
+  });
+
+  it('keeps sandbox reuse verification limited to fields returned by the sandbox API', () => {
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: [],
+        },
+        {
+          allowInternetAccess: false,
+          allowOut: ['10.0.0.8/32'],
+          secretNames: [],
+        },
+      ),
+    ).toEqual({ ok: true });
   });
 
   it('normalizes the Anthropic proxy base URL when the proxy URL has a trailing slash', () => {

@@ -21,4 +21,4 @@ COPY scripts/package.json scripts/package.json
 COPY scripts/install-git-hooks.ts scripts/install-git-hooks.ts
 RUN bun install --frozen-lockfile --production
 COPY runner ./runner
-CMD ["node", "runner/verify-image.mjs"]
+CMD ["bun", "runner/verify-image.mjs"]

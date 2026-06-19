@@ -4,12 +4,15 @@ import { validateFinding } from './findings';
 export type ReviewTool<TInput, TOutput> = {
   name: string;
   description: string;
-  readOnlyHint: true;
+  readOnlyHint: boolean;
   execute(input: TInput): TOutput;
 };
 
 export type TribunalReviewTools = {
-  get_changed_files: ReviewTool<Record<string, never>, { changedFiles: ChangedFile[] }>;
+  get_changed_files: ReviewTool<
+    Record<string, never>,
+    { changedFiles: ChangedFile[]; changedSinceLast: ChangedFile[] }
+  >;
   read_base_file: ReviewTool<{ path: string }, { path: string; contents: string | null }>;
   get_pr_context: ReviewTool<
     Record<string, never>,
@@ -36,7 +39,10 @@ export function createTribunalReviewTools(context: ReviewToolContext): TribunalR
       name: 'get_changed_files',
       description: 'Return the changed files for the pull request under review.',
       readOnlyHint: true,
-      execute: () => ({ changedFiles: context.diffContext.changedFiles }),
+      execute: () => ({
+        changedFiles: context.diffContext.changedFiles,
+        changedSinceLast: context.diffContext.changedSinceLast ?? [],
+      }),
     },
     read_base_file: {
       name: 'read_base_file',
@@ -63,7 +69,7 @@ export function createTribunalReviewTools(context: ReviewToolContext): TribunalR
     record_finding: {
       name: 'record_finding',
       description: 'Validate and collect one structured review finding.',
-      readOnlyHint: true,
+      readOnlyHint: false,
       collectedFindings,
       execute: ({ finding }) => {
         const validation = validateFinding(finding, context.diffContext);
