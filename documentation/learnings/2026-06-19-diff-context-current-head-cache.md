@@ -1,0 +1,4 @@
+- Pull request file-list APIs return the current pull request diff, so diff-context cache keys that include a reviewed head SHA must only be populated when that SHA matches the current pull request head.
+- Runtime GitHub ports should pass current pull request metadata into cache decisions instead of letting lower-level helpers assume a reviewed SHA is current.
+- Review-workflow diff anchoring should precompute commentable line keys once per diff context and reuse O(1) lookups for review comments, Check Run text, and annotations.
+- Finding location labels should use the same anchor line as GitHub review comments (`endLine ?? startLine`) so end-line-only findings remain locatable in Check Run text.

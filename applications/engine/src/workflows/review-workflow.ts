@@ -1171,11 +1171,12 @@ function buildReviewPayload(
   diffContext: DiffContext,
   findings: Finding[],
 ): ReviewPayload {
+  const commentableLineKeys = createCommentableLineKeys(diffContext);
   const comments = findings
     .flatMap((finding) => {
       const line = getFindingAnchorLine(finding);
       if (line === null) return [];
-      if (!canAnchorFindingInDiff(diffContext, finding)) return [];
+      if (!canAnchorFindingInDiff(commentableLineKeys, finding)) return [];
 
       return [
         {
@@ -1209,27 +1210,34 @@ function buildReviewPayload(
             'Unanchored findings:',
             ...unanchoredFindings.map(
               (finding) =>
-                `- **${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`}** ${finding.title}: ${finding.body}`,
+                `- **${formatFindingLocation(finding)}** ${finding.title}: ${finding.body}`,
             ),
           ].join('\n'),
     comments,
   };
 }
 
-function canAnchorFindingInDiff(diffContext: DiffContext, finding: Finding): boolean {
+function createCommentableLineKeys(diffContext: DiffContext): Set<string> {
+  return new Set(
+    diffContext.changedFiles.flatMap((file) =>
+      file.commentableLines.map((line) => `${file.path}:${line.side}:${line.line}`),
+    ),
+  );
+}
+
+function canAnchorFindingInDiff(commentableLineKeys: Set<string>, finding: Finding): boolean {
   const line = getFindingAnchorLine(finding);
   if (line === null) return false;
-  return diffContext.changedFiles.some(
-    (file) =>
-      file.path === finding.path &&
-      file.commentableLines.some(
-        (commentableLine) => commentableLine.side === finding.side && commentableLine.line === line,
-      ),
-  );
+  return commentableLineKeys.has(`${finding.path}:${finding.side}:${line}`);
 }
 
 function getFindingAnchorLine(finding: Finding): number | null {
   return finding.endLine ?? finding.startLine;
+}
+
+function formatFindingLocation(finding: Finding): string {
+  const line = getFindingAnchorLine(finding);
+  return `${finding.path}${line === null ? '' : `:${line}`}`;
 }
 
 function withReviewRunMarker(review: ReviewPayload, reviewMarker: string): ReviewPayload {
@@ -1251,8 +1259,11 @@ function buildCompletedCheckRunPatch(
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
+  const commentableLineKeys = createCommentableLineKeys(diffContext);
   const annotations = agentResults.flatMap((result) =>
-    result.findings.flatMap((finding) => createCheckRunAnnotation(result, finding, diffContext)),
+    result.findings.flatMap((finding) =>
+      createCheckRunAnnotation(result, finding, commentableLineKeys),
+    ),
   );
   const agentLines = agentResults.map((result) => {
     const severityCounts = countSeverities(result.findings);
@@ -1262,10 +1273,10 @@ function buildCompletedCheckRunPatch(
   });
   const unanchoredFindingLines = agentResults.flatMap((result) =>
     result.findings
-      .filter((finding) => !canAnnotateFindingInCheckRun(diffContext, finding))
+      .filter((finding) => !canAnnotateFindingInCheckRun(commentableLineKeys, finding))
       .map(
         (finding) =>
-          `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
+          `- ${result.agentSlug}: ${formatFindingLocation(finding)} ${finding.title}: ${finding.body}`,
       ),
   );
 
@@ -1288,12 +1299,16 @@ function buildCompletedCheckRunPatch(
   };
 }
 
-function canAnnotateFindingInCheckRun(diffContext: DiffContext, finding: Finding): boolean {
-  return finding.side !== 'LEFT' && canAnchorFindingInDiff(diffContext, finding);
+function canAnnotateFindingInCheckRun(commentableLineKeys: Set<string>, finding: Finding): boolean {
+  return finding.side !== 'LEFT' && canAnchorFindingInDiff(commentableLineKeys, finding);
 }
 
-function createCheckRunAnnotation(result: AgentResult, finding: Finding, diffContext: DiffContext) {
-  if (!canAnnotateFindingInCheckRun(diffContext, finding)) return [];
+function createCheckRunAnnotation(
+  result: AgentResult,
+  finding: Finding,
+  commentableLineKeys: Set<string>,
+) {
+  if (!canAnnotateFindingInCheckRun(commentableLineKeys, finding)) return [];
   const line = getFindingAnchorLine(finding)!;
   const startLine = finding.startLine ?? line;
   const endLine = finding.endLine ?? line;

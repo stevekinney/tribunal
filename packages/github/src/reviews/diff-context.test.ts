@@ -122,7 +122,7 @@ describe('getDiffContext', () => {
     expect(context.cache.getCached).not.toHaveBeenCalled();
   });
 
-  it('stores fetched diff context in cache when repository id and reviewed head SHA are provided', async () => {
+  it('stores fetched diff context in cache when repository id and current reviewed head SHA are provided', async () => {
     const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
     const context = createContext(listFiles);
 
@@ -133,10 +133,31 @@ describe('getDiffContext', () => {
       pullRequestNumber: 42,
       repositoryId: 123,
       headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
     });
 
     expect(result.changedFiles).toHaveLength(1);
     expect(context.cache.setCache).toHaveBeenCalled();
+  });
+
+  it('bypasses the cache when reviewed head SHA is not the current pull request head', async () => {
+    const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
+    const context = createContext(listFiles);
+
+    const result = await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'stale111',
+      currentHeadSha: 'current222',
+    });
+
+    expect(result.changedFiles).toHaveLength(1);
+    expect(listFiles).toHaveBeenCalledTimes(1);
+    expect(context.cache.getCached).not.toHaveBeenCalled();
+    expect(context.cache.setCache).not.toHaveBeenCalled();
   });
 
   it('uses separate cached diff contexts for separate reviewed head SHAs', async () => {
@@ -150,6 +171,7 @@ describe('getDiffContext', () => {
       pullRequestNumber: 42,
       repositoryId: 123,
       headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
     });
     await getDiffContext(context, {
       installationId: 1,
@@ -158,6 +180,7 @@ describe('getDiffContext', () => {
       pullRequestNumber: 42,
       repositoryId: 123,
       headSha: 'bbb222',
+      currentHeadSha: 'bbb222',
     });
 
     expect(context.cache.getCached).toHaveBeenNthCalledWith(
@@ -190,6 +213,7 @@ describe('getDiffContext', () => {
       pullRequestNumber: 42,
       repositoryId: 123,
       headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
     });
     await getDiffContext(context, {
       installationId: 1,
@@ -198,6 +222,7 @@ describe('getDiffContext', () => {
       pullRequestNumber: 42,
       repositoryId: 123,
       headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
     });
 
     expect(context.cache.getCached).toHaveBeenCalledTimes(2);

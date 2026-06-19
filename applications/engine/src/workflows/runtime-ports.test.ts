@@ -1034,6 +1034,7 @@ describe('engine GitHub port', () => {
         installationId: installation.installationId,
         repositoryId: createdRepository.id,
         headSha: 'head',
+        currentHeadSha: 'head',
       }),
     );
     expect(getPullRequestMetadataMock).toHaveBeenCalledWith(

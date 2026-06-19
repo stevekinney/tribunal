@@ -2178,8 +2178,8 @@ function createAgentResult(
           },
           {
             path: 'src/example.ts',
-            startLine: 99,
-            endLine: null,
+            startLine: null,
+            endLine: 99,
             side: 'RIGHT' as const,
             severity: 'warning' as const,
             title: 'Off-diff line',
