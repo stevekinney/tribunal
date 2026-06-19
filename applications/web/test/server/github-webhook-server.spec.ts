@@ -132,7 +132,7 @@ describe('GitHub webhook route', () => {
   });
 
   it('claims review-engine deliveries before dispatch so redelivery cannot enqueue twice', async () => {
-    expect.assertions(5);
+    expect.assertions(7);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
@@ -147,5 +147,11 @@ describe('GitHub webhook route', () => {
     expect(claimWebhookDeliveryMock).toHaveBeenCalledTimes(2);
     expect(handlePullRequestEventMock).toHaveBeenCalledTimes(1);
     expect(storeWebhookEventMock).toHaveBeenCalledTimes(1);
+    expect(claimWebhookDeliveryMock.mock.invocationCallOrder[0]).toBeLessThan(
+      storeWebhookEventMock.mock.invocationCallOrder[0],
+    );
+    expect(claimWebhookDeliveryMock.mock.invocationCallOrder[0]).toBeLessThan(
+      handlePullRequestEventMock.mock.invocationCallOrder[0],
+    );
   });
 });
