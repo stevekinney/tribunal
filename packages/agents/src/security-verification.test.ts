@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DiffContext } from '@tribunal/review-core/types';
 import { toAgentDefinition } from './definitions';
 import { enforceReadOnlyToolUse } from './hooks';
+import { buildReviewPrompt } from './prompts';
 import { createTribunalReviewTools } from './tools';
 
 const adversarialPromptInjectionFixture = `
@@ -124,5 +125,48 @@ describe('agent security verification', () => {
       permissionDecision: 'deny',
       reason: 'read path is outside the pull request diff',
     });
+  });
+
+  it('builds review prompts with authored instructions, changed-since digest, and diff last', () => {
+    const prompt = buildReviewPrompt({
+      agentDescription: 'Find security defects.',
+      agentBody: 'Only report confirmed findings.',
+      diffContext: {
+        ...diffContext,
+        changedSinceLast: [
+          {
+            path: 'src/review-target.ts',
+            status: 'modified',
+            patch: '@@ -1 +1 @@\n-old\n+newer',
+            commentableLines: [{ side: 'RIGHT', line: 20 }],
+          },
+        ],
+      },
+      guidelines: 'Prefer concrete evidence.',
+    });
+
+    expect(prompt).toContain('Only report confirmed findings.');
+    expect(prompt).toContain('Changed since the previous review');
+    expect(prompt).toContain('src/review-target.ts');
+    expect(prompt.indexOf('Only report confirmed findings.')).toBeLessThan(
+      prompt.indexOf('Pull request diff'),
+    );
+    expect(prompt.indexOf('Changed since the previous review')).toBeLessThan(
+      prompt.indexOf('Pull request diff'),
+    );
+  });
+
+  it('builds review prompts with an explicit empty changed-since section', () => {
+    const prompt = buildReviewPrompt({
+      agentDescription: 'Find security defects.',
+      agentBody: 'Only report confirmed findings.',
+      diffContext,
+      guidelines: 'Prefer concrete evidence.',
+    });
+
+    expect(prompt).toContain('Changed since the previous review\n(none)');
+    expect(prompt.indexOf('Changed since the previous review')).toBeLessThan(
+      prompt.indexOf('Pull request diff'),
+    );
   });
 });

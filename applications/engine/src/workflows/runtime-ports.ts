@@ -21,7 +21,12 @@ import {
   postPullRequestReview,
 } from '@tribunal/github/reviews/pull-request-reviews';
 import type { GithubServiceContext } from '@tribunal/github/context';
-import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from '@tribunal/sandbox';
+import {
+  createSandboxPort,
+  type SandboxAdapter,
+  type SandboxCreateInput,
+  verifySandboxReuseIsolation,
+} from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
 import type { UsageCostApiClient, UsageCostApiEvent } from '@tribunal/cost/usage-cost-api';
 import type {
@@ -803,6 +808,14 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
   private async createOnce(input: SandboxCreateInput) {
     const existing = await this.findSandboxByName(input.name);
     if (existing) {
+      const verification = verifySandboxReuseIsolation(existing, {
+        allowInternetAccess: false,
+        allowOut: input.allowOut,
+        secretNames: [],
+      });
+      if (!verification.ok) {
+        throw new Error(`existing sandbox isolation could not be verified: ${verification.reason}`);
+      }
       const sandbox = await Sandbox.connect({ sandboxId: existing.sandboxId, apiKey: this.apiKey });
       this.sandboxes.set(existing.sandboxId, sandbox);
       return { sandboxId: existing.sandboxId };

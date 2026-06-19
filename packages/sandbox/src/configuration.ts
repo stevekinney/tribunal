@@ -16,6 +16,21 @@ export type SandboxEgressConfiguration = {
 };
 
 export type CloneInputValidationResult = { ok: true } | { ok: false; reason: string };
+export type SandboxReuseIsolationResult = { ok: true } | { ok: false; reason: string };
+export type SandboxReuseIsolationExpectation = Pick<
+  SandboxEgressConfiguration,
+  'allowInternetAccess' | 'allowOut' | 'secretNames'
+>;
+
+export type SandboxReuseIsolationCandidate = {
+  allowInternetAccess?: unknown;
+  allowOut?: unknown;
+  network?: {
+    allowInternetAccess?: unknown;
+    allowOut?: unknown;
+  };
+  secretNames?: unknown;
+};
 
 /** Builds the stable Tensorlake sandbox name for one open pull request. */
 export function makeSandboxName(key: PullRequestSandboxKey): string {
@@ -50,6 +65,32 @@ export function buildProxyOnlyEgressConfiguration(input: {
   };
 }
 
+export function verifySandboxReuseIsolation(
+  candidate: SandboxReuseIsolationCandidate,
+  expected: SandboxReuseIsolationExpectation,
+): SandboxReuseIsolationResult {
+  const allowInternetAccess =
+    candidate.network?.allowInternetAccess ?? candidate.allowInternetAccess;
+  const allowOut = candidate.network?.allowOut ?? candidate.allowOut;
+
+  if (allowInternetAccess !== false) {
+    return { ok: false, reason: 'allowInternetAccess is not disabled' };
+  }
+
+  if (!Array.isArray(allowOut) || !sameStringSet(allowOut, expected.allowOut)) {
+    return { ok: false, reason: 'allowOut does not match the proxy-only egress policy' };
+  }
+
+  if (!Array.isArray(candidate.secretNames) || candidate.secretNames.length > 0) {
+    return {
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    };
+  }
+
+  return { ok: true };
+}
+
 /** Validates the credential-less GitHub clone URL and exact head SHA used in the sandbox. */
 export function validateCloneInput(input: {
   repositoryUrl: string;
@@ -68,4 +109,9 @@ export function validateCloneInput(input: {
   }
 
   return { ok: true };
+}
+
+function sameStringSet(left: readonly unknown[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return right.every((expectedValue) => left.includes(expectedValue));
 }

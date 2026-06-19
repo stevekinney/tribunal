@@ -1,6 +1,6 @@
 import type { AgentModel, AgentSpec, Effort } from '@tribunal/review-core/types';
 
-export const READ_ONLY_AGENT_TOOLS = ['Read'] as const;
+export const READ_ONLY_AGENT_TOOLS = ['Read', 'Grep', 'Glob'] as const;
 
 export const TRIBUNAL_READ_ONLY_TOOLS = [
   'mcp__tribunal__get_changed_files',
@@ -56,7 +56,7 @@ export function toAgentDefinition(
 }
 
 function resolveEffort(model: string, effort: Effort | undefined): Effort | null {
-  if (model === 'haiku') return null;
+  if (model.includes('haiku')) return null;
   if (effort === undefined) return null;
   if (effort === 'xhigh' && !supportsExtraHighEffort(model)) return 'high';
   return effort;
