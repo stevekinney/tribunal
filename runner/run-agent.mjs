@@ -35,9 +35,9 @@ export async function runAgentProcess({
     return;
   }
 
-  const resultPath = environment.TRIBUNAL_AGENT_RESULT_FILE;
-  if (resultPath && environment.NODE_ENV === 'test') {
-    stdout.write(await readFile(resultPath, 'utf8'));
+  const fixturePath = environment.TRIBUNAL_AGENT_FIXTURE_FILE;
+  if (fixturePath) {
+    stdout.write(await readFile(fixturePath, 'utf8'));
     exit(0);
     return;
   }

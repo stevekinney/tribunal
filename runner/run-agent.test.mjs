@@ -13,7 +13,6 @@ import {
 } from './run-agent.mjs';
 
 const baseEnvironment = {
-  NODE_ENV: 'test',
   TRIBUNAL_RUN_TOKEN: 'run-token',
   TRIBUNAL_AGENT_RUN_ID: 'agent_run_1',
   TRIBUNAL_AGENT_MODEL: 'sonnet',
@@ -72,7 +71,7 @@ describe('run-agent runner', () => {
     expect(isMainModule(import.meta.url, 'run-agent.test.mjs')).toBe(true);
   });
 
-  it('only short-circuits TRIBUNAL_AGENT_RESULT_FILE in test mode', async () => {
+  it('short-circuits explicit fixture files without invoking the SDK', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tribunal-runner-'));
     const resultFile = join(directory, 'result.jsonl');
     await writeFile(resultFile, '{"type":"result","result":{"agentSlug":"fixture"}}\n');
@@ -80,7 +79,7 @@ describe('run-agent runner', () => {
 
     await runAgentProcess({
       argv: ['node', 'run-agent.mjs', 'security-reviewer'],
-      environment: { ...baseEnvironment, TRIBUNAL_AGENT_RESULT_FILE: resultFile },
+      environment: { ...baseEnvironment, TRIBUNAL_AGENT_FIXTURE_FILE: resultFile },
       stdout,
       stderr: createWritable(),
       exit: vi.fn(),
@@ -89,34 +88,6 @@ describe('run-agent runner', () => {
     });
 
     expect(stdout.toString()).toBe('{"type":"result","result":{"agentSlug":"fixture"}}\n');
-
-    const productionQuery = vi.fn(() =>
-      streamMessages([
-        {
-          type: 'result',
-          structured_output: { findings: [] },
-          modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
-          usage: {},
-          total_cost_usd: 0,
-        },
-      ]),
-    );
-    const productionStdout = createWritable();
-    await runAgentProcess({
-      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
-      environment: { ...baseEnvironment, NODE_ENV: 'production', TRIBUNAL_AGENT_RESULT_FILE: resultFile },
-      stdout: productionStdout,
-      stderr: createWritable(),
-      exit: vi.fn(),
-      signalSource: new EventEmitter(),
-      queryFunction: productionQuery,
-    });
-
-    expect(productionQuery).toHaveBeenCalledTimes(1);
-    expect(productionStdout.records().at(-1)).toMatchObject({
-      type: 'result',
-      result: { modelUsed: 'claude-sonnet-4-6-20251101', effortUsed: 'high' },
-    });
   });
 
   it('emits wrapped event records with deterministic sequence numbers', () => {

@@ -1197,7 +1197,7 @@ describe('Tensorlake sandbox adapter', () => {
       controller.signal,
     );
 
-    await waitFor(() => expect(calls).toEqual(['kill-started']));
+    await vi.waitFor(() => expect(calls).toEqual(['kill-started']));
     releaseKill();
     await expect(result).resolves.toMatchObject({ exitCode: 143, stdout: 'before abort' });
     expect(calls).toEqual(['kill-started', 'kill-finished', 'get-process']);
@@ -1462,20 +1462,6 @@ async function waitForIntent(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error(`Review intent ${intentId} did not reach expected state.`);
-}
-
-async function waitFor(assertion: () => void) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-  throw lastError;
 }
 
 function claimedIntent() {
