@@ -5,6 +5,8 @@ SET "user_id" = "agent"."user_id"
 FROM "agent"
 WHERE "repository_agent"."agent_id" = "agent"."id"
   AND "repository_agent"."user_id" IS NULL;--> statement-breakpoint
+DELETE FROM "repository_agent"
+WHERE "user_id" IS NULL;--> statement-breakpoint
 UPDATE "repository_review_settings"
 SET "user_id" = "owner"."user_id"
 FROM (

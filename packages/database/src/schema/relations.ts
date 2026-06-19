@@ -133,6 +133,7 @@ export const agentEventRelations = relations(agentEvent, ({ one }) => ({
 
 export const reviewIntentRelations = relations(reviewIntent, ({ one }) => ({
   repository: one(repository, { fields: [reviewIntent.repositoryId], references: [repository.id] }),
+  user: one(user, { fields: [reviewIntent.userId], references: [user.id] }),
 }));
 
 export const costEventRelations = relations(costEvent, ({ one }) => ({

@@ -153,6 +153,7 @@ describe('createDatabaseReviewIntentPort', () => {
             deliveryId: 'delivery_missing_target',
             kind: 'start',
             repositoryId: 42,
+            userId: 1,
             prNumber: 7,
             headSha: null,
             prState: null,
@@ -297,6 +298,10 @@ describe('createDatabaseReviewIntentPort', () => {
       watched: true,
       ignoreGlobs: ['watched-user/**'],
     });
+    await testDatabase.db
+      .update(reviewIntent)
+      .set({ userId: watchedUser.id })
+      .where(eq(reviewIntent.id, 'intent_1'));
     await testDatabase.db.insert(agent).values([
       {
         id: 'agent_unwatched_installation',
@@ -333,6 +338,81 @@ describe('createDatabaseReviewIntentPort', () => {
       dailyCostCapUsd: 1,
       ignoreGlobs: ['watched-user/**'],
       agents: [{ id: 'agent_watched_installation' }],
+    });
+  });
+
+  it('claims one review intent for each watched user on a shared repository', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    const factories = createFactories(testDatabase.db);
+    const otherUser = await factories.user.create();
+    const otherInstallation = await factories.githubInstallation.createForUser(otherUser.id, {
+      installationId: 1000,
+      status: 'active',
+    });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: otherInstallation.installationId,
+      repositoryId: repository.id,
+      isActive: true,
+    });
+    await testDatabase.db.insert(userReviewSettings).values({
+      userId: otherUser.id,
+      dailyCostCapUsd: '5.00',
+      reviewsEnabled: true,
+    });
+    await testDatabase.db.insert(repositoryReviewSettings).values({
+      userId: otherUser.id,
+      repositoryId: repository.id,
+      watched: true,
+      ignoreGlobs: ['other-user/**'],
+    });
+    await testDatabase.db.insert(reviewIntent).values({
+      id: 'intent_2',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: repository.id,
+      userId: otherUser.id,
+      prNumber: 7,
+      headSha: null,
+    });
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_primary_user',
+        userId: user.id,
+        slug: 'primary-user-review',
+        description: 'Reviews for the primary user.',
+        body: 'Use primary user.',
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent_other_user',
+        userId: otherUser.id,
+        slug: 'other-user-review',
+        description: 'Reviews for the other user.',
+        body: 'Use other user.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values([
+      { userId: user.id, repositoryId: repository.id, agentId: 'agent_primary_user' },
+      { userId: otherUser.id, repositoryId: repository.id, agentId: 'agent_other_user' },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+    const firstClaimedAt = new Date('2026-06-17T12:00:00.000Z');
+    const secondClaimedAt = new Date('2026-06-17T12:01:00.000Z');
+
+    const first = await port.claimNextReviewIntent(firstClaimedAt);
+    await port.markReviewIntentProcessed(first!.id, first!.claimedAt, secondClaimedAt);
+    const second = await port.claimNextReviewIntent(secondClaimedAt);
+
+    expect(first?.pullRequest).toMatchObject({
+      userId: user.id,
+      agents: [{ id: 'agent_primary_user' }],
+    });
+    expect(second?.pullRequest).toMatchObject({
+      userId: otherUser.id,
+      dailyCostCapUsd: 5,
+      ignoreGlobs: ['other-user/**'],
+      agents: [{ id: 'agent_other_user' }],
     });
   });
 
@@ -858,6 +938,7 @@ async function createReviewIntentFixture(
     deliveryId: 'delivery_1',
     kind: options.kind ?? 'start',
     repositoryId: repository.id,
+    userId: user.id,
     prNumber: 7,
     headSha: null,
   });

@@ -10,6 +10,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { repository } from './repository';
+import { user } from './user';
 
 export const reviewIntent = pgTable(
   'review_intent',
@@ -20,6 +21,9 @@ export const reviewIntent = pgTable(
     repositoryId: bigint('repository_id', { mode: 'number' })
       .notNull()
       .references(() => repository.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
     prNumber: integer('pr_number').notNull(),
     headSha: text('head_sha'),
     prState: text('pr_state'),
@@ -33,7 +37,11 @@ export const reviewIntent = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('review_intent_delivery_kind_idx').on(table.deliveryId, table.kind),
+    uniqueIndex('review_intent_delivery_kind_user_idx').on(
+      table.deliveryId,
+      table.kind,
+      table.userId,
+    ),
     index('review_intent_unprocessed_claimed_idx')
       .on(table.claimedAt)
       .where(sql`${table.processedAt} IS NULL`),

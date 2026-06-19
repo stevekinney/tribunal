@@ -1,4 +1,12 @@
-import { reviewIntent, type ReviewIntent } from '@tribunal/database/schema';
+import { and, asc, eq } from 'drizzle-orm';
+import {
+  githubInstallation,
+  githubInstallationRepository,
+  repositoryReviewSettings,
+  reviewIntent,
+  type ReviewIntent,
+  userReviewSettings,
+} from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../../context.js';
 import { ValidationError } from '../../error-taxonomy.js';
 
@@ -99,24 +107,67 @@ async function enqueueReviewIntent(
   if (!input.deliveryId) {
     throw new ValidationError('Cannot enqueue review intent without a GitHub delivery id.');
   }
+  const deliveryId = input.deliveryId;
 
-  const [intent] = await context.db
+  const watchedUsers = await context.db
+    .select({ userId: githubInstallation.userId })
+    .from(githubInstallationRepository)
+    .innerJoin(
+      githubInstallation,
+      and(
+        eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.status, 'active'),
+      ),
+    )
+    .innerJoin(
+      repositoryReviewSettings,
+      and(
+        eq(repositoryReviewSettings.repositoryId, githubInstallationRepository.repositoryId),
+        eq(repositoryReviewSettings.userId, githubInstallation.userId),
+        eq(repositoryReviewSettings.watched, true),
+      ),
+    )
+    .innerJoin(
+      userReviewSettings,
+      and(
+        eq(userReviewSettings.userId, githubInstallation.userId),
+        eq(userReviewSettings.reviewsEnabled, true),
+      ),
+    )
+    .where(
+      and(
+        eq(githubInstallationRepository.repositoryId, input.repositoryId),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .groupBy(githubInstallation.userId)
+    .orderBy(asc(githubInstallation.userId));
+
+  const watchedUserIds = watchedUsers.flatMap(({ userId }) => (userId === null ? [] : [userId]));
+  if (watchedUserIds.length === 0) {
+    return { enqueued: false };
+  }
+
+  const intents = await context.db
     .insert(reviewIntent)
-    .values({
-      id: createReviewIntentId(),
-      deliveryId: input.deliveryId,
-      kind: input.kind,
-      repositoryId: input.repositoryId,
-      prNumber: input.prNumber,
-      headSha: input.headSha ?? null,
-      prState: input.prState ?? null,
-    })
+    .values(
+      watchedUserIds.map((userId) => ({
+        id: createReviewIntentId(),
+        deliveryId,
+        kind: input.kind,
+        repositoryId: input.repositoryId,
+        userId,
+        prNumber: input.prNumber,
+        headSha: input.headSha ?? null,
+        prState: input.prState ?? null,
+      })),
+    )
     .onConflictDoNothing({
-      target: [reviewIntent.deliveryId, reviewIntent.kind],
+      target: [reviewIntent.deliveryId, reviewIntent.kind, reviewIntent.userId],
     })
     .returning();
 
-  return { enqueued: intent !== undefined, intent };
+  return { enqueued: intents.length > 0, intent: intents[0] };
 }
 
 export async function signalPullRequestEvent(
