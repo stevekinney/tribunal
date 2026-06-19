@@ -49,8 +49,8 @@ bun run --cwd packages/database db:tables
 
 ## Pull request Neon branches
 
-GitHub creates a Neon branch for same-repository pull requests targeting `main`
-through `.github/workflows/neon-pull-request-branches.yml`.
+The pull request workflow creates a Neon branch for same-repository pull requests
+targeting `main` through `.github/workflows/neon-pull-request-branches.yml`.
 
 - Opening, reopening, or pushing to a pull request creates or reuses
   `preview/pr-<number>`.

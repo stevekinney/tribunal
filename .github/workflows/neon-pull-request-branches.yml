@@ -16,7 +16,7 @@ permissions:
 jobs:
   create-and-migrate:
     name: Create and Migrate Neon Branch
-    if: ${{ github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base.ref.from != null) }}
+    if: ${{ github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || contains(toJSON(github.event.changes), '"base"')) }}
     runs-on: ubuntu-latest
     concurrency:
       group: neon-pull-request-${{ github.event.pull_request.number }}
@@ -70,10 +70,10 @@ jobs:
           encoded_branch_name="$(jq -nr --arg value "$NEON_BRANCH_NAME" '$value | @uri')"
           branches_response="$(curl -fsS \
             -H "Authorization: Bearer ${NEON_API_KEY}" \
-            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10")"
+            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10000")"
 
           branch_id="$(jq -r --arg name "$NEON_BRANCH_NAME" \
-            '.branches[] | select(.name == $name) | .id' <<< "$branches_response" | head -n 1)"
+            '.branches[] | select(.name == $name) | (.id // empty)' <<< "$branches_response" | head -n 1)"
 
           if [ -z "$branch_id" ]; then
             echo "Neon branch ${NEON_BRANCH_NAME} does not exist; nothing to delete."
@@ -245,10 +245,10 @@ jobs:
           encoded_branch_name="$(jq -nr --arg value "$NEON_BRANCH_NAME" '$value | @uri')"
           branches_response="$(curl -fsS \
             -H "Authorization: Bearer ${NEON_API_KEY}" \
-            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10")"
+            "${NEON_API_HOST}/projects/${NEON_PROJECT_ID}/branches?search=${encoded_branch_name}&limit=10000")"
 
           branch_id="$(jq -r --arg name "$NEON_BRANCH_NAME" \
-            '.branches[] | select(.name == $name) | .id' <<< "$branches_response" | head -n 1)"
+            '.branches[] | select(.name == $name) | (.id // empty)' <<< "$branches_response" | head -n 1)"
 
           if [ -z "$branch_id" ]; then
             echo "Neon branch ${NEON_BRANCH_NAME} does not exist; nothing to delete."
