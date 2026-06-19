@@ -1,4 +1,5 @@
 - Claim-before-processing webhook delivery guards still need an explicit release path when a review-engine dispatch failure returns 500, otherwise GitHub redelivery can be deduplicated before the durable review intent is retried.
 - If the release path itself fails, return a distinct 500 and log delivery metadata so operators know the delivery may need manual claim cleanup.
 - Release helpers used from webhook catch paths should return explicit success/failure instead of throwing, so the caller can reliably emit the intended response.
+- Delivery-claim release documentation should state that callers are responsible for retry-safe/idempotent downstream side effects.
 - Check Run annotations anchor to the reviewed head commit, so LEFT-side/base-diff findings should stay in Check Run text but not become annotations.

@@ -39,8 +39,9 @@ export async function claimWebhookDelivery(
 }
 
 /**
- * Release a claimed delivery when processing fails before durable side effects
- * complete, allowing GitHub redelivery to retry the same event.
+ * Release a claimed delivery so GitHub redelivery can retry the same event.
+ * Callers must only use this when downstream side effects are idempotent or
+ * otherwise safe to repeat after a redelivery.
  */
 export async function releaseWebhookDeliveryClaim(
   context: GithubServiceContext,

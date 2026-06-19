@@ -73,7 +73,7 @@ The request lifecycle:
 
 1. **Validate and extract.** Parse headers and payload (`validateRequest`).
 2. **Verify the signature first.** HMAC verification against `GITHUB_APP_WEBHOOK_SECRET` happens before any processing (`verifySignature`). An unconfigured secret returns `500`.
-3. **Claim the delivery (deduplicate).** `claimWebhookDelivery` records the delivery ID before processing so retries and duplicate deliveries are skipped without repeating side effects.
+3. **Claim the delivery (deduplicate).** `claimWebhookDelivery` records the delivery ID before processing so retries and duplicate deliveries are skipped without repeating side effects. Review-engine dispatch failures release that claim before returning `500`, allowing GitHub redelivery to retry durable review-intent enqueue.
 4. **Store the event.** Events carrying a repository are persisted via `storeWebhookEvent` (from `@tribunal/github/webhooks/webhook-events`) for auditability.
 5. **Route to a typed handler.** A per-request router from `github-webhook-schemas/registry` validates the payload against Zod schemas and dispatches to the matching handler in `./handlers/`. `issue_comment` and `pull_request_review_thread` are routed through a manual fallback path.
 6. **Invalidate caches and track state.** Access and resource caches are invalidated for events that change repository data, repository rename/transfer events are reconciled, and pull-request state tracking runs fire-and-forget.
