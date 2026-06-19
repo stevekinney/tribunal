@@ -258,7 +258,7 @@ function parseAnthropicCostReport(
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
     if (metadata?.review_run_id !== reviewRunId) return [];
     if (row.currency !== 'USD') return [];
-    const amountUsd = parseUsdFromLowestUnitString(row.amount);
+    const amountUsd = parseUsdDecimal(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
     const userId = Number(metadata.user_id ?? row.user_id ?? 0);
     if (!Number.isInteger(userId) || userId <= 0) return [];
@@ -314,11 +314,11 @@ function toNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function parseUsdFromLowestUnitString(value: unknown): number {
+function parseUsdDecimal(value: unknown): number {
   if (typeof value !== 'string' && typeof value !== 'number') return 0;
-  const cents = Number(value);
-  if (!Number.isFinite(cents) || cents <= 0) return 0;
-  return Number((cents / 100).toFixed(8));
+  const amountUsd = Number(value);
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0) return 0;
+  return Number(amountUsd.toFixed(8));
 }
 
 type ReviewIntentWorkflowHandle = {

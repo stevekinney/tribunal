@@ -182,7 +182,7 @@ describe('runtime review intent consumer wiring', () => {
             ending_at: '2026-06-18T12:00:00.000Z',
             results: [
               {
-                amount: '125.00',
+                amount: '1.25',
                 currency: 'USD',
                 workspace_id: 'wrkspc_1',
                 description: 'Claude Sonnet 4 Usage',
@@ -197,7 +197,7 @@ describe('runtime review intent consumer wiring', () => {
                 },
               },
               {
-                amount: '300.00',
+                amount: '3.00',
                 currency: 'USD',
                 workspace_id: 'wrkspc_1',
                 description: 'Claude Sonnet 4 Usage',
@@ -211,7 +211,7 @@ describe('runtime review intent consumer wiring', () => {
                 metadata: { review_run_id: 'run_1', user_id: '7' },
               },
               {
-                amount: '200.00',
+                amount: '2.00',
                 currency: 'USD',
                 workspace_id: 'wrkspc_1',
                 description: 'Claude Sonnet 4 Usage',
@@ -288,7 +288,7 @@ describe('runtime review intent consumer wiring', () => {
               ending_at: '2026-06-18T13:00:00.000Z',
               results: [
                 {
-                  amount: '250.00',
+                  amount: '2.5',
                   currency: 'USD',
                   workspace_id: 'wrkspc_2',
                   description: 'Claude Haiku Usage',

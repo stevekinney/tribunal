@@ -89,6 +89,8 @@ export type ReviewWorkflowConfiguration = {
   enablePromptCaching1h: boolean;
 };
 
+const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 } as const;
+
 export type ReviewRunStatus =
   | 'queued'
   | 'running'
@@ -1103,10 +1105,7 @@ export class ReviewWorkflowEngine {
 
   private async recordSandboxEstimate(run: ReviewRunRecord): Promise<void> {
     for (const window of getSandboxBillingWindows(run.startedAt, run.finishedAt!)) {
-      const amountUsd = sandboxCost(
-        { runtimeSeconds: window.runtimeSeconds },
-        { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
-      );
+      const amountUsd = sandboxCost({ runtimeSeconds: window.runtimeSeconds }, SANDBOX_RESOURCES);
       await this.ports.cost.recordSandbox({
         userId: run.userId,
         repositoryId: run.repositoryId,
@@ -1114,7 +1113,7 @@ export class ReviewWorkflowEngine {
         sandboxId: run.sandboxId,
         amountUsd,
         runtime: { runtimeSeconds: window.runtimeSeconds },
-        resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+        resources: SANDBOX_RESOURCES,
         idempotencyKey: `sandbox:${run.sandboxId}:${window.window}`,
       });
     }
