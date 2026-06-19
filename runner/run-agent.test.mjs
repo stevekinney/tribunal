@@ -235,7 +235,7 @@ describe('run-agent runner', () => {
       queryFunction: signalAfterCostCapture,
     });
 
-    await waitFor(() => exit.mock.calls.length > 0);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalled());
     releaseQuery();
     await run;
 
@@ -363,7 +363,7 @@ describe('run-agent runner', () => {
       queryFunction: signalDuringReview,
     });
 
-    await waitFor(() => exit.mock.calls.length > 0);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalled());
 
     expect(exit).toHaveBeenCalledWith(143);
     await run;
@@ -387,11 +387,3 @@ describe('run-agent runner', () => {
     expect(stdout.off).toHaveBeenCalledTimes(1);
   });
 });
-
-async function waitFor(assertion) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (assertion()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error('condition was not met');
-}
