@@ -702,11 +702,7 @@ export class ReviewWorkflowEngine {
 
     const findings = deduplicateFindings(agentResults.flatMap((result) => result.findings));
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
-    if (
-      reviewPayload.comments.length > 0 &&
-      findings.length > 0 &&
-      !this.postedReviewRunIds.has(reviewRun.id)
-    ) {
+    if (reviewPayload.comments.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
       let ownedClaimedAt: Date | undefined;
       if (claimResult.status === 'already_posted') {
@@ -831,7 +827,7 @@ export class ReviewWorkflowEngine {
     await this.updateCheckRun(
       input,
       supervisor.checkRunId,
-      buildCompletedCheckRunPatch(agentResults),
+      buildCompletedCheckRunPatch(agentResults, diffContext),
     );
     await this.ports.cost.reconcile(reviewRun.id);
     return reviewRun;
@@ -1175,16 +1171,11 @@ function buildReviewPayload(
   diffContext: DiffContext,
   findings: Finding[],
 ): ReviewPayload {
-  const commentableLines = new Set(
-    diffContext.changedFiles.flatMap((file) =>
-      file.commentableLines.map((line) => `${file.path}:${line.side}:${line.line}`),
-    ),
-  );
   const comments = findings
     .flatMap((finding) => {
       const line = getFindingAnchorLine(finding);
       if (line === null) return [];
-      if (!commentableLines.has(`${finding.path}:${finding.side}:${line}`)) return [];
+      if (!canAnchorFindingInDiff(diffContext, finding)) return [];
 
       return [
         {
@@ -1225,6 +1216,18 @@ function buildReviewPayload(
   };
 }
 
+function canAnchorFindingInDiff(diffContext: DiffContext, finding: Finding): boolean {
+  const line = getFindingAnchorLine(finding);
+  if (line === null) return false;
+  return diffContext.changedFiles.some(
+    (file) =>
+      file.path === finding.path &&
+      file.commentableLines.some(
+        (commentableLine) => commentableLine.side === finding.side && commentableLine.line === line,
+      ),
+  );
+}
+
 function getFindingAnchorLine(finding: Finding): number | null {
   return finding.endLine ?? finding.startLine;
 }
@@ -1241,7 +1244,10 @@ function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): s
   return `<!-- tribunal-review-run:v1:${reviewRunId}:${signature} -->`;
 }
 
-function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch {
+function buildCompletedCheckRunPatch(
+  agentResults: AgentResult[],
+  diffContext: DiffContext,
+): CheckRunPatch {
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
@@ -1254,11 +1260,13 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
     const status = result.error === undefined ? 'completed' : `failed: ${result.error}`;
     return `- ${result.agentSlug}: ${status}; model ${result.modelUsed}; effort ${effort}; findings ${result.findings.length} (${formatSeverityCounts(severityCounts)}); estimated cost $${result.costEstimateUsd.toFixed(4)}.`;
   });
-  const findingLines = agentResults.flatMap((result) =>
-    result.findings.map(
-      (finding) =>
-        `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
-    ),
+  const unanchoredFindingLines = agentResults.flatMap((result) =>
+    result.findings
+      .filter((finding) => !canAnchorFindingInDiff(diffContext, finding))
+      .map(
+        (finding) =>
+          `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
+      ),
   );
 
   return {
@@ -1271,7 +1279,10 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
         '',
         ...agentLines,
       ].join('\n'),
-      text: findingLines.length === 0 ? undefined : ['Findings:', ...findingLines].join('\n'),
+      text:
+        unanchoredFindingLines.length === 0
+          ? undefined
+          : ['Findings:', ...unanchoredFindingLines].join('\n'),
       annotations,
     },
   };

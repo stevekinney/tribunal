@@ -104,15 +104,10 @@ describe('getDiffContext', () => {
     expect(context.cache.setCache).not.toHaveBeenCalled();
   });
 
-  it('uses the cached diff context when repository id is provided', async () => {
+  it('bypasses the cache when repository id is provided without a reviewed head SHA', async () => {
     const listFiles = vi.fn();
     const context = createContext(listFiles);
-    vi.mocked(context.cache.getCached).mockResolvedValue({
-      value: [createPullRequestFile(1)],
-      fetchedAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-      source: 'api',
-    });
+    listFiles.mockResolvedValue({ data: [createPullRequestFile(1)] });
 
     const result = await getDiffContext(context, {
       installationId: 1,
@@ -123,10 +118,11 @@ describe('getDiffContext', () => {
     });
 
     expect(result.changedFiles).toHaveLength(1);
-    expect(listFiles).not.toHaveBeenCalled();
+    expect(listFiles).toHaveBeenCalledTimes(1);
+    expect(context.cache.getCached).not.toHaveBeenCalled();
   });
 
-  it('stores fetched diff context in cache when repository id is provided', async () => {
+  it('stores fetched diff context in cache when repository id and reviewed head SHA are provided', async () => {
     const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
     const context = createContext(listFiles);
 
@@ -136,6 +132,7 @@ describe('getDiffContext', () => {
       repository: 'tribunal',
       pullRequestNumber: 42,
       repositoryId: 123,
+      headSha: 'aaa111',
     });
 
     expect(result.changedFiles).toHaveLength(1);

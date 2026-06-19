@@ -102,7 +102,7 @@ export async function getDiffContext(
       listPullRequestFiles(octokit, input.owner, input.repository, input.pullRequestNumber),
     );
 
-  if (input.repositoryId === undefined) {
+  if (input.repositoryId === undefined || input.headSha === undefined) {
     return toDiffContext(input, await fetchFiles());
   }
 
@@ -114,7 +114,7 @@ export async function getDiffContext(
       const files = await fetchFiles();
       return { data: files };
     },
-    [input.repositoryId, input.pullRequestNumber, input.headSha ?? 'current'],
+    [input.repositoryId, input.pullRequestNumber, input.headSha],
   );
 
   return toDiffContext(input, value);

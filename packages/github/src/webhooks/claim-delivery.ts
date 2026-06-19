@@ -49,15 +49,21 @@ export async function releaseWebhookDeliveryClaim(
   eventType: string,
 ): Promise<boolean> {
   try {
-    await context.db
+    const deleted = await context.db
       .delete(githubWebhookDelivery)
       .where(
         and(
           eq(githubWebhookDelivery.deliveryId, deliveryId),
           eq(githubWebhookDelivery.eventType, eventType),
         ),
-      );
-    return true;
+      )
+      .returning({ id: githubWebhookDelivery.id });
+    if (deleted.length > 0) return true;
+    console.error('[github-webhook] Delivery claim release did not delete a row:', {
+      deliveryId,
+      eventType,
+    });
+    return false;
   } catch (error) {
     console.error('[github-webhook] Failed to release delivery claim:', {
       deliveryId,

@@ -1225,6 +1225,35 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('posts inline findings while surfacing only off-diff findings in Check Run text', async () => {
+    const ports = createFakePorts({ mixedAnchoredAndOffDiffFindings: true });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 1,
+    });
+
+    expect(ports.github.reviews[0]).toMatchObject({
+      comments: [
+        expect.objectContaining({
+          path: 'src/example.ts',
+          line: 12,
+          body: expect.stringContaining('Check this change'),
+        }),
+      ],
+    });
+    expect(ports.github.reviews[0]?.body).toContain('Unanchored findings:');
+    expect(ports.github.reviews[0]?.body).toContain('File-level finding');
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    const checkRunText = completedCheckRunPatch?.patch.output?.text;
+
+    expect(checkRunText).toContain(
+      '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
+    );
+    expect(checkRunText).not.toContain('Check this change');
+  });
+
   it('adds per-agent details and annotations to the completed Check Run', async () => {
     const ports = createFakePorts({ multipleFindings: true });
     const engine = createEngine(ports);
@@ -1251,7 +1280,7 @@ describe('ReviewWorkflowEngine', () => {
           summary: expect.stringContaining(
             'security-review: completed; model opus; effort high; findings 4',
           ),
-          text: expect.stringContaining('Findings:'),
+          text: undefined,
           annotations: expect.arrayContaining([
             {
               path: 'src/example.ts',
@@ -1518,6 +1547,7 @@ type FakePortOptions = {
   multipleFindings?: boolean;
   multiLineFinding?: boolean;
   fileLevelFinding?: boolean;
+  mixedAnchoredAndOffDiffFindings?: boolean;
   endLineOnlyFinding?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
@@ -1995,6 +2025,7 @@ class FakeSandboxPort implements SandboxPort {
       this.options.multipleFindings,
       this.options.multiLineFinding,
       this.options.fileLevelFinding,
+      this.options.mixedAnchoredAndOffDiffFindings,
       this.options.endLineOnlyFinding,
     );
   }
@@ -2094,6 +2125,7 @@ function createAgentResult(
   multipleFindings = false,
   multiLineFinding = false,
   fileLevelFinding = false,
+  mixedAnchoredAndOffDiffFindings = false,
   endLineOnlyFinding = false,
 ): AgentResult {
   const findings = fileLevelFinding
@@ -2108,80 +2140,101 @@ function createAgentResult(
           body: 'This cannot be anchored inline.',
         },
       ]
-    : multiLineFinding
+    : mixedAnchoredAndOffDiffFindings
       ? [
           {
             path: 'src/example.ts',
-            startLine: 3,
-            endLine: 12,
+            startLine: 12,
+            endLine: null,
             side: 'RIGHT' as const,
             severity: 'warning' as const,
-            title: 'Multi-line finding',
-            body: 'This finding should span the changed range.',
+            title: 'Check this change',
+            body: 'This fake finding proves review posting stays outside the agent.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: null,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'File-level finding',
+            body: 'This cannot be anchored inline.',
           },
         ]
-      : endLineOnlyFinding
+      : multiLineFinding
         ? [
             {
               path: 'src/example.ts',
-              startLine: null,
+              startLine: 3,
               endLine: 12,
               side: 'RIGHT' as const,
               severity: 'warning' as const,
-              title: 'Check this change',
-              body: 'This fake finding proves review posting stays outside the agent.',
+              title: 'Multi-line finding',
+              body: 'This finding should span the changed range.',
             },
           ]
-        : multipleFindings
+        : endLineOnlyFinding
           ? [
               {
-                path: 'src/second.ts',
-                startLine: 1,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'info' as const,
-                title: 'Second file',
-                body: 'This should sort last by path.',
-              },
-              {
                 path: 'src/example.ts',
-                startLine: 3,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'error' as const,
-                title: 'Earlier right side',
-                body: 'This should sort before the later right-side comment.',
-              },
-              {
-                path: 'src/example.ts',
-                startLine: 12,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'warning' as const,
-                title: 'Right side',
-                body: 'This should sort after the left-side comment.',
-              },
-              {
-                path: 'src/example.ts',
-                startLine: 2,
-                endLine: null,
-                side: 'LEFT' as const,
-                severity: 'warning' as const,
-                title: 'Left side',
-                body: 'This should sort first within the file.',
-              },
-            ]
-          : [
-              {
-                path: 'src/example.ts',
-                startLine: 12,
-                endLine: null,
+                startLine: null,
+                endLine: 12,
                 side: 'RIGHT' as const,
                 severity: 'warning' as const,
                 title: 'Check this change',
                 body: 'This fake finding proves review posting stays outside the agent.',
               },
-            ];
+            ]
+          : multipleFindings
+            ? [
+                {
+                  path: 'src/second.ts',
+                  startLine: 1,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'info' as const,
+                  title: 'Second file',
+                  body: 'This should sort last by path.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 3,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'error' as const,
+                  title: 'Earlier right side',
+                  body: 'This should sort before the later right-side comment.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 12,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'warning' as const,
+                  title: 'Right side',
+                  body: 'This should sort after the left-side comment.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 2,
+                  endLine: null,
+                  side: 'LEFT' as const,
+                  severity: 'warning' as const,
+                  title: 'Left side',
+                  body: 'This should sort first within the file.',
+                },
+              ]
+            : [
+                {
+                  path: 'src/example.ts',
+                  startLine: 12,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'warning' as const,
+                  title: 'Check this change',
+                  body: 'This fake finding proves review posting stays outside the agent.',
+                },
+              ];
 
   return {
     agentSlug: agent.slug,
