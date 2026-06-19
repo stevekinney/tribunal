@@ -3,6 +3,7 @@ import type { AgentEvent, AgentResult, AgentSpec, DiffContext } from './types';
 export interface RepoRef {
   owner: string;
   name: string;
+  repositoryId?: number;
 }
 
 export interface ScopedToken {
@@ -17,6 +18,15 @@ export interface CheckRunPatch {
     title: string;
     summary: string;
     text?: string;
+    annotations?: Array<{
+      path: string;
+      startLine: number;
+      endLine: number;
+      annotationLevel: 'notice' | 'warning' | 'failure';
+      message: string;
+      title?: string;
+      rawDetails?: string;
+    }>;
   };
 }
 

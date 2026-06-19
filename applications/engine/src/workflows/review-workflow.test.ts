@@ -970,7 +970,9 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
     expect(ports.cost.recordLlmEstimateCalls).toHaveLength(0);
     expect(ports.github.reviews).toHaveLength(0);
-    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
         conclusion: 'success',
@@ -1160,6 +1162,30 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews[0]?.comments).toHaveLength(1);
   });
 
+  it('deduplicates matching findings from different agents in completed Check Run output', async () => {
+    const ports = createFakePorts({ mixedAnchoredAndOffDiffFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [reviewAgent, performanceAgent],
+    });
+
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    const checkRunText = completedCheckRunPatch?.patch.output?.text ?? '';
+
+    expect(ports.github.reviews[0]?.comments).toHaveLength(1);
+    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(1);
+    expect(
+      completedCheckRunPatch?.patch.output?.annotations?.filter(
+        (annotation) => annotation.title === '[security-review] Check this change',
+      ),
+    ).toHaveLength(1);
+    expect(checkRunText.match(/File-level finding/gu)).toHaveLength(1);
+    expect(checkRunText.match(/Off-diff line/gu)).toHaveLength(1);
+    expect(checkRunText).not.toContain('performance-review');
+  });
+
   it('uses the end line as the GitHub review anchor for multi-line findings', async () => {
     const ports = createFakePorts({ multiLineFinding: true });
     const engine = createEngine(ports);
@@ -1194,18 +1220,128 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
-  it('posts unanchored findings in the review body', async () => {
+  it('surfaces off-diff-only findings in the completed Check Run without posting an empty review', async () => {
     const ports = createFakePorts({ fileLevelFinding: true });
     const engine = createEngine(ports);
 
-    await engine.startPullRequestReview(baseInput);
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+    });
+
+    expect(ports.github.reviews).toEqual([]);
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review complete',
+          summary: expect.stringContaining('security-review: completed; model sonnet'),
+          text: expect.stringContaining(
+            '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
+          ),
+          annotations: [],
+        },
+      },
+    });
+  });
+
+  it('posts inline findings while surfacing only off-diff findings in Check Run text', async () => {
+    const ports = createFakePorts({ mixedAnchoredAndOffDiffFindings: true });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 1,
+    });
 
     expect(ports.github.reviews[0]).toMatchObject({
-      comments: [],
-      body: expect.stringContaining('Unanchored findings:'),
+      comments: [
+        expect.objectContaining({
+          path: 'src/example.ts',
+          line: 12,
+          body: expect.stringContaining('Check this change'),
+        }),
+      ],
     });
-    expect(ports.github.reviews[0]?.body).toContain(
-      '- **src/example.ts** File-level finding: This cannot be anchored inline.',
+    expect(ports.github.reviews[0]?.body).toContain('Unanchored findings:');
+    expect(ports.github.reviews[0]?.body).toContain('File-level finding');
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    const checkRunText = completedCheckRunPatch?.patch.output?.text;
+
+    expect(checkRunText).toContain(
+      '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
+    );
+    expect(checkRunText).toContain(
+      '- security-review: src/example.ts:99 Off-diff line: This line is not commentable in the diff.',
+    );
+    expect(checkRunText).not.toContain('Check this change');
+    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          startLine: 99,
+          title: '[security-review] Off-diff line',
+        }),
+      ]),
+    );
+  });
+
+  it('adds per-agent details and annotations to the completed Check Run', async () => {
+    const ports = createFakePorts({ multipleFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [
+        {
+          ...reviewAgent,
+          model: 'opus',
+          effort: 'high',
+        },
+      ],
+    });
+
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+
+    expect(completedCheckRunPatch).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review complete',
+          summary: expect.stringContaining(
+            'security-review: completed; model opus; effort high; findings 4',
+          ),
+          text: expect.stringContaining(
+            '- security-review: src/example.ts:2 Left side: This should sort first within the file.',
+          ),
+          annotations: expect.arrayContaining([
+            {
+              path: 'src/example.ts',
+              startLine: 12,
+              endLine: 12,
+              annotationLevel: 'warning',
+              message: 'This should sort after the left-side comment.',
+              title: '[security-review] Right side',
+              rawDetails: 'model=opus; effort=high; estimatedCostUsd=0.0100',
+            },
+          ]),
+        },
+      },
+    });
+    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(3);
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Right side');
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Earlier right side');
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Second file');
+    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          startLine: 2,
+          title: '[security-review] Left side',
+        }),
+      ]),
     );
   });
 
@@ -1450,6 +1586,7 @@ type FakePortOptions = {
   multipleFindings?: boolean;
   multiLineFinding?: boolean;
   fileLevelFinding?: boolean;
+  mixedAnchoredAndOffDiffFindings?: boolean;
   endLineOnlyFinding?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
@@ -1925,6 +2062,7 @@ class FakeSandboxPort implements SandboxPort {
       this.options.multipleFindings,
       this.options.multiLineFinding,
       this.options.fileLevelFinding,
+      this.options.mixedAnchoredAndOffDiffFindings,
       this.options.endLineOnlyFinding,
     );
   }
@@ -2024,6 +2162,7 @@ function createAgentResult(
   multipleFindings = false,
   multiLineFinding = false,
   fileLevelFinding = false,
+  mixedAnchoredAndOffDiffFindings = false,
   endLineOnlyFinding = false,
 ): AgentResult {
   const findings = fileLevelFinding
@@ -2038,80 +2177,110 @@ function createAgentResult(
           body: 'This cannot be anchored inline.',
         },
       ]
-    : multiLineFinding
+    : mixedAnchoredAndOffDiffFindings
       ? [
           {
             path: 'src/example.ts',
-            startLine: 3,
-            endLine: 12,
+            startLine: 12,
+            endLine: null,
             side: 'RIGHT' as const,
             severity: 'warning' as const,
-            title: 'Multi-line finding',
-            body: 'This finding should span the changed range.',
+            title: 'Check this change',
+            body: 'This fake finding proves review posting stays outside the agent.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: null,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'File-level finding',
+            body: 'This cannot be anchored inline.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: null,
+            endLine: 99,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Off-diff line',
+            body: 'This line is not commentable in the diff.',
           },
         ]
-      : endLineOnlyFinding
+      : multiLineFinding
         ? [
             {
               path: 'src/example.ts',
-              startLine: null,
+              startLine: 3,
               endLine: 12,
               side: 'RIGHT' as const,
               severity: 'warning' as const,
-              title: 'Check this change',
-              body: 'This fake finding proves review posting stays outside the agent.',
+              title: 'Multi-line finding',
+              body: 'This finding should span the changed range.',
             },
           ]
-        : multipleFindings
+        : endLineOnlyFinding
           ? [
               {
-                path: 'src/second.ts',
-                startLine: 1,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'warning' as const,
-                title: 'Second file',
-                body: 'This should sort last by path.',
-              },
-              {
                 path: 'src/example.ts',
-                startLine: 3,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'warning' as const,
-                title: 'Earlier right side',
-                body: 'This should sort before the later right-side comment.',
-              },
-              {
-                path: 'src/example.ts',
-                startLine: 12,
-                endLine: null,
-                side: 'RIGHT' as const,
-                severity: 'warning' as const,
-                title: 'Right side',
-                body: 'This should sort after the left-side comment.',
-              },
-              {
-                path: 'src/example.ts',
-                startLine: 2,
-                endLine: null,
-                side: 'LEFT' as const,
-                severity: 'warning' as const,
-                title: 'Left side',
-                body: 'This should sort first within the file.',
-              },
-            ]
-          : [
-              {
-                path: 'src/example.ts',
-                startLine: 12,
-                endLine: null,
+                startLine: null,
+                endLine: 12,
                 side: 'RIGHT' as const,
                 severity: 'warning' as const,
                 title: 'Check this change',
                 body: 'This fake finding proves review posting stays outside the agent.',
               },
-            ];
+            ]
+          : multipleFindings
+            ? [
+                {
+                  path: 'src/second.ts',
+                  startLine: 1,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'info' as const,
+                  title: 'Second file',
+                  body: 'This should sort last by path.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 3,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'error' as const,
+                  title: 'Earlier right side',
+                  body: 'This should sort before the later right-side comment.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 12,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'warning' as const,
+                  title: 'Right side',
+                  body: 'This should sort after the left-side comment.',
+                },
+                {
+                  path: 'src/example.ts',
+                  startLine: 2,
+                  endLine: null,
+                  side: 'LEFT' as const,
+                  severity: 'warning' as const,
+                  title: 'Left side',
+                  body: 'This should sort first within the file.',
+                },
+              ]
+            : [
+                {
+                  path: 'src/example.ts',
+                  startLine: 12,
+                  endLine: null,
+                  side: 'RIGHT' as const,
+                  severity: 'warning' as const,
+                  title: 'Check this change',
+                  body: 'This fake finding proves review posting stays outside the agent.',
+                },
+              ];
 
   return {
     agentSlug: agent.slug,
