@@ -117,6 +117,29 @@ describe('finding validation', () => {
     ]);
   });
 
+  it('keeps distinct unanchored findings with the same path, severity, and title', () => {
+    const firstSummaryFinding: Finding = {
+      ...finding,
+      startLine: null,
+      endLine: null,
+      body: 'First off-diff issue.',
+    };
+    const secondSummaryFinding: Finding = {
+      ...finding,
+      startLine: null,
+      endLine: null,
+      body: 'Second off-diff issue.',
+    };
+
+    expect(computeCanonicalFindingFingerprint(firstSummaryFinding)).not.toBe(
+      computeCanonicalFindingFingerprint(secondSummaryFinding),
+    );
+    expect(deduplicateFindings([firstSummaryFinding, secondSummaryFinding])).toEqual([
+      firstSummaryFinding,
+      secondSummaryFinding,
+    ]);
+  });
+
   it('clamps over-length bodies deterministically', () => {
     const sanitized = sanitizeFinding(
       {

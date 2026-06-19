@@ -487,8 +487,8 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isAgentSlug(value) {
-  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/u.test(value);
+export function isAgentSlug(value) {
+  return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value);
 }
 
 function elapsedMilliseconds(startedAt) {

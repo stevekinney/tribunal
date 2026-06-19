@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import {
   createTribunalMcpServer,
+  isAgentSlug,
   isMainModule,
   redactRuntimeValueForEvent,
   runClaudeReview,
@@ -180,6 +181,13 @@ describe('runner agent wiring', () => {
 
     expect(isMainModule(moduleUrl, ['bun', 'runner/run-agent.mjs'], cwd)).toBe(true);
     expect(isMainModule(moduleUrl, ['bun', 'runner/other-agent.mjs'], cwd)).toBe(false);
+  });
+
+  it('accepts digit-leading agent slugs allowed by the shared agent schema', () => {
+    expect(isAgentSlug('1-security-review')).toBe(true);
+    expect(isAgentSlug('security-review')).toBe(true);
+    expect(isAgentSlug('-security-review')).toBe(false);
+    expect(isAgentSlug('security-review-')).toBe(false);
   });
 });
 

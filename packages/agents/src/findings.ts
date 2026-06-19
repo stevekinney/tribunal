@@ -131,6 +131,7 @@ export function computeCanonicalFindingFingerprint(finding: Finding): string {
     normalizedLine: normalizeFindingLine(finding),
     severity: finding.severity,
     normalizedTitle: normalizeFindingTitle(finding.title),
+    ...(isUnanchoredFinding(finding) ? { normalizedBody: normalizeFindingBody(finding.body) } : {}),
   });
 
   return createHash('sha256').update(payload).digest('hex');
@@ -154,6 +155,14 @@ function normalizeFindingLine(finding: Finding): number {
   return finding.endLine ?? finding.startLine ?? 0;
 }
 
+function isUnanchoredFinding(finding: Finding): boolean {
+  return finding.startLine === null && finding.endLine === null;
+}
+
 function normalizeFindingTitle(title: string): string {
   return stripControlCharacters(title).trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+function normalizeFindingBody(body: string): string {
+  return stripControlCharacters(body).trim().replace(/\s+/gu, ' ');
 }
