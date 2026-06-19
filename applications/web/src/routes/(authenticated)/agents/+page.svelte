@@ -23,7 +23,10 @@
   let selectedModel = $state(untrack(() => form?.values?.model ?? 'sonnet'));
   let selectedEffort = $state(untrack(() => form?.values?.effort ?? ''));
   let sampleDiff = $state(untrack(() => getDryRunValues()?.sampleDiff ?? ''));
-  const fallbackNotice = $derived(getEffortFallbackNotice(selectedModel, selectedEffort));
+  const effectiveWarningModel = $derived(
+    selectedModel === 'inherit' ? data.defaultModel : selectedModel,
+  );
+  const fallbackNotice = $derived(getEffortFallbackNotice(effectiveWarningModel, selectedEffort));
   const dryRunEstimate = $derived(form?.dryRunEstimate);
   const dryRunValues = $derived(getDryRunValues());
   const isDryRunEstimateCurrent = $derived(

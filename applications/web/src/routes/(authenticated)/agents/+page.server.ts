@@ -4,6 +4,7 @@ import {
   estimateAgentDryRun,
   getReviewEffortOptions,
   getReviewModelOptions,
+  getUserReviewSettings,
   listAgents,
   operatorSurfaceStates,
   saveAgent,
@@ -15,8 +16,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   const { user } = locals;
   if (!user) redirect(302, '/login');
 
+  const [settings] = await getUserReviewSettings(user.id);
+
   return {
     agents: await listAgents(user.id),
+    defaultModel: settings.defaultModel,
     modelOptions: getReviewModelOptions(),
     effortOptions: getReviewEffortOptions(),
     surfaceStates: operatorSurfaceStates,
