@@ -333,7 +333,6 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(claimed?.pullRequest).toMatchObject({
       userId: watchedUser.id,
       installationId: 1000,
-      dailyCostCapUsd: 1,
       ignoreGlobs: ['watched-user/**'],
       agents: [{ id: 'agent_watched_installation' }],
     });
@@ -408,7 +407,6 @@ describe('createDatabaseReviewIntentPort', () => {
     });
     expect(second?.pullRequest).toMatchObject({
       userId: otherUser.id,
-      dailyCostCapUsd: 5,
       ignoreGlobs: ['other-user/**'],
       agents: [{ id: 'agent_other_user' }],
     });
