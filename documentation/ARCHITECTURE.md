@@ -2,10 +2,11 @@
 
 ## System Overview
 
-Tribunal is a SvelteKit web application that lets a developer log in with GitHub, install the
-Tribunal GitHub App on their accounts and organizations, and browse the open pull requests for the
-repositories that install grants access to. The data model is deliberately flat and the only
-integration is GitHub.
+Tribunal is a SvelteKit web application plus an implemented containerized review engine, proxy, and
+reviewer runner. A developer logs in with GitHub, installs the Tribunal GitHub App on their accounts
+and organizations, browses repositories and pull requests, configures review agents, and inspects
+review runs and estimated costs. GitHub remains the only product integration; Anthropic and Tensorlake
+are runtime dependencies of the review execution path when that path is deployed.
 
 Core technologies:
 
@@ -14,34 +15,48 @@ Core technologies:
 - PostgreSQL (Neon in production): https://neon.com/docs
 - Bun (tooling/runtime): https://bun.sh/docs
 - Turborepo (task orchestration): https://turbo.build/repo/docs
+- Weft durable workflows: https://github.com/lostgradient/weft
 
-There is a single deployable application (`applications/web`, deployed to Vercel). There are no
-background workers and no separate workflow engine.
+The implemented MVP topology is designed around three application containers:
+
+- `applications/web`: SvelteKit web UI, authentication, GitHub webhooks, operator pages, and test-only E2E harness.
+- `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, GitHub review posting, and cost reconciliation.
+- `applications/proxy`: signed egress boundary for reviewer sandboxes.
+
+The `runner` directory builds the reviewer sandbox image. Its boot self-check verifies both system
+tools and runtime imports used by `runner/run-agent.mjs`.
 
 ## Request Flow Diagram
 
 ```mermaid
 flowchart LR
-  Browser[Browser] -->|HTTP| SvelteKit[SvelteKit app]
-  SvelteKit --> Services[Server load functions and services]
-  Services -->|SQL| Drizzle[Drizzle ORM]
-  Drizzle --> Neon[(PostgreSQL Neon)]
-
-  Services -->|REST / App tokens| GitHub[GitHub API]
+  Browser[Browser] -->|HTTP| Web[SvelteKit web]
+  Web -->|SQL| Database[(PostgreSQL)]
+  Web -->|REST / App tokens| GitHub[GitHub API]
   GitHub -->|Webhook deliveries| Webhook["/api/webhooks/github"]
-  Webhook --> Drizzle
+  Webhook --> Database
+  Engine[Review engine singleton] -->|claim intents / persist runs| Database
+  Engine -->|checks + review comments| GitHub
+  Engine -->|create sandbox| Tensorlake[Tensorlake sandbox]
+  Tensorlake --> Runner[Reviewer image runner]
+  Runner -->|signed egress| Proxy[Tribunal proxy]
+  Proxy -->|allowed APIs| GitHub
+  Proxy -->|allowed APIs| Anthropic[Anthropic API]
 ```
 
 Pull requests are read live from the GitHub API at render time (see
-`applications/web/src/routes/(authenticated)/repositories/[repositoryId=int]/pull-requests/+page.server.ts`);
-they are not stored in the database.
+`applications/web/src/routes/(authenticated)/repositories/[repositoryId=int]/pull-requests/+page.server.ts`).
+Review run state, agent runs, findings, cost events, and operator settings are stored in the
+database.
 
 ## Directory Structure
 
 ```text
 .
 ├─ applications/
-│  └─ web/                 SvelteKit application (deployed to Vercel)
+│  ├─ web/                 SvelteKit application and operator UI
+│  ├─ engine/              singleton review workflow consumer
+│  └─ proxy/               signed reviewer egress boundary
 │     ├─ src/
 │     │  ├─ lib/           shared modules and server logic
 │     │  │  ├─ api-keys/   user API key helpers
@@ -54,12 +69,15 @@ they are not stored in the database.
 │     ├─ test/             test harnesses and fixtures
 │     └─ static/           static assets served as-is
 ├─ packages/
-│  ├─ components/          @tribunal/components — shared Svelte components and design tokens
+│  ├─ agents/              @tribunal/agents — reviewer definitions, tools, and read-only hooks
+│  ├─ cost/                @tribunal/cost — estimate and reconciliation ledger helpers
 │  ├─ database/            @tribunal/database — schema, connection factory, operators, queries, validation
 │  ├─ github/              @tribunal/github — GitHub integration domain logic, cache, error taxonomy
-│  ├─ markdown/            @tribunal/markdown — markdown rendering utilities
+│  ├─ review-core/         @tribunal/review-core — review ports, schemas, and tokens
+│  ├─ sandbox/             @tribunal/sandbox — Tensorlake sandbox adapter
 │  ├─ test/                @tribunal/test — shared test utilities
 │  └─ typescript/          @tribunal/typescript — shared TypeScript configuration
+├─ runner/                 reviewer sandbox entrypoint and image self-check
 ├─ documentation/          long-form docs and guides
 ├─ scripts/                repo automation and tooling
 └─ .claude/ .codex/        agent rules, skills, and automation
@@ -70,6 +88,12 @@ they are not stored in the database.
 The repository uses Bun workspaces with Turborepo for task orchestration. All packages are installed
 from the root with a single `bun install`, and `@tribunal/*` names resolve directly to the workspace
 packages — there is no TypeScript `paths` mapping for them.
+
+**`@tribunal/agents`** (`packages/agents/`) — Agent definitions, read-only tool metadata, finding
+validation, and hook policy enforcement used by the reviewer image.
+
+**`@tribunal/review-core`** (`packages/review-core/`) — Shared review schemas, port types,
+capability-token helpers, and review payload contracts.
 
 **`@tribunal/github`** (`packages/github/`) — GitHub integration domain logic with no framework
 dependency. Functions take a `GithubServiceContext` (database, cache, GitHub App) as their first
@@ -83,11 +107,9 @@ operators, query helpers, and Zod validation schemas (`@tribunal/database/valida
 Depends on Drizzle ORM and `@neondatabase/serverless`. This is the single source of truth for all
 table definitions.
 
-**`@tribunal/components`** (`packages/components/`) — Shared Svelte component library and design
-tokens.
-
-Additional supporting packages: **`@tribunal/markdown`** (markdown rendering),
-**`@tribunal/test`** (test utilities), and **`@tribunal/typescript`** (shared TypeScript config).
+Additional supporting packages: **`@tribunal/cost`** (cost ledger), **`@tribunal/sandbox`**
+(sandbox adapter), **`@tribunal/test`** (test utilities), and **`@tribunal/typescript`** (shared
+TypeScript configuration).
 
 ## Path Aliases
 
@@ -107,14 +129,20 @@ imports resolve through Bun workspaces, not aliases.
    (database, Redis cache, GitHub App) that package functions expect.
 3. `@tribunal/database` owns all schema definitions. Other packages import from it; they never
    define their own tables.
-4. The database connection in `packages/database/src/connection.ts` uses an `AsyncLocalStorage`
+4. `applications/engine` owns review workflow execution and must run as a singleton. Health checks
+   expose singleton lock status so deployment verification can confirm the active engine owns the lease.
+5. Reviewer sandbox code must remain read-only. `@tribunal/agents` enforces allowed tools and
+   repository-relative file access; `applications/web/test/end-to-end/security/` covers the harness.
+6. The database connection in `packages/database/src/connection.ts` uses an `AsyncLocalStorage`
    override (`runWithDatabase`) so E2E tests can route queries to a per-worker PGlite instance.
    Production uses Neon over HTTP.
 
 ## Data Model
 
-The model is flat: a user connects one or more GitHub App installations, each installation grants
-access to a set of repositories, and pull requests are read live from GitHub for those repositories.
+The model is flat at the GitHub authorization layer: a user connects one or more GitHub App
+installations, each installation grants access to repositories, and pull requests are read live from
+GitHub for those repositories. The review engine adds operator-owned tables below that flat
+authorization model.
 
 ```mermaid
 erDiagram
@@ -124,6 +152,10 @@ erDiagram
   GITHUB_INSTALLATION ||--o{ GITHUB_INSTALLATION_REPOSITORY : "grants access to"
   REPOSITORY ||--o{ GITHUB_INSTALLATION_REPOSITORY : "linked through"
   REPOSITORY ||--o{ WEBHOOK_EVENT : "receives"
+  REPOSITORY ||--o{ REVIEW_RUN : "has"
+  REVIEW_RUN ||--o{ AGENT_RUN : "runs"
+  AGENT_RUN ||--o{ FINDING : "emits"
+  REVIEW_RUN ||--o{ COST_EVENT : "accounts"
 ```
 
 Notes:
@@ -137,16 +169,19 @@ Notes:
   `github_installation_repository` records which repositories are reachable through which
   installation.
 - Pull requests are not stored. They are fetched from the GitHub API when a page loads.
+- Review runs, agent runs, findings, cost events, repository review settings, and user review
+  settings are stored for the operator UI and engine lifecycle.
 - `webhook_event` stores received GitHub webhook payloads; `github_webhook_delivery` records
   processed delivery GUIDs for idempotency.
 
-### Dormant tables
+### Review Engine Topology
 
-The schema in `packages/database/src/schema/` also still declares tables left over from an earlier,
-larger system: `pull_request_state`, `pull_request_trigger`, `workflow_config`, `workflow_run`, and
-`workflow_issue_reference`. **No live user flow writes to or reads from these.** They are not part of
-the flat model above and should be treated as scheduled for removal, not as features. Do not build on
-them without first deciding whether they should exist at all.
+`applications/web` receives GitHub webhook deliveries, verifies and claims them idempotently, stores
+the raw event, and writes review intent state. `applications/engine` claims review intents, dispatches
+Weft workflows, creates or reuses reviewer sandboxes, mints scoped read tokens, posts GitHub check
+runs/reviews, persists findings, and records cost events. `applications/proxy` gives reviewer
+sandboxes a signed egress path for the allowed GitHub and Anthropic APIs. The reviewer image runs
+`runner/run-agent.mjs`, which imports `@anthropic-ai/claude-agent-sdk` and `@tribunal/agents`.
 
 ## Authentication and Installation Flow
 
@@ -207,13 +242,9 @@ caches.
 
 Pull-request-related handlers (`pull-request.server.ts`, `pull-request-review.server.ts`,
 `pull-request-review-comment.server.ts`, `review-thread.server.ts`, `issue-comment.server.ts`,
-`check-completed-dispatch.server.ts`, etc.) call `signalPullRequestEvent` /
-`signalPullRequestClosed` from `@tribunal/github/pull-requests/state/workflow-signals`. **These
-signal functions are stubs**: the dispatch they once performed has been removed, so they
-`console.log` the signal that would have been sent and return success. The endpoint likewise only
-logs the pull-request-review dispatch it would otherwise have triggered. There is no background
-processing — the app runs no workflow engine and no worker — so these handlers exist to accept,
-verify, and record deliveries, not to drive downstream automation.
+`check-completed-dispatch.server.ts`, etc.) preserve idempotent delivery handling and route review
+state changes into the review intent/workflow path. Critical webhook side effects — signature
+verification, delivery claim, and event persistence — are awaited before handlers return.
 
 The same endpoint also exposes a `GET` method that returns the GitHub App's registered webhooks for
 authenticated users (via `getRegisteredWebhooks`).

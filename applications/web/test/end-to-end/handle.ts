@@ -243,7 +243,7 @@ async function handleE2ELogin(event: RequestEvent): Promise<Response> {
       user?: { username?: string; name?: string; email?: string };
     };
 
-    const { getE2EDatabase, seedE2EUser, seedRepository } =
+    const { getE2EDatabase, seedE2EUser, seedOperatorData, seedRepository } =
       await import('$testing/end-to-end/seed');
 
     const db = await getE2EDatabase(workerId);
@@ -253,6 +253,10 @@ async function handleE2ELogin(event: RequestEvent): Promise<Response> {
     if (seed.repository) {
       const result = await seedRepository(db, {}, workerId);
       repository = result.repository;
+    }
+
+    if (repository) {
+      await seedOperatorData(db, { userId: user.id, repositoryId: repository.id });
     }
 
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
@@ -310,7 +314,7 @@ async function handleE2EReset(event: RequestEvent): Promise<Response> {
     };
 
     const { resetE2EDatabase } = await import('$testing/end-to-end/database');
-    const { resetSeedCounter, getE2EDatabase, seedE2EUser, seedRepository } =
+    const { resetSeedCounter, getE2EDatabase, seedE2EUser, seedOperatorData, seedRepository } =
       await import('$testing/end-to-end/seed');
 
     await resetE2EDatabase(workerId);
@@ -329,6 +333,7 @@ async function handleE2EReset(event: RequestEvent): Promise<Response> {
       if (seed.repository) {
         const repositoryResult = await seedRepository(db, {}, workerId);
         repository = repositoryResult.repository;
+        await seedOperatorData(db, { userId: user.id, repositoryId: repository.id });
       }
     }
 
@@ -358,6 +363,80 @@ async function handleE2EReset(event: RequestEvent): Promise<Response> {
     );
   } catch (error) {
     console.error('[E2E Reset] Error:', error);
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { 'content-type': 'application/json' } },
+    );
+  }
+}
+
+async function handleE2EReviewLifecycle(event: RequestEvent): Promise<Response> {
+  const validationError = validateE2ERequest(event.request);
+  if (validationError) return validationError;
+
+  try {
+    const workerIdResult = getWorkerIdFromRequest(event.request);
+    if (workerIdResult instanceof Response) return workerIdResult;
+    const { workerId } = workerIdResult;
+
+    const body = (await event.request.json()) as {
+      userId?: number;
+      repositoryId?: number;
+      pullRequestNumber?: number;
+      headSha?: string;
+      deliveryId?: string;
+      kind?: 'opened' | 'synchronize' | 'closed' | 'redelivered';
+    };
+
+    if (!Number.isInteger(body.userId) || !Number.isInteger(body.repositoryId)) {
+      return new Response(JSON.stringify({ error: 'userId and repositoryId are required.' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    const userId = Number(body.userId);
+    const repositoryId = Number(body.repositoryId);
+    if (
+      body.kind !== undefined &&
+      body.kind !== 'opened' &&
+      body.kind !== 'synchronize' &&
+      body.kind !== 'closed' &&
+      body.kind !== 'redelivered'
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: 'kind must be opened, synchronize, closed, or redelivered when provided.',
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    }
+
+    const { applyFakeReviewLifecycleEvent, canUserAccessE2ERepository, getE2EDatabase } =
+      await import('$testing/end-to-end/seed');
+    const db = await getE2EDatabase(workerId);
+    const canAccessRepository = await canUserAccessE2ERepository(db, { userId, repositoryId });
+    if (!canAccessRepository) {
+      return new Response(JSON.stringify({ error: 'Repository is not available to this user.' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    const result = await applyFakeReviewLifecycleEvent(db, {
+      userId,
+      repositoryId,
+      pullRequestNumber: body.pullRequestNumber,
+      headSha: body.headSha,
+      deliveryId: body.deliveryId,
+      kind: body.kind,
+    });
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  } catch (error) {
+    console.error('[E2E Review Lifecycle] Error:', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'content-type': 'application/json' } },
@@ -410,6 +489,8 @@ export const e2eHandle: Handle = async ({ event, resolve }) => {
         return handleE2ELogin(event);
       case '/__e2e__/reset':
         return handleE2EReset(event);
+      case '/__e2e__/review-lifecycle':
+        return handleE2EReviewLifecycle(event);
       default:
         return new Response('Not Found', { status: 404 });
     }
