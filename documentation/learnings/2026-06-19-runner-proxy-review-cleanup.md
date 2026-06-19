@@ -1,0 +1,2 @@
+- Prefer Bun-native server and subprocess primitives in proxy integration tests, and pair spawned runner processes with explicit timeouts plus cleanup.
+- When multiple headers can carry a capability token, encode the precedence contract in tests for both valid-first and invalid-first cases.

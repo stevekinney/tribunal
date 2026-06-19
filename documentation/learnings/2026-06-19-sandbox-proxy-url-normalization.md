@@ -1,0 +1,1 @@
+- Normalize shared proxy base URLs once and reuse that value for every sandbox environment variable derived from the same input.
