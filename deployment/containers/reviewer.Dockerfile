@@ -25,7 +25,7 @@ COPY packages/sandbox/package.json ./packages/sandbox/package.json
 COPY packages/test/package.json ./packages/test/package.json
 COPY packages/typescript/package.json ./packages/typescript/package.json
 COPY scripts/package.json ./scripts/package.json
-RUN bun install --production --filter @tribunal/runner
+RUN bun install --production --frozen-lockfile --filter @tribunal/runner
 COPY packages/agents ./packages/agents
 COPY packages/review-core ./packages/review-core
 COPY runner ./runner
