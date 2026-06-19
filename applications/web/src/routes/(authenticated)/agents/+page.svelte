@@ -23,10 +23,17 @@
   let selectedModel = $state(untrack(() => form?.values?.model ?? 'sonnet'));
   let selectedEffort = $state(untrack(() => form?.values?.effort ?? ''));
   let sampleDiff = $state(untrack(() => getDryRunValues()?.sampleDiff ?? ''));
-  const extraHighEffortModels = new Set(['opus', 'fable']);
-  const isExtraHighEffortAllowed = $derived(extraHighEffortModels.has(selectedModel));
   const fallbackNotice = $derived(getEffortFallbackNotice(selectedModel, selectedEffort));
   const dryRunEstimate = $derived(form?.dryRunEstimate);
+  const dryRunValues = $derived(getDryRunValues());
+  const isDryRunEstimateCurrent = $derived(
+    dryRunEstimate &&
+      dryRunValues &&
+      dryRunValues.body === body &&
+      dryRunValues.sampleDiff === sampleDiff &&
+      dryRunValues.model === selectedModel &&
+      dryRunValues.effort === selectedEffort,
+  );
 
   function editAgent(agent: (typeof data.agents)[number]) {
     agentId = agent.id;
@@ -35,6 +42,7 @@
     body = agent.body;
     selectedModel = agent.model;
     selectedEffort = agent.effort ?? '';
+    sampleDiff = '';
     enabled = agent.enabled;
   }
 
@@ -56,7 +64,7 @@
   {/if}
 
   <Card>
-    <form method="POST" action="?/save" class="agent-form">
+    <form method="POST" action="?/save" class="agent-form" id="agent-save-form">
       <input type="hidden" name="id" value={agentId} />
       <label class="field">
         <span>Slug</span>
@@ -90,9 +98,7 @@
         <select name="effort" bind:value={selectedEffort}>
           <option value="">Default</option>
           {#each data.effortOptions as effort (effort)}
-            <option value={effort} disabled={effort === 'xhigh' && !isExtraHighEffortAllowed}
-              >{effort}</option
-            >
+            <option value={effort}>{effort}</option>
           {/each}
         </select>
       </label>
@@ -103,7 +109,34 @@
         <span>System prompt</span>
         <textarea name="body" rows="8" required bind:value={body}></textarea>
       </label>
-      <label class="field field-wide">
+      <label class="enabled-control">
+        <input type="checkbox" name="enabled" bind:checked={enabled} />
+        <span>Enabled</span>
+      </label>
+      <div class="form-actions">
+        <Button type="submit" variant="primary">
+          {agentId ? 'Update agent' : 'Save agent'}
+          {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
+        </Button>
+        {#if agentId}
+          <Button type="button" variant="secondary" onclick={resetForm}>
+            Cancel
+            {#snippet leadingIcon()}<X size={14} aria-hidden="true" />{/snippet}
+          </Button>
+        {/if}
+      </div>
+    </form>
+
+    <form method="POST" action="?/dryRun" class="dry-run-form">
+      <input type="hidden" name="id" value={agentId} />
+      <input type="hidden" name="slug" value={slug} />
+      <input type="hidden" name="description" value={description} />
+      <input type="hidden" name="body" value={body} />
+      <input type="hidden" name="model" value={selectedModel} />
+      <input type="hidden" name="effort" value={selectedEffort} />
+      <input type="hidden" name="enabled" value={enabled ? 'on' : ''} />
+
+      <label class="field">
         <span>Sample diff</span>
         <textarea
           name="sampleDiff"
@@ -112,8 +145,9 @@
           placeholder="diff --git a/src/example.ts b/src/example.ts"
         ></textarea>
       </label>
-      {#if dryRunEstimate}
-        <div class="dry-run-result field-wide" role="status" aria-live="polite" aria-atomic="true">
+
+      {#if dryRunEstimate && isDryRunEstimateCurrent}
+        <div class="dry-run-result" role="status" aria-live="polite" aria-atomic="true">
           <div>
             <span>Estimated cost</span>
             <strong>${dryRunEstimate.costEstimateUsd.toFixed(4)}</strong>
@@ -132,25 +166,12 @@
           </div>
         </div>
       {/if}
-      <label class="enabled-control">
-        <input type="checkbox" name="enabled" bind:checked={enabled} />
-        <span>Enabled</span>
-      </label>
+
       <div class="form-actions">
-        <Button type="submit" variant="secondary" formaction="?/dryRun" formnovalidate>
+        <Button type="submit" variant="secondary">
           Dry run estimate
           {#snippet leadingIcon()}<Calculator size={14} aria-hidden="true" />{/snippet}
         </Button>
-        <Button type="submit" variant="primary">
-          {agentId ? 'Update agent' : 'Save agent'}
-          {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
-        </Button>
-        {#if agentId}
-          <Button type="button" variant="secondary" onclick={resetForm}>
-            Cancel
-            {#snippet leadingIcon()}<X size={14} aria-hidden="true" />{/snippet}
-          </Button>
-        {/if}
       </div>
     </form>
   </Card>
@@ -212,6 +233,15 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-4);
+  }
+
+  .dry-run-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-top: var(--space-4);
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-4);
   }
 
   .field,

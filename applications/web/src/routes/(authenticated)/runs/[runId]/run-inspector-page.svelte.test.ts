@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import RunInspectorPage from './+page.svelte';
 import type { PageData } from './$types';
+
+const invalidateAllMock = vi.hoisted(() => vi.fn());
+
+vi.mock('$app/navigation', () => ({
+  invalidateAll: invalidateAllMock,
+}));
 
 const user = {
   id: 1,
@@ -102,7 +109,11 @@ const data = {
 } satisfies PageData;
 
 describe('/runs/[runId] page', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    invalidateAllMock.mockClear();
+    vi.unstubAllGlobals();
+  });
 
   it('renders blocked tool calls and stop control', async () => {
     render(RunInspectorPage, { data });
@@ -119,6 +130,50 @@ describe('/runs/[runId] page', () => {
     await expect
       .element(page.getByRole('link', { name: 'GitHub comment' }))
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');
+  });
+
+  it('streams run updates through agent_event transport state', async () => {
+    const eventSources: Array<{
+      url: string;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      listeners: Map<string, Array<() => void>>;
+      close: () => void;
+    }> = [];
+
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        url: string;
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        listeners = new Map<string, Array<() => void>>();
+
+        constructor(url: string) {
+          this.url = url;
+          eventSources.push(this);
+        }
+
+        addEventListener(type: string, listener: () => void) {
+          this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+        }
+
+        close = vi.fn();
+      },
+    );
+
+    render(RunInspectorPage, { data });
+
+    expect(eventSources).toHaveLength(1);
+    expect(eventSources[0].url).toBe('/api/review/runs/run_1/events');
+
+    eventSources[0].onopen?.();
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('streaming');
+
+    eventSources[0].listeners.get('agent_event')?.forEach((listener) => listener());
+    expect(invalidateAllMock).toHaveBeenCalledOnce();
   });
 
   it('links superseded runs to their replacement run', async () => {

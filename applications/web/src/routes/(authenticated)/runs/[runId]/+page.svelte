@@ -12,7 +12,10 @@
   let { data } = $props();
 
   const run = $derived(data.run);
-  const connected = $derived(run.status === 'running' || run.status === 'queued');
+  let connectionState = $state<'connecting' | 'streaming' | 'disconnected'>('disconnected');
+  const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
+  const connected = $derived(canStopRun && connectionState === 'streaming');
+  const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
   const replacementRunHref = $derived(
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
   );
@@ -40,9 +43,29 @@
   }
 
   onMount(() => {
-    if (!connected) return;
-    const timer = window.setInterval(() => void invalidateAll(), 2_500);
-    return () => window.clearInterval(timer);
+    if (!canStopRun || typeof EventSource === 'undefined') {
+      connectionState = 'disconnected';
+      return;
+    }
+
+    connectionState = 'connecting';
+    const eventSource = new EventSource(`/api/review/runs/${run.id}/events`);
+
+    eventSource.onopen = () => {
+      connectionState = 'streaming';
+    };
+
+    eventSource.addEventListener('agent_event', () => {
+      void invalidateAll();
+    });
+
+    eventSource.onerror = () => {
+      connectionState = 'disconnected';
+    };
+
+    return () => {
+      eventSource.close();
+    };
   });
 </script>
 
@@ -52,7 +75,7 @@
 >
   {#snippet actions()}
     <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
-      <Button type="submit" variant="danger" size="sm" disabled={!connected}>
+      <Button type="submit" variant="danger" size="sm" disabled={!canStopRun}>
         Stop run
         {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
       </Button>
@@ -63,7 +86,7 @@
     <div class="status-row">
       <Badge size="sm">{run.status}</Badge>
       <span class:connected class="connection-dot" aria-hidden="true"></span>
-      <span>{connected ? 'Streaming' : 'Disconnected'}</span>
+      <span aria-label="Run event stream state">{connectionLabel}</span>
       {#if run.status === 'superseded'}
         {#if replacementRunHref}
           <Link href={replacementRunHref}>Superseded by a newer run</Link>

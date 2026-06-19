@@ -547,6 +547,116 @@ export async function getRunInspector(userId: number, runId: string) {
   };
 }
 
+export type RunAgentEventStreamEvent = {
+  id: number;
+  agentRunId: string;
+  seq: number;
+  kind: string;
+  tool: string | null;
+  detail: unknown;
+  at: string;
+};
+
+export async function streamRunAgentEvents(
+  userId: number,
+  runId: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  await requireRunAccess(userId, runId);
+
+  const encoder = new TextEncoder();
+  let latestEventId = 0;
+  let interval: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const close = () => {
+        closed = true;
+        if (interval) clearInterval(interval);
+        signal.removeEventListener('abort', close);
+        try {
+          controller.close();
+        } catch {
+          // The stream may already be closed by the client.
+        }
+      };
+
+      const enqueue = (chunk: string) => {
+        if (!closed) controller.enqueue(encoder.encode(chunk));
+      };
+
+      const emitNewEvents = async () => {
+        if (closed) return;
+        const events = await listRunAgentEvents(userId, runId, latestEventId);
+        for (const event of events) {
+          latestEventId = Math.max(latestEventId, event.id);
+          enqueue(`id: ${event.id}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      signal.addEventListener('abort', close);
+      enqueue(': connected\n\n');
+      await emitNewEvents();
+      interval = setInterval(() => void emitNewEvents(), 2_500);
+    },
+    cancel() {
+      closed = true;
+      if (interval) clearInterval(interval);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'text/event-stream',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+async function requireRunAccess(userId: number, runId: string) {
+  const [row] = await db
+    .select({ userId: reviewRun.userId })
+    .from(reviewRun)
+    .where(eq(reviewRun.id, runId))
+    .limit(1);
+
+  if (!row) error(404, 'Run not found.');
+  if (row.userId !== userId) error(403, 'You do not have access to this run.');
+}
+
+async function listRunAgentEvents(
+  userId: number,
+  runId: string,
+  afterEventId: number,
+): Promise<RunAgentEventStreamEvent[]> {
+  const rows = await db
+    .select({
+      id: agentEvent.id,
+      agentRunId: agentEvent.agentRunId,
+      seq: agentEvent.seq,
+      kind: agentEvent.kind,
+      tool: agentEvent.tool,
+      detail: agentEvent.detail,
+      at: agentEvent.at,
+    })
+    .from(agentEvent)
+    .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
+    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
+    .where(
+      and(
+        eq(reviewRun.userId, userId),
+        eq(reviewRun.id, runId),
+        sql`${agentEvent.id} > ${afterEventId}`,
+      ),
+    )
+    .orderBy(asc(agentEvent.id))
+    .limit(100);
+
+  return rows.map((event) => ({ ...event, at: event.at.toISOString() }));
+}
+
 async function getReplacementRun(
   userId: number,
   run: typeof reviewRun.$inferSelect,
