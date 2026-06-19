@@ -62,7 +62,7 @@ export async function runAgentProcess({
   };
 
   emitEvent(context, 'session_start', { agentSlug, model, effort });
-  signalSource.once?.('SIGTERM', () => {
+  const terminateListener = () => {
     emitEvent(context, 'stop', { reason: 'terminated' });
     void writeOnce(
       createResult({
@@ -74,7 +74,8 @@ export async function runAgentProcess({
         error: 'Agent review stopped before completion.',
       }),
     ).finally(() => exit(143));
-  });
+  };
+  signalSource.once?.('SIGTERM', terminateListener);
 
   try {
     const result = await runClaudeReview({
@@ -103,6 +104,9 @@ export async function runAgentProcess({
         error: error instanceof Error ? error.message : 'Agent review failed.',
       }),
     );
+  } finally {
+    const removeSignalListener = signalSource.off ?? signalSource.removeListener;
+    removeSignalListener?.call(signalSource, 'SIGTERM', terminateListener);
   }
 }
 

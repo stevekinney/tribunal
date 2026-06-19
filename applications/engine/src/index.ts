@@ -151,12 +151,10 @@ export function createEngineServerOptions(
 function hasValidControlToken(request: Request, expectedToken: string): boolean {
   const authorization = request.headers.get('authorization');
   const expectedAuthorization = `Bearer ${expectedToken}`;
-  const providedAuthorization = authorization ?? '';
-  const matches = timingSafeEqual(
-    hashControlToken(providedAuthorization),
-    hashControlToken(expectedAuthorization),
+  return (
+    authorization !== null &&
+    timingSafeEqual(hashControlToken(authorization), hashControlToken(expectedAuthorization))
   );
-  return authorization !== null && matches;
 }
 
 function hashControlToken(value: string): Buffer {

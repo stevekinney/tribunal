@@ -290,7 +290,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string {
   const url = new URL(proxyUrl);
-  url.pathname = `${url.pathname.replace(/\/$/, '')}/github/github.com/${repository.owner}/${repository.name}.git`;
+  const prefix = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+  url.pathname = `${prefix}/github/github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}.git`;
+  url.search = '';
+  url.hash = '';
   return url.toString();
 }
 

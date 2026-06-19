@@ -200,6 +200,32 @@ describe('run-agent runner', () => {
       },
     });
   });
+
+  it('removes the SIGTERM listener after normal completion', async () => {
+    const signalSource = new EventEmitter();
+    const stdout = createWritable();
+
+    await runAgentProcess({
+      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit: vi.fn(),
+      signalSource,
+      queryFunction: () =>
+        streamMessages([
+          {
+            type: 'result',
+            structured_output: { findings: [] },
+            modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+            usage: {},
+            total_cost_usd: 0,
+          },
+        ]),
+    });
+
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+  });
 });
 
 async function waitFor(assertion) {

@@ -101,9 +101,14 @@ export function decryptInstallationToken(token: EncryptedInstallationToken): Ins
     key,
     Buffer.from(initializationVectorHex, 'hex'),
   );
-  decipher.setAuthTag(Buffer.from(authenticationTagHex, 'hex'));
-  let plaintext = decipher.update(encryptedToken, 'hex', 'utf8');
-  plaintext += decipher.final('utf8');
+  let plaintext: string;
+  try {
+    decipher.setAuthTag(Buffer.from(authenticationTagHex, 'hex'));
+    plaintext = decipher.update(encryptedToken, 'hex', 'utf8');
+    plaintext += decipher.final('utf8');
+  } catch {
+    throw new ValidationError('Cached GitHub installation token is not encrypted.');
+  }
 
   return {
     token: plaintext,

@@ -160,6 +160,48 @@ describe('mintSingleRepositoryReadToken', () => {
     );
   });
 
+  it('evicts undecryptable cached tokens and mints a fresh encrypted token', async () => {
+    const staleEncryptedToken = encryptInstallationToken({
+      token: 'stale-token',
+      expiresAt: '2026-01-01T00:00:00Z',
+      installationId: 123,
+    });
+    process.env.ENCRYPTION_KEY = 'b'.repeat(64);
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: staleEncryptedToken,
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+  });
+
   it('maps rate-limited token minting failures to RateLimitError', async () => {
     const app = {
       octokit: {

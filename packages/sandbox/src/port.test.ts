@@ -145,6 +145,31 @@ describe('sandbox port', () => {
     expect(commandArguments.join(' ')).not.toContain('capability-token');
   });
 
+  it('normalizes proxy clone URLs before validating update input', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local/base/?ignored=true#fragment',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await port.update(
+      'sandbox_1',
+      { owner: 'stevekinney', name: 'tribunal' },
+      'a'.repeat(40),
+      'capability-token',
+    );
+
+    expect(calls[0]).toMatchObject({
+      input: {
+        environment: {
+          TRIBUNAL_REPOSITORY_URL:
+            'https://proxy.tribunal.local/base/github/github.com/stevekinney/tribunal.git',
+        },
+      },
+    });
+  });
+
   it('rejects invalid repository URLs before calling the adapter', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
