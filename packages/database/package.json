@@ -24,18 +24,20 @@
     "test:migrations:integration": "vitest run --config vitest.configuration.ts src/test/__tests__/migration-scenarios.test.ts",
     "test:migrations:watch": "vitest --config vitest.configuration.ts --watch src/test/__tests__",
     "lint": "oxlint . && eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --write --ignore-path ../../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
     "chalk": "^5.6.2",
     "drizzle-orm": "^0.45.1",
+    "pg": "^8.21.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
     "@tribunal/typescript": "workspace:*",
     "@neondatabase/api-client": "^1.6.0",
+    "@types/pg": "^8.16.0",
     "change-case": "^5.4.4",
     "drizzle-kit": "^0.31.8"
   }

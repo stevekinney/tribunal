@@ -10,11 +10,9 @@ import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/wor
 
 /**
  * Handle pull_request_review webhook events.
- * Orchestrator-trigger actions throw on dispatch failure for 500 retry.
- * Claiming is performed at the +server.ts level for all orchestrator events.
- *
- * Routes review signals into the registered pull-request-orchestrator Weft
- * workflow via signalPullRequestEvent (start-or-signal, coalesced).
+ * Review activity is parsed here so the handler can become a durable trigger
+ * when the review engine grows an explicit intent kind for review events.
+ * Today only pull_request lifecycle events persist review_intent rows.
  */
 export async function handlePullRequestReview(
   payload: PullRequestReviewEvent,
@@ -37,7 +35,6 @@ export async function handlePullRequestReview(
       return;
   }
 
-  // Orchestrator dispatch - must throw on failure for 500 response
   const result = await signalPullRequestEvent(githubContext, {
     workspaceId: 0,
     repositoryId,
@@ -57,5 +54,10 @@ export async function handlePullRequestReview(
     );
   }
 
-  logger.info(`PR review ${action} workflow signaled`);
+  if (!result.enqueued) {
+    logger.debug(`PR review ${action} did not map to a durable review intent`);
+    return;
+  }
+
+  logger.info(`PR review ${action} review intent enqueued`);
 }

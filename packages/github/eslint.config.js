@@ -6,7 +6,7 @@ import ts from 'typescript-eslint';
 import oxlint from 'eslint-plugin-oxlint';
 
 export default defineConfig(
-  { ignores: ['node_modules/**', 'dist/**'] },
+  { ignores: ['node_modules/**', 'dist/**', 'coverage/**'] },
   js.configs.recommended,
   ...ts.configs.recommended,
   prettier,

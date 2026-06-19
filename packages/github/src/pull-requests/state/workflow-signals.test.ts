@@ -1,203 +1,334 @@
-import { describe, expect, it, vi } from 'vitest';
-import { WorkflowNotFoundError, WorkflowNotRegisteredError } from '@lostgradient/weft';
-import type { WeftClient } from '@lostgradient/weft/client';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { reviewIntent } from '@tribunal/database/schema';
+import { createTestContext, type TestContext } from '@tribunal/test/context';
 import type { GithubServiceContext } from '../../context.js';
 import {
+  buildPullRequestOrchestratorWorkflowId,
+  mapPullRequestEventToReviewIntentKind,
   signalPullRequestClosed,
   signalPullRequestEvent,
-  type SignalPullRequestClosedInput,
-  type SignalPullRequestEventInput,
+  type PullRequestEventType,
 } from './workflow-signals.js';
 
-/**
- * Build a minimal GithubServiceContext for these tests. Only the Weft client
- * resolver matters here; the other dependencies are never touched. Passing a
- * client wires a resolver that returns it; passing nothing wires a resolver that
- * returns `null` (the "no engine configured" path).
- */
-function createContext(weftClient?: Partial<WeftClient>): GithubServiceContext {
+let testContext: TestContext;
+
+beforeAll(async () => {
+  testContext = await createTestContext();
+});
+
+afterAll(async () => {
+  await testContext.close();
+});
+
+beforeEach(async () => {
+  await testContext.reset();
+});
+
+function createGithubContext(): GithubServiceContext {
   return {
-    db: {} as GithubServiceContext['db'],
-    cache: {} as GithubServiceContext['cache'],
-    getInstallationOctokit: vi.fn(),
-    resolveWeftClient: () => Promise.resolve((weftClient as WeftClient | undefined) ?? null),
+    db: testContext.db as unknown as GithubServiceContext['db'],
+    cache: {
+      getCached: vi.fn().mockResolvedValue(null),
+      setCache: vi.fn().mockResolvedValue(true),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    },
+    getInstallationOctokit: vi.fn().mockResolvedValue(null),
   };
 }
 
-/** Context whose client resolver rejects (e.g. engine build / storage outage). */
-function createContextWithFailingResolver(error: Error): GithubServiceContext {
-  return {
-    db: {} as GithubServiceContext['db'],
-    cache: {} as GithubServiceContext['cache'],
-    getInstallationOctokit: vi.fn(),
-    resolveWeftClient: () => Promise.reject(error),
-  };
-}
+describe('mapPullRequestEventToReviewIntentKind', () => {
+  it.each([
+    ['pr_opened', 'start'],
+    ['pr_reopened', 'start'],
+    ['pr_ready_for_review', 'start'],
+    ['pr_synchronized', 'commit_pushed'],
+    ['check_completed', 'commit_pushed'],
+    ['pr_closed', 'pr_closed'],
+  ] satisfies Array<[PullRequestEventType, string]>)('%s maps to %s', (eventType, kind) => {
+    expect(mapPullRequestEventToReviewIntentKind(eventType)).toBe(kind);
+  });
 
-const eventInput: SignalPullRequestEventInput = {
-  workspaceId: 1,
-  repositoryId: 42,
-  prNumber: 7,
-  installationId: 100,
-  owner: 'acme',
-  repo: 'widgets',
-  eventType: 'review_submitted',
-  actorLogin: 'octocat',
-  eventId: 'evt-1',
-};
+  it('ignores pull request activity that does not start review-engine work', () => {
+    const ignoredEventTypes = [
+      'review_submitted',
+      'review_dismissed',
+      'review_comment_created',
+      'review_comment_edited',
+      'review_comment_deleted',
+      'review_thread_resolved',
+      'review_thread_unresolved',
+      'issue_comment_created',
+      'issue_comment_edited',
+      'issue_comment_deleted',
+      'base_branch_updated',
+      'manual',
+    ] satisfies PullRequestEventType[];
 
-const closedInput: SignalPullRequestClosedInput = {
-  repositoryId: 42,
-  prNumber: 7,
-  merged: true,
-  actorLogin: 'octocat',
-};
+    for (const eventType of ignoredEventTypes) {
+      expect(mapPullRequestEventToReviewIntentKind(eventType)).toBeNull();
+    }
+  });
+});
 
-const EXPECTED_ID = 'pull-request-orchestrator:42:7';
+describe('buildPullRequestOrchestratorWorkflowId', () => {
+  it('builds a deterministic workflow id from repository and pull request numbers', () => {
+    expect(buildPullRequestOrchestratorWorkflowId(42, 7)).toBe('review:pr:42:7');
+  });
+});
 
 describe('signalPullRequestEvent', () => {
-  it('start-or-signals the per-PR orchestrator with the deterministic id', async () => {
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'started' });
-    const context = createContext({ startOrSignal });
+  it('inserts one idempotent start intent for a redelivered opened event', async () => {
+    const repository = await testContext.factories.repository.create({ id: 42 });
+    const context = createGithubContext();
+    const input = {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 7,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_opened' as const,
+      eventId: 'delivery-1',
+      headSha: 'abc123',
+    };
 
-    const result = await signalPullRequestEvent(context, eventInput);
+    const first = await signalPullRequestEvent(context, input);
+    const second = await signalPullRequestEvent(context, input);
 
-    // weft#466: the producer propagates the handle's outcome.
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID, outcome: 'started' });
-    expect(startOrSignal).toHaveBeenCalledTimes(1);
-    expect(startOrSignal).toHaveBeenCalledWith(
-      'pull-request-orchestrator',
-      eventInput,
-      // signalId is the delivery GUID (eventId) so retries dedup to one signal.
-      // The signal payload carries kind:'event' so the orchestrator's ctx.race
-      // can discriminate it from a close signal / the sleep timer (FIX 1).
-      { name: 'pull_request_event', payload: { kind: 'event', ...eventInput }, signalId: 'evt-1' },
-      { id: EXPECTED_ID },
-    );
+    expect(first).toMatchObject({ ok: true, intentKind: 'start', enqueued: true });
+    expect(second).toMatchObject({ ok: true, intentKind: 'start', enqueued: false });
+
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-1'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'start',
+      repositoryId: repository.id,
+      prNumber: 7,
+      headSha: 'abc123',
+      prState: null,
+    });
   });
 
-  it('propagates a "signalled" outcome when an event coalesced onto a live orchestrator', async () => {
-    // weft#466: a rapid follow-up webhook coalesced onto the running orchestrator.
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'signalled' });
-    const context = createContext({ startOrSignal });
+  it('inserts a commit_pushed intent for synchronize events', async () => {
+    const repository = await testContext.factories.repository.create({ id: 43 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestEvent(context, eventInput);
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 8,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_synchronized',
+      eventId: 'delivery-2',
+      headSha: 'def456',
+    });
 
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID, outcome: 'signalled' });
+    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-2'));
+    expect(rows[0]).toMatchObject({ kind: 'commit_pushed', headSha: 'def456' });
   });
 
-  it('mints a fresh signalId when the event carries no delivery id', async () => {
-    const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'started' });
-    const context = createContext({ startOrSignal });
-    const { eventId: _omitted, ...withoutEventId } = eventInput;
+  it('inserts a commit_pushed intent for check-completed events', async () => {
+    const repository = await testContext.factories.repository.create({ id: 50 });
+    const context = createGithubContext();
 
-    await signalPullRequestEvent(context, withoutEventId);
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 16,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'check_completed',
+      eventId: 'delivery-check-completed',
+      headSha: 'checkhead',
+    });
 
-    const signalArg = startOrSignal.mock.calls[0][2] as { signalId: string };
-    expect(signalArg.signalId).toEqual(expect.any(String));
-    expect(signalArg.signalId.length).toBeGreaterThan(0);
+    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-check-completed'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'commit_pushed',
+      repositoryId: repository.id,
+      prNumber: 16,
+      headSha: 'checkhead',
+    });
   });
 
-  it('falls back to log-only success when no engine is configured', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const context = createContext(undefined);
+  it('deduplicates same-delivery intents by event kind', async () => {
+    const repository = await testContext.factories.repository.create({ id: 49 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestEvent(context, eventInput);
+    const first = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 14,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_synchronized',
+      eventId: 'delivery-multiple-pull-requests',
+      headSha: 'first',
+    });
+    const second = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 15,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_synchronized',
+      eventId: 'delivery-multiple-pull-requests',
+      headSha: 'second',
+    });
 
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
-    expect(log).toHaveBeenCalledWith(
-      '[pull-request-orchestrator] would signal pull request event (no engine)',
-      expect.objectContaining({ workflowId: EXPECTED_ID, eventType: 'review_submitted' }),
-    );
-    log.mockRestore();
+    expect(first).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    expect(second).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: false });
+
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-multiple-pull-requests'))
+      .orderBy(reviewIntent.prNumber);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ prNumber: 14, headSha: 'first' });
   });
 
-  it('reports failure (does not throw) when dispatch errors', async () => {
-    const startOrSignal = vi.fn().mockRejectedValue(new Error('engine down'));
-    const context = createContext({ startOrSignal });
+  it('returns not enqueued for ignored event types', async () => {
+    const repository = await testContext.factories.repository.create({ id: 45 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestEvent(context, eventInput);
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 10,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'review_submitted',
+      eventId: 'delivery-ignored',
+      headSha: 'abc123',
+    });
 
-    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'engine down' });
+    expect(result).toEqual({
+      ok: true,
+      workflowId: `review:pr:${repository.id}:10`,
+      enqueued: false,
+    });
   });
 
-  it('treats a not-yet-registered orchestrator as no-op success (storage live, workflow unported)', async () => {
-    // This is the invariant: a client configured before workflows are ported
-    // must NOT 500 webhooks. WorkflowNotRegisteredError => ok:true, no error.
-    const startOrSignal = vi
-      .fn()
-      .mockRejectedValue(new WorkflowNotRegisteredError('pull-request-orchestrator'));
-    const context = createContext({ startOrSignal });
+  it('returns a classified failure when an intent event has no delivery id', async () => {
+    const repository = await testContext.factories.repository.create({ id: 46 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestEvent(context, eventInput);
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 11,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_opened',
+      headSha: 'abc123',
+    });
 
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
-  });
-
-  it('returns an error result (does not throw) when the client resolver rejects', async () => {
-    // A configured-but-unreachable engine must not throw past the webhook handler.
-    const context = createContextWithFailingResolver(new Error('engine build failed'));
-
-    const result = await signalPullRequestEvent(context, eventInput);
-
-    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'engine build failed' });
+    expect(result).toEqual({
+      ok: false,
+      workflowId: `review:pr:${repository.id}:11`,
+      intentKind: 'start',
+      enqueued: false,
+      error: 'Cannot enqueue review intent without a GitHub delivery id.',
+    });
   });
 });
 
 describe('signalPullRequestClosed', () => {
-  it('signals the running orchestrator with the close payload', async () => {
-    const signal = vi.fn().mockResolvedValue(undefined);
-    const context = createContext({ signal });
-
-    const result = await signalPullRequestClosed(context, closedInput);
-
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
-    expect(signal).toHaveBeenCalledWith(EXPECTED_ID, 'pull_request_closed', {
-      // kind:'closed' lets the orchestrator's ctx.race discriminate the close
-      // signal from an event payload / the sleep timer (FIX 1).
-      kind: 'closed',
+  it('inserts an idempotent pr_closed intent with final pull request state', async () => {
+    const repository = await testContext.factories.repository.create({ id: 44 });
+    const context = createGithubContext();
+    const input = {
+      repositoryId: repository.id,
+      prNumber: 9,
       merged: true,
-      actorLogin: 'octocat',
+      eventId: 'delivery-3',
+      headSha: 'fed789',
+    };
+
+    const first = await signalPullRequestClosed(context, input);
+    const second = await signalPullRequestClosed(context, input);
+
+    expect(first).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
+    expect(second).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: false });
+
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-3'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'pr_closed',
+      headSha: 'fed789',
+      prState: 'merged',
     });
   });
 
-  it('treats a missing orchestrator as success (nothing to notify)', async () => {
-    const signal = vi.fn().mockRejectedValue(new WorkflowNotFoundError(EXPECTED_ID));
-    const context = createContext({ signal });
+  it('records closed state for unmerged pull requests', async () => {
+    const repository = await testContext.factories.repository.create({ id: 47 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestClosed(context, closedInput);
+    const result = await signalPullRequestClosed(context, {
+      repositoryId: repository.id,
+      prNumber: 12,
+      merged: false,
+      eventId: 'delivery-4',
+      headSha: null,
+    });
 
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
+    expect(result).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
+
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-4'));
+    expect(rows[0]).toMatchObject({
+      kind: 'pr_closed',
+      headSha: null,
+      prState: 'closed',
+    });
   });
 
-  it('reports failure for non-not-found errors', async () => {
-    const signal = vi.fn().mockRejectedValue(new Error('network blip'));
-    const context = createContext({ signal });
+  it('returns a classified failure when a closed event has no delivery id', async () => {
+    const repository = await testContext.factories.repository.create({ id: 48 });
+    const context = createGithubContext();
 
-    const result = await signalPullRequestClosed(context, closedInput);
+    const result = await signalPullRequestClosed(context, {
+      repositoryId: repository.id,
+      prNumber: 13,
+      merged: false,
+      headSha: null,
+    });
 
-    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'network blip' });
-  });
-
-  it('falls back to log-only success when no engine is configured', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const context = createContext(undefined);
-
-    const result = await signalPullRequestClosed(context, closedInput);
-
-    expect(result).toEqual({ ok: true, workflowId: EXPECTED_ID });
-    expect(log).toHaveBeenCalledWith(
-      '[pull-request-orchestrator] would signal pull request closed (no engine)',
-      expect.objectContaining({ workflowId: EXPECTED_ID, merged: true }),
-    );
-    log.mockRestore();
-  });
-
-  it('returns an error result (does not throw) when the client resolver rejects', async () => {
-    const context = createContextWithFailingResolver(new Error('engine build failed'));
-
-    const result = await signalPullRequestClosed(context, closedInput);
-
-    expect(result).toEqual({ ok: false, workflowId: EXPECTED_ID, error: 'engine build failed' });
+    expect(result).toEqual({
+      ok: false,
+      workflowId: `review:pr:${repository.id}:13`,
+      intentKind: 'pr_closed',
+      enqueued: false,
+      error: 'Cannot enqueue review intent without a GitHub delivery id.',
+    });
   });
 });

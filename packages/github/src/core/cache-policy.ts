@@ -95,6 +95,22 @@ registerPolicy({
   supportsEtag: true,
 });
 
+registerPolicy({
+  operationId: 'get-pull-request-diff-context',
+  keyFactory: (repositoryId: number, pullNumber: number) =>
+    CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber),
+  ttlSeconds: 30,
+  supportsEtag: false,
+});
+
+registerPolicy({
+  operationId: 'mint-single-repository-read-token',
+  keyFactory: (installationId: number, repositoryId: number) =>
+    CACHE_KEYS.GITHUB_SINGLE_REPOSITORY_READ_TOKEN(installationId, repositoryId),
+  ttlSeconds: 55 * 60,
+  supportsEtag: false,
+});
+
 // ============================================================================
 // Registered policies — issues
 // ============================================================================

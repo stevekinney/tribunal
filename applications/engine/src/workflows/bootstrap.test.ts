@@ -1,0 +1,178 @@
+import { describe, expect, it, vi } from 'vitest';
+import { workflow } from '@lostgradient/weft';
+import {
+  createEngineRuntime,
+  type EngineSingletonLease,
+  type EngineSingletonLock,
+} from './bootstrap';
+
+describe('createEngineRuntime', () => {
+  it('fails fast when a second engine cannot acquire the singleton lock', async () => {
+    const lock = new FakeEngineSingletonLock();
+    const firstRuntime = await createEngineRuntime({ allowEphemeralStorageForTests: true, lock });
+
+    await expect(
+      createEngineRuntime({ allowEphemeralStorageForTests: true, lock }),
+    ).rejects.toThrow('Another review engine already holds the singleton lock.');
+
+    await firstRuntime.release();
+    const secondRuntime = await createEngineRuntime({ allowEphemeralStorageForTests: true, lock });
+    await secondRuntime.release();
+  });
+
+  it('drains review intents through the runtime consumer', async () => {
+    const consumer = {
+      drain: vi.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(1),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(1));
+    await expect(runtime.drainReviewIntents(5)).resolves.toBe(1);
+    expect(consumer.drain).toHaveBeenLastCalledWith(5);
+
+    await runtime.release();
+  });
+
+  it('serializes manual review intent drains behind poller drains', async () => {
+    const firstDrain = createDeferred<number>();
+    const secondDrain = createDeferred<number>();
+    const consumer = {
+      drain: vi
+        .fn()
+        .mockReturnValueOnce(firstDrain.promise)
+        .mockReturnValueOnce(secondDrain.promise),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(1));
+    const manualDrain = runtime.drainReviewIntents(5);
+    await Promise.resolve();
+
+    expect(consumer.drain).toHaveBeenCalledTimes(1);
+    firstDrain.resolve(2);
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(2));
+    expect(consumer.drain).toHaveBeenLastCalledWith(5);
+    secondDrain.resolve(1);
+    await expect(manualDrain).resolves.toBe(1);
+
+    await runtime.release();
+  });
+
+  it('continues serialized review intent drains after a failed drain', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consumer = {
+      drain: vi.fn().mockRejectedValueOnce(new Error('drain failed')).mockResolvedValueOnce(4),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    await vi.waitFor(() => expect(consumer.drain).toHaveBeenCalledTimes(1));
+    await expect(runtime.drainReviewIntents(5)).resolves.toBe(4);
+    expect(consumer.drain).toHaveBeenLastCalledWith(5);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[engine] review intent drain failed',
+      expect.any(Error),
+    );
+
+    consoleError.mockRestore();
+    await runtime.release();
+  });
+
+  it('registers review workflows and binds the created Weft engine to the consumer', async () => {
+    const bindWorkflowEngine = vi.fn();
+    const reviewWorkflow = workflow({ name: 'review-pr' }).execute(async function* () {
+      yield* [];
+      return { ok: true };
+    });
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: { 'review-pr': reviewWorkflow },
+        bindWorkflowEngine,
+        drain: vi.fn().mockResolvedValue(0),
+      },
+      reviewIntentPollIntervalMs: 60_000,
+    });
+
+    expect(bindWorkflowEngine).toHaveBeenCalledWith(runtime.engine);
+    expect(
+      (runtime.engine as { listWorkflowDefinitions(): Array<{ type: string }> })
+        .listWorkflowDefinitions()
+        .map((definition) => definition.type),
+    ).toContain('review-pr');
+
+    await runtime.release();
+  });
+
+  it('reports singleton ownership only after the runtime is created', async () => {
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      healthDependencies: [{ name: 'weft_database', ok: true }],
+    });
+
+    expect(runtime.healthDependencies()).toEqual([
+      { name: 'weft_database', ok: true },
+      { name: 'singleton_lock', ok: true, detail: 'Weft lease ownership active' },
+    ]);
+
+    await runtime.release();
+  });
+
+  it('async-disposes the Weft engine before releasing the singleton lease', async () => {
+    const events: string[] = [];
+    const lock = new FakeEngineSingletonLock(events);
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      lock,
+    });
+    (runtime.engine as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose] =
+      vi.fn(async () => {
+        events.push('engine.asyncDispose');
+      });
+
+    await runtime.release();
+
+    expect(events).toEqual(['engine.asyncDispose', 'lease.release']);
+  });
+});
+
+class FakeEngineSingletonLock implements EngineSingletonLock {
+  private held = false;
+
+  constructor(private readonly events: string[] = []) {}
+
+  async acquire(): Promise<EngineSingletonLease> {
+    if (this.held) {
+      throw new Error('Another review engine already holds the singleton lock.');
+    }
+
+    this.held = true;
+    return {
+      release: async () => {
+        this.events.push('lease.release');
+        this.held = false;
+      },
+    };
+  }
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}

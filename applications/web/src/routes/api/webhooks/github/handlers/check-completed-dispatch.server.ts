@@ -1,6 +1,7 @@
 /**
- * Shared orchestrator dispatch logic for check_run.completed and check_suite.completed events.
- * Both event types reference a list of associated PRs and signal each one via the orchestrator.
+ * Shared check_run.completed and check_suite.completed review-engine hook.
+ * Today these events are observed but do not persist review_intent rows until
+ * the engine owns an explicit check-completed intent kind.
  */
 
 import type { WebhookContext } from './types';
@@ -8,7 +9,7 @@ import { githubContext } from '$lib/server/github-context';
 import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/workflow-signals';
 
 /**
- * Parameters for dispatching check-completed orchestrator signals.
+ * Parameters for observing check-completed review-engine signals.
  */
 export interface CheckCompletedDispatchOptions {
   /** Human-readable event label used in log messages (e.g. "check_run" or "check_suite"). */
@@ -24,11 +25,9 @@ export interface CheckCompletedDispatchOptions {
 }
 
 /**
- * Dispatch orchestrator signals for all PRs associated with a completed check run or suite.
- * Throws if any signal fails, so the outer handler can return a 500 for GitHub to retry.
- *
- * Routes check-completed signals into the registered pull-request-orchestrator
- * Weft workflow via signalPullRequestEvent (start-or-signal, coalesced).
+ * Observe check-completed events for all PRs associated with a completed check
+ * run or suite. Throws if an implemented durable mapping fails, so the outer
+ * handler can return a 500 for GitHub to retry.
  */
 export async function dispatchCheckCompletedSignals(
   options: CheckCompletedDispatchOptions,
@@ -69,5 +68,11 @@ export async function dispatchCheckCompletedSignals(
     );
   }
 
-  logger.info(`${eventLabel} completed workflow signaled for ${prNumbers.length} PR(s)`);
+  const enqueuedCount = results.filter((result) => result.enqueued).length;
+  if (enqueuedCount === 0) {
+    logger.debug(`${eventLabel} completed did not map to durable review intents`);
+    return;
+  }
+
+  logger.info(`${eventLabel} completed review intents enqueued for ${enqueuedCount} PR(s)`);
 }

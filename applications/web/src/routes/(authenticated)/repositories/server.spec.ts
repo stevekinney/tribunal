@@ -30,6 +30,12 @@ vi.mock('$lib/server/repositories', () => ({
   getRepositoriesForUser: vi.fn(() => Promise.resolve(mockRepositoriesResult.value)),
 }));
 
+vi.mock('$lib/server/review/operator', () => ({
+  getRepositoryOperatorDetails: vi.fn(() => Promise.resolve(new Map())),
+  listAgents: vi.fn(() => Promise.resolve([])),
+  operatorSurfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+}));
+
 import { load } from './+page.server';
 
 type RepositoriesLoadResult = {

@@ -1,6 +1,14 @@
 import { redirect } from '@sveltejs/kit';
 import { getRepositoriesForUser } from '$lib/server/repositories';
+import {
+  getRepositoryOperatorDetails,
+  listAgents,
+  operatorSurfaceStates,
+  parseIgnoreGlobs,
+  saveRepositoryWatchSettings,
+} from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
+import type { Actions } from './$types';
 
 const repositoryPageErrorMessages: Partial<Record<string, string>> = {
   github_denied: 'GitHub authorization was cancelled. Try again when you are ready.',
@@ -33,11 +41,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     // connect prompt instead of a hard error so the user has an obvious next step.
     return {
       repositories: [],
+      agents: [],
       installations: [],
       needsConnect: result.error === 'no_github_token',
       loadError: routeError ?? (result.error === 'github_unavailable' ? result.message : null),
+      surfaceStates: operatorSurfaceStates,
     };
   }
+
+  const repositoryIds = result.repositories.map((entry) => entry.repository.id);
+  const [operatorDetails, agents] = await Promise.all([
+    getRepositoryOperatorDetails(user.id, repositoryIds),
+    listAgents(user.id),
+  ]);
 
   return {
     repositories: result.repositories.map((entry) => ({
@@ -47,9 +63,38 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       defaultBranch: entry.repository.defaultBranch,
       accountLogin: entry.installation.accountLogin,
       accountAvatarUrl: entry.installation.accountAvatarUrl,
+      review: operatorDetails.get(entry.repository.id) ?? {
+        watched: false,
+        ignoreGlobs: [],
+        agents: [],
+        lastRunStatus: null,
+        estimatedCostLast30DaysUsd: 0,
+      },
     })),
+    agents,
     installations: result.installations,
     needsConnect: false,
     loadError: routeError,
+    surfaceStates: operatorSurfaceStates,
   };
+};
+
+export const actions: Actions = {
+  watch: async ({ locals, request }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    const formData = await request.formData();
+    const repositoryId = Number(formData.get('repositoryId'));
+    if (!Number.isInteger(repositoryId)) {
+      return { error: 'Repository is invalid.' };
+    }
+
+    return saveRepositoryWatchSettings(user.id, {
+      repositoryId,
+      watched: formData.get('watched') === 'on',
+      ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
+      agentIds: formData.getAll('agentIds').map(String),
+    });
+  },
 };

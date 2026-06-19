@@ -1,0 +1,1 @@
+ALTER TABLE "review_run" ADD COLUMN "review_post_claimed_at" timestamp with time zone;

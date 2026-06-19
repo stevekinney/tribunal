@@ -170,11 +170,11 @@ jobs:
           exit 1
         env:
           DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
-          GITHUB_APP_ID: "1"
-          GITHUB_APP_PRIVATE_KEY: "placeholder"
-          GITHUB_OAUTH_CLIENT_ID: "placeholder"
-          GITHUB_OAUTH_CLIENT_SECRET: "placeholder"
-          SESSION_SECRET: "placeholder-secret-at-least-32-chars-long"
+          GITHUB_APP_ID: '1'
+          GITHUB_APP_PRIVATE_KEY: 'placeholder'
+          GITHUB_OAUTH_CLIENT_ID: 'placeholder'
+          GITHUB_OAUTH_CLIENT_SECRET: 'placeholder'
+          SESSION_SECRET: 'placeholder-secret-at-least-32-chars-long'
 
   build:
     name: Build
@@ -189,6 +189,124 @@ jobs:
         run: bunx turbo run build ${{ github.event_name == 'pull_request' && '--affected' || '' }}
         env:
           DATABASE_URL: postgres://placeholder:placeholder@localhost:5432/placeholder
+
+  container-images:
+    name: Container Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TENSORLAKE_API_KEY: ${{ secrets.TENSORLAKE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Build container images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f deployment/containers/web.Dockerfile -t tribunal-web:test .
+          docker build -f deployment/containers/engine.Dockerfile -t tribunal-engine:test .
+          docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
+          docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
+          docker run --rm tribunal-reviewer:test
+      - name: Publish reviewer image to Tensorlake
+        if: ${{ env.TENSORLAKE_API_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install tensorlake
+          published_image="$(tl sbx image create --image tribunal-reviewer:test)"
+          echo "TRIBUNAL_SANDBOX_IMAGE=${published_image}" >> "$GITHUB_ENV"
+      - name: Boot images on injected ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${TRIBUNAL_SANDBOX_IMAGE:=tribunal-reviewer:test}"
+
+          docker run -d --rm --name tribunal-postgres-test \
+            -e POSTGRES_USER=tribunal \
+            -e POSTGRES_PASSWORD=tribunal \
+            -e POSTGRES_DB=tribunal \
+            -p 5433:5432 postgres:16
+          docker run -d --rm --name tribunal-redis-test -p 6380:6379 redis:7
+          for attempt in 1 2 3 4 5; do
+            if docker exec tribunal-postgres-test pg_isready -U tribunal -d tribunal >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          for attempt in 1 2 3 4 5; do
+            if docker exec tribunal-redis-test redis-cli ping >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          database_url=postgres://tribunal:tribunal@host.docker.internal:5433/tribunal
+          redis_url=redis://host.docker.internal:6380
+
+          docker run -d --rm --name tribunal-web-test \
+            --add-host=host.docker.internal:host-gateway \
+            -e PORT=4310 \
+            -e DATABASE_URL="${database_url}" \
+            -e REDIS_URL="${redis_url}" \
+            -p 4310:4310 tribunal-web:test
+          docker run -d --rm --name tribunal-engine-test \
+            --add-host=host.docker.internal:host-gateway \
+            -e PORT=4311 \
+            -e DATABASE_URL="${database_url}" \
+            -e GITHUB_APP_ID=12345 \
+            -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
+            -e TENSORLAKE_API_KEY=tl_ci_placeholder \
+            -e TRIBUNAL_SANDBOX_IMAGE="${TRIBUNAL_SANDBOX_IMAGE}" \
+            -e TRIBUNAL_PROXY_URL=http://host.docker.internal:4312 \
+            -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
+            -e PROXY_SIGNING_KEY=ci-placeholder \
+            -e TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1 \
+            -e TRIBUNAL_ENGINE_CONTROL_TOKEN=ci-engine-control-token \
+            -e TRIBUNAL_DEFAULT_MODEL=claude-sonnet-4-6 \
+            -e DEFAULT_DAILY_COST_CAP_USD=25 \
+            -e IDLE_SUSPEND_SECONDS=900 \
+            -e SANDBOX_REAP_INTERVAL=300 \
+            -e ENABLE_PROMPT_CACHING_1H=true \
+            -e ANTHROPIC_ADMIN_KEY=sk-ant-admin-ci-placeholder \
+            -p 4311:4311 tribunal-engine:test
+          docker run -d --rm --name tribunal-proxy-test \
+            --add-host=host.docker.internal:host-gateway \
+            -e PORT=4312 \
+            -e DATABASE_URL="${database_url}" \
+            -e GITHUB_APP_ID=12345 \
+            -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
+            -e ANTHROPIC_API_KEY=sk-ant-ci-placeholder \
+            -e TRIBUNAL_PROXY_URL=http://localhost:4312 \
+            -e TRIBUNAL_PROXY_CIDR=127.0.0.1/32 \
+            -e PROXY_CA_CERT=ci-placeholder \
+            -e PROXY_SIGNING_KEY=ci-placeholder \
+            -e GITHUB_EGRESS_ALLOW=github.com,api.github.com \
+            -e ANTHROPIC_EGRESS_ALLOW=api.anthropic.com \
+            -p 4312:4312 tribunal-proxy:test
+
+          cleanup() {
+            docker stop tribunal-web-test tribunal-engine-test tribunal-proxy-test tribunal-postgres-test tribunal-redis-test >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for service in web:4310 engine:4311 proxy:4312; do
+            name="${service%%:*}"
+            port="${service##*:}"
+            ready=0
+            for attempt in {1..30}; do
+              if curl -sf "http://127.0.0.1:${port}/health" >/tmp/"${name}-health.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "::error::${name} container did not become healthy on injected port ${port}"
+              docker logs "tribunal-${name}-test" || true
+              exit 1
+            fi
+            cat /tmp/"${name}-health.json"
+          done
 
   migration:
     name: Migration
@@ -348,7 +466,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [type-check, lint-format, test-unit, test-browser, build, migration]
+    needs: [type-check, lint-format, test-unit, test-browser, build, container-images, migration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results

@@ -33,6 +33,10 @@ const checks: { name: string; command: string[]; continueOnError?: boolean }[] =
     name: 'Unit tests (client)',
     command: ['bun', 'run', '--cwd', 'applications/web', 'test:unit:client', '--', '--run'],
   },
+  {
+    name: 'Review engine coverage',
+    command: ['bun', 'run', 'test:coverage:review-engine'],
+  },
   { name: 'Build', command: ['bun', 'run', 'build'] },
   {
     name: 'Migration consistency',

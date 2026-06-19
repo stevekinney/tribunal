@@ -1,5 +1,5 @@
 /**
- * Issue comment webhook event handler (orchestrator dispatch).
+ * Issue comment webhook event handler.
  * Handles: issue_comment.created, edited, deleted on PRs.
  * This event type has no github-webhook-schemas Zod schema,
  * so it's dispatched outside the router.
@@ -54,8 +54,6 @@ async function signalIssueComment(
   eventType: PullRequestEventType,
   action: string | null,
 ): Promise<void> {
-  // Routes issue-comment signals into the registered pull-request-orchestrator Weft
-  // workflow via signalPullRequestEvent (start-or-signal, coalesced).
   const { installationId, repositoryId, logger } = context;
 
   // Only handle PR comments (issue_comment events fire for both issues and PRs)
@@ -83,5 +81,10 @@ async function signalIssueComment(
     );
   }
 
-  logger.info(`Issue comment ${action} workflow signaled`);
+  if (!result.enqueued) {
+    logger.debug(`Issue comment ${action} did not map to a durable review intent`);
+    return;
+  }
+
+  logger.info(`Issue comment ${action} review intent enqueued`);
 }

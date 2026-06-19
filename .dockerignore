@@ -1,0 +1,9 @@
+**/.turbo
+**/coverage
+**/dist
+**/node_modules
+**/.svelte-kit
+.git
+.env
+.env.*
+!.env.example

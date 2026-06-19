@@ -52,7 +52,7 @@ import { createGithubWebhookRouter } from 'github-webhook-schemas/registry';
  */
 /**
  * Event types that are handled by the typed router (not the manual fallback path).
- * Used to detect Zod validation failures that would otherwise silently skip orchestrator signals.
+ * Used to detect Zod validation failures that would otherwise silently skip review intents.
  */
 const ROUTER_HANDLED_EVENT_TYPES = new Set([
   'pull_request',
@@ -138,17 +138,17 @@ export const POST: RequestHandler = async (event) => {
 
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
 
-  // 3. Claim-Before-Processing Pattern for non-orchestrator events
-  // Orchestrator triggers defer claiming until after successful processing,
+  // 3. Claim-Before-Processing Pattern for non-review-engine events
+  // Review-engine triggers defer claiming until after successful processing,
   // so GitHub can retry on transient failures (500). All other events claim early.
   const installation = data.installation as { id: number } | undefined;
   const repository = data.repository as { id: number } | undefined;
   const installationId = installation?.id;
   const repositoryId = repository?.id;
 
-  const isOrchestratorTrigger = isPullRequestWebhookEvent(eventType, action, data);
+  const isReviewEngineTrigger = isPullRequestWebhookEvent(eventType, action, data);
 
-  if (deliveryId && eventType && !isOrchestratorTrigger) {
+  if (deliveryId && eventType && !isReviewEngineTrigger) {
     const claimed = await claimWebhookDelivery(
       githubContext,
       deliveryId,
@@ -210,29 +210,29 @@ export const POST: RequestHandler = async (event) => {
     logger,
   };
 
-  // 6. Route to typed handlers and dispatch orchestrator signals
+  // 6. Route to typed handlers and enqueue durable review intents
   try {
     // Route events with Zod schemas through the typed router
     const dispatch = createWebhookDispatcher(context);
     const handlerDispatched = await dispatch(data);
 
-    // Guard against silent Zod validation failures for orchestrator events.
+    // Guard against silent Zod validation failures for review-engine events.
     // If the event type is handled by the typed router but no handler ran, the payload failed
-    // schema validation. For orchestrator triggers this would result in a silent claim with no
+    // schema validation. For review-engine triggers this would result in a silent claim with no
     // signal sent — GitHub would not retry because the delivery appears processed. Throw so the
     // caller can return 500 and allow GitHub to retry with the original payload.
     if (
-      isOrchestratorTrigger &&
+      isReviewEngineTrigger &&
       !handlerDispatched &&
       eventType &&
       ROUTER_HANDLED_EVENT_TYPES.has(eventType)
     ) {
       throw new Error(
-        `[webhook] Orchestrator trigger '${eventType}' failed schema validation — delivery not claimed`,
+        `[webhook] Review-engine trigger '${eventType}' failed schema validation — delivery not claimed`,
       );
     }
 
-    // Fallback: dispatch orchestrator signals for event types without router schemas
+    // Fallback: dispatch review-engine signals for event types without router schemas
     // (issue_comment on PRs, pull_request_review_thread)
     if (eventType === 'issue_comment') {
       await handleIssueComment(action, data, context);
@@ -240,14 +240,14 @@ export const POST: RequestHandler = async (event) => {
       await handleReviewThread(action, data, context);
     }
   } catch (e) {
-    if (isOrchestratorTrigger) {
-      console.error('[webhook] Orchestrator signal dispatch failed:', e);
-      // Return 500 so GitHub retries this delivery (orchestrator failures)
-      error(500, 'Orchestrator signal dispatch failed');
+    if (isReviewEngineTrigger) {
+      console.error('[webhook] Review intent dispatch failed:', e);
+      // Return 500 so GitHub retries this delivery (review intent failures)
+      error(500, 'Review intent dispatch failed');
     } else {
-      // For non-orchestrator events, the delivery may already be claimed. Log and continue
+      // For non-review-engine events, the delivery may already be claimed. Log and continue
       // so we do not create a claimed-but-unprocessed drop that GitHub will not retry.
-      console.error('[webhook] Non-orchestrator webhook handler failed:', {
+      console.error('[webhook] Non-review-engine webhook handler failed:', {
         eventType,
         action,
         deliveryId,
@@ -256,34 +256,24 @@ export const POST: RequestHandler = async (event) => {
     }
   }
 
-  // Claim orchestrator events after successful processing.
-  // Runs for ALL orchestrator triggers including no-op paths (no workspace, bot events,
+  // Claim review-engine events after successful processing.
+  // Runs for ALL review-engine triggers including no-op paths (no workspace, bot events,
   // unassociated checks) to prevent unnecessary GitHub retries. Matches pre-refactor behavior.
-  // For orchestrator triggers: error() in the catch always throws and exits, so this is only
-  // reached on success. For non-orchestrator triggers: isOrchestratorTrigger is false, so
+  // For review-engine triggers: error() in the catch always throws and exits, so this is only
+  // reached on success. For non-review-engine triggers: isReviewEngineTrigger is false, so
   // this block is skipped regardless of whether the handler threw.
-  if (isOrchestratorTrigger) {
+  if (isReviewEngineTrigger) {
     await claimWebhookDelivery(githubContext, deliveryId, eventType, installationId);
   }
 
-  // 7. Pull request review dispatch would have happened here. The workflow
-  // runtime has been removed, so we log what would have been dispatched.
-  // TODO(weft): Dispatch this pull request review workflow through ../weft once
-  // durable webhook orchestration is restored.
-  console.log('[webhook] would dispatch pull-request-review workflow', {
-    eventType,
-    action: action ?? undefined,
-    deliveryId,
-  });
-
-  // 8. Handle repository rename/transfer events
+  // 7. Handle repository rename/transfer events
   await handleRepositoryMetadataEvents(githubContext, data);
 
-  // 9. Invalidate GitHub access and resource caches for events that affect repository data
+  // 8. Invalidate GitHub access and resource caches for events that affect repository data
   await invalidateGitHubAccessCacheForEvent(githubContext, data);
   await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
 
-  // 10. PR state tracking (fire-and-forget)
+  // 9. PR state tracking (fire-and-forget)
   dispatchPRStateTracking(githubContext, eventType, action, data);
 
   return json({ ok: true });

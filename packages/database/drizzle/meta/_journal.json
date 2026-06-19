@@ -169,6 +169,55 @@
       "when": 1781718794354,
       "tag": "0023_weft_action_items_reshape",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1781749349132,
+      "tag": "0024_add-review-contract-tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1781789173797,
+      "tag": "0025_review-intent-failure-backoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1781790292834,
+      "tag": "0026_review-intent-ready-queue-index",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1781797714847,
+      "tag": "0027_add-review-post-claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1781803754175,
+      "tag": "0028_agent_event_bigint_and_operator_stop_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1781805197674,
+      "tag": "0029_review-intent-delivery-kind-index",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1781819820583,
+      "tag": "0030_remove-operator-stopped-reason",
+      "breakpoints": true
     }
   ]
 }
