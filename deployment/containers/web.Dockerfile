@@ -6,6 +6,7 @@ COPY applications/proxy/package.json applications/proxy/package.json
 COPY applications/web/package.json applications/web/package.json
 COPY runner/package.json runner/package.json
 COPY packages packages
+COPY runner/package.json runner/package.json
 COPY scripts/package.json scripts/package.json
 COPY scripts/install-git-hooks.ts scripts/install-git-hooks.ts
 RUN bun install --frozen-lockfile

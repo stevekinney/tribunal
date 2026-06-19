@@ -9,6 +9,11 @@ export type FindingValidationResult =
   | { ok: true; finding: Finding }
   | { ok: false; reason: string };
 
+export type AnchoredFinding = {
+  finding: Finding;
+  anchored: boolean;
+};
+
 /** Validates and sanitizes a structured finding before it can become review output. */
 export function validateFinding(input: unknown, diffContext: DiffContext): FindingValidationResult {
   const parsed = findingSchema.safeParse(input);
@@ -29,8 +34,13 @@ export function sanitizeFinding(
     return { ok: false, reason: 'finding path escapes the repository' };
   }
 
-  if (!isFindingOnChangedFile(finding, diffContext)) {
-    return { ok: false, reason: 'finding does not point to a commentable diff line' };
+  const changedFile = diffContext.changedFiles.find((file) => file.path === finding.path);
+  if (changedFile === undefined) {
+    return { ok: false, reason: 'finding path is outside the pull request diff' };
+  }
+
+  if (finding.startLine === 0 || finding.endLine === 0) {
+    return { ok: false, reason: 'finding line must be one-based' };
   }
 
   const body = sanitizeCommentText(finding.body).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
@@ -40,10 +50,14 @@ export function sanitizeFinding(
       ? undefined
       : sanitizeCommentText(finding.suggestion).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
 
+  const isFileLevelFinding = finding.startLine === null && finding.endLine === null;
+  const commentable = isFileLevelFinding || isFindingOnCommentableLine(finding, changedFile);
+
   return {
     ok: true,
     finding: {
       ...finding,
+      ...(!commentable ? { startLine: null, endLine: null } : {}),
       body,
       title,
       suggestion,
@@ -51,16 +65,34 @@ export function sanitizeFinding(
   };
 }
 
-function isFindingOnChangedFile(finding: Finding, diffContext: DiffContext): boolean {
-  const changedFile = diffContext.changedFiles.find((file) => file.path === finding.path);
-  if (changedFile === undefined) return false;
-  if (finding.startLine === null && finding.endLine === null) return true;
-
+function isFindingOnCommentableLine(
+  finding: Finding,
+  changedFile: DiffContext['changedFiles'][number],
+): boolean {
   const line = finding.endLine ?? finding.startLine;
+  if (line === null) return true;
 
   return changedFile.commentableLines.some(
     (commentableLine) => commentableLine.side === finding.side && commentableLine.line === line,
   );
+}
+
+export function anchorFindings(
+  findings: readonly unknown[],
+  diffContext: DiffContext,
+): AnchoredFinding[] {
+  const anchoredFindings: AnchoredFinding[] = [];
+
+  for (const finding of findings) {
+    const validated = validateFinding(finding, diffContext);
+    if (!validated.ok) continue;
+    anchoredFindings.push({
+      finding: validated.finding,
+      anchored: validated.finding.startLine !== null || validated.finding.endLine !== null,
+    });
+  }
+
+  return anchoredFindings;
 }
 
 export function isRepositoryRelativePath(candidatePath: string): boolean {
@@ -99,6 +131,7 @@ export function computeCanonicalFindingFingerprint(finding: Finding): string {
     normalizedLine: normalizeFindingLine(finding),
     severity: finding.severity,
     normalizedTitle: normalizeFindingTitle(finding.title),
+    ...(isUnanchoredFinding(finding) ? { normalizedBody: normalizeFindingBody(finding.body) } : {}),
   });
 
   return createHash('sha256').update(payload).digest('hex');
@@ -122,6 +155,14 @@ function normalizeFindingLine(finding: Finding): number {
   return finding.endLine ?? finding.startLine ?? 0;
 }
 
+function isUnanchoredFinding(finding: Finding): boolean {
+  return finding.startLine === null && finding.endLine === null;
+}
+
 function normalizeFindingTitle(title: string): string {
   return stripControlCharacters(title).trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+function normalizeFindingBody(body: string): string {
+  return stripControlCharacters(body).trim().replace(/\s+/gu, ' ');
 }

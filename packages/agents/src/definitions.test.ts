@@ -50,6 +50,10 @@ describe('agent definitions', () => {
       toAgentDefinition({ ...agentSpec, model: 'haiku', effort: 'max' }, 'opus').effectiveEffort,
     ).toBeNull();
     expect(
+      toAgentDefinition({ ...agentSpec, model: 'claude-haiku-4-5', effort: 'max' }, 'opus')
+        .effectiveEffort,
+    ).toBeNull();
+    expect(
       toAgentDefinition({ ...agentSpec, model: 'sonnet', effort: undefined }, 'opus')
         .effectiveEffort,
     ).toBeNull();

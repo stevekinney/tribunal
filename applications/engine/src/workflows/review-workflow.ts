@@ -1,7 +1,12 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
+import {
+  anchorFindings,
+  computeCanonicalFindingFingerprint,
+  deduplicateFindings,
+} from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
+import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import type {
   AgentEvent,
   AgentResult,
@@ -906,7 +911,7 @@ export class ReviewWorkflowEngine {
       );
       const normalizedResult = controller.signal.aborted
         ? { ...result, stopped: execution.stopReason, findings: [] }
-        : result;
+        : sanitizeAgentResultFindings(result, diffContext);
       await this.flushAgentEventWrites();
       await this.finishAgentRun(agentRunId, reviewRun, agent, normalizedResult);
       return normalizedResult;
@@ -963,7 +968,11 @@ export class ReviewWorkflowEngine {
   }
 
   private recordAgentEvent(agentRunId: string, event: AgentEvent): void {
-    const normalizedEvent = { ...event, agentRunId };
+    const normalizedEvent = {
+      ...event,
+      agentRunId,
+      ...(event.detail === undefined ? {} : { detail: redactRuntimeRecord(event.detail) }),
+    };
     this.agentEvents.push(normalizedEvent);
     const write = this.ports.state?.upsertAgentEvent?.(normalizedEvent);
     if (write !== undefined) this.agentEventWrites.push(write);
@@ -1111,6 +1120,15 @@ export class ReviewWorkflowEngine {
       });
     }
   }
+}
+
+function sanitizeAgentResultFindings(result: AgentResult, diffContext: DiffContext): AgentResult {
+  return {
+    ...result,
+    findings: deduplicateFindings(
+      anchorFindings(result.findings, diffContext).map((finding) => finding.finding),
+    ),
+  };
 }
 
 function getSandboxBillingWindows(

@@ -2,8 +2,18 @@
   "name": "@tribunal/runner",
   "private": true,
   "type": "module",
+  "scripts": {
+    "format": "prettier --write --ignore-path ../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../.prettierignore .",
+    "test": "vitest run run-agent.test.mjs"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.181",
-    "@tribunal/agents": "workspace:*"
+    "@tribunal/agents": "workspace:*",
+    "@tribunal/review-core": "workspace:*",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.16"
   }
 }

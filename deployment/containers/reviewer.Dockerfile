@@ -29,4 +29,4 @@ RUN bun install --production --frozen-lockfile --filter @tribunal/runner
 COPY packages/agents ./packages/agents
 COPY packages/review-core ./packages/review-core
 COPY runner ./runner
-CMD ["node", "runner/verify-image.mjs"]
+CMD ["bun", "runner/verify-image.mjs"]
