@@ -259,18 +259,20 @@ function parseAnthropicCostReport(
 ): UsageCostApiEvent[] {
   const rows = getCostReportRows(payload);
   const events: UsageCostApiEvent[] = [];
-  let unsupportedCostReportRows = 0;
+  let positiveUsdRowsWithReviewRunId = 0;
+  let positiveUsdRowsWithoutReviewRunId = 0;
 
   for (const [index, row] of rows.entries()) {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
     if (row.currency !== undefined && row.currency !== 'USD') continue;
     const amountUsd = parseUsdDecimal(row.amount);
-    if (!Number.isFinite(amountUsd)) continue;
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
     const rowReviewRunId = metadata?.review_run_id;
     if (rowReviewRunId === undefined) {
-      unsupportedCostReportRows += 1;
+      positiveUsdRowsWithoutReviewRunId += 1;
       continue;
     }
+    positiveUsdRowsWithReviewRunId += 1;
     if (rowReviewRunId !== target.reviewRunId) continue;
     const userId = toNullableInteger(metadata?.user_id ?? row.user_id) ?? target.userId;
     events.push({
@@ -287,7 +289,11 @@ function parseAnthropicCostReport(
     });
   }
 
-  if (events.length === 0 && unsupportedCostReportRows > 0) {
+  if (
+    events.length === 0 &&
+    positiveUsdRowsWithoutReviewRunId > 0 &&
+    positiveUsdRowsWithReviewRunId === 0
+  ) {
     throw new Error(
       'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
     );

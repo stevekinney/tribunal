@@ -358,6 +358,44 @@ describe('runtime review intent consumer wiring', () => {
     ]);
   });
 
+  it('returns no Anthropic cost rows when only other runs are attributable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '1.50',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_1',
+                  description: 'Unscoped Claude Usage',
+                },
+                {
+                  amount: '2.25',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_1',
+                  description: 'Other review run usage',
+                  metadata: { review_run_id: 'run_other', user_id: '7', repository_id: '42' },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
+    ).resolves.toEqual([]);
+  });
+
   it('follows documented Anthropic cost report pagination', async () => {
     const fetchMock = vi
       .fn()

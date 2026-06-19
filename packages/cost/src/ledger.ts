@@ -14,6 +14,8 @@ import type { UsageCostApiClient, UsageCostApiEvent } from './usage-cost-api';
 
 type CostDatabase = Pick<Database, 'insert' | 'select'>;
 
+const defaultReconciliationLookbackMilliseconds = 60 * 60 * 1000;
+
 export type RecordSandboxInput = {
   userId: number;
   repositoryId: number;
@@ -178,7 +180,15 @@ async function readReviewRunEstimateStartedAt(
 
 function resolveReconciliationStartedAt(startedAt: Date | null, finishedAt: Date): Date {
   if (startedAt !== null && startedAt.getTime() < finishedAt.getTime()) return startedAt;
-  return new Date(finishedAt.getTime() - 1);
+  return new Date(finishedAt.getTime() - defaultReconciliationLookbackMilliseconds);
+}
+
+function parseSandboxWindowStartedAt(window: string): Date | undefined {
+  const normalizedWindow = /^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(window)
+    ? `${window}:00:00.000Z`
+    : window;
+  const startedAt = new Date(normalizedWindow);
+  return Number.isNaN(startedAt.getTime()) ? undefined : startedAt;
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -290,7 +300,7 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
           sandboxId: event.sandboxId,
           window: event.window,
         },
-        occurredAt: options.now?.(),
+        occurredAt: parseSandboxWindowStartedAt(event.window) ?? options.now?.(),
         idempotencyKey: event.idempotencyKey,
       }),
     reconcile: (reviewRunId) => reconcile(database, options.usageCostApiClient, reviewRunId),

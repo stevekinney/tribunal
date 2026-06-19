@@ -259,6 +259,29 @@ describe('cost ledger', () => {
     expect(receivedTarget?.startedAt).toEqual(expect.any(Date));
   });
 
+  it('reconciles with a one-hour fallback window when the run start is not before finish', async () => {
+    const { review } = await createCostFixture();
+    await testDatabase.db
+      .update(reviewRun)
+      .set({
+        startedAt: new Date('2026-06-17T12:30:00.000Z'),
+        finishedAt: new Date('2026-06-17T12:30:00.000Z'),
+      })
+      .where(eq(reviewRun.id, review.id));
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
+    const client: UsageCostApiClient = {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
+        return [];
+      },
+    };
+
+    await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget?.startedAt).toEqual(new Date('2026-06-17T11:30:00.000Z'));
+    expect(receivedTarget?.finishedAt).toEqual(new Date('2026-06-17T12:30:00.000Z'));
+  });
+
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
     const { user, review, reviewer, run } = await createCostFixture();
     await testDatabase.db
@@ -413,6 +436,7 @@ describe('cost ledger', () => {
       .select()
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
+    expect(sandboxRows[0]?.occurredAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
     expect(sandboxRows[0]?.meta).toMatchObject({
       pricingVersion: CURRENT_PRICING_VERSION,
       runtime: { runtimeSeconds: 60 },
@@ -420,6 +444,33 @@ describe('cost ledger', () => {
       sandboxId: 'sandbox_1',
       window: '2026-06-17T12:00:00.000Z',
     });
+  });
+
+  it('records sandbox cost port events at shorthand billing window starts', async () => {
+    const { user, repository, review } = await createCostFixture();
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:30:00.000Z'),
+    });
+
+    await port.recordSandbox({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      sandboxId: 'sandbox_2',
+      window: '2026-06-17T08',
+      amountUsd: 0.2,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      idempotencyKey: 'sandbox:sandbox_2:manual',
+    });
+
+    const rows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_2:manual'));
+    expect(rows[0]?.occurredAt).toEqual(new Date('2026-06-17T08:00:00.000Z'));
   });
 
   it('reports a blocked daily cap through the review-core cost port', async () => {
