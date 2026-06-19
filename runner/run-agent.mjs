@@ -344,7 +344,8 @@ export function createTribunalMcpServer(
   return createServer({
     name: 'tribunal',
     version: '0.0.1',
-    instructions: 'Read-only Tribunal review tools. Use record_finding to report findings.',
+    instructions:
+      'Tribunal review tools. Use read-only tools to inspect context, and use record_finding to report findings.',
     tools: [
       defineTool(
         'get_changed_files',

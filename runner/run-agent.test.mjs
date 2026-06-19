@@ -46,6 +46,8 @@ describe('runner agent wiring', () => {
 
     createTribunalMcpServer(reviewTools, captured.sdk);
 
+    expect(captured.server.instructions).toContain('use record_finding to report findings');
+    expect(captured.server.instructions).not.toContain('Read-only Tribunal review tools');
     const toolMetadata = Object.fromEntries(
       captured.server.tools.map((tool) => [tool.name, tool.options.annotations.readOnlyHint]),
     );

@@ -1,6 +1,10 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { anchorFindings, computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
+import {
+  anchorFindings,
+  computeCanonicalFindingFingerprint,
+  deduplicateFindings,
+} from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import type {
@@ -1121,7 +1125,9 @@ export class ReviewWorkflowEngine {
 function sanitizeAgentResultFindings(result: AgentResult, diffContext: DiffContext): AgentResult {
   return {
     ...result,
-    findings: anchorFindings(result.findings, diffContext).map((finding) => finding.finding),
+    findings: deduplicateFindings(
+      anchorFindings(result.findings, diffContext).map((finding) => finding.finding),
+    ),
   };
 }
 
