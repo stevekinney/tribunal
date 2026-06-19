@@ -1,6 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import {
   deleteAgent,
+  estimateAgentDryRun,
   getReviewEffortOptions,
   getReviewModelOptions,
   listAgents,
@@ -40,5 +41,11 @@ export const actions: Actions = {
     if (!user) redirect(302, '/login');
 
     return deleteAgent(user.id, await request.formData());
+  },
+  dryRun: async ({ locals, request }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    return estimateAgentDryRun(user.id, await request.formData());
   },
 };

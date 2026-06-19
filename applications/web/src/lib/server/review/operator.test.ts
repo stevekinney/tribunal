@@ -18,6 +18,7 @@ import {
 import { eq } from 'drizzle-orm';
 import {
   deleteAgent,
+  estimateAgentDryRun,
   getCostOverview,
   getRunInspector,
   saveAgent,
@@ -162,6 +163,29 @@ describe('review operator server helpers', () => {
     await expect(
       withTestDatabase(() => deleteAgent(owner.id, missingFormData)),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('estimates an agent dry run from the submitted prompt and sample diff', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'sonnet');
+    formData.set('effort', 'high');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result).toMatchObject({
+      dryRunEstimate: {
+        model: 'sonnet',
+        effort: 'high',
+      },
+    });
+    expect(result.dryRunEstimate.estimatedInputTokens).toBeGreaterThan(0);
+    expect(result.dryRunEstimate.estimatedOutputTokens).toBeGreaterThan(0);
+    expect(result.dryRunEstimate.costEstimateUsd).toBeGreaterThan(0);
   });
 
   it('scopes run inspection and stop control to the owning user', async () => {

@@ -315,6 +315,100 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
   return { success: true };
 }
 
+export type AgentDryRunEstimate = {
+  model: string;
+  effort: string | null;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  costEstimateUsd: number;
+};
+
+export async function estimateAgentDryRun(userId: number, formData: FormData) {
+  void userId;
+
+  const body = String(formData.get('body') ?? '').trim();
+  const sampleDiff = String(formData.get('sampleDiff') ?? '').trim();
+  const model = String(formData.get('model') ?? 'inherit').trim();
+  const effortValue = String(formData.get('effort') ?? '').trim();
+  const effort = effortValue === '' ? null : effortValue;
+
+  if (body.length === 0) {
+    return fail(400, { error: 'System prompt is required for a dry run estimate.' });
+  }
+
+  if (sampleDiff.length === 0) {
+    return fail(400, { error: 'Sample diff is required for a dry run estimate.' });
+  }
+
+  if (!agentModelSchema.safeParse(model).success) {
+    return fail(400, { error: 'Model is invalid.' });
+  }
+
+  if (effort !== null && !effortSchema.safeParse(effort).success) {
+    return fail(400, { error: 'Effort is invalid.' });
+  }
+
+  return {
+    dryRunEstimate: calculateAgentDryRunEstimate({ body, sampleDiff, model, effort }),
+  };
+}
+
+function calculateAgentDryRunEstimate(input: {
+  body: string;
+  sampleDiff: string;
+  model: string;
+  effort: string | null;
+}): AgentDryRunEstimate {
+  const estimatedInputTokens = Math.max(
+    1,
+    Math.ceil((input.body.length + input.sampleDiff.length) / 4),
+  );
+  const estimatedOutputTokens = Math.max(32, Math.ceil(input.sampleDiff.length / 8));
+  const modelRate = getEstimatedModelRate(input.model);
+  const effortMultiplier = getEstimatedEffortMultiplier(input.effort);
+  const costEstimateUsd =
+    ((estimatedInputTokens * modelRate.inputPerMillionTokens +
+      estimatedOutputTokens * modelRate.outputPerMillionTokens) /
+      1_000_000) *
+    effortMultiplier;
+
+  return {
+    model: input.model,
+    effort: input.effort,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    costEstimateUsd: Number(costEstimateUsd.toFixed(4)),
+  };
+}
+
+function getEstimatedModelRate(model: string) {
+  if (model.includes('opus')) {
+    return { inputPerMillionTokens: 15, outputPerMillionTokens: 75 };
+  }
+
+  if (model.includes('haiku')) {
+    return { inputPerMillionTokens: 1, outputPerMillionTokens: 5 };
+  }
+
+  return { inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
+}
+
+function getEstimatedEffortMultiplier(effort: string | null): number {
+  switch (effort) {
+    case 'low':
+      return 0.75;
+    case 'high':
+      return 1.5;
+    case 'xhigh':
+      return 2;
+    case 'max':
+      return 2.5;
+    case 'medium':
+    default:
+      return 1;
+  }
+}
+
 export async function getRunsOverview(userId: number) {
   const rows = await db
     .select({

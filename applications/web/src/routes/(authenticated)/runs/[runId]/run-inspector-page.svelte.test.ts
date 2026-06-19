@@ -26,7 +26,7 @@ const data = {
     status: 'running',
     workflowId: null,
     sandboxId: null,
-    checkRunId: null,
+    checkRunId: 123456,
     commentsPosted: 0,
     reviewPostClaimedAt: null,
     costEstimateUsd: '1.00',
@@ -112,6 +112,10 @@ describe('/runs/[runId] page', () => {
     await expect.element(page.getByText('blocked').first()).toBeInTheDocument();
     await expect.element(page.getByText('Glob')).toBeInTheDocument();
     await expect.element(page.getByText('Missing authorization check')).toBeInTheDocument();
+    await expect.element(page.getByText('$1.00')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Open GitHub Check Run' }))
+      .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/runs/123456');
     await expect
       .element(page.getByRole('link', { name: 'GitHub comment' }))
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');

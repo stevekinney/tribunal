@@ -16,6 +16,11 @@
   const replacementRunHref = $derived(
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
   );
+  const checkRunHref = $derived(
+    run.checkRunId === null
+      ? null
+      : `https://github.com/${run.repositoryOwner}/${run.repositoryName}/runs/${run.checkRunId}`,
+  );
 
   function isDeniedToolEvent(detail: unknown): boolean {
     return (
@@ -70,6 +75,22 @@
     {#if run.error}
       <Alert variant="error">{run.error}</Alert>
     {/if}
+    <dl class="run-summary">
+      <div>
+        <dt>Estimated cost</dt>
+        <dd>${Number(run.costEstimateUsd).toFixed(2)}</dd>
+      </div>
+      <div>
+        <dt>Check Run</dt>
+        <dd>
+          {#if checkRunHref}
+            <Link href={checkRunHref}>Open GitHub Check Run</Link>
+          {:else}
+            <span>No Check Run recorded</span>
+          {/if}
+        </dd>
+      </div>
+    </dl>
   </Card>
 
   <div class="surface-states" aria-label="Surface states">
@@ -167,6 +188,34 @@
     gap: var(--space-2);
   }
 
+  .run-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .run-summary div {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--surface-overlay);
+  }
+
+  .run-summary dt {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .run-summary dd {
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+  }
+
   .connection-dot {
     width: 0.625rem;
     height: 0.625rem;
@@ -215,5 +264,11 @@
   .finding-list li {
     display: grid;
     gap: var(--space-1);
+  }
+
+  @media (max-width: 640px) {
+    .run-summary {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
