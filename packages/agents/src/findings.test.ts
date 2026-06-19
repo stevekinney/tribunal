@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffContext, Finding } from '@tribunal/review-core/types';
 import {
+  anchorFindings,
   computeCanonicalFindingFingerprint,
   deduplicateFindings,
   isRepositoryRelativePath,
@@ -149,7 +150,7 @@ describe('finding validation', () => {
     }
   });
 
-  it('allows file-level findings and rejects unchanged or non-commentable lines', () => {
+  it('allows file-level findings, rejects unchanged files, and routes off-diff lines to summaries', () => {
     expect(
       validateFinding({ ...finding, startLine: null, endLine: null }, diffContext),
     ).toMatchObject({ ok: true });
@@ -159,11 +160,38 @@ describe('finding validation', () => {
     expect(validateFinding({ ...finding, path: 'src/other.ts' }, diffContext)).toMatchObject({
       ok: false,
     });
+    const offDiffFinding = validateFinding(
+      { ...finding, startLine: 99, endLine: null },
+      diffContext,
+    );
+    expect(offDiffFinding).toMatchObject({ ok: true });
+    if (offDiffFinding.ok) {
+      expect(offDiffFinding.finding).toMatchObject({ startLine: null, endLine: null });
+    }
+  });
+
+  it('anchors sanitized findings without dropping off-diff summary findings', () => {
     expect(
-      validateFinding({ ...finding, startLine: 99, endLine: null }, diffContext),
-    ).toMatchObject({
-      ok: false,
-    });
+      anchorFindings(
+        [
+          finding,
+          { ...finding, startLine: 99, endLine: null, title: '@team\n/fix this' },
+          { ...finding, path: '../secret.env' },
+        ],
+        diffContext,
+      ),
+    ).toEqual([
+      { finding, anchored: true },
+      {
+        finding: {
+          ...finding,
+          startLine: null,
+          endLine: null,
+          title: 'team\nfix this',
+        },
+        anchored: false,
+      },
+    ]);
   });
 
   it('classifies repository-relative paths without relying on changed-file context', () => {

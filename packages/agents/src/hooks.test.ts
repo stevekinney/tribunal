@@ -49,8 +49,67 @@ describe('read-only hook policy', () => {
     ).toMatchObject({ permissionDecision: 'allow' });
   });
 
+  it('allows read-only discovery tools without treating grep text as a path', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Grep',
+        input: { pattern: '../secret', path: 'src' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'allow' });
+
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Glob',
+        input: { pattern: 'src/**/*.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'allow' });
+
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Glob',
+        input: { pattern: '../**/*' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({ permissionDecision: 'deny' });
+  });
+
+  it('blocks Glob patterns that escape or cannot be validated as repository-relative', () => {
+    for (const pattern of ['', 'src\\**\\*.ts', '/tmp/**/*.ts', 'C:/secrets/**/*.ts']) {
+      expect(
+        enforceReadOnlyToolUse({
+          toolName: 'Glob',
+          input: { pattern },
+          repositoryRoot: '/workspace/repository',
+          diffContext,
+        }),
+      ).toMatchObject({
+        permissionDecision: 'deny',
+        reason: 'tool path escapes the repository',
+      });
+    }
+  });
+
+  it('blocks Glob without a string pattern', () => {
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Glob',
+        input: { pattern: null },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'tool path escapes the repository',
+    });
+  });
+
   it('blocks forbidden tools', () => {
-    for (const toolName of ['Write', 'Edit', 'Bash', 'Grep', 'Glob']) {
+    for (const toolName of ['Write', 'Edit', 'Bash']) {
       expect(
         enforceReadOnlyToolUse({
           toolName,

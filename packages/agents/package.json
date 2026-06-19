@@ -8,6 +8,7 @@
     "./definitions": "./src/definitions.ts",
     "./findings": "./src/findings.ts",
     "./hooks": "./src/hooks.ts",
+    "./prompts": "./src/prompts.ts",
     "./tools": "./src/tools.ts"
   },
   "scripts": {

@@ -9,6 +9,11 @@ export type FindingValidationResult =
   | { ok: true; finding: Finding }
   | { ok: false; reason: string };
 
+export type AnchoredFinding = {
+  finding: Finding;
+  anchored: boolean;
+};
+
 /** Validates and sanitizes a structured finding before it can become review output. */
 export function validateFinding(input: unknown, diffContext: DiffContext): FindingValidationResult {
   const parsed = findingSchema.safeParse(input);
@@ -29,8 +34,9 @@ export function sanitizeFinding(
     return { ok: false, reason: 'finding path escapes the repository' };
   }
 
-  if (!isFindingOnChangedFile(finding, diffContext)) {
-    return { ok: false, reason: 'finding does not point to a commentable diff line' };
+  const changedFile = diffContext.changedFiles.find((file) => file.path === finding.path);
+  if (changedFile === undefined) {
+    return { ok: false, reason: 'finding path is outside the pull request diff' };
   }
 
   const body = sanitizeCommentText(finding.body).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
@@ -40,10 +46,14 @@ export function sanitizeFinding(
       ? undefined
       : sanitizeCommentText(finding.suggestion).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
 
+  const line = normalizeFindingLine(finding);
+  const commentable = line === 0 || isFindingOnCommentableLine(finding, changedFile);
+
   return {
     ok: true,
     finding: {
       ...finding,
+      ...(!commentable ? { startLine: null, endLine: null } : {}),
       body,
       title,
       suggestion,
@@ -51,16 +61,34 @@ export function sanitizeFinding(
   };
 }
 
-function isFindingOnChangedFile(finding: Finding, diffContext: DiffContext): boolean {
-  const changedFile = diffContext.changedFiles.find((file) => file.path === finding.path);
-  if (changedFile === undefined) return false;
-  if (finding.startLine === null && finding.endLine === null) return true;
-
+function isFindingOnCommentableLine(
+  finding: Finding,
+  changedFile: DiffContext['changedFiles'][number],
+): boolean {
   const line = finding.endLine ?? finding.startLine;
+  if (line === null) return true;
 
   return changedFile.commentableLines.some(
     (commentableLine) => commentableLine.side === finding.side && commentableLine.line === line,
   );
+}
+
+export function anchorFindings(
+  findings: readonly Finding[],
+  diffContext: DiffContext,
+): AnchoredFinding[] {
+  const anchoredFindings: AnchoredFinding[] = [];
+
+  for (const finding of findings) {
+    const sanitized = sanitizeFinding(finding, diffContext);
+    if (!sanitized.ok) continue;
+    anchoredFindings.push({
+      finding: sanitized.finding,
+      anchored: sanitized.finding.startLine !== null || sanitized.finding.endLine !== null,
+    });
+  }
+
+  return anchoredFindings;
 }
 
 export function isRepositoryRelativePath(candidatePath: string): boolean {

@@ -500,6 +500,59 @@ describe('sandbox port', () => {
     });
   });
 
+  it('redacts sensitive runner event details and command failure output', async () => {
+    const { adapter } = createFakeAdapter();
+    const event = {
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: {
+        token: 'ghs_abcdefghijklmnopqrstuvwxyz',
+        input: { content: 'const rawRepositoryFileContent = true;' },
+      },
+      at: '2026-06-18T10:00:00.000Z',
+    } satisfies AgentEvent;
+    adapter.runTrackedCommand = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({ type: 'event', event }),
+      stderr: 'agent crashed with sk-ant-secret and github_pat_abcdefghijklmnopqrstuvwxyz',
+    });
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+    const events: AgentEvent[] = [];
+
+    await expect(
+      port.runAgent(
+        'sandbox_1',
+        {
+          id: 'agent_1',
+          agentRunId: 'agent_run_1',
+          userId: 1,
+          slug: 'security-reviewer',
+          description: 'Find security issues',
+          body: 'Review.',
+          model: 'sonnet',
+          enabled: true,
+        },
+        diffContext,
+        'token',
+        (agentEvent) => events.push(agentEvent),
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      error: expect.not.stringContaining('sk-ant-secret'),
+    });
+
+    expect(events[0]?.detail).toEqual({
+      token: '[REDACTED]',
+      input: { content: '[REDACTED_CONTENT]' },
+    });
+  });
+
   it('returns a typed failed result when failed agent runner commands do not produce a valid result', async () => {
     const { adapter } = createFakeAdapter();
     adapter.runTrackedCommand = async () => ({

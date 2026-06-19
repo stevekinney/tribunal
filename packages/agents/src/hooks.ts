@@ -28,8 +28,12 @@ export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicy
       : { permissionDecision: 'deny', reason: validation.reason };
   }
 
-  const requestedPath = getRequestedPath(policyInput.input);
+  const requestedPath = getRequestedPath(policyInput.toolName, policyInput.input);
   if (requestedPath !== null && !isRepositoryRelativePath(requestedPath)) {
+    return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
+  }
+  const requestedPattern = getRequestedGlobPattern(policyInput.toolName, policyInput.input);
+  if (requestedPattern !== null && !isRepositoryRelativePattern(requestedPattern)) {
     return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
   }
   if (requiresChangedFileScope(policyInput.toolName)) {
@@ -48,11 +52,24 @@ function requiresChangedFileScope(toolName: string): boolean {
   return toolName === 'Read' || toolName === 'mcp__tribunal__read_base_file';
 }
 
-function getRequestedPath(input: Record<string, unknown>): string | null {
-  for (const key of ['file_path', 'path', 'pattern']) {
+function getRequestedPath(toolName: string, input: Record<string, unknown>): string | null {
+  const keys = toolName === 'Grep' ? ['path'] : ['file_path', 'path'];
+  for (const key of keys) {
     const value = input[key];
     if (typeof value === 'string') return value;
   }
 
   return null;
+}
+
+function getRequestedGlobPattern(toolName: string, input: Record<string, unknown>): string | null {
+  if (toolName !== 'Glob') return null;
+  return typeof input.pattern === 'string' ? input.pattern : '';
+}
+
+function isRepositoryRelativePattern(pattern: string): boolean {
+  if (pattern.length === 0) return false;
+  if (pattern.includes('\\')) return false;
+  if (pattern.startsWith('/') || /^[A-Za-z]:/u.test(pattern)) return false;
+  return !pattern.split('/').includes('..');
 }

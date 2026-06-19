@@ -1,4 +1,5 @@
 import { agentResultSchema } from '@tribunal/review-core/schemas';
+import { redactRuntimeRecord, redactRuntimeText } from '@tribunal/review-core/redaction';
 import type { AgentEvent, AgentResult, AgentSpec, DiffContext } from '@tribunal/review-core/types';
 import type { RepoRef, SandboxOptions, SandboxPort } from '@tribunal/review-core/ports';
 import { buildProxyOnlyEgressConfiguration, validateCloneInput } from './configuration';
@@ -130,6 +131,8 @@ export function createSandboxPort(
             TRIBUNAL_PROXY_URL: configuration.proxyUrl,
             ANTHROPIC_BASE_URL: makeProxiedAnthropicUrl(configuration.proxyUrl),
             TRIBUNAL_AGENT_MODEL: agent.model,
+            TRIBUNAL_AGENT_DESCRIPTION: agent.description,
+            TRIBUNAL_AGENT_BODY: agent.body,
             TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
             TRIBUNAL_CHANGED_FILES: JSON.stringify(
               diffContext.changedFiles.map((file) => file.path),
@@ -278,7 +281,7 @@ function parseAgentEvent(value: unknown): AgentEvent | undefined {
     seq: value.seq,
     kind: value.kind as AgentEvent['kind'],
     ...(typeof value.tool === 'string' ? { tool: value.tool } : {}),
-    ...(isRecord(value.detail) ? { detail: value.detail } : {}),
+    ...(isRecord(value.detail) ? { detail: redactRuntimeRecord(value.detail) } : {}),
     at: value.at,
   };
 }
@@ -340,10 +343,10 @@ function withAgentResultError(result: AgentResult, error: string): AgentResult {
 
 function formatAgentCommandFailure(commandResult: SandboxCommandResult): string {
   const detail = commandResult.stderr || commandResult.stdout || 'agent runner produced no output';
-  return `Agent runner failed with exit code ${commandResult.exitCode}: ${detail}`;
+  return `Agent runner failed with exit code ${commandResult.exitCode}: ${redactRuntimeText(detail)}`;
 }
 
 function formatGitCommandFailure(commandResult: SandboxCommandResult): string {
   const detail = commandResult.stderr || commandResult.stdout || 'git command produced no output';
-  return `Sandbox repository update failed with exit code ${commandResult.exitCode}: ${detail}`;
+  return `Sandbox repository update failed with exit code ${commandResult.exitCode}: ${redactRuntimeText(detail)}`;
 }

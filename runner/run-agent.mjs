@@ -1,7 +1,16 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { READ_ONLY_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
+import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod/v4';
+import {
+  ALLOWED_AGENT_TOOLS,
+  buildReviewPrompt,
+  createTribunalReviewTools,
+  deduplicateFindings,
+  enforceReadOnlyToolUse,
+  anchorFindings,
+} from '@tribunal/agents';
+import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 
 const [, , agentSlug] = process.argv;
 
@@ -26,6 +35,14 @@ if (resultPath) {
 const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
 const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
 const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
+const agentDescription =
+  process.env.TRIBUNAL_AGENT_DESCRIPTION ?? `Tribunal review agent ${agentSlug}`;
+const agentBody =
+  process.env.TRIBUNAL_AGENT_BODY ??
+  'Review the pull request for confirmed, actionable code review findings.';
+const guidelines =
+  process.env.TRIBUNAL_REVIEW_GUIDELINES ??
+  'Report only confirmed findings. Do not approve, reject, or modify the pull request.';
 const diffContext = createDiffContext();
 let sequence = 0;
 let latestSdkResult;
@@ -64,24 +81,39 @@ try {
 }
 
 async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
-  const prompt = [
-    'Review this pull request from the checked-out repository.',
-    'Return only structured findings. Do not modify files. Do not run shell commands.',
-    'Each finding must include path, startLine, endLine, side, severity, title, body, and optional suggestion.',
-  ].join('\n');
+  const prompt = buildReviewPrompt({
+    agentDescription,
+    agentBody,
+    diffContext,
+    guidelines,
+  });
+  const reviewTools = createTribunalReviewTools({ diffContext, guidelines });
+  const tribunalMcpServer = createTribunalMcpServer(reviewTools);
   let sdkResult;
 
   const stream = query({
     prompt,
     options: {
+      agent: agentSlug,
+      agents: {
+        [agentSlug]: {
+          description: agentDescription,
+          prompt: agentBody,
+          tools: [...ALLOWED_AGENT_TOOLS],
+          model,
+          ...(effort ? { effort } : {}),
+          permissionMode: 'dontAsk',
+        },
+      },
       cwd: repositoryPath,
       model,
       ...(effort ? { effort } : {}),
       settingSources: [],
       strictMcpConfig: true,
-      mcpServers: {},
+      mcpServers: { tribunal: tribunalMcpServer },
       permissionMode: 'dontAsk',
-      allowedTools: [...READ_ONLY_AGENT_TOOLS],
+      tools: [...ALLOWED_AGENT_TOOLS],
+      allowedTools: [...ALLOWED_AGENT_TOOLS],
       disallowedTools: [
         'Bash',
         'Write',
@@ -103,7 +135,7 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
           'tool_pre',
           {
             toolName,
-            input,
+            input: redactRuntimeValueForEvent(input),
             allowed,
             denied: !allowed,
             reason:
@@ -159,12 +191,15 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   }
 
   const findings = Array.isArray(sdkResult?.structured_output?.findings)
-    ? sdkResult.structured_output.findings
+    ? anchorFindings(sdkResult.structured_output.findings, diffContext).map(
+        (finding) => finding.finding,
+      )
     : [];
+  const collectedFindings = reviewTools.record_finding.collectedFindings;
 
   return {
     agentSlug,
-    findings,
+    findings: deduplicateFindings([...collectedFindings, ...findings]),
     modelUsed: model,
     effortUsed: effort,
     usage: normalizeUsage(sdkResult?.usage),
@@ -211,11 +246,64 @@ function emitEvent(kind, detail = {}, tool) {
         seq: sequence,
         kind,
         ...(tool ? { tool } : {}),
-        detail,
+        detail: redactRuntimeValueForEvent(detail),
         at: new Date().toISOString(),
       },
     })}\n`,
   );
+}
+
+function createTribunalMcpServer(reviewTools) {
+  return createSdkMcpServer({
+    name: 'tribunal',
+    version: '0.0.1',
+    instructions: 'Read-only Tribunal review tools. Use record_finding to report findings.',
+    tools: [
+      tool(
+        'get_changed_files',
+        reviewTools.get_changed_files.description,
+        {},
+        async () => toToolResult(reviewTools.get_changed_files.execute({})),
+        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+      ),
+      tool(
+        'read_base_file',
+        reviewTools.read_base_file.description,
+        { path: z.string() },
+        async (input) => toToolResult(reviewTools.read_base_file.execute(input)),
+        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+      ),
+      tool(
+        'get_pr_context',
+        reviewTools.get_pr_context.description,
+        {},
+        async () => toToolResult(reviewTools.get_pr_context.execute({})),
+        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+      ),
+      tool(
+        'get_review_guidelines',
+        reviewTools.get_review_guidelines.description,
+        {},
+        async () => toToolResult(reviewTools.get_review_guidelines.execute({})),
+        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+      ),
+      tool(
+        'record_finding',
+        reviewTools.record_finding.description,
+        { finding: z.unknown() },
+        async (input) => toToolResult(reviewTools.record_finding.execute(input)),
+        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+      ),
+    ],
+  });
+}
+
+function toToolResult(value) {
+  return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+}
+
+function redactRuntimeValueForEvent(value) {
+  return isRecord(value) ? redactRuntimeRecord(value) : value;
 }
 
 function createDiffContext() {
