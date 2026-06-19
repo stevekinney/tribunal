@@ -274,6 +274,7 @@ jobs:
             --add-host=host.docker.internal:host-gateway \
             -e PORT=4312 \
             -e DATABASE_URL="${database_url}" \
+            -e REDIS_URL="${redis_url}" \
             -e GITHUB_APP_ID=12345 \
             -e GITHUB_APP_PRIVATE_KEY=ci-placeholder \
             -e ANTHROPIC_API_KEY=sk-ant-ci-placeholder \
