@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod/v4';
 import {
@@ -10,77 +11,122 @@ import {
   enforceReadOnlyToolUse,
   anchorFindings,
 } from '@tribunal/agents';
-import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
+import { redactRuntimeValue } from '@tribunal/review-core/redaction';
 
-const [, , agentSlug] = process.argv;
-
-if (!agentSlug) {
-  console.error('Missing agent slug.');
-  process.exit(1);
+if (isMainModule()) {
+  await main();
 }
 
-if (!process.env.TRIBUNAL_RUN_TOKEN) {
-  console.error('Missing TRIBUNAL_RUN_TOKEN.');
-  process.exit(1);
-}
+export async function main({
+  argv = process.argv,
+  environment = process.env,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  exit = process.exit,
+} = {}) {
+  const [, , agentSlug] = argv;
 
-const startedAt = performance.now();
-const resultPath = process.env.TRIBUNAL_AGENT_RESULT_FILE;
+  if (!agentSlug || !isAgentSlug(agentSlug)) {
+    stderr.write('Missing or invalid agent slug.\n');
+    exit(1);
+    return;
+  }
 
-if (resultPath) {
-  process.stdout.write(await readFile(resultPath, 'utf8'));
-  process.exit(0);
-}
+  if (!environment.TRIBUNAL_RUN_TOKEN) {
+    stderr.write('Missing TRIBUNAL_RUN_TOKEN.\n');
+    exit(1);
+    return;
+  }
 
-const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
-const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
-const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
-const agentDescription =
-  process.env.TRIBUNAL_AGENT_DESCRIPTION ?? `Tribunal review agent ${agentSlug}`;
-const agentBody =
-  process.env.TRIBUNAL_AGENT_BODY ??
-  'Review the pull request for confirmed, actionable code review findings.';
-const guidelines =
-  process.env.TRIBUNAL_REVIEW_GUIDELINES ??
-  'Report only confirmed findings. Do not approve, reject, or modify the pull request.';
-const diffContext = createDiffContext();
-let sequence = 0;
-let latestSdkResult;
-let resultWritten = false;
+  const resultPath = environment.TRIBUNAL_AGENT_RESULT_FILE;
 
-emitEvent('session_start', { agentSlug, model, effort });
-process.once('SIGTERM', () => {
-  emitEvent('stop', { reason: 'terminated' });
-  writeResult(
-    createResult({
+  if (resultPath) {
+    stdout.write(await readFile(resultPath, 'utf8'));
+    exit(0);
+    return;
+  }
+
+  const startedAt = performance.now();
+  const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
+  const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
+  const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
+  const agentDescription =
+    environment.TRIBUNAL_AGENT_DESCRIPTION ?? `Tribunal review agent ${agentSlug}`;
+  const agentBody =
+    environment.TRIBUNAL_AGENT_BODY ??
+    'Review the pull request for confirmed, actionable code review findings.';
+  const guidelines =
+    environment.TRIBUNAL_REVIEW_GUIDELINES ??
+    'Report only confirmed findings. Do not approve, reject, or modify the pull request.';
+  const diffContext = createDiffContext(environment);
+  const emitEvent = createEventEmitter({ environment, stdout });
+  const resultState = { written: false };
+  let latestSdkResult;
+
+  emitEvent('session_start', { agentSlug, model, effort });
+  process.once('SIGTERM', () => {
+    emitEvent('stop', { reason: 'terminated' });
+    writeResult(
+      stdout,
+      resultState,
+      createResult({
+        agentSlug,
+        modelUsed: model,
+        effortUsed: effort,
+        sdkResult: latestSdkResult,
+        durationMs: elapsedMilliseconds(startedAt),
+        error: 'Agent review stopped before completion.',
+      }),
+    );
+    exit(143);
+  });
+
+  try {
+    const result = await runClaudeReview({
+      agentSlug,
+      repositoryPath,
+      model,
+      effort,
+      agentDescription,
+      agentBody,
+      guidelines,
+      diffContext,
+      startedAt,
+      emitEvent,
+      onSdkResult: (sdkResult) => {
+        latestSdkResult = sdkResult;
+      },
+    });
+    writeResult(stdout, resultState, result);
+  } catch (error) {
+    emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
+    const result = createResult({
       agentSlug,
       modelUsed: model,
       effortUsed: effort,
       sdkResult: latestSdkResult,
-      durationMs: elapsedMilliseconds(),
-      error: 'Agent review stopped before completion.',
-    }),
-  );
-  process.exit(143);
-});
-
-try {
-  const result = await runClaudeReview({ agentSlug, repositoryPath, model, effort });
-  writeResult(result);
-} catch (error) {
-  emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
-  const result = createResult({
-    agentSlug,
-    modelUsed: model,
-    effortUsed: effort,
-    sdkResult: latestSdkResult,
-    durationMs: elapsedMilliseconds(),
-    error: error instanceof Error ? error.message : 'Agent review failed.',
-  });
-  writeResult(result);
+      durationMs: elapsedMilliseconds(startedAt),
+      error: error instanceof Error ? error.message : 'Agent review failed.',
+    });
+    writeResult(stdout, resultState, result);
+  }
 }
 
-async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
+export async function runClaudeReview({
+  agentSlug,
+  repositoryPath,
+  model,
+  effort,
+  agentDescription,
+  agentBody,
+  guidelines,
+  diffContext,
+  startedAt = performance.now(),
+  emitEvent = () => {},
+  onSdkResult = () => {},
+  queryClient = query,
+  createMcpServer = createTribunalMcpServer,
+}) {
   const prompt = buildReviewPrompt({
     agentDescription,
     agentBody,
@@ -88,10 +134,10 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
     guidelines,
   });
   const reviewTools = createTribunalReviewTools({ diffContext, guidelines });
-  const tribunalMcpServer = createTribunalMcpServer(reviewTools);
+  const tribunalMcpServer = createMcpServer(reviewTools);
   let sdkResult;
 
-  const stream = query({
+  const stream = queryClient({
     prompt,
     options: {
       agent: agentSlug,
@@ -185,7 +231,7 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   for await (const message of stream) {
     if (message.type === 'result') {
       sdkResult = message;
-      latestSdkResult = message;
+      onSdkResult(message);
     } else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
     else if (message.type === 'system') emitEvent('notification', { subtype: message.subtype });
   }
@@ -204,14 +250,14 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
     effortUsed: effort,
     usage: normalizeUsage(sdkResult?.usage),
     costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
-    durationMs: elapsedMilliseconds(),
+    durationMs: elapsedMilliseconds(startedAt),
   };
 }
 
-function writeResult(result) {
-  if (resultWritten) return;
-  resultWritten = true;
-  process.stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+function writeResult(stdout, state, result) {
+  if (state.written) return;
+  state.written = true;
+  stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
 }
 
 function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs, error }) {
@@ -236,63 +282,70 @@ function normalizeUsage(usage = {}) {
   };
 }
 
-function emitEvent(kind, detail = {}, tool) {
-  sequence += 1;
-  process.stdout.write(
-    `${JSON.stringify({
-      type: 'event',
-      event: {
-        agentRunId: process.env.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
-        seq: sequence,
-        kind,
-        ...(tool ? { tool } : {}),
-        detail: redactRuntimeValueForEvent(detail),
-        at: new Date().toISOString(),
-      },
-    })}\n`,
-  );
+function createEventEmitter({ environment, stdout }) {
+  let sequence = 0;
+
+  return (kind, detail = {}, tool) => {
+    sequence += 1;
+    stdout.write(
+      `${JSON.stringify({
+        type: 'event',
+        event: {
+          agentRunId: environment.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
+          seq: sequence,
+          kind,
+          ...(tool ? { tool } : {}),
+          detail: redactRuntimeValueForEvent(detail),
+          at: new Date().toISOString(),
+        },
+      })}\n`,
+    );
+  };
 }
 
-function createTribunalMcpServer(reviewTools) {
-  return createSdkMcpServer({
+export function createTribunalMcpServer(
+  reviewTools,
+  { createServer = createSdkMcpServer, defineTool = tool } = {},
+) {
+  return createServer({
     name: 'tribunal',
     version: '0.0.1',
     instructions: 'Read-only Tribunal review tools. Use record_finding to report findings.',
     tools: [
-      tool(
+      defineTool(
         'get_changed_files',
         reviewTools.get_changed_files.description,
         {},
         async () => toToolResult(reviewTools.get_changed_files.execute({})),
         { annotations: { readOnlyHint: true }, alwaysLoad: true },
       ),
-      tool(
+      defineTool(
         'read_base_file',
         reviewTools.read_base_file.description,
         { path: z.string() },
         async (input) => toToolResult(reviewTools.read_base_file.execute(input)),
         { annotations: { readOnlyHint: true }, alwaysLoad: true },
       ),
-      tool(
+      defineTool(
         'get_pr_context',
         reviewTools.get_pr_context.description,
         {},
         async () => toToolResult(reviewTools.get_pr_context.execute({})),
         { annotations: { readOnlyHint: true }, alwaysLoad: true },
       ),
-      tool(
+      defineTool(
         'get_review_guidelines',
         reviewTools.get_review_guidelines.description,
         {},
         async () => toToolResult(reviewTools.get_review_guidelines.execute({})),
         { annotations: { readOnlyHint: true }, alwaysLoad: true },
       ),
-      tool(
+      defineTool(
         'record_finding',
         reviewTools.record_finding.description,
         { finding: z.unknown() },
         async (input) => toToolResult(reviewTools.record_finding.execute(input)),
-        { annotations: { readOnlyHint: true }, alwaysLoad: true },
+        { annotations: { readOnlyHint: false }, alwaysLoad: true },
       ),
     ],
   });
@@ -302,25 +355,25 @@ function toToolResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
-function redactRuntimeValueForEvent(value) {
-  return isRecord(value) ? redactRuntimeRecord(value) : value;
+export function redactRuntimeValueForEvent(value) {
+  return redactRuntimeValue(value);
 }
 
-function createDiffContext() {
-  const parsedDiffContext = parseDiffContext();
+function createDiffContext(environment) {
+  const parsedDiffContext = parseDiffContext(environment);
   if (parsedDiffContext !== null) return parsedDiffContext;
 
-  const changedFiles = parseChangedFiles();
+  const changedFiles = parseChangedFiles(environment);
   return {
-    headSha: process.env.TRIBUNAL_HEAD_SHA ?? 'unknown',
-    baseSha: process.env.TRIBUNAL_BASE_SHA ?? 'unknown',
+    headSha: environment.TRIBUNAL_HEAD_SHA ?? 'unknown',
+    baseSha: environment.TRIBUNAL_BASE_SHA ?? 'unknown',
     changedFiles: changedFiles.map((path) => ({
       path,
       status: 'modified',
       commentableLines: [],
     })),
     pr: {
-      number: Number(process.env.TRIBUNAL_PULL_REQUEST_NUMBER ?? 0),
+      number: Number(environment.TRIBUNAL_PULL_REQUEST_NUMBER ?? 0),
       title: '',
       body: '',
       labels: [],
@@ -329,9 +382,9 @@ function createDiffContext() {
   };
 }
 
-function parseDiffContext() {
+function parseDiffContext(environment) {
   try {
-    const parsed = JSON.parse(process.env.TRIBUNAL_DIFF_CONTEXT ?? 'null');
+    const parsed = JSON.parse(environment.TRIBUNAL_DIFF_CONTEXT ?? 'null');
     if (!isRecord(parsed)) return null;
     if (!Array.isArray(parsed.changedFiles)) return null;
     if (!isRecord(parsed.pr)) return null;
@@ -382,9 +435,9 @@ function normalizeCommentableLine(value) {
   return { side: value.side, line: value.line };
 }
 
-function parseChangedFiles() {
+function parseChangedFiles(environment) {
   try {
-    const parsed = JSON.parse(process.env.TRIBUNAL_CHANGED_FILES ?? '[]');
+    const parsed = JSON.parse(environment.TRIBUNAL_CHANGED_FILES ?? '[]');
     return Array.isArray(parsed) ? parsed.filter((path) => typeof path === 'string') : [];
   } catch {
     return [];
@@ -395,6 +448,14 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function elapsedMilliseconds() {
+function isAgentSlug(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/u.test(value);
+}
+
+function elapsedMilliseconds(startedAt) {
   return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function isMainModule() {
+  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 }

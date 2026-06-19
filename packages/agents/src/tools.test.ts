@@ -42,7 +42,11 @@ describe('review tools', () => {
   it('marks all Tribunal tools as read-only', () => {
     const tools = createTribunalReviewTools({ diffContext, guidelines: 'Be kind.' });
 
-    expect(Object.values(tools).every((tool) => tool.readOnlyHint)).toBe(true);
+    expect(tools.get_changed_files.readOnlyHint).toBe(true);
+    expect(tools.read_base_file.readOnlyHint).toBe(true);
+    expect(tools.get_pr_context.readOnlyHint).toBe(true);
+    expect(tools.get_review_guidelines.readOnlyHint).toBe(true);
+    expect(tools.record_finding.readOnlyHint).toBe(false);
   });
 
   it('returns changed files, pull request context, guidelines, and optional base files', () => {

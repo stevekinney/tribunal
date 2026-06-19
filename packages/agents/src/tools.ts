@@ -4,7 +4,7 @@ import { validateFinding } from './findings';
 export type ReviewTool<TInput, TOutput> = {
   name: string;
   description: string;
-  readOnlyHint: true;
+  readOnlyHint: boolean;
   execute(input: TInput): TOutput;
 };
 
@@ -69,7 +69,7 @@ export function createTribunalReviewTools(context: ReviewToolContext): TribunalR
     record_finding: {
       name: 'record_finding',
       description: 'Validate and collect one structured review finding.',
-      readOnlyHint: true,
+      readOnlyHint: false,
       collectedFindings,
       execute: ({ finding }) => {
         const validation = validateFinding(finding, context.diffContext);

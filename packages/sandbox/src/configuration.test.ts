@@ -57,6 +57,21 @@ describe('sandbox configuration', () => {
     expect(verifySandboxReuseIsolation({}, expected)).toMatchObject({ ok: false });
     expect(
       verifySandboxReuseIsolation(
+        { network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] } },
+        expected,
+      ),
+    ).toMatchObject({ ok: false, reason: 'secretNames could not be verified' });
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: 'ANTHROPIC_API_KEY',
+        },
+        expected,
+      ),
+    ).toMatchObject({ ok: false, reason: 'secretNames could not be verified' });
+    expect(
+      verifySandboxReuseIsolation(
         { network: { allowInternetAccess: true, allowOut: ['10.0.0.8/32'] }, secretNames: [] },
         expected,
       ),

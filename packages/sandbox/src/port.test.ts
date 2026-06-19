@@ -202,6 +202,8 @@ describe('sandbox port', () => {
     expect(calls.map((call) => call.method)).toEqual(['runTrackedCommand', 'suspend', 'terminate']);
     expect(calls[0]).toMatchObject({
       input: {
+        command: 'bun',
+        arguments_: ['runner/run-agent.mjs', 'security-reviewer'],
         environment: {
           TRIBUNAL_RUN_TOKEN: 'token',
           TRIBUNAL_AGENT_RUN_ID: 'agent_run_1',

@@ -123,7 +123,7 @@ export function createSandboxPort(
       try {
         commandResult = await adapter.runTrackedCommand(
           sandboxId,
-          'node',
+          'bun',
           ['runner/run-agent.mjs', agent.slug],
           {
             TRIBUNAL_RUN_TOKEN: runToken,

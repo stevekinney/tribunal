@@ -70,6 +70,8 @@ function getRequestedGlobPattern(toolName: string, input: Record<string, unknown
 function isRepositoryRelativePattern(pattern: string): boolean {
   if (pattern.length === 0) return false;
   if (pattern.includes('\\')) return false;
+  if (/[{}]/u.test(pattern)) return false;
+  if (/[!@+*?]\(/u.test(pattern)) return false;
   if (pattern.startsWith('/') || /^[A-Za-z]:/u.test(pattern)) return false;
   return !pattern.split('/').includes('..');
 }

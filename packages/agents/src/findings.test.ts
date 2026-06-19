@@ -49,6 +49,10 @@ describe('finding validation', () => {
     expect(validateFinding({ ...finding, path: 'C:\\secrets.env' }, diffContext).ok).toBe(false);
     expect(validateFinding({ ...finding, path: '' }, diffContext).ok).toBe(false);
     expect(validateFinding({ ...finding, path: '.' }, diffContext).ok).toBe(false);
+    expect(sanitizeFinding({ ...finding, startLine: 0 }, diffContext)).toMatchObject({
+      ok: false,
+      reason: 'finding line must be one-based',
+    });
   });
 
   it('strips mentions and slash commands before they can become comments', () => {
@@ -192,6 +196,22 @@ describe('finding validation', () => {
         anchored: false,
       },
     ]);
+  });
+
+  it('validates raw finding values before anchoring', () => {
+    expect(() =>
+      anchorFindings(
+        [finding, { ...finding, startLine: 0 }, { ...finding, severity: 'critical' }, null],
+        diffContext,
+      ),
+    ).not.toThrow();
+
+    expect(
+      anchorFindings(
+        [finding, { ...finding, startLine: 0 }, { ...finding, severity: 'critical' }, null],
+        diffContext,
+      ),
+    ).toEqual([{ finding, anchored: true }]);
   });
 
   it('classifies repository-relative paths without relying on changed-file context', () => {

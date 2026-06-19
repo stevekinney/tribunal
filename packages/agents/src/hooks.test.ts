@@ -79,7 +79,14 @@ describe('read-only hook policy', () => {
   });
 
   it('blocks Glob patterns that escape or cannot be validated as repository-relative', () => {
-    for (const pattern of ['', 'src\\**\\*.ts', '/tmp/**/*.ts', 'C:/secrets/**/*.ts']) {
+    for (const pattern of [
+      '',
+      'src\\**\\*.ts',
+      '/tmp/**/*.ts',
+      'C:/secrets/**/*.ts',
+      '{../secret,src}/**',
+      'src/!(safe).ts',
+    ]) {
       expect(
         enforceReadOnlyToolUse({
           toolName: 'Glob',

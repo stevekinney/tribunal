@@ -39,6 +39,10 @@ export function sanitizeFinding(
     return { ok: false, reason: 'finding path is outside the pull request diff' };
   }
 
+  if (finding.startLine === 0 || finding.endLine === 0) {
+    return { ok: false, reason: 'finding line must be one-based' };
+  }
+
   const body = sanitizeCommentText(finding.body).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
   const title = sanitizeCommentText(finding.title);
   const suggestion =
@@ -74,17 +78,17 @@ function isFindingOnCommentableLine(
 }
 
 export function anchorFindings(
-  findings: readonly Finding[],
+  findings: readonly unknown[],
   diffContext: DiffContext,
 ): AnchoredFinding[] {
   const anchoredFindings: AnchoredFinding[] = [];
 
   for (const finding of findings) {
-    const sanitized = sanitizeFinding(finding, diffContext);
-    if (!sanitized.ok) continue;
+    const validated = validateFinding(finding, diffContext);
+    if (!validated.ok) continue;
     anchoredFindings.push({
-      finding: sanitized.finding,
-      anchored: sanitized.finding.startLine !== null || sanitized.finding.endLine !== null,
+      finding: validated.finding,
+      anchored: validated.finding.startLine !== null || validated.finding.endLine !== null,
     });
   }
 
