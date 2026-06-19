@@ -53,6 +53,12 @@ describe('sandbox configuration', () => {
     ).toBe(false);
     expect(
       validateCloneInput({
+        repositoryUrl: 'https://github.com/github/github.com/owner/repository.git',
+        headSha: 'a'.repeat(40),
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateCloneInput({
         repositoryUrl: 'https://proxy.tribunal.local/github/github.com/owner/repository.git',
         headSha: 'not-a-sha',
       }).ok,

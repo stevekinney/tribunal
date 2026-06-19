@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,13 +34,6 @@ export async function runAgentProcess({
     return;
   }
 
-  const fixturePath = environment.TRIBUNAL_AGENT_FIXTURE_FILE;
-  if (fixturePath) {
-    stdout.write(await readFile(fixturePath, 'utf8'));
-    exit(0);
-    return;
-  }
-
   const startedAt = performanceNow();
   const context = {
     agentRunId: environment.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
@@ -54,11 +46,21 @@ export async function runAgentProcess({
   const diffContext = createDiffContext(environment);
   let latestSdkResult;
   let resultWritten = false;
+  let resultWritePromise;
+  let terminationRequested = false;
   const elapsedMilliseconds = () => Math.max(0, Math.round(performanceNow() - startedAt));
   const writeOnce = async (result) => {
     if (resultWritten) return;
-    resultWritten = true;
-    await writeResult(stdout, result);
+    if (!resultWritePromise) {
+      resultWritePromise = writeResult(stdout, result)
+        .then(() => {
+          resultWritten = true;
+        })
+        .finally(() => {
+          resultWritePromise = undefined;
+        });
+    }
+    await resultWritePromise;
   };
   const removeTerminateListener = () => {
     const removeSignalListener = signalSource.off ?? signalSource.removeListener;
@@ -67,6 +69,7 @@ export async function runAgentProcess({
 
   emitEvent(context, 'session_start', { agentSlug, model, effort });
   const terminateListener = () => {
+    terminationRequested = true;
     emitEvent(context, 'stop', { reason: 'terminated' });
     void writeOnce(
       createResult({
@@ -97,6 +100,7 @@ export async function runAgentProcess({
       },
       elapsedMilliseconds,
     });
+    if (terminationRequested) return;
     removeTerminateListener();
     await writeOnce(result);
   } catch (error) {

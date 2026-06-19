@@ -54,11 +54,7 @@ export function validateCloneInput(input: {
   repositoryUrl: string;
   headSha: string;
 }): CloneInputValidationResult {
-  if (
-    !/^https:\/\/[^/]+\/(?:[^/]+\/)*github\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*(?:\.git)?$/.test(
-      input.repositoryUrl,
-    )
-  ) {
+  if (!isProxiedGitHubCloneUrl(input.repositoryUrl)) {
     return { ok: false, reason: 'repository URL must be a proxied GitHub HTTPS clone URL' };
   }
 
@@ -67,4 +63,26 @@ export function validateCloneInput(input: {
   }
 
   return { ok: true };
+}
+
+function isProxiedGitHubCloneUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+
+  if (url.protocol !== 'https:' || url.hostname === 'github.com') return false;
+
+  const segments = url.pathname.split('/').filter(Boolean);
+  const githubSegmentIndex = segments.findIndex(
+    (segment, index) => segment === 'github' && segments[index + 1] === 'github.com',
+  );
+  if (githubSegmentIndex === -1 || segments.length !== githubSegmentIndex + 4) return false;
+
+  const owner = segments[githubSegmentIndex + 2];
+  const repository = segments[githubSegmentIndex + 3]?.replace(/\.git$/, '');
+  const namePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+  return namePattern.test(owner ?? '') && namePattern.test(repository ?? '');
 }

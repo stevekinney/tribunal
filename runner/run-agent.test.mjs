@@ -1,7 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import {
   emitEvent,
@@ -49,7 +46,7 @@ function createWritable() {
 }
 
 function createFailingWritable() {
-  return {
+  return Object.assign(new EventEmitter(), {
     write(chunk, callback) {
       if (String(chunk).includes('"type":"result"')) {
         this.emit('error', new Error('write failed'));
@@ -57,10 +54,33 @@ function createFailingWritable() {
       }
       callback?.();
     },
-    once: EventEmitter.prototype.once,
-    off: EventEmitter.prototype.off,
-    emit: EventEmitter.prototype.emit,
-  };
+  });
+}
+
+function createWritableThatFailsFirstResult() {
+  const emitter = new EventEmitter();
+  let resultWrites = 0;
+  let value = '';
+  return Object.assign(emitter, {
+    write(chunk, callback) {
+      if (String(chunk).includes('"type":"result"')) {
+        resultWrites += 1;
+        if (resultWrites === 1) {
+          queueMicrotask(() => this.emit('error', new Error('write failed')));
+          return;
+        }
+      }
+      value += chunk;
+      callback?.();
+    },
+    records() {
+      return value
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+  });
 }
 
 function createSignalOnResultWritable(signalSource) {
@@ -104,23 +124,34 @@ describe('run-agent runner', () => {
     expect(isMainModule(import.meta.url, 'run-agent.test.mjs')).toBe(true);
   });
 
-  it('short-circuits explicit fixture files without invoking the SDK', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'tribunal-runner-'));
-    const resultFile = join(directory, 'result.jsonl');
-    await writeFile(resultFile, '{"type":"result","result":{"agentSlug":"fixture"}}\n');
+  it('ignores fixture file environment values and invokes the SDK', async () => {
     const stdout = createWritable();
+    const queryFunction = vi.fn(() =>
+      streamMessages([
+        {
+          type: 'result',
+          structured_output: { findings: [] },
+          modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+          usage: {},
+          total_cost_usd: 0,
+        },
+      ]),
+    );
 
     await runAgentProcess({
       argv: ['node', 'run-agent.mjs', 'security-reviewer'],
-      environment: { ...baseEnvironment, TRIBUNAL_AGENT_FIXTURE_FILE: resultFile },
+      environment: { ...baseEnvironment, TRIBUNAL_AGENT_FIXTURE_FILE: '/tmp/result.jsonl' },
       stdout,
       stderr: createWritable(),
       exit: vi.fn(),
       signalSource: new EventEmitter(),
-      queryFunction: vi.fn(),
+      queryFunction,
     });
 
-    expect(stdout.toString()).toBe('{"type":"result","result":{"agentSlug":"fixture"}}\n');
+    expect(queryFunction).toHaveBeenCalledTimes(1);
+    const resultRecord = stdout.records().find((record) => record.type === 'result');
+    expect(resultRecord).toMatchObject({ result: { agentSlug: 'security-reviewer' } });
+    expect(resultRecord.result).not.toHaveProperty('error');
   });
 
   it('emits wrapped event records with deterministic sequence numbers', () => {
@@ -276,6 +307,38 @@ describe('run-agent runner', () => {
     expect(resultRecord.result.error).toBeUndefined();
   });
 
+  it('emits an error result when writing a successful result fails', async () => {
+    const stdout = createWritableThatFailsFirstResult();
+
+    await runAgentProcess({
+      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit: vi.fn(),
+      signalSource: new EventEmitter(),
+      queryFunction: () =>
+        streamMessages([
+          {
+            type: 'result',
+            structured_output: { findings: [] },
+            modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+            usage: {},
+            total_cost_usd: 0,
+          },
+        ]),
+    });
+
+    expect(stdout.records().filter((record) => record.type === 'result')).toEqual([
+      expect.objectContaining({
+        result: expect.objectContaining({
+          agentSlug: 'security-reviewer',
+          error: 'write failed',
+        }),
+      }),
+    ]);
+  });
+
   it('exits after SIGTERM when writing a partial result fails', async () => {
     const signalSource = new EventEmitter();
     const exit = vi.fn();
@@ -293,7 +356,7 @@ describe('run-agent runner', () => {
     const run = runAgentProcess({
       argv: ['node', 'run-agent.mjs', 'security-reviewer'],
       environment: baseEnvironment,
-      stdout: Object.assign(createFailingWritable(), new EventEmitter()),
+      stdout: createFailingWritable(),
       stderr: createWritable(),
       exit,
       signalSource,
