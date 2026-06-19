@@ -13,7 +13,6 @@ import type {
   RepoRef,
   ReviewPayload,
   SandboxCostInput,
-  SandboxAgentExecutionOptions,
   SandboxOptions,
   SandboxPort,
   ScopedToken,
