@@ -19,6 +19,7 @@ describe('runtime redaction', () => {
     expect(
       redactRuntimeRecord({
         authorization: 'Bearer ghs_abcdefghijklmnopqrstuvwxyz',
+        tokenValues: ['safe', 'ghs_abcdefghijklmnopqrstuvwxyz'],
         nested: {
           apiKey: 'sk-ant-secret',
           contents: 'const rawRepositoryFileContent = true;',
@@ -27,6 +28,7 @@ describe('runtime redaction', () => {
       }),
     ).toEqual({
       authorization: '[REDACTED]',
+      tokenValues: '[REDACTED]',
       nested: {
         apiKey: '[REDACTED]',
         contents: '[REDACTED_CONTENT]',

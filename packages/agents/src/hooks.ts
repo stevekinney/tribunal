@@ -33,7 +33,10 @@ export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicy
     return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
   }
   const requestedPattern = getRequestedGlobPattern(policyInput.toolName, policyInput.input);
-  if (requestedPattern !== null && !isRepositoryRelativePattern(requestedPattern)) {
+  if (
+    policyInput.toolName === 'Glob' &&
+    (requestedPattern === null || !isRepositoryRelativePattern(requestedPattern))
+  ) {
     return { permissionDecision: 'deny', reason: 'tool path escapes the repository' };
   }
   if (requiresChangedFileScope(policyInput.toolName)) {
@@ -64,7 +67,7 @@ function getRequestedPath(toolName: string, input: Record<string, unknown>): str
 
 function getRequestedGlobPattern(toolName: string, input: Record<string, unknown>): string | null {
   if (toolName !== 'Glob') return null;
-  return typeof input.pattern === 'string' ? input.pattern : '';
+  return typeof input.pattern === 'string' ? input.pattern : null;
 }
 
 function isRepositoryRelativePattern(pattern: string): boolean {

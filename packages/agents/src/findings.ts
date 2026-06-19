@@ -50,8 +50,8 @@ export function sanitizeFinding(
       ? undefined
       : sanitizeCommentText(finding.suggestion).slice(0, MAXIMUM_COMMENT_BODY_LENGTH);
 
-  const line = normalizeFindingLine(finding);
-  const commentable = line === 0 || isFindingOnCommentableLine(finding, changedFile);
+  const isFileLevelFinding = finding.startLine === null && finding.endLine === null;
+  const commentable = isFileLevelFinding || isFindingOnCommentableLine(finding, changedFile);
 
   return {
     ok: true,

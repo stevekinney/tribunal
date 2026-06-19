@@ -60,7 +60,10 @@ describe('sandbox configuration', () => {
         { network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] } },
         expected,
       ),
-    ).toMatchObject({ ok: false, reason: 'secretNames could not be verified' });
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
     expect(
       verifySandboxReuseIsolation(
         {
@@ -69,7 +72,10 @@ describe('sandbox configuration', () => {
         },
         expected,
       ),
-    ).toMatchObject({ ok: false, reason: 'secretNames could not be verified' });
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
     expect(
       verifySandboxReuseIsolation(
         { network: { allowInternetAccess: true, allowOut: ['10.0.0.8/32'] }, secretNames: [] },
@@ -90,7 +96,10 @@ describe('sandbox configuration', () => {
         },
         expected,
       ),
-    ).toMatchObject({ ok: false });
+    ).toMatchObject({
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    });
   });
 
   it('rejects invalid repository clone inputs', () => {

@@ -34,7 +34,7 @@ function redactRuntimeValueForKey(key: string, value: unknown): unknown {
   if (rawContentKeyPattern.test(key)) return REDACTED_CONTENT;
 
   if (typeof value === 'string') return redactRuntimeText(value);
-  if (Array.isArray(value)) return value.map((entry) => redactRuntimeValueForKey('', entry));
+  if (Array.isArray(value)) return value.map((entry) => redactRuntimeValueForKey(key, entry));
   if (!isRecord(value)) return value;
 
   const redacted: Record<string, unknown> = {};

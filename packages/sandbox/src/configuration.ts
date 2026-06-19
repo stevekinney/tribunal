@@ -76,12 +76,11 @@ export function verifySandboxReuseIsolation(
     return { ok: false, reason: 'allowOut does not match the proxy-only egress policy' };
   }
 
-  if (!Array.isArray(candidate.secretNames)) {
-    return { ok: false, reason: 'secretNames could not be verified' };
-  }
-
-  if (candidate.secretNames.length > 0) {
-    return { ok: false, reason: 'sandbox has retained secret names' };
+  if (!Array.isArray(candidate.secretNames) || candidate.secretNames.length > 0) {
+    return {
+      ok: false,
+      reason: 'sandbox has retained secret names or secretNames is unknown',
+    };
   }
 
   return { ok: true };
