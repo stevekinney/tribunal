@@ -265,7 +265,7 @@ function parseAnthropicCostReport(
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
     if (row.currency !== undefined && row.currency !== 'USD') continue;
     const amountUsd = parseUsdDecimal(row.amount);
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
+    if (!Number.isFinite(amountUsd)) continue;
     const rowReviewRunId = metadata?.review_run_id;
     if (rowReviewRunId === undefined) {
       unsupportedCostReportRows += 1;

@@ -1023,6 +1023,24 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('sanitizes invalid partial failed agent duration from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0.1,
+      failedAgentPartialDurationMs: -1,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0.1,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      durationMs: 0,
+    });
+  });
+
   it('skips agent execution when every changed file matches repository ignore globs', async () => {
     const ports = createFakePorts();
     const engine = createEngine(ports);
@@ -1554,6 +1572,7 @@ type FakePortOptions = {
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number;
+  failedAgentPartialDurationMs?: number;
 };
 
 class FakeReviewIntentPort implements ReviewIntentPort {
@@ -2074,10 +2093,12 @@ function createSandboxFailure(
 ): Error {
   const error = new Error(message);
   if (options.failedAgentPartialCostEstimateUsd !== undefined) {
+    const partialResult = createAgentResult(agent, stopped);
     Object.assign(error, {
       partialResult: {
-        ...createAgentResult(agent, stopped),
+        ...partialResult,
         costEstimateUsd: options.failedAgentPartialCostEstimateUsd,
+        durationMs: options.failedAgentPartialDurationMs ?? partialResult.durationMs,
       },
     });
   }

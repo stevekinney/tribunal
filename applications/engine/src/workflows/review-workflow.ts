@@ -1334,7 +1334,7 @@ function getPartialAgentResult(error: unknown): Partial<AgentResult> | undefined
   const usage = getUnknownRecord(candidate?.usage);
   return {
     costEstimateUsd,
-    durationMs: Number(candidate?.durationMs) || 0,
+    durationMs: toNonnegativeFiniteNumber(candidate?.durationMs),
     modelUsed: typeof candidate?.modelUsed === 'string' ? candidate.modelUsed : undefined,
     effortUsed:
       candidate?.effortUsed === 'low' ||
@@ -1363,6 +1363,11 @@ function getUnknownRecord(value: unknown): Record<string, unknown> | undefined {
 function toNonnegativeInteger(value: unknown): number {
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : 0;
+}
+
+function toNonnegativeFiniteNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 function toSupervisorSnapshot(supervisor: SupervisorState): PullRequestSupervisorSnapshot {
