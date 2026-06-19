@@ -52,7 +52,7 @@ export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicy
 }
 
 function requiresChangedFileScope(toolName: string): boolean {
-  return toolName === 'Read' || toolName === 'mcp__tribunal__read_base_file';
+  return toolName === 'Read' || toolName === 'Grep' || toolName === 'mcp__tribunal__read_base_file';
 }
 
 function getRequestedPath(toolName: string, input: Record<string, unknown>): string | null {

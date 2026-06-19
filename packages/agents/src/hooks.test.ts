@@ -49,16 +49,42 @@ describe('read-only hook policy', () => {
     ).toMatchObject({ permissionDecision: 'allow' });
   });
 
-  it('allows read-only discovery tools without treating grep text as a path', () => {
+  it('allows grep only when scoped to a changed file', () => {
     expect(
       enforceReadOnlyToolUse({
         toolName: 'Grep',
-        input: { pattern: '../secret', path: 'src' },
+        input: { pattern: '../secret', path: 'src/auth.ts' },
         repositoryRoot: '/workspace/repository',
         diffContext,
       }),
     ).toMatchObject({ permissionDecision: 'allow' });
 
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Grep',
+        input: { pattern: 'token' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is required',
+    });
+
+    expect(
+      enforceReadOnlyToolUse({
+        toolName: 'Grep',
+        input: { pattern: 'token', path: 'src/unchanged.ts' },
+        repositoryRoot: '/workspace/repository',
+        diffContext,
+      }),
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      reason: 'read path is outside the pull request diff',
+    });
+  });
+
+  it('allows read-only glob discovery for repository-relative patterns', () => {
     expect(
       enforceReadOnlyToolUse({
         toolName: 'Glob',
