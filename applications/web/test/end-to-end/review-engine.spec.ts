@@ -78,7 +78,5 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
 
   await page.goto('/costs');
   await expect(page.getByText('byReviewRun')).toBeVisible();
-  await expect(
-    page.getByRole('rowheader', { name: /Run run-e2e-.*open-sha-opened/ }),
-  ).toBeVisible();
+  await expect(page.getByRole('rowheader', { name: /^run-e2e-.*open-sha-opened$/ })).toBeVisible();
 });
