@@ -44,7 +44,6 @@ export async function dispatchCheckCompletedSignals(
   const results = await Promise.all(
     prNumbers.map((prNumber) =>
       signalPullRequestEvent(githubContext, {
-        workspaceId: 0,
         repositoryId,
         prNumber,
         installationId,

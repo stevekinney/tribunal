@@ -4,6 +4,7 @@ import { parseProxyEnvironment } from './environment';
 const fullEnvironment = {
   DATABASE_URL: 'postgres://user:pass@localhost:5432/tribunal',
   REDIS_URL: 'redis://localhost:6379',
+  ENCRYPTION_KEY: 'a'.repeat(64),
   GITHUB_APP_ID: '123',
   GITHUB_APP_PRIVATE_KEY: 'private-key',
   ANTHROPIC_API_KEY: 'anthropic-key',
@@ -28,5 +29,17 @@ describe('parseProxyEnvironment', () => {
     const { PROXY_SIGNING_KEY: _removed, ...missingSigningKey } = fullEnvironment;
 
     expect(() => parseProxyEnvironment(missingSigningKey)).toThrow();
+  });
+
+  it('throws when Redis is missing', () => {
+    const { REDIS_URL: _removed, ...missingRedis } = fullEnvironment;
+
+    expect(() => parseProxyEnvironment(missingRedis)).toThrow();
+  });
+
+  it('throws when the encryption key is not a 64-character hex string', () => {
+    expect(() =>
+      parseProxyEnvironment({ ...fullEnvironment, ENCRYPTION_KEY: `${'a'.repeat(64)}zz` }),
+    ).toThrow();
   });
 });

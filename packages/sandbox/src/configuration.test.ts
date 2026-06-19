@@ -133,19 +133,25 @@ describe('sandbox configuration', () => {
   it('rejects invalid repository clone inputs', () => {
     expect(
       validateCloneInput({
-        repositoryUrl: 'https://github.com/owner/repository.git',
+        repositoryUrl: 'https://proxy.tribunal.local/github/github.com/owner/repository.git',
         headSha: 'a'.repeat(40),
       }).ok,
     ).toBe(true);
     expect(
       validateCloneInput({
-        repositoryUrl: 'https://evil.example.com/owner/repository.git',
+        repositoryUrl: 'https://github.com/owner/repository.git',
         headSha: 'a'.repeat(40),
       }).ok,
     ).toBe(false);
     expect(
       validateCloneInput({
-        repositoryUrl: 'https://github.com/owner/repository.git',
+        repositoryUrl: 'https://github.com/github/github.com/owner/repository.git',
+        headSha: 'a'.repeat(40),
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateCloneInput({
+        repositoryUrl: 'https://proxy.tribunal.local/github/github.com/owner/repository.git',
         headSha: 'not-a-sha',
       }).ok,
     ).toBe(false);

@@ -46,6 +46,9 @@ export interface GithubServiceContext {
   /** Get the GitHub App instance — only required by token minting functions. */
   getGithubApplication?: GetGithubApplication;
 
+  /** Hex-encoded 32-byte key used to encrypt cached GitHub installation tokens. */
+  tokenEncryptionKey?: string;
+
   /**
    * Lazily resolve the Weft durable-execution client.
    *

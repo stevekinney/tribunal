@@ -1,6 +1,6 @@
 FROM oven/bun:1.3.13
 
-WORKDIR /reviewer
+WORKDIR /workspace
 ARG PROXY_CA_CERT=""
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git openssh-client \

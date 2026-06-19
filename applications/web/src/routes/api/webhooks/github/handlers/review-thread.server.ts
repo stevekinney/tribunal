@@ -51,7 +51,6 @@ async function signalReviewThread(
   if (!data.pull_request.number) return;
 
   const result = await signalPullRequestEvent(githubContext, {
-    workspaceId: 0,
     repositoryId,
     prNumber: data.pull_request.number,
     installationId,

@@ -75,8 +75,10 @@ export type ReviewIntentRuntimeEnvironment = {
   TRIBUNAL_PROXY_URL?: string;
   TRIBUNAL_PROXY_CIDR?: string;
   PROXY_SIGNING_KEY?: string;
+  ENCRYPTION_KEY?: string;
   TRIBUNAL_DEFAULT_MODEL?: string;
   DEFAULT_DAILY_COST_CAP_USD?: number | string;
+  IDLE_SUSPEND_SECONDS?: number | string;
   ENABLE_PROMPT_CACHING_1H?: boolean | string;
   ANTHROPIC_ADMIN_KEY?: string;
   REVIEWS_ENABLED?: boolean | string;
@@ -106,7 +108,11 @@ export function createReviewIntentConsumer(
   environment: ReviewIntentRuntimeEnvironment,
 ) {
   const githubContext = createEngineGithubContext(database, environment);
-  const defaultDailyCostCapUsd = parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25);
+  const defaultDailyCostCapUsd = parsePositiveNumber(
+    environment.DEFAULT_DAILY_COST_CAP_USD,
+    25,
+    'DEFAULT_DAILY_COST_CAP_USD',
+  );
   const intentPort = createDatabaseReviewIntentPort(database, {
     reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
   });
@@ -131,11 +137,15 @@ export function createReviewIntentConsumer(
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
+      idleSuspendSeconds: parsePositiveInteger(
+        environment.IDLE_SUSPEND_SECONDS,
+        900,
+        'IDLE_SUSPEND_SECONDS',
+      ),
       defaultModel: requireEnvironmentValue(
         environment.TRIBUNAL_DEFAULT_MODEL,
         'TRIBUNAL_DEFAULT_MODEL',
       ) as Exclude<PullRequestReviewInput['agents'][number]['model'], 'inherit'>,
-      enablePromptCaching1h: isEnabledFlag(environment.ENABLE_PROMPT_CACHING_1H),
     },
   );
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
@@ -386,6 +396,7 @@ export function createEngineGithubContext(
     cache,
     getInstallationOctokit: githubApplication.getInstallationOctokit,
     getGithubApplication: githubApplication.getGithubApplication,
+    tokenEncryptionKey: environment.ENCRYPTION_KEY,
   };
 }
 
@@ -921,6 +932,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
     onStdoutLine?: (line: string) => void,
+    signal?: AbortSignal,
   ) {
     const sandbox = await this.getSandbox(sandboxId);
     const process = await sandbox.startProcess(command, {
@@ -931,13 +943,32 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
 
     const stdout: string[] = [];
     const stderr: string[] = [];
-    for await (const event of sandbox.followOutput(process.pid)) {
-      if (event.stream === 'stderr') {
-        stderr.push(event.line);
-      } else {
-        stdout.push(event.line);
-        onStdoutLine?.(event.line);
+    let abortPromise: Promise<void> | undefined;
+    const abort = async () => {
+      try {
+        await sandbox.killProcess(process.pid);
+      } catch (error) {
+        stderr.push(error instanceof Error ? error.message : 'Failed to kill sandbox process.');
       }
+    };
+    const abortListener = () => {
+      abortPromise ??= abort();
+    };
+    signal?.addEventListener('abort', abortListener, { once: true });
+    try {
+      if (signal?.aborted) abortPromise ??= abort();
+      for await (const event of sandbox.followOutput(process.pid)) {
+        if (signal?.aborted) break;
+        if (event.stream === 'stderr') {
+          stderr.push(event.line);
+        } else {
+          stdout.push(event.line);
+          onStdoutLine?.(event.line);
+        }
+      }
+    } finally {
+      await abortPromise;
+      signal?.removeEventListener('abort', abortListener);
     }
     const completedProcess = await sandbox.getProcess(process.pid);
     const exitCode = completedProcess.exitCode;
@@ -1040,10 +1071,30 @@ function requireEnvironmentValue(value: string | undefined, name: string): strin
   return value;
 }
 
-function parsePositiveNumber(value: number | string | undefined, fallback: number): number {
-  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+function parsePositiveNumber(
+  value: number | string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+  throw new Error(`${name} must be a positive number.`);
+}
+
+function parsePositiveInteger(
+  value: number | string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+
+  throw new Error(`${name} must be a positive integer.`);
 }
 
 function parseBooleanFlag(value: boolean | string | undefined, fallback: boolean): boolean {

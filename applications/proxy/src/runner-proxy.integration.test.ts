@@ -40,6 +40,7 @@ async function runRunnerProxyIntegrationTest(): Promise<void> {
       environment: parseProxyEnvironment({
         DATABASE_URL: 'postgres://user:pass@localhost:5432/tribunal',
         REDIS_URL: 'redis://localhost:6379',
+        ENCRYPTION_KEY: 'a'.repeat(64),
         GITHUB_APP_ID: '123',
         GITHUB_APP_PRIVATE_KEY: 'private-key',
         ANTHROPIC_API_KEY: anthropicApiKey,

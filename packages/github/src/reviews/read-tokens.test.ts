@@ -1,8 +1,26 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { RateLimitError, ServiceUnavailableError, ValidationError } from '../error-taxonomy.js';
-import { mintSingleRepositoryReadToken } from './read-tokens.js';
+import {
+  decryptInstallationToken,
+  encryptInstallationToken,
+  mintSingleRepositoryReadToken,
+} from './read-tokens.js';
+
+const originalEncryptionKey = process.env.ENCRYPTION_KEY;
+
+beforeEach(() => {
+  process.env.ENCRYPTION_KEY = 'a'.repeat(64);
+});
+
+afterEach(() => {
+  if (originalEncryptionKey === undefined) {
+    delete process.env.ENCRYPTION_KEY;
+  } else {
+    process.env.ENCRYPTION_KEY = originalEncryptionKey;
+  }
+});
 
 function createContext(app: App): GithubServiceContext {
   return {
@@ -17,6 +35,7 @@ function createContext(app: App): GithubServiceContext {
     },
     getInstallationOctokit: vi.fn().mockResolvedValue(null),
     getGithubApplication: vi.fn().mockReturnValue(app),
+    tokenEncryptionKey: process.env.ENCRYPTION_KEY,
   };
 }
 
@@ -55,6 +74,9 @@ describe('mintSingleRepositoryReadToken', () => {
     });
 
     expect(result.token).toBe('opaque-token-with-no-assumed-format');
+    const cachedEnvelope = vi.mocked(context.cache.setCache).mock.calls[0]?.[1];
+    expect(JSON.stringify(cachedEnvelope)).not.toContain('opaque-token-with-no-assumed-format');
+    expect(JSON.stringify(cachedEnvelope)).toContain('encryptedToken');
     expect(createInstallationAccessToken).toHaveBeenCalledWith({
       installation_id: 123,
       repository_ids: [456],
@@ -75,9 +97,47 @@ describe('mintSingleRepositoryReadToken', () => {
       },
     } as unknown as App;
     const context = createContext(app);
+    const cachedToken = encryptInstallationToken({
+      token: 'x',
+      expiresAt: '2026-01-01T00:00:00Z',
+      installationId: 123,
+    });
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: cachedToken,
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('x');
+    expect(app.octokit.rest.apps.createInstallationAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('evicts malformed cached tokens and mints a fresh encrypted token', async () => {
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
     vi.mocked(context.cache.getCached).mockResolvedValue({
       value: {
-        token: 'x',
+        token: 'legacy-plaintext-token',
         expiresAt: '2026-01-01T00:00:00Z',
         installationId: 123,
       },
@@ -91,8 +151,137 @@ describe('mintSingleRepositoryReadToken', () => {
       repositoryId: 456,
     });
 
-    expect(result.token).toBe('x');
-    expect(app.octokit.rest.apps.createInstallationAccessToken).not.toHaveBeenCalled();
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(context.cache.setCache).mock.calls.at(-1))).not.toContain(
+      'fresh-token',
+    );
+  });
+
+  it('mints a fresh token when malformed cached token eviction fails', async () => {
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: {
+        token: 'legacy-plaintext-token',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      },
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+    vi.mocked(context.cache.deleteCache).mockRejectedValue(new Error('Redis down'));
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('evicts undecryptable cached tokens and mints a fresh encrypted token', async () => {
+    const staleEncryptedToken = encryptInstallationToken({
+      token: 'stale-token',
+      expiresAt: '2026-01-01T00:00:00Z',
+      installationId: 123,
+    });
+    process.env.ENCRYPTION_KEY = 'b'.repeat(64);
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: staleEncryptedToken,
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('evicts encrypted cached tokens with invalid initialization vectors', async () => {
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: {
+        encryptedToken: 'aa:bb:cc',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      },
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
 
   it('maps rate-limited token minting failures to RateLimitError', async () => {
@@ -160,5 +349,70 @@ describe('mintSingleRepositoryReadToken', () => {
         repositoryId: 456,
       }),
     ).rejects.toThrow(ValidationError);
+  });
+
+  it('rejects malformed encrypted cached tokens', () => {
+    expect(() =>
+      decryptInstallationToken({
+        encryptedToken: 'not-encrypted',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      }),
+    ).toThrow('Cached GitHub installation token is not encrypted.');
+  });
+
+  it('validates the encryption key before minting a GitHub token', async () => {
+    delete process.env.ENCRYPTION_KEY;
+    const createInstallationAccessToken = vi.fn();
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+
+    await expect(
+      mintSingleRepositoryReadToken(context, {
+        installationId: 123,
+        repositoryId: 456,
+      }),
+    ).rejects.toThrow('ENCRYPTION_KEY is required to cache GitHub tokens.');
+    expect(createInstallationAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('requires a valid encryption key before caching tokens', () => {
+    delete process.env.ENCRYPTION_KEY;
+
+    expect(() =>
+      encryptInstallationToken({
+        token: 'x',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      }),
+    ).toThrow('ENCRYPTION_KEY is required to cache GitHub tokens.');
+
+    process.env.ENCRYPTION_KEY = 'a'.repeat(62);
+
+    expect(() =>
+      encryptInstallationToken({
+        token: 'x',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      }),
+    ).toThrow('ENCRYPTION_KEY must be 32 bytes');
+
+    process.env.ENCRYPTION_KEY = `${'a'.repeat(64)}zz`;
+
+    expect(() =>
+      encryptInstallationToken({
+        token: 'x',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      }),
+    ).toThrow('ENCRYPTION_KEY must be 32 bytes');
   });
 });

@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
@@ -151,8 +151,12 @@ export function createEngineServerOptions(
 function hasValidControlToken(request: Request, expectedToken: string): boolean {
   const authorization = request.headers.get('authorization');
   const expectedAuthorization = `Bearer ${expectedToken}`;
-  if (authorization === null || authorization.length !== expectedAuthorization.length) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(authorization), Buffer.from(expectedAuthorization));
+  return (
+    authorization !== null &&
+    timingSafeEqual(hashControlToken(authorization), hashControlToken(expectedAuthorization))
+  );
+}
+
+function hashControlToken(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
 }

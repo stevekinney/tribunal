@@ -46,15 +46,23 @@ function createFakeAdapter() {
     },
     async runCommand(sandboxId, command, arguments_, environment) {
       calls.push({ method: 'runCommand', input: { sandboxId, command, arguments_, environment } });
-      return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
     },
-    async runTrackedCommand(sandboxId, command, arguments_, environment, onProcessStart) {
+    async runTrackedCommand(
+      sandboxId,
+      command,
+      arguments_,
+      environment,
+      onProcessStart,
+      _onStdoutLine,
+      signal,
+    ) {
       calls.push({
         method: 'runTrackedCommand',
-        input: { sandboxId, command, arguments_, environment },
+        input: { sandboxId, command, arguments_, environment, signal },
       });
       await onProcessStart('123');
-      return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
     },
     async killProcess(sandboxId, processId) {
       calls.push({ method: 'killProcess', input: { sandboxId, processId } });
@@ -79,13 +87,18 @@ describe('sandbox port', () => {
       proxyCidr: '10.0.0.8/32',
     });
 
-    await port.ensure('tribunal-pr-42-7', { image: 'ignored', proxyUrl: 'ignored' });
+    await port.ensure('tribunal-pr-42-7', {
+      image: 'ignored',
+      proxyUrl: 'ignored',
+      idleSuspendSeconds: 123,
+    });
 
     expect(calls[0]).toMatchObject({
       method: 'create',
       input: {
         name: 'tribunal-pr-42-7',
         image: 'tribunal-reviewer:latest',
+        timeoutSecs: 123,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
         secretNames: [],
@@ -93,7 +106,33 @@ describe('sandbox port', () => {
     });
   });
 
-  it('uses credential-less clone and proxy configuration for updates', async () => {
+  it('rejects invalid idle suspend timeouts before creating a sandbox', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.ensure('tribunal-pr-42-7', {
+        image: 'ignored',
+        proxyUrl: 'ignored',
+        idleSuspendSeconds: 0,
+      }),
+    ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
+    await expect(
+      port.ensure('tribunal-pr-42-7', {
+        image: 'ignored',
+        proxyUrl: 'ignored',
+        idleSuspendSeconds: 1.5,
+      }),
+    ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
+
+    expect(calls).toEqual([]);
+  });
+
+  it('uses proxy clone URLs and run-token authorization for updates', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
       image: 'tribunal-reviewer:latest',
@@ -127,8 +166,34 @@ describe('sandbox port', () => {
     expect(commandArguments.join(' ')).toContain(
       'http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN',
     );
+    expect(commandArguments.join(' ')).not.toContain('http.proxy');
     expect(commandArguments.join(' ')).not.toContain('clone-or-fetch');
     expect(commandArguments.join(' ')).not.toContain('capability-token');
+  });
+
+  it('normalizes proxy clone URLs before validating update input', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local/base/?ignored=true#fragment',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await port.update(
+      'sandbox_1',
+      { owner: 'stevekinney', name: 'tribunal' },
+      'a'.repeat(40),
+      'capability-token',
+    );
+
+    expect(calls[0]).toMatchObject({
+      input: {
+        environment: {
+          TRIBUNAL_REPOSITORY_URL:
+            'https://proxy.tribunal.local/base/github/github.com/stevekinney/tribunal.git',
+        },
+      },
+    });
   });
 
   it('rejects invalid repository URLs before calling the adapter', async () => {
@@ -176,6 +241,7 @@ describe('sandbox port', () => {
       proxyCidr: '10.0.0.8/32',
     });
 
+    const abortController = new AbortController();
     await expect(
       port.runAgent(
         'sandbox_1',
@@ -193,7 +259,7 @@ describe('sandbox port', () => {
         diffContext,
         'token',
         () => {},
-        new AbortController().signal,
+        abortController.signal,
       ),
     ).resolves.toMatchObject({ agentSlug: 'security-reviewer' });
     await port.suspend('sandbox_1');
@@ -214,6 +280,7 @@ describe('sandbox port', () => {
           TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
           TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts']),
         },
+        signal: abortController.signal,
       },
     });
   });
@@ -609,7 +676,7 @@ describe('sandbox port', () => {
         await new Promise<void>((resolve) => {
           finishRun = resolve;
         });
-        return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+        return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
       },
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });
@@ -669,7 +736,7 @@ describe('sandbox port', () => {
         await new Promise<void>((resolve) => {
           finishRun = resolve;
         });
-        return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+        return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
       },
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });

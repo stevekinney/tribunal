@@ -24,7 +24,10 @@ export async function main({
   environment = process.env,
   stdout = process.stdout,
   stderr = process.stderr,
-  exit = process.exit,
+  exit = process.exit.bind(process),
+  signalSource = process,
+  queryClient = query,
+  performanceNow = () => performance.now(),
 } = {}) {
   const [, , agentSlug] = argv;
 
@@ -40,7 +43,7 @@ export async function main({
     return;
   }
 
-  const startedAt = performance.now();
+  const startedAt = performanceNow();
   const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
   const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
   const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
@@ -59,14 +62,20 @@ export async function main({
     'Report only confirmed findings. Do not approve, reject, or modify the pull request.';
   const diffContext = createDiffContext(environment);
   const emitEvent = createEventEmitter({ environment, stdout });
-  const resultState = { written: false };
+  const resultState = { written: false, promise: undefined };
   let latestSdkResult;
   let latestCollectedFindings = [];
+  let terminationRequested = false;
+  const removeTerminateListener = () => {
+    const removeSignalListener = signalSource.off ?? signalSource.removeListener;
+    removeSignalListener?.call(signalSource, 'SIGTERM', terminateListener);
+  };
 
   emitEvent('session_start', { agentSlug, model, effort });
-  process.once('SIGTERM', () => {
+  const terminateListener = () => {
+    terminationRequested = true;
     emitEvent('stop', { reason: 'terminated' });
-    writeResult(
+    void writeResult(
       stdout,
       resultState,
       createResult({
@@ -75,12 +84,14 @@ export async function main({
         effortUsed: effort,
         sdkResult: latestSdkResult,
         findings: latestCollectedFindings,
-        durationMs: elapsedMilliseconds(startedAt),
+        durationMs: elapsedMilliseconds(startedAt, performanceNow),
         error: 'Agent review stopped before completion.',
       }),
-    );
-    exit(143);
-  });
+    )
+      .catch(() => {})
+      .finally(() => exit(143));
+  };
+  signalSource.once?.('SIGTERM', terminateListener);
 
   try {
     const result = await runClaudeReview({
@@ -94,7 +105,9 @@ export async function main({
       diffContext,
       sdkEnvironment,
       startedAt,
+      performanceNow,
       emitEvent,
+      queryClient,
       onSdkResult: (sdkResult) => {
         latestSdkResult = sdkResult;
       },
@@ -102,8 +115,11 @@ export async function main({
         latestCollectedFindings = collectedFindings;
       },
     });
-    writeResult(stdout, resultState, result);
+    if (terminationRequested) return;
+    removeTerminateListener();
+    await writeResult(stdout, resultState, result);
   } catch (error) {
+    removeTerminateListener();
     emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
     const collectedFindings =
       error instanceof Error && Array.isArray(error.collectedFindings)
@@ -115,10 +131,12 @@ export async function main({
       effortUsed: effort,
       sdkResult: latestSdkResult,
       findings: collectedFindings,
-      durationMs: elapsedMilliseconds(startedAt),
+      durationMs: elapsedMilliseconds(startedAt, performanceNow),
       error: error instanceof Error ? error.message : 'Agent review failed.',
     });
-    writeResult(stdout, resultState, result);
+    await writeResult(stdout, resultState, result);
+  } finally {
+    removeTerminateListener();
   }
 }
 
@@ -133,6 +151,7 @@ export async function runClaudeReview({
   diffContext,
   sdkEnvironment,
   startedAt = performance.now(),
+  performanceNow = () => performance.now(),
   emitEvent = () => {},
   onSdkResult = () => {},
   onCollectedFindings = () => {},
@@ -276,14 +295,44 @@ export async function runClaudeReview({
     effortUsed: effort,
     usage: normalizeUsage(sdkResult?.usage),
     costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
-    durationMs: elapsedMilliseconds(startedAt),
+    durationMs: elapsedMilliseconds(startedAt, performanceNow),
   };
 }
 
-function writeResult(stdout, state, result) {
+export async function writeResult(stdout, state, result) {
   if (state.written) return;
-  state.written = true;
-  stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+  if (state.promise) return state.promise;
+
+  state.promise = new Promise((resolvePromise, rejectPromise) => {
+    const removeErrorListener = () => {
+      const removeListener = stdout.off ?? stdout.removeListener;
+      removeListener?.call(stdout, 'error', handleError);
+    };
+    const handleError = (error) => {
+      removeErrorListener();
+      rejectPromise(error);
+    };
+    stdout.once?.('error', handleError);
+
+    try {
+      stdout.write(`${JSON.stringify({ type: 'result', result })}\n`, (error) => {
+        removeErrorListener();
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        state.written = true;
+        resolvePromise();
+      });
+    } catch (error) {
+      removeErrorListener();
+      rejectPromise(error);
+    }
+  }).finally(() => {
+    state.promise = undefined;
+  });
+
+  return state.promise;
 }
 
 function createResult({
@@ -545,8 +594,8 @@ export function isAgentSlug(value) {
   return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value);
 }
 
-function elapsedMilliseconds(startedAt) {
-  return Math.max(0, Math.round(performance.now() - startedAt));
+function elapsedMilliseconds(startedAt, performanceNow = () => performance.now()) {
+  return Math.max(0, Math.round(performanceNow() - startedAt));
 }
 
 export function isMainModule(
