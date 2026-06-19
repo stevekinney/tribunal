@@ -29,6 +29,8 @@ FROM (
 ) AS "owner"
 WHERE "repository_review_settings"."repository_id" = "owner"."repository_id"
   AND "repository_review_settings"."user_id" IS NULL;--> statement-breakpoint
+DELETE FROM "repository_review_settings"
+WHERE "user_id" IS NULL;--> statement-breakpoint
 ALTER TABLE "repository_agent" ALTER COLUMN "user_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "repository_review_settings" ALTER COLUMN "user_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "repository_agent" DROP CONSTRAINT "repository_agent_repository_id_agent_id_pk";--> statement-breakpoint

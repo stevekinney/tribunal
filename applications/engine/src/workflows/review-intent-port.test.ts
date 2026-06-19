@@ -273,6 +273,69 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('builds review input for the watched user when the repository installation user is unwatched', async () => {
+    const { user, repository } = await createReviewIntentFixture({ watched: false });
+    const factories = createFactories(testDatabase.db);
+    const watchedUser = await factories.user.create();
+    const watchedInstallation = await factories.githubInstallation.createForUser(watchedUser.id, {
+      installationId: 1000,
+      status: 'active',
+    });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: watchedInstallation.installationId,
+      repositoryId: repository.id,
+      isActive: true,
+    });
+    await testDatabase.db.insert(userReviewSettings).values({
+      userId: watchedUser.id,
+      dailyCostCapUsd: '1.00',
+      reviewsEnabled: true,
+    });
+    await testDatabase.db.insert(repositoryReviewSettings).values({
+      userId: watchedUser.id,
+      repositoryId: repository.id,
+      watched: true,
+      ignoreGlobs: ['watched-user/**'],
+    });
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_unwatched_installation',
+        userId: user.id,
+        slug: 'unwatched-installation-review',
+        description: 'Should not be selected.',
+        body: 'Do not use.',
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent_watched_installation',
+        userId: watchedUser.id,
+        slug: 'watched-installation-review',
+        description: 'Reviews for the watched installation.',
+        body: 'Use this agent.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values([
+      { userId: user.id, repositoryId: repository.id, agentId: 'agent_unwatched_installation' },
+      {
+        userId: watchedUser.id,
+        repositoryId: repository.id,
+        agentId: 'agent_watched_installation',
+      },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest).toMatchObject({
+      userId: watchedUser.id,
+      installationId: 1000,
+      dailyCostCapUsd: 1,
+      ignoreGlobs: ['watched-user/**'],
+      agents: [{ id: 'agent_watched_installation' }],
+    });
+  });
+
   it('reclaims stale unprocessed review intents', async () => {
     const { user, repository } = await createReviewIntentFixture();
     await testDatabase.db.insert(agent).values({

@@ -191,7 +191,13 @@ async function buildPullRequestReviewInput(
         eq(pullRequestState.prNumber, reviewIntent.prNumber),
       ),
     )
-    .where(eq(reviewIntent.id, intent.id))
+    .where(
+      and(
+        eq(reviewIntent.id, intent.id),
+        eq(repositoryReviewSettings.watched, true),
+        eq(userReviewSettings.reviewsEnabled, true),
+      ),
+    )
     .orderBy(
       sql`CASE WHEN ${githubInstallation.installationId} = ${repository.installationId} THEN 0 ELSE 1 END`,
       asc(githubInstallation.installationId),
