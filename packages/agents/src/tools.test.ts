@@ -39,7 +39,7 @@ const diffContext: DiffContext = {
 };
 
 describe('review tools', () => {
-  it('marks all Tribunal tools as read-only', () => {
+  it('marks read tools as read-only and record_finding as stateful', () => {
     const tools = createTribunalReviewTools({ diffContext, guidelines: 'Be kind.' });
 
     expect(tools.get_changed_files.readOnlyHint).toBe(true);

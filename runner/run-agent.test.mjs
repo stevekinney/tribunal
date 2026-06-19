@@ -57,7 +57,7 @@ describe('runner agent wiring', () => {
     });
   });
 
-  it('collects MCP findings, sanitizes structured output, and redacts tool events', async () => {
+  it('sanitizes structured output and redacts tool events', async () => {
     const captured = createFakeSdk();
     const events = [];
     const readGitObjectCalls = [];
