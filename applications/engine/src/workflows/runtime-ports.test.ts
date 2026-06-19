@@ -987,6 +987,7 @@ describe('engine GitHub port', () => {
       owner: 'lostgradient',
       name: 'tribunal',
       installationId: installation.installationId,
+      repositoryId: createdRepository.id,
     };
 
     await expect(
@@ -1034,7 +1035,12 @@ describe('engine GitHub port', () => {
 
     expect(getDiffContextMock).toHaveBeenCalledWith(
       context,
-      expect.objectContaining({ installationId: installation.installationId }),
+      expect.objectContaining({
+        installationId: installation.installationId,
+        repositoryId: createdRepository.id,
+        headSha: 'head',
+        currentHeadSha: 'head',
+      }),
     );
     expect(getPullRequestMetadataMock).toHaveBeenCalledWith(
       context,

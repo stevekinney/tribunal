@@ -66,6 +66,19 @@ describe('isRateLimitError', () => {
     expect(isRateLimitError(errorSecondary)).toBe(true);
   });
 
+  it('returns true for 403 with exhausted primary rate-limit headers', () => {
+    expect.assertions(2);
+    const error = Object.assign(new Error('Forbidden'), {
+      status: 403,
+      response: {
+        data: { message: 'Forbidden' },
+        headers: { 'x-ratelimit-remaining': '0' },
+      },
+    });
+    expect(isRateLimitError(error)).toBe(true);
+    expect(isForbiddenError(error)).toBe(false);
+  });
+
   it('returns false for 403 without rate limit message', () => {
     expect.assertions(2);
     const error = Object.assign(new Error('Forbidden'), {

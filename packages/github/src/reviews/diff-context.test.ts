@@ -104,15 +104,10 @@ describe('getDiffContext', () => {
     expect(context.cache.setCache).not.toHaveBeenCalled();
   });
 
-  it('uses the cached diff context when repository id is provided', async () => {
+  it('bypasses the cache when repository id is provided without a reviewed head SHA', async () => {
     const listFiles = vi.fn();
     const context = createContext(listFiles);
-    vi.mocked(context.cache.getCached).mockResolvedValue({
-      value: [createPullRequestFile(1)],
-      fetchedAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-      source: 'api',
-    });
+    listFiles.mockResolvedValue({ data: [createPullRequestFile(1)] });
 
     const result = await getDiffContext(context, {
       installationId: 1,
@@ -123,10 +118,11 @@ describe('getDiffContext', () => {
     });
 
     expect(result.changedFiles).toHaveLength(1);
-    expect(listFiles).not.toHaveBeenCalled();
+    expect(listFiles).toHaveBeenCalledTimes(1);
+    expect(context.cache.getCached).not.toHaveBeenCalled();
   });
 
-  it('stores fetched diff context in cache when repository id is provided', async () => {
+  it('stores fetched diff context in cache when repository id and current reviewed head SHA are provided', async () => {
     const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
     const context = createContext(listFiles);
 
@@ -136,10 +132,101 @@ describe('getDiffContext', () => {
       repository: 'tribunal',
       pullRequestNumber: 42,
       repositoryId: 123,
+      headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
     });
 
     expect(result.changedFiles).toHaveLength(1);
     expect(context.cache.setCache).toHaveBeenCalled();
+  });
+
+  it('bypasses the cache when reviewed head SHA is not the current pull request head', async () => {
+    const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
+    const context = createContext(listFiles);
+
+    const result = await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'stale111',
+      currentHeadSha: 'current222',
+    });
+
+    expect(result.changedFiles).toHaveLength(1);
+    expect(listFiles).toHaveBeenCalledTimes(1);
+    expect(context.cache.getCached).not.toHaveBeenCalled();
+    expect(context.cache.setCache).not.toHaveBeenCalled();
+  });
+
+  it('uses separate cached diff contexts for separate reviewed head SHAs', async () => {
+    const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
+    const context = createContext(listFiles);
+
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
+    });
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'bbb222',
+      currentHeadSha: 'bbb222',
+    });
+
+    expect(context.cache.getCached).toHaveBeenNthCalledWith(
+      1,
+      'github:response:repository:123:pr:42:head:aaa111:diff-context',
+    );
+    expect(context.cache.getCached).toHaveBeenNthCalledWith(
+      2,
+      'github:response:repository:123:pr:42:head:bbb222:diff-context',
+    );
+    expect(listFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses the cached diff context for the same reviewed head SHA', async () => {
+    const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
+    const context = createContext(listFiles);
+    const cachedEnvelopes = new Map<string, unknown>();
+    vi.mocked(context.cache.getCached).mockImplementation(async (key) => {
+      return cachedEnvelopes.get(key) ?? null;
+    });
+    vi.mocked(context.cache.setCache).mockImplementation(async (key, envelope) => {
+      cachedEnvelopes.set(key, envelope);
+      return true;
+    });
+
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
+    });
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'aaa111',
+      currentHeadSha: 'aaa111',
+    });
+
+    expect(context.cache.getCached).toHaveBeenCalledTimes(2);
+    expect(listFiles).toHaveBeenCalledTimes(1);
   });
 
   it.each([

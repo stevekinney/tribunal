@@ -63,6 +63,18 @@ describe('cache-policy', () => {
       expect(key).toContain('42');
     });
 
+    it('get-pull-request-diff-context keys by reviewed head SHA', () => {
+      const policy = getPolicy('get-pull-request-diff-context')!;
+      const firstHeadKey = policy.keyFactory(123, 42, 'aaa111');
+      const secondHeadKey = policy.keyFactory(123, 42, 'bbb222');
+
+      expect(firstHeadKey).toContain('123');
+      expect(firstHeadKey).toContain('42');
+      expect(firstHeadKey).toContain('aaa111');
+      expect(secondHeadKey).toContain('bbb222');
+      expect(secondHeadKey).not.toBe(firstHeadKey);
+    });
+
     it('get-aggregate-review-state generates correct cache key', () => {
       const policy = getPolicy('get-aggregate-review-state')!;
       const key = policy.keyFactory('owner', 'repo', 5);
