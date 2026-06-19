@@ -20,7 +20,7 @@ concurrency:
 jobs:
   create-and-migrate:
     name: Create and Migrate Neon Branch
-    if: ${{ github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base.ref.from != null) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

@@ -57,6 +57,8 @@ through `.github/workflows/neon-pull-request-branches.yml`.
 - Retargeting a pull request also refreshes the branch if the pull request now
   targets `main`.
 - Retargeting a pull request away from `main` deletes the matching Neon branch.
+- Editing other pull request fields, such as the title or description, does not
+  reset or migrate the Neon branch.
 - Each create-and-migrate run resets the branch to its Neon parent before
   applying migrations, so validation runs against the current parent schema plus
   the pull request's migrations.
