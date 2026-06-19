@@ -60,11 +60,13 @@
 
     connectionState = 'connecting';
     const initialAgentEventId = untrack(() => latestAgentEventId);
+    let streamIsActive = true;
     const eventSource = new EventSource(
       `/api/review/runs/${run.id}/events?after=${initialAgentEventId}`,
     );
 
     eventSource.onopen = () => {
+      if (!streamIsActive) return;
       connectionState = 'streaming';
     };
 
@@ -73,10 +75,12 @@
     });
 
     eventSource.onerror = () => {
+      if (!streamIsActive) return;
       connectionState = 'disconnected';
     };
 
     return () => {
+      streamIsActive = false;
       window.clearInterval(fallbackRefresh);
       eventSource.close();
     };
