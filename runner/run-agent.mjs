@@ -60,6 +60,10 @@ export async function runAgentProcess({
     resultWritten = true;
     await writeResult(stdout, result);
   };
+  const removeTerminateListener = () => {
+    const removeSignalListener = signalSource.off ?? signalSource.removeListener;
+    removeSignalListener?.call(signalSource, 'SIGTERM', terminateListener);
+  };
 
   emitEvent(context, 'session_start', { agentSlug, model, effort });
   const terminateListener = () => {
@@ -93,6 +97,7 @@ export async function runAgentProcess({
       },
       elapsedMilliseconds,
     });
+    removeTerminateListener();
     await writeOnce(result);
   } catch (error) {
     emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
@@ -107,8 +112,7 @@ export async function runAgentProcess({
       }),
     );
   } finally {
-    const removeSignalListener = signalSource.off ?? signalSource.removeListener;
-    removeSignalListener?.call(signalSource, 'SIGTERM', terminateListener);
+    removeTerminateListener();
   }
 }
 

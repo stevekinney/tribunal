@@ -62,6 +62,28 @@ function createFailingWritable() {
   };
 }
 
+function createSignalOnResultWritable(signalSource) {
+  let value = '';
+  return {
+    write(chunk, callback) {
+      value += chunk;
+      if (String(chunk).includes('"type":"result"')) {
+        signalSource.emit('SIGTERM');
+      }
+      callback?.();
+    },
+    once: vi.fn(),
+    off: vi.fn(),
+    records() {
+      return value
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+  };
+}
+
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
 }
@@ -211,6 +233,36 @@ describe('run-agent runner', () => {
     });
 
     expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  it('ignores SIGTERM after review completion while writing the success result', async () => {
+    const signalSource = new EventEmitter();
+    const stdout = createSignalOnResultWritable(signalSource);
+    const exit = vi.fn();
+
+    await runAgentProcess({
+      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit,
+      signalSource,
+      queryFunction: () =>
+        streamMessages([
+          {
+            type: 'result',
+            structured_output: { findings: [] },
+            modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+            usage: {},
+            total_cost_usd: 0,
+          },
+        ]),
+    });
+
+    expect(exit).not.toHaveBeenCalledWith(143);
+    const resultRecord = stdout.records().find((record) => record.type === 'result');
+    expect(resultRecord).toBeDefined();
+    expect(resultRecord.result.error).toBeUndefined();
   });
 
   it('exits after SIGTERM when writing a partial result fails', async () => {
