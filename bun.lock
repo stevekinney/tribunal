@@ -73,6 +73,7 @@
         "@lostgradient/weft": "^0.6.0",
         "@neondatabase/neon-js": "^0.6.1-beta",
         "@neondatabase/serverless": "^1.0.2",
+        "@tribunal/agents": "workspace:*",
         "@tribunal/database": "workspace:*",
         "@tribunal/github": "workspace:*",
         "arctic": "^3.7.0",
