@@ -96,13 +96,13 @@ export function decryptInstallationToken(token: EncryptedInstallationToken): Ins
     throw new ValidationError('Cached GitHub installation token is not encrypted.');
   }
 
-  const decipher = createDecipheriv(
-    tokenEncryptionAlgorithm,
-    key,
-    Buffer.from(initializationVectorHex, 'hex'),
-  );
   let plaintext: string;
   try {
+    const decipher = createDecipheriv(
+      tokenEncryptionAlgorithm,
+      key,
+      Buffer.from(initializationVectorHex, 'hex'),
+    );
     decipher.setAuthTag(Buffer.from(authenticationTagHex, 'hex'));
     plaintext = decipher.update(encryptedToken, 'hex', 'utf8');
     plaintext += decipher.final('utf8');

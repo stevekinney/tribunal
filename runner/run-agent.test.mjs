@@ -10,6 +10,7 @@ import {
   resolveModelUsed,
   runAgentProcess,
   runClaudeReview,
+  writeResult,
 } from './run-agent.mjs';
 
 const baseEnvironment = {
@@ -81,6 +82,16 @@ function createSignalOnResultWritable(signalSource) {
         .filter(Boolean)
         .map((line) => JSON.parse(line));
     },
+  };
+}
+
+function createThrowingWritable() {
+  return {
+    write() {
+      throw new Error('stream destroyed');
+    },
+    once: vi.fn(),
+    off: vi.fn(),
   };
 }
 
@@ -293,6 +304,24 @@ describe('run-agent runner', () => {
 
     expect(exit).toHaveBeenCalledWith(143);
     await run;
+  });
+
+  it('removes the error listener when result writing throws synchronously', async () => {
+    const stdout = createThrowingWritable();
+
+    await expect(
+      writeResult(stdout, {
+        agentSlug: 'security-reviewer',
+        findings: [],
+        modelUsed: 'sonnet',
+        effortUsed: null,
+        usage: {},
+        costEstimateUsd: 0,
+        durationMs: 0,
+      }),
+    ).rejects.toThrow('stream destroyed');
+
+    expect(stdout.off).toHaveBeenCalledTimes(1);
   });
 });
 

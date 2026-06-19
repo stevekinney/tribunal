@@ -256,10 +256,15 @@ export function writeResult(stdout, result) {
       rejectWrite(error);
     };
     stdout.once?.('error', handleError);
-    stdout.write(`${JSON.stringify({ type: 'result', result })}\n`, () => {
+    try {
+      stdout.write(`${JSON.stringify({ type: 'result', result })}\n`, () => {
+        stdout.off?.('error', handleError);
+        resolveWrite();
+      });
+    } catch (error) {
       stdout.off?.('error', handleError);
-      resolveWrite();
-    });
+      rejectWrite(error);
+    }
   });
 }
 
