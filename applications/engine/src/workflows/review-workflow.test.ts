@@ -1097,6 +1097,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.sandboxCostEvents).toEqual([
       expect.objectContaining({
         idempotencyKey: 'sandbox:sandbox-tribunal-pr-42-7:2026-06-17T12',
+        window: '2026-06-17T12',
       }),
     ]);
   });

@@ -166,10 +166,12 @@ describe('runtime review intent consumer wiring', () => {
 
   it('creates a consumer from DATABASE_URL and exposes an empty reconciliation client', async () => {
     expect(createReviewIntentConsumerFromEnvironment(runtimeEnvironment())).toBeDefined();
-    await expect(emptyUsageCostApiClient.listReviewRunCosts()).resolves.toEqual([]);
-    await expect(unconfiguredUsageCostApiClient.listReviewRunCosts()).rejects.toThrow(
-      'Authoritative usage cost reconciliation is not configured.',
+    await expect(emptyUsageCostApiClient.listReviewRunCosts(usageCostTarget())).resolves.toEqual(
+      [],
     );
+    await expect(
+      unconfiguredUsageCostApiClient.listReviewRunCosts(usageCostTarget()),
+    ).rejects.toThrow('Authoritative usage cost reconciliation is not configured.');
   });
 
   it('fetches and parses Anthropic cost report rows for a review run', async () => {
@@ -230,7 +232,9 @@ describe('runtime review intent consumer wiring', () => {
     vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
 
     const client = createAnthropicUsageCostApiClient('admin-key');
-    await expect(client.listReviewRunCosts('run_1')).resolves.toEqual([
+    await expect(
+      client.listReviewRunCosts(usageCostTarget({ reviewRunId: 'run_1' })),
+    ).resolves.toEqual([
       {
         id: 'run_1:0:0',
         occurredAt: new Date('2026-06-17T12:00:00.000Z'),
@@ -248,6 +252,17 @@ describe('runtime review intent consumer wiring', () => {
           agent_id: 'agent_security',
         },
       },
+      {
+        id: 'run_1:0:3',
+        occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+        amountUsd: 2,
+        userId: 7,
+        repositoryId: 42,
+        reviewRunId: 'run_1',
+        agentRunId: null,
+        agentId: null,
+        metadata: { review_run_id: 'run_1' },
+      },
     ]);
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -263,9 +278,54 @@ describe('runtime review intent consumer wiring', () => {
       },
     );
     const url = fetchMock.mock.calls[0]?.[0] as URL;
-    expect(url.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(url.searchParams.get('starting_at')).toBe('2026-06-17T12:00:00.000Z');
     expect(url.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
     expect(url.searchParams.getAll('group_by[]')).toEqual(['workspace_id', 'description']);
+  });
+
+  it('attributes Anthropic cost report rows without custom metadata to the review run target', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '1.50',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_1',
+                  description: 'Claude Sonnet 4 Usage',
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(
+        usageCostTarget({ reviewRunId: 'run_without_metadata', userId: 9, repositoryId: 77 }),
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'run_without_metadata:0:0',
+        occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+        amountUsd: 1.5,
+        userId: 9,
+        repositoryId: 77,
+        reviewRunId: 'run_without_metadata',
+        agentRunId: null,
+        agentId: null,
+        metadata: {},
+      },
+    ]);
   });
 
   it('follows documented Anthropic cost report pagination', async () => {
@@ -312,7 +372,9 @@ describe('runtime review intent consumer wiring', () => {
     vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_2'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(
+        usageCostTarget({ reviewRunId: 'run_2' }),
+      ),
     ).resolves.toEqual([
       {
         id: 'run_2:1:0',
@@ -334,9 +396,9 @@ describe('runtime review intent consumer wiring', () => {
     ]);
     const firstUrl = fetchMock.mock.calls[0]?.[0] as URL;
     const secondUrl = fetchMock.mock.calls[1]?.[0] as URL;
-    expect(firstUrl.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(firstUrl.searchParams.get('starting_at')).toBe('2026-06-17T12:00:00.000Z');
     expect(firstUrl.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
-    expect(secondUrl.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
+    expect(secondUrl.searchParams.get('starting_at')).toBe('2026-06-17T12:00:00.000Z');
     expect(secondUrl.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
     expect(secondUrl.searchParams.get('page')).toBe('page_2');
   });
@@ -355,7 +417,7 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
     ).rejects.toThrow('Anthropic cost report response is missing next_page.');
   });
 
@@ -373,7 +435,7 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
     ).rejects.toThrow('Anthropic cost report pagination exceeded 5 pages.');
   });
 
@@ -403,7 +465,7 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
     ).resolves.toEqual([]);
   });
 
@@ -432,7 +494,7 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
     ).resolves.toMatchObject([{ amountUsd: 1.25, userId: 7, reviewRunId: 'run_1' }]);
   });
 
@@ -446,7 +508,7 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     await expect(
-      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
     ).rejects.toThrow('Anthropic cost report request failed with status 503');
   });
 
@@ -1430,6 +1492,19 @@ function runtimeEnvironment() {
     TRIBUNAL_DEFAULT_MODEL: 'sonnet',
     DEFAULT_DAILY_COST_CAP_USD: '25',
     ANTHROPIC_ADMIN_KEY: 'sk-ant-admin-test',
+  };
+}
+
+function usageCostTarget(
+  overrides: Partial<Parameters<typeof emptyUsageCostApiClient.listReviewRunCosts>[0]> = {},
+) {
+  return {
+    reviewRunId: 'run_1',
+    userId: 7,
+    repositoryId: 42,
+    startedAt: new Date('2026-06-17T12:00:00.000Z'),
+    finishedAt: new Date('2026-06-18T12:00:00.000Z'),
+    ...overrides,
   };
 }
 

@@ -49,6 +49,8 @@ async function createCostFixture() {
       headSha: 'abc123',
       trigger: 'opened',
       status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00.000Z'),
+      finishedAt: new Date('2026-06-17T12:30:00.000Z'),
     })
     .returning()
     .then(([row]) => row);
@@ -153,8 +155,10 @@ describe('cost ledger', () => {
       amountUsd: 1.25,
       idempotencyKey: `llm:${run.id}:estimate`,
     });
+    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
     const client: UsageCostApiClient = {
-      async listReviewRunCosts(reviewRunId) {
+      async listReviewRunCosts(target) {
+        receivedTarget = target;
         return [
           {
             id: 'usage_2',
@@ -162,7 +166,7 @@ describe('cost ledger', () => {
             amountUsd: 1.1,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: run.id,
             agentId: reviewer.id,
             metadata: { invoiceLineItem: 'line_1' },
@@ -173,7 +177,7 @@ describe('cost ledger', () => {
             amountUsd: 0.05,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: null,
             agentId: null,
           },
@@ -183,6 +187,14 @@ describe('cost ledger', () => {
 
     await reconcile(testDatabase.db, client, review.id);
     await reconcile(testDatabase.db, client, review.id);
+
+    expect(receivedTarget).toEqual({
+      reviewRunId: review.id,
+      userId: user.id,
+      repositoryId: repository.id,
+      startedAt: review.startedAt,
+      finishedAt: review.finishedAt,
+    });
 
     const rows = await testDatabase.db
       .select()
@@ -292,7 +304,7 @@ describe('cost ledger', () => {
   it('creates the review-core cost port over the ledger', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     const client: UsageCostApiClient = {
-      async listReviewRunCosts(reviewRunId) {
+      async listReviewRunCosts(target) {
         return [
           {
             id: 'usage_1',
@@ -300,7 +312,7 @@ describe('cost ledger', () => {
             amountUsd: 0.75,
             userId: user.id,
             repositoryId: repository.id,
-            reviewRunId,
+            reviewRunId: target.reviewRunId,
             agentRunId: run.id,
             agentId: reviewer.id,
           },
@@ -326,6 +338,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       sandboxId: 'sandbox_1',
+      window: '2026-06-17T12:00:00.000Z',
       amountUsd: 0.2,
       pricingVersion: CURRENT_PRICING_VERSION,
       runtime: { runtimeSeconds: 60 },
@@ -358,6 +371,7 @@ describe('cost ledger', () => {
       runtime: { runtimeSeconds: 60 },
       resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       sandboxId: 'sandbox_1',
+      window: '2026-06-17T12:00:00.000Z',
     });
   });
 

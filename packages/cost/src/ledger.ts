@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '@tribunal/database';
 import { and, eq, sql } from '@tribunal/database/operators';
-import { costEvent, userReviewSettings } from '@tribunal/database/schema';
+import { costEvent, reviewRun, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
 import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
 import {
@@ -115,7 +115,31 @@ export async function reconcile(
   usageCostApiClient: UsageCostApiClient,
   reviewRunId: string,
 ): Promise<void> {
-  const events = await usageCostApiClient.listReviewRunCosts(reviewRunId);
+  const [target] = await database
+    .select({
+      reviewRunId: reviewRun.id,
+      userId: reviewRun.userId,
+      repositoryId: reviewRun.repositoryId,
+      startedAt: reviewRun.startedAt,
+      finishedAt: reviewRun.finishedAt,
+    })
+    .from(reviewRun)
+    .where(eq(reviewRun.id, reviewRunId));
+
+  if (target === undefined) {
+    throw new Error(`Review run ${reviewRunId} was not found for cost reconciliation.`);
+  }
+  if (target.startedAt === null) {
+    throw new Error(`Review run ${reviewRunId} is missing startedAt for cost reconciliation.`);
+  }
+
+  const events = await usageCostApiClient.listReviewRunCosts({
+    reviewRunId: target.reviewRunId,
+    userId: target.userId,
+    repositoryId: target.repositoryId,
+    startedAt: target.startedAt,
+    finishedAt: target.finishedAt,
+  });
   const orderedEvents = [...events].sort((left, right) =>
     left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
   );
@@ -238,6 +262,7 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
           runtime: event.runtime,
           resources: event.resources,
           sandboxId: event.sandboxId,
+          window: event.window,
         },
         occurredAt: options.now?.(),
         idempotencyKey: event.idempotencyKey,

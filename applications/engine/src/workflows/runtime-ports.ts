@@ -23,7 +23,11 @@ import {
 import type { GithubServiceContext } from '@tribunal/github/context';
 import { createSandboxPort, type SandboxAdapter, type SandboxCreateInput } from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
-import type { UsageCostApiClient, UsageCostApiEvent } from '@tribunal/cost/usage-cost-api';
+import type {
+  UsageCostApiClient,
+  UsageCostApiEvent,
+  UsageCostReconciliationTarget,
+} from '@tribunal/cost/usage-cost-api';
 import type {
   CheckRunPatch,
   DiffContext,
@@ -74,11 +78,11 @@ export type ReviewIntentRuntimeEnvironment = {
 };
 
 export const emptyUsageCostApiClient = {
-  listReviewRunCosts: async () => [],
+  listReviewRunCosts: async (_target: UsageCostReconciliationTarget) => [],
 };
 
 export const unconfiguredUsageCostApiClient = {
-  listReviewRunCosts: async () => {
+  listReviewRunCosts: async (_target: UsageCostReconciliationTarget) => {
     throw new Error('Authoritative usage cost reconciliation is not configured.');
   },
 };
@@ -209,10 +213,10 @@ async function listOpenPullRequestSandboxes(
 
 export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostApiClient {
   return {
-    async listReviewRunCosts(reviewRunId: string) {
+    async listReviewRunCosts(target: UsageCostReconciliationTarget) {
       const events: UsageCostApiEvent[] = [];
-      const endingAt = new Date();
-      const startingAt = new Date(endingAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const startingAt = target.startedAt;
+      const endingAt = target.finishedAt ?? new Date();
       let page: string | undefined;
 
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -234,7 +238,7 @@ export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostAp
           throw new Error(`Anthropic cost report request failed with status ${response.status}`);
         }
         const payload = (await response.json()) as unknown;
-        events.push(...parseAnthropicCostReport(payload, reviewRunId, attempt));
+        events.push(...parseAnthropicCostReport(payload, target, attempt));
 
         const payloadRecord = getRecord(payload);
         if (payloadRecord?.has_more !== true) return events;
@@ -251,28 +255,30 @@ export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostAp
 
 function parseAnthropicCostReport(
   payload: unknown,
-  reviewRunId: string,
+  target: UsageCostReconciliationTarget,
   pageIndex: number,
 ): UsageCostApiEvent[] {
   const rows = getCostReportRows(payload);
   return rows.flatMap((row, index) => {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
-    if (metadata?.review_run_id !== reviewRunId) return [];
+    if (metadata?.review_run_id !== undefined && metadata.review_run_id !== target.reviewRunId) {
+      return [];
+    }
     if (row.currency !== undefined && row.currency !== 'USD') return [];
     const amountUsd = parseUsdDecimal(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
-    const userId = Number(metadata.user_id ?? row.user_id ?? 0);
-    if (!Number.isInteger(userId) || userId <= 0) return [];
+    const userId = toNullableInteger(metadata?.user_id ?? row.user_id) ?? target.userId;
     return [
       {
-        id: String(row.id ?? `${reviewRunId}:${pageIndex}:${index}`),
+        id: String(row.id ?? `${target.reviewRunId}:${pageIndex}:${index}`),
         occurredAt: new Date(String(row.starting_at ?? row.ending_at ?? Date.now())),
         amountUsd,
         userId,
-        repositoryId: toNullableInteger(metadata.repository_id ?? row.repository_id),
-        reviewRunId,
-        agentRunId: toNullableString(metadata.agent_run_id ?? row.agent_run_id),
-        agentId: toNullableString(metadata.agent_id ?? row.agent_id),
+        repositoryId:
+          toNullableInteger(metadata?.repository_id ?? row.repository_id) ?? target.repositoryId,
+        reviewRunId: target.reviewRunId,
+        agentRunId: toNullableString(metadata?.agent_run_id ?? row.agent_run_id),
+        agentId: toNullableString(metadata?.agent_id ?? row.agent_id),
         metadata: metadata ?? {},
       },
     ];

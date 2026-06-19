@@ -96,6 +96,7 @@ export interface SandboxCostInput {
   repositoryId: number;
   reviewRunId: string;
   sandboxId: string;
+  window: string;
   amountUsd: number;
   idempotencyKey: string;
   pricingVersion?: string;

@@ -1111,6 +1111,7 @@ export class ReviewWorkflowEngine {
         repositoryId: run.repositoryId,
         reviewRunId: run.id,
         sandboxId: run.sandboxId,
+        window: window.window,
         amountUsd,
         runtime: { runtimeSeconds: window.runtimeSeconds },
         resources: SANDBOX_RESOURCES,
