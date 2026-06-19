@@ -11,7 +11,22 @@ RUN apt-get update \
 
 ENV NODE_ENV=production
 ENV TRIBUNAL_RUNNER_MODE=sandbox
+COPY package.json bun.lock ./
+COPY applications/engine/package.json ./applications/engine/package.json
+COPY applications/proxy/package.json ./applications/proxy/package.json
+COPY applications/web/package.json ./applications/web/package.json
 COPY runner/package.json ./runner/package.json
-RUN cd runner && bun install --production
+COPY packages/agents/package.json ./packages/agents/package.json
+COPY packages/cost/package.json ./packages/cost/package.json
+COPY packages/database/package.json ./packages/database/package.json
+COPY packages/github/package.json ./packages/github/package.json
+COPY packages/review-core/package.json ./packages/review-core/package.json
+COPY packages/sandbox/package.json ./packages/sandbox/package.json
+COPY packages/test/package.json ./packages/test/package.json
+COPY packages/typescript/package.json ./packages/typescript/package.json
+COPY scripts/package.json ./scripts/package.json
+RUN bun install --production --filter @tribunal/runner
+COPY packages/agents ./packages/agents
+COPY packages/review-core ./packages/review-core
 COPY runner ./runner
 CMD ["node", "runner/verify-image.mjs"]

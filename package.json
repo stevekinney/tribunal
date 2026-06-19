@@ -7,6 +7,7 @@
   "workspaces": [
     "applications/*",
     "packages/*",
+    "runner",
     "scripts"
   ],
   "scripts": {

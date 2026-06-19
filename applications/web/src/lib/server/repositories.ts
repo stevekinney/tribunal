@@ -68,6 +68,10 @@ export type UserRepositoriesResult =
  * caller renders an empty state and a prompt to connect the app.
  */
 export async function getRepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
+  if (env.E2E_TEST_MODE === '1') {
+    return getE2ERepositoriesForUser(userId);
+  }
+
   const octokitResult = await getUserOctokit(userId);
   if (!octokitResult.ok) {
     // Token problems (missing/expired/invalid) all collapse to "connect GitHub".
@@ -180,6 +184,67 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
     }
     if (a.repository.name === b.repository.name) return 0;
     return a.repository.name < b.repository.name ? -1 : 1;
+  });
+
+  return { ok: true, repositories, installations };
+}
+
+async function getE2ERepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
+  const rows = await db
+    .select({
+      repository,
+      installationId: githubInstallation.installationId,
+      accountLogin: githubInstallation.accountLogin,
+      accountAvatarUrl: githubInstallation.accountAvatarUrl,
+    })
+    .from(githubInstallation)
+    .innerJoin(
+      githubInstallationRepository,
+      eq(githubInstallationRepository.installationId, githubInstallation.installationId),
+    )
+    .innerJoin(repository, eq(repository.id, githubInstallationRepository.repositoryId))
+    .where(
+      and(
+        eq(githubInstallation.userId, userId),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    );
+
+  const installationMap = new Map<number, UserRepositoryInstallation>();
+  const repositories: UserRepository[] = [];
+  const seen = new Set<number>();
+
+  for (const row of rows) {
+    installationMap.set(row.installationId, {
+      installationId: row.installationId,
+      accountLogin: row.accountLogin,
+      accountAvatarUrl: row.accountAvatarUrl,
+    });
+
+    if (seen.has(row.repository.id)) continue;
+    seen.add(row.repository.id);
+    repositories.push({
+      repository: row.repository,
+      installation: {
+        installationId: row.installationId,
+        accountLogin: row.accountLogin,
+        accountAvatarUrl: row.accountAvatarUrl,
+      },
+    });
+  }
+
+  repositories.sort((a, b) => {
+    if (a.repository.owner !== b.repository.owner) {
+      return a.repository.owner < b.repository.owner ? -1 : 1;
+    }
+    if (a.repository.name === b.repository.name) return 0;
+    return a.repository.name < b.repository.name ? -1 : 1;
+  });
+
+  const installations = Array.from(installationMap.values()).sort((a, b) => {
+    if (a.accountLogin === b.accountLogin) return 0;
+    return a.accountLogin < b.accountLogin ? -1 : 1;
   });
 
   return { ok: true, repositories, installations };

@@ -17,4 +17,31 @@ if (!existsSync(new URL('./verify-image.mjs', import.meta.url))) {
   process.exit(1);
 }
 
+const importChecks = [
+  {
+    packageName: '@anthropic-ai/claude-agent-sdk',
+    verify: (module) => typeof module.query === 'function',
+  },
+  {
+    packageName: '@tribunal/agents',
+    verify: (module) =>
+      Array.isArray(module.READ_ONLY_AGENT_TOOLS) &&
+      typeof module.enforceReadOnlyToolUse === 'function',
+  },
+];
+
+for (const check of importChecks) {
+  try {
+    const importedModule = await import(check.packageName);
+    if (!check.verify(importedModule)) {
+      console.error(`Reviewer image runtime package failed shape check: ${check.packageName}`);
+      process.exit(1);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Reviewer image cannot import ${check.packageName}: ${message}`);
+    process.exit(1);
+  }
+}
+
 console.log('Reviewer image self-check passed.');

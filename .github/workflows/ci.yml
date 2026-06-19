@@ -148,6 +148,13 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
 
+      - name: Run end-to-end tests
+        if: steps.browser-changes.outputs.changed == 'true'
+        run: bun run --cwd applications/web test:e2e
+        env:
+          E2E_TEST_SECRET: tribunal-ci-e2e-secret
+          NODE_OPTIONS: --max-old-space-size=4096
+
       - name: Verify dev server starts without esbuild parse errors
         if: steps.browser-changes.outputs.changed == 'true'
         working-directory: applications/web

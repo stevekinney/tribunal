@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -80,38 +80,37 @@ async function requireAgentMutationAccess(userId: number, agentId: string) {
 
 export async function getRepositoryOperatorDetails(userId: number, repositoryIds: number[]) {
   if (repositoryIds.length === 0) return new Map<number, RepositoryOperatorDetails>();
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-  const [settingsRows, assignmentRows, runRows, costRows] = await Promise.all([
-    db
-      .select()
-      .from(repositoryReviewSettings)
-      .where(inArray(repositoryReviewSettings.repositoryId, repositoryIds)),
-    db
-      .select({
-        repositoryId: repositoryAgent.repositoryId,
-        agentId: agent.id,
-        slug: agent.slug,
-        enabled: agent.enabled,
-      })
-      .from(repositoryAgent)
-      .innerJoin(agent, eq(agent.id, repositoryAgent.agentId))
-      .where(and(eq(agent.userId, userId), inArray(repositoryAgent.repositoryId, repositoryIds))),
-    db
-      .select()
-      .from(reviewRun)
-      .where(and(eq(reviewRun.userId, userId), inArray(reviewRun.repositoryId, repositoryIds)))
-      .orderBy(desc(reviewRun.startedAt)),
-    db
-      .select()
-      .from(costEvent)
-      .where(
-        and(
-          eq(costEvent.userId, userId),
-          inArray(costEvent.repositoryId, repositoryIds),
-          sql`${costEvent.occurredAt} >= now() - interval '30 days'`,
-        ),
+  const settingsRows = await db
+    .select()
+    .from(repositoryReviewSettings)
+    .where(inArray(repositoryReviewSettings.repositoryId, repositoryIds));
+  const assignmentRows = await db
+    .select({
+      repositoryId: repositoryAgent.repositoryId,
+      agentId: agent.id,
+      slug: agent.slug,
+      enabled: agent.enabled,
+    })
+    .from(repositoryAgent)
+    .innerJoin(agent, eq(agent.id, repositoryAgent.agentId))
+    .where(and(eq(agent.userId, userId), inArray(repositoryAgent.repositoryId, repositoryIds)));
+  const runRows = await db
+    .select()
+    .from(reviewRun)
+    .where(and(eq(reviewRun.userId, userId), inArray(reviewRun.repositoryId, repositoryIds)))
+    .orderBy(desc(reviewRun.startedAt));
+  const costRows = await db
+    .select()
+    .from(costEvent)
+    .where(
+      and(
+        eq(costEvent.userId, userId),
+        inArray(costEvent.repositoryId, repositoryIds),
+        gte(costEvent.occurredAt, thirtyDaysAgo),
       ),
-  ]);
+    );
 
   const details = new Map<number, RepositoryOperatorDetails>();
   for (const repositoryId of repositoryIds) {
