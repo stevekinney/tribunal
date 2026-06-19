@@ -33,9 +33,21 @@ describe('sandbox configuration', () => {
       secretNames: [],
       env: {
         TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
-        ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic',
+        ANTHROPIC_BASE_URL: 'https://proxy.tribunal.local/anthropic/api.anthropic.com',
       },
     });
+  });
+
+  it('normalizes the Anthropic proxy base URL when the proxy URL has a trailing slash', () => {
+    const configuration = buildProxyOnlyEgressConfiguration({
+      proxyUrl: 'https://proxy.tribunal.local/',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    expect(configuration.env.ANTHROPIC_BASE_URL).toBe(
+      'https://proxy.tribunal.local/anthropic/api.anthropic.com',
+    );
+    expect(configuration.env.TRIBUNAL_PROXY_URL).toBe('https://proxy.tribunal.local');
   });
 
   it('rejects invalid repository clone inputs', () => {

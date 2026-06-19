@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun",
     "check": "tsc --noEmit",
-    "test": "vitest run --config vitest.configuration.ts",
+    "test": "vitest run --config vitest.configuration.ts && bun run src/runner-proxy.integration.test.ts",
     "test:coverage": "vitest run --config vitest.configuration.ts --coverage",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write --ignore-path ../../.prettierignore .",
