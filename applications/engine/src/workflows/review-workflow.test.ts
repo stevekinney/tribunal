@@ -2104,10 +2104,6 @@ class FakeCostPort implements CostPort {
     this.reconcileCalls.push(reviewRunId);
   }
 
-  async spendTodayEstimate(): Promise<number> {
-    return this.spendTodayEstimateValue;
-  }
-
   async enforceDailyCap(userId: number): Promise<DailyCapDecision> {
     this.enforceDailyCapCalls.push(userId);
     const capUsd = 10;

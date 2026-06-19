@@ -238,7 +238,5 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
       }),
     reconcile: (reviewRunId) => reconcile(database, options.usageCostApiClient, reviewRunId),
     enforceDailyCap: (userId) => enforceDailyCap(database, userId, options.now?.() ?? new Date()),
-    spendTodayEstimate: (userId) =>
-      readSpendTodayEstimate(database as Database, userId, options.now?.() ?? new Date()),
   };
 }

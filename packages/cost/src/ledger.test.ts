@@ -334,7 +334,6 @@ describe('cost ledger', () => {
     });
     await port.reconcile(review.id);
 
-    await expect(port.spendTodayEstimate(user.id)).resolves.toBe(1);
     await expect(getReviewRunCostComparison(testDatabase.db, review.id)).resolves.toMatchObject({
       estimateUsd: 1,
       reconciledUsd: 0.75,

@@ -122,5 +122,4 @@ export interface CostPort {
   recordSandbox(event: SandboxCostInput): Promise<void>;
   reconcile(reviewRunId: string): Promise<void>;
   enforceDailyCap(userId: number): Promise<DailyCapDecision>;
-  spendTodayEstimate(userId: number): Promise<number>;
 }

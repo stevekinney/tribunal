@@ -1,0 +1,1 @@
+- When a port gains a higher-level policy method, remove lower-level methods from that port once workflow call sites stop using them; keep raw queries in their owning package instead of forcing fakes to implement unused surface area.
