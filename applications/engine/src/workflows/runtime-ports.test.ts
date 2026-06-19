@@ -318,6 +318,43 @@ describe('runtime review intent consumer wiring', () => {
     );
   });
 
+  it('fails loudly for Anthropic cost report rows with unusable review run metadata', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '1.50',
+                  currency: 'USD',
+                  metadata: { review_run_id: '' },
+                },
+                {
+                  amount: '2.50',
+                  currency: 'USD',
+                  metadata: { review_run_id: null },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(usageCostTarget()),
+    ).rejects.toThrow(
+      'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
+    );
+  });
+
   it('skips unscoped Anthropic cost report rows when attributable rows exist', async () => {
     vi.stubGlobal(
       'fetch',

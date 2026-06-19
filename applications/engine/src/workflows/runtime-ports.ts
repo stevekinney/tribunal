@@ -267,8 +267,8 @@ function parseAnthropicCostReport(
     if (row.currency !== undefined && row.currency !== 'USD') continue;
     const amountUsd = parseUsdDecimal(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
-    const rowReviewRunId = metadata?.review_run_id;
-    if (rowReviewRunId === undefined) {
+    const rowReviewRunId = toNullableString(metadata?.review_run_id);
+    if (rowReviewRunId === null) {
       positiveUsdRowsWithoutReviewRunId += 1;
       continue;
     }
