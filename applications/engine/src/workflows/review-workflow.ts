@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { computeCanonicalFindingFingerprint, deduplicateFindings } from '@tribunal/agents/findings';
+import { computeCanonicalFindingFingerprint } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import type {
   AgentEvent,
@@ -700,7 +700,8 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
 
-    const findings = deduplicateFindings(agentResults.flatMap((result) => result.findings));
+    const deduplicatedAgentResults = deduplicateAgentResultFindings(agentResults);
+    const findings = deduplicatedAgentResults.flatMap((result) => result.findings);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
     if (reviewPayload.comments.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
@@ -827,7 +828,7 @@ export class ReviewWorkflowEngine {
     await this.updateCheckRun(
       input,
       supervisor.checkRunId,
-      buildCompletedCheckRunPatch(agentResults, diffContext),
+      buildCompletedCheckRunPatch(deduplicatedAgentResults, diffContext),
     );
     await this.ports.cost.reconcile(reviewRun.id);
     return reviewRun;
@@ -1297,6 +1298,20 @@ function buildCompletedCheckRunPatch(
       annotations,
     },
   };
+}
+
+function deduplicateAgentResultFindings(agentResults: AgentResult[]): AgentResult[] {
+  const seenFingerprints = new Set<string>();
+
+  return agentResults.map((result) => ({
+    ...result,
+    findings: result.findings.filter((finding) => {
+      const fingerprint = computeCanonicalFindingFingerprint(finding);
+      if (seenFingerprints.has(fingerprint)) return false;
+      seenFingerprints.add(fingerprint);
+      return true;
+    }),
+  }));
 }
 
 function canAnnotateFindingInCheckRun(commentableLineKeys: Set<string>, finding: Finding): boolean {

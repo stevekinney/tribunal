@@ -1163,6 +1163,30 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews[0]?.comments).toHaveLength(1);
   });
 
+  it('deduplicates matching findings from different agents in completed Check Run output', async () => {
+    const ports = createFakePorts({ mixedAnchoredAndOffDiffFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [reviewAgent, performanceAgent],
+    });
+
+    const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    const checkRunText = completedCheckRunPatch?.patch.output?.text ?? '';
+
+    expect(ports.github.reviews[0]?.comments).toHaveLength(1);
+    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(1);
+    expect(
+      completedCheckRunPatch?.patch.output?.annotations?.filter(
+        (annotation) => annotation.title === '[security-review] Check this change',
+      ),
+    ).toHaveLength(1);
+    expect(checkRunText.match(/File-level finding/gu)).toHaveLength(1);
+    expect(checkRunText.match(/Off-diff line/gu)).toHaveLength(1);
+    expect(checkRunText).not.toContain('performance-review');
+  });
+
   it('uses the end line as the GitHub review anchor for multi-line findings', async () => {
     const ports = createFakePorts({ multiLineFinding: true });
     const engine = createEngine(ports);
