@@ -597,11 +597,16 @@ describe('runtime review intent consumer wiring', () => {
 
   it('continues draining later intents after one workflow dispatch fails', async () => {
     await createRunnableReviewIntentFixture();
+    const [existingIntent] = await testDatabase.db
+      .select({ userId: reviewIntent.userId })
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
     await testDatabase.db.insert(reviewIntent).values({
       id: 'intent_2',
       deliveryId: 'delivery_2',
       kind: 'start',
       repositoryId: 42,
+      userId: existingIntent!.userId,
       prNumber: 8,
       headSha: 'b'.repeat(40),
     });
@@ -1454,6 +1459,7 @@ async function createRunnableReviewIntentFixture() {
     reviewsEnabled: true,
   });
   await testDatabase.db.insert(repositoryReviewSettings).values({
+    userId: activeInstallation!.userId,
     repositoryId: createdRepository.id,
     watched: true,
   });
@@ -1472,6 +1478,7 @@ async function createRunnableReviewIntentFixture() {
     model: 'claude-sonnet-4-6',
   });
   await testDatabase.db.insert(repositoryAgent).values({
+    userId: activeInstallation!.userId,
     repositoryId: createdRepository.id,
     agentId: 'agent_security',
   });
@@ -1480,6 +1487,7 @@ async function createRunnableReviewIntentFixture() {
     deliveryId: 'delivery_1',
     kind: 'start',
     repositoryId: createdRepository.id,
+    userId: activeInstallation!.userId,
     prNumber: 7,
     headSha: null,
   });

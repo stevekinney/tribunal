@@ -1,0 +1,3 @@
+- Tenant-scoped configuration needs tenant-scoped queue rows too; filtering during claim is not enough when processing marks the shared queue row complete.
+- Bulk enqueue paths should deduplicate by the final conflict key before inserting, because duplicate values in one statement can fail before `ON CONFLICT` handles persisted duplicates.
+- Migrations that add non-null tenant columns need both a backfill and an explicit cleanup or fan-out plan before enforcing `NOT NULL`.

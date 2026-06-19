@@ -1,0 +1,2 @@
+- New tenant foreign keys should get a standalone supporting index even when a composite unique index includes the same column later in the key.
+- After adding an index in Drizzle schema, regenerate the migration snapshot and keep the migration filename descriptive so review context remains obvious.

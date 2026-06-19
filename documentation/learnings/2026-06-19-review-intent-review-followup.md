@@ -1,0 +1,3 @@
+- When a boolean result gains a second false case, add a typed status before callers start depending on ambiguous logs or metrics.
+- Descriptive migration filenames and inline comments should capture deliberate legacy-data choices, especially when backfills choose one owner or skip historical fan-out.
+- Tests that mock the database boundary should say whether they prove application error propagation or database-level atomicity.

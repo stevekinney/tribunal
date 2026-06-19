@@ -1,0 +1,3 @@
+- Review-intent claim and review-input build queries must apply the same tenant eligibility predicates. If claiming requires a watched repository setting and enabled user review settings, the later build query must require those same predicates before choosing an installation owner.
+- When a migration adds a required tenant column to legacy configuration rows, handle rows that cannot be mapped to an active tenant before `SET NOT NULL`; deleting unusable orphan configuration is safer than inventing ownership.
+- Shared cost rollup helpers should require an explicit tenant boundary in their public options. Optional `userId` parameters make global aggregation the default and can reintroduce cross-user reads through future call sites.

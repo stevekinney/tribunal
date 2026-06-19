@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { reviewIntent } from '@tribunal/database/schema';
+import {
+  githubInstallationRepository,
+  repositoryReviewSettings,
+  reviewIntent,
+  userReviewSettings,
+} from '@tribunal/database/schema';
 import { createTestContext, type TestContext } from '@tribunal/test/context';
 import type { GithubServiceContext } from '../../context.js';
 import {
@@ -83,6 +88,7 @@ describe('buildPullRequestOrchestratorWorkflowId', () => {
 describe('signalPullRequestEvent', () => {
   it('inserts one idempotent start intent for a redelivered opened event', async () => {
     const repository = await testContext.factories.repository.create({ id: 42 });
+    const { user } = await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
     const input = {
       repositoryId: repository.id,
@@ -98,8 +104,18 @@ describe('signalPullRequestEvent', () => {
     const first = await signalPullRequestEvent(context, input);
     const second = await signalPullRequestEvent(context, input);
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'start', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'start', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -109,6 +125,7 @@ describe('signalPullRequestEvent', () => {
     expect(rows[0]).toMatchObject({
       kind: 'start',
       repositoryId: repository.id,
+      userId: user.id,
       prNumber: 7,
       headSha: 'abc123',
       prState: null,
@@ -117,6 +134,7 @@ describe('signalPullRequestEvent', () => {
 
   it('inserts a commit_pushed intent for synchronize events', async () => {
     const repository = await testContext.factories.repository.create({ id: 43 });
+    await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
@@ -130,7 +148,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'def456',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -140,6 +163,7 @@ describe('signalPullRequestEvent', () => {
 
   it('inserts a commit_pushed intent for check-completed events', async () => {
     const repository = await testContext.factories.repository.create({ id: 50 });
+    await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
@@ -153,7 +177,12 @@ describe('signalPullRequestEvent', () => {
       headSha: 'checkhead',
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
@@ -169,6 +198,7 @@ describe('signalPullRequestEvent', () => {
 
   it('deduplicates same-delivery intents by event kind', async () => {
     const repository = await testContext.factories.repository.create({ id: 49 });
+    await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
 
     const first = await signalPullRequestEvent(context, {
@@ -192,8 +222,18 @@ describe('signalPullRequestEvent', () => {
       headSha: 'second',
     });
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'commit_pushed',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -202,6 +242,68 @@ describe('signalPullRequestEvent', () => {
       .orderBy(reviewIntent.prNumber);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ prNumber: 14, headSha: 'first' });
+  });
+
+  it('enqueues one intent per watched user on a shared repository', async () => {
+    const repository = await testContext.factories.repository.create({ id: 51 });
+    const firstWatcher = await createWatchedRepository(repository.id, 100);
+    const secondWatcher = await createWatchedRepository(repository.id, 101);
+    const context = createGithubContext();
+
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 17,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_opened',
+      eventId: 'delivery-shared-repository',
+      headSha: 'shared-head',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-shared-repository'))
+      .orderBy(reviewIntent.userId);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.userId)).toEqual([firstWatcher.user.id, secondWatcher.user.id]);
+  });
+
+  it('does not enqueue an intent when no active user watches the repository', async () => {
+    const repository = await testContext.factories.repository.create({ id: 52 });
+    const context = createGithubContext();
+
+    const result = await signalPullRequestEvent(context, {
+      workspaceId: 0,
+      repositoryId: repository.id,
+      prNumber: 18,
+      installationId: 100,
+      owner: repository.owner,
+      repo: repository.name,
+      eventType: 'pr_opened',
+      eventId: 'delivery-unwatched-repository',
+      headSha: 'unwatched-head',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'start',
+      enqueued: false,
+      enqueueStatus: 'no_watchers',
+    });
+    const rows = await testContext.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.deliveryId, 'delivery-unwatched-repository'));
+    expect(rows).toHaveLength(0);
   });
 
   it('returns not enqueued for ignored event types', async () => {
@@ -253,6 +355,7 @@ describe('signalPullRequestEvent', () => {
 describe('signalPullRequestClosed', () => {
   it('inserts an idempotent pr_closed intent with final pull request state', async () => {
     const repository = await testContext.factories.repository.create({ id: 44 });
+    await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
     const input = {
       repositoryId: repository.id,
@@ -265,8 +368,18 @@ describe('signalPullRequestClosed', () => {
     const first = await signalPullRequestClosed(context, input);
     const second = await signalPullRequestClosed(context, input);
 
-    expect(first).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: false });
+    expect(first).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
+    expect(second).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: false,
+      enqueueStatus: 'duplicate',
+    });
 
     const rows = await testContext.db
       .select()
@@ -282,6 +395,7 @@ describe('signalPullRequestClosed', () => {
 
   it('records closed state for unmerged pull requests', async () => {
     const repository = await testContext.factories.repository.create({ id: 47 });
+    await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
 
     const result = await signalPullRequestClosed(context, {
@@ -292,7 +406,12 @@ describe('signalPullRequestClosed', () => {
       headSha: null,
     });
 
-    expect(result).toMatchObject({ ok: true, intentKind: 'pr_closed', enqueued: true });
+    expect(result).toMatchObject({
+      ok: true,
+      intentKind: 'pr_closed',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
+    });
 
     const rows = await testContext.db
       .select()
@@ -325,3 +444,27 @@ describe('signalPullRequestClosed', () => {
     });
   });
 });
+
+async function createWatchedRepository(repositoryId: number, installationId: number) {
+  const user = await testContext.factories.user.create();
+  const installation = await testContext.factories.githubInstallation.createForUser(user.id, {
+    installationId,
+    status: 'active',
+  });
+  await testContext.db.insert(githubInstallationRepository).values({
+    installationId: installation.installationId,
+    repositoryId,
+    isActive: true,
+  });
+  await testContext.db.insert(userReviewSettings).values({
+    userId: user.id,
+    reviewsEnabled: true,
+  });
+  await testContext.db.insert(repositoryReviewSettings).values({
+    userId: user.id,
+    repositoryId,
+    watched: true,
+  });
+
+  return { user, installation };
+}
