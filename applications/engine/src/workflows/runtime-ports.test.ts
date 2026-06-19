@@ -283,7 +283,7 @@ describe('runtime review intent consumer wiring', () => {
     expect(url.searchParams.getAll('group_by[]')).toEqual(['workspace_id', 'description']);
   });
 
-  it('attributes Anthropic cost report rows without custom metadata to the review run target', async () => {
+  it('fails loudly for Anthropic cost report rows without review run metadata', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -313,19 +313,9 @@ describe('runtime review intent consumer wiring', () => {
       createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts(
         usageCostTarget({ reviewRunId: 'run_without_metadata', userId: 9, repositoryId: 77 }),
       ),
-    ).resolves.toEqual([
-      {
-        id: 'run_without_metadata:0:0',
-        occurredAt: new Date('2026-06-17T12:00:00.000Z'),
-        amountUsd: 1.5,
-        userId: 9,
-        repositoryId: 77,
-        reviewRunId: 'run_without_metadata',
-        agentRunId: null,
-        agentId: null,
-        metadata: {},
-      },
-    ]);
+    ).rejects.toThrow(
+      'Anthropic cost report row is missing review_run_id metadata; cannot safely reconcile organization-level costs.',
+    );
   });
 
   it('follows documented Anthropic cost report pagination', async () => {

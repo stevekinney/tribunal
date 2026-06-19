@@ -260,12 +260,16 @@ function parseAnthropicCostReport(
   const rows = getCostReportRows(payload);
   return rows.flatMap((row, index) => {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
-    if (metadata?.review_run_id !== undefined && metadata.review_run_id !== target.reviewRunId) {
-      return [];
-    }
     if (row.currency !== undefined && row.currency !== 'USD') return [];
     const amountUsd = parseUsdDecimal(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
+    const rowReviewRunId = metadata?.review_run_id;
+    if (rowReviewRunId === undefined) {
+      throw new Error(
+        'Anthropic cost report row is missing review_run_id metadata; cannot safely reconcile organization-level costs.',
+      );
+    }
+    if (rowReviewRunId !== target.reviewRunId) return [];
     const userId = toNullableInteger(metadata?.user_id ?? row.user_id) ?? target.userId;
     return [
       {
