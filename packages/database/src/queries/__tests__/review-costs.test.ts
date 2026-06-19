@@ -314,6 +314,7 @@ describe('review contract schema', () => {
           deliveryId: 'delivery-1',
           kind: 'start',
           repositoryId: repository.id,
+          userId: user.id,
           prNumber: 12,
           headSha: 'abc',
         },
@@ -322,6 +323,7 @@ describe('review contract schema', () => {
           deliveryId: 'delivery-1',
           kind: 'start',
           repositoryId: repository.id,
+          userId: user.id,
           prNumber: 12,
           headSha: 'abc',
         },
@@ -330,8 +332,8 @@ describe('review contract schema', () => {
 
     await expect(
       testDatabase.db.insert(repositoryAgent).values([
-        { repositoryId: repository.id, agentId: firstAgent.id },
-        { repositoryId: repository.id, agentId: firstAgent.id },
+        { userId: user.id, repositoryId: repository.id, agentId: firstAgent.id },
+        { userId: user.id, repositoryId: repository.id, agentId: firstAgent.id },
       ]),
     ).rejects.toThrow();
   });
@@ -366,9 +368,12 @@ describe('review contract schema', () => {
     const { user, repository } = await createReviewFixture();
 
     await testDatabase.db.insert(userReviewSettings).values({ userId: user.id });
-    await testDatabase.db
-      .insert(repositoryReviewSettings)
-      .values({ repositoryId: repository.id, watched: true, ignoreGlobs: ['**/*.md'] });
+    await testDatabase.db.insert(repositoryReviewSettings).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      watched: true,
+      ignoreGlobs: ['**/*.md'],
+    });
     await testDatabase.db.insert(finding).values({
       id: 'find_1',
       userId: user.id,
@@ -403,29 +408,132 @@ describe('review cost rollups', () => {
   it('returns the six required rollups and spendTodayEstimate', async () => {
     const { user, repository, secondaryRepository, firstAgent, secondAgent } =
       await createReviewFixture();
+    const options = { source: 'estimate' as const, userId: user.id };
 
-    expect(await getCostPerReviewRun(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerReviewRun(testDatabase.db, options)).toEqual([
       { reviewRunId: 'run_1', amountUsd: 2 },
       { reviewRunId: 'run_2', amountUsd: 2 },
     ]);
-    expect(await getCostPerPullRequest(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerPullRequest(testDatabase.db, options)).toEqual([
       { repositoryId: repository.id, prNumber: 12, amountUsd: 2 },
       { repositoryId: secondaryRepository.id, prNumber: 13, amountUsd: 2 },
     ]);
-    expect(await getCostPerRepository(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerRepository(testDatabase.db, options)).toEqual([
       { repositoryId: repository.id, amountUsd: 2 },
       { repositoryId: secondaryRepository.id, amountUsd: 2 },
     ]);
-    expect(await getCostPerAgent(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerAgent(testDatabase.db, options)).toEqual([
       { agentId: firstAgent.id, amountUsd: 3.25 },
       { agentId: secondAgent.id, amountUsd: 0.75 },
     ]);
-    expect(await getCostPerAgentPerRepository(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerAgentPerRepository(testDatabase.db, options)).toEqual([
       { agentId: firstAgent.id, repositoryId: repository.id, amountUsd: 1.25 },
       { agentId: firstAgent.id, repositoryId: secondaryRepository.id, amountUsd: 2 },
       { agentId: secondAgent.id, repositoryId: repository.id, amountUsd: 0.75 },
     ]);
-    expect(await getCostPerUserPerDay(testDatabase.db, { source: 'estimate' })).toEqual([
+    expect(await getCostPerUserPerDay(testDatabase.db, options)).toEqual([
+      { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 4 },
+    ]);
+    await expect(
+      spendTodayEstimate(testDatabase.db, user.id, new Date('2026-06-17T20:00:00.000Z')),
+    ).resolves.toBe(4);
+  });
+
+  it('scopes the six required rollups and spendTodayEstimate to one user', async () => {
+    const { user, repository, secondaryRepository, firstAgent, secondAgent } =
+      await createReviewFixture();
+    const factories = createFactories(testDatabase.db);
+    const otherUser = await factories.user.create({ username: 'other-user' });
+    const otherAgent = await testDatabase.db
+      .insert(agent)
+      .values({
+        id: 'agent_other',
+        userId: otherUser.id,
+        slug: 'other-reviewer',
+        description: 'Find other issues.',
+        body: 'Review another tenant.',
+        model: 'inherit',
+      })
+      .returning()
+      .then(([row]) => row);
+    const otherRun = await testDatabase.db
+      .insert(reviewRun)
+      .values({
+        id: 'run_other',
+        userId: otherUser.id,
+        repositoryId: repository.id,
+        prNumber: 12,
+        headSha: 'abc-other',
+        trigger: 'opened',
+        status: 'posted',
+      })
+      .returning()
+      .then(([row]) => row);
+    const otherAgentRun = await testDatabase.db
+      .insert(agentRun)
+      .values({
+        id: 'arun_other',
+        userId: otherUser.id,
+        reviewRunId: otherRun.id,
+        agentId: otherAgent.id,
+        status: 'succeeded',
+      })
+      .returning()
+      .then(([row]) => row);
+
+    await testDatabase.db.insert(costEvent).values([
+      {
+        id: 'cost_other_estimate',
+        userId: otherUser.id,
+        kind: 'llm',
+        source: 'estimate',
+        repositoryId: repository.id,
+        reviewRunId: otherRun.id,
+        agentRunId: otherAgentRun.id,
+        agentId: otherAgent.id,
+        amountUsd: '8.00',
+        idempotencyKey: 'llm:arun_other:estimate',
+        occurredAt: new Date('2026-06-17T14:00:00.000Z'),
+      },
+      {
+        id: 'cost_other_reconciled',
+        userId: otherUser.id,
+        kind: 'llm',
+        source: 'reconciled',
+        repositoryId: repository.id,
+        reviewRunId: otherRun.id,
+        agentRunId: otherAgentRun.id,
+        agentId: otherAgent.id,
+        amountUsd: '7.00',
+        idempotencyKey: 'llm:arun_other:reconciled',
+        occurredAt: new Date('2026-06-17T15:00:00.000Z'),
+      },
+    ]);
+
+    const options = { source: 'estimate' as const, userId: user.id };
+
+    expect(await getCostPerReviewRun(testDatabase.db, options)).toEqual([
+      { reviewRunId: 'run_1', amountUsd: 2 },
+      { reviewRunId: 'run_2', amountUsd: 2 },
+    ]);
+    expect(await getCostPerPullRequest(testDatabase.db, options)).toEqual([
+      { repositoryId: repository.id, prNumber: 12, amountUsd: 2 },
+      { repositoryId: secondaryRepository.id, prNumber: 13, amountUsd: 2 },
+    ]);
+    expect(await getCostPerRepository(testDatabase.db, options)).toEqual([
+      { repositoryId: repository.id, amountUsd: 2 },
+      { repositoryId: secondaryRepository.id, amountUsd: 2 },
+    ]);
+    expect(await getCostPerAgent(testDatabase.db, options)).toEqual([
+      { agentId: firstAgent.id, amountUsd: 3.25 },
+      { agentId: secondAgent.id, amountUsd: 0.75 },
+    ]);
+    expect(await getCostPerAgentPerRepository(testDatabase.db, options)).toEqual([
+      { agentId: firstAgent.id, repositoryId: repository.id, amountUsd: 1.25 },
+      { agentId: firstAgent.id, repositoryId: secondaryRepository.id, amountUsd: 2 },
+      { agentId: secondAgent.id, repositoryId: repository.id, amountUsd: 0.75 },
+    ]);
+    expect(await getCostPerUserPerDay(testDatabase.db, options)).toEqual([
       { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 4 },
     ]);
     await expect(

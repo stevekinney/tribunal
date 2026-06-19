@@ -86,7 +86,12 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
     db
       .select()
       .from(repositoryReviewSettings)
-      .where(inArray(repositoryReviewSettings.repositoryId, repositoryIds)),
+      .where(
+        and(
+          eq(repositoryReviewSettings.userId, userId),
+          inArray(repositoryReviewSettings.repositoryId, repositoryIds),
+        ),
+      ),
     db
       .select({
         repositoryId: repositoryAgent.repositoryId,
@@ -96,7 +101,13 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
       })
       .from(repositoryAgent)
       .innerJoin(agent, eq(agent.id, repositoryAgent.agentId))
-      .where(and(eq(agent.userId, userId), inArray(repositoryAgent.repositoryId, repositoryIds))),
+      .where(
+        and(
+          eq(repositoryAgent.userId, userId),
+          eq(agent.userId, userId),
+          inArray(repositoryAgent.repositoryId, repositoryIds),
+        ),
+      ),
     db
       .select()
       .from(reviewRun)
@@ -185,22 +196,6 @@ export async function saveRepositoryWatchSettings(
     return fail(400, { error: 'One or more selected agents are unavailable.' });
   }
 
-  await db
-    .insert(repositoryReviewSettings)
-    .values({
-      repositoryId: input.repositoryId,
-      watched: input.watched,
-      ignoreGlobs: input.ignoreGlobs,
-    })
-    .onConflictDoUpdate({
-      target: repositoryReviewSettings.repositoryId,
-      set: {
-        watched: input.watched,
-        ignoreGlobs: input.ignoreGlobs,
-        updatedAt: new Date(),
-      },
-    });
-
   const agentIdSql =
     input.agentIds.length === 0
       ? sql`ARRAY[]::text[]`
@@ -208,23 +203,42 @@ export async function saveRepositoryWatchSettings(
           input.agentIds.map((agentId) => sql`${agentId}`),
           sql`, `,
         )}]::text[]`;
+  const ignoreGlobsSql =
+    input.ignoreGlobs.length === 0
+      ? sql`ARRAY[]::text[]`
+      : sql`ARRAY[${sql.join(
+          input.ignoreGlobs.map((glob) => sql`${glob}`),
+          sql`, `,
+        )}]::text[]`;
+  const now = new Date();
 
   await db.execute(sql`
-    WITH selected_agents AS (
+    WITH updated_settings AS (
+      INSERT INTO ${repositoryReviewSettings}
+        ("user_id", "repository_id", "watched", "ignore_globs", "updated_at")
+      VALUES (${userId}, ${input.repositoryId}, ${input.watched}, ${ignoreGlobsSql}, ${now})
+      ON CONFLICT ("user_id", "repository_id") DO UPDATE SET
+        "watched" = excluded."watched",
+        "ignore_globs" = excluded."ignore_globs",
+        "updated_at" = excluded."updated_at"
+      RETURNING "user_id", "repository_id"
+    ),
+    selected_agents AS (
       SELECT unnest(${agentIdSql}) AS agent_id
     ),
     removed_agents AS (
       DELETE FROM ${repositoryAgent}
-      WHERE ${repositoryAgent.repositoryId} = ${input.repositoryId}
+      WHERE ${repositoryAgent.userId} = ${userId}
+        AND ${repositoryAgent.repositoryId} = ${input.repositoryId}
         AND NOT EXISTS (
           SELECT 1 FROM selected_agents
           WHERE selected_agents.agent_id = ${repositoryAgent.agentId}
         )
       RETURNING ${repositoryAgent.agentId}
     )
-    INSERT INTO "repository_agent" ("repository_id", "agent_id")
-    SELECT ${input.repositoryId}, selected_agents.agent_id
-    FROM selected_agents
+    INSERT INTO ${repositoryAgent} ("user_id", "repository_id", "agent_id")
+    SELECT updated_settings."user_id", updated_settings."repository_id", selected_agents.agent_id
+    FROM updated_settings, selected_agents
     ON CONFLICT DO NOTHING
   `);
 
