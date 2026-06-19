@@ -14,10 +14,12 @@ import {
   repositoryReviewSettings,
   reviewRun,
   user,
+  userReviewSettings,
 } from '@tribunal/database/schema';
 import { eq } from 'drizzle-orm';
 import {
   deleteAgent,
+  estimateAgentDryRun,
   getRepositoryOperatorDetails,
   getCostOverview,
   getRunInspector,
@@ -26,6 +28,7 @@ import {
   setAgentEnabled,
   stopAgent,
   stopRun,
+  streamRunAgentEvents,
 } from './operator';
 
 const mocks = vi.hoisted(() => ({
@@ -298,6 +301,89 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it('estimates an agent dry run from the submitted prompt and sample diff', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'sonnet');
+    formData.set('effort', 'high');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result).toMatchObject({
+      values: {
+        body: 'Review this pull request for security issues.',
+        sampleDiff: 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();',
+      },
+      dryRunEstimate: {
+        model: 'sonnet',
+        effort: 'high',
+      },
+    });
+    expect(result.dryRunEstimate.estimatedInputTokens).toBeGreaterThan(0);
+    expect(result.dryRunEstimate.estimatedOutputTokens).toBeGreaterThan(0);
+    expect(result.dryRunEstimate.costEstimateUsd).toBeGreaterThan(0);
+  });
+
+  it('estimates dry runs with the effective inherited model and effort fallback', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'inherit');
+    formData.set('effort', 'xhigh');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result.dryRunEstimate.model).not.toBe('inherit');
+    expect(result.dryRunEstimate.model).toMatch(/^claude-[a-z0-9-]+$|^(sonnet|opus|haiku|fable)$/);
+    expect(result.dryRunEstimate.effort).toBe('high');
+  });
+
+  it('rejects dry-run inheritance when the user default model is not concrete', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db
+      .insert(userReviewSettings)
+      .values({ userId: owner.id, defaultModel: 'inherit' });
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'inherit');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'User default model is not configured.' },
+    });
+  });
+
+  it('estimates explicit-model dry runs without requiring a concrete user default model', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db
+      .insert(userReviewSettings)
+      .values({ userId: owner.id, defaultModel: 'inherit' });
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'sonnet');
+    formData.set('effort', 'high');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result.dryRunEstimate).toMatchObject({
+      model: 'sonnet',
+      effort: 'high',
+    });
+  });
+
   it('scopes run inspection and stop control to the owning user', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
     await testDb.db.insert(reviewRun).values({
@@ -347,6 +433,58 @@ describe('review operator server helpers', () => {
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
+  });
+
+  it('streams only new agent events and sends an idle keepalive', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      reviewRunId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    const [storedEvent] = await testDb.db
+      .insert(agentEvent)
+      .values({
+        agentRunId: 'agent_run_1',
+        seq: 1,
+        kind: 'tool_pre',
+        tool: 'Read',
+        detail: { allowed: true },
+      })
+      .returning();
+    const abortController = new AbortController();
+
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, storedEvent.id),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    const firstChunk = await reader.read();
+    let streamedText = decoder.decode(firstChunk.value ?? new Uint8Array());
+    if (!streamedText.includes(': keepalive')) {
+      const secondChunk = await reader.read();
+      streamedText += decoder.decode(secondChunk.value ?? new Uint8Array());
+    }
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+
+    expect(streamedText).toContain(': connected');
+    expect(streamedText).toContain(': keepalive');
+    expect(streamedText).not.toContain('event: agent_event');
   });
 
   it('stops one owned agent run and signals the live engine when configured', async () => {
