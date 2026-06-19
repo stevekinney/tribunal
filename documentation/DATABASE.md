@@ -198,6 +198,13 @@ CI validates migrations on every pull request:
 - **Clean application** — the `migration` job in `.github/workflows/ci.yml`
   applies the full migration history against a disposable Postgres 16 service,
   proving migrations apply from scratch.
+- **Pull request Neon branch** —
+  `.github/workflows/neon-pull-request-branches.yml` creates or refreshes
+  `preview/pr-<number>` for same-repository pull requests targeting `main`,
+  applies Drizzle migrations to that branch, and validates database invariants.
+  It deletes the branch when the pull request closes or retargets away from
+  `main`. The workflow requires the `NEON_API_KEY` repository secret and
+  `NEON_PROJECT_ID` repository variable.
 - **Schema drift** (`packages/database/scripts/check-migration-consistency.ts`,
   run via `bun run --cwd packages/database check:migrations`) — runs
   `drizzle-kit generate` to a temp directory and checks whether uncommitted schema

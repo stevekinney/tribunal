@@ -46,3 +46,33 @@ bun run --cwd packages/database db:detect-drift
 # (from packages/database) list tables in the database
 bun run --cwd packages/database db:tables
 ```
+
+## Pull request Neon branches
+
+GitHub creates a Neon branch for same-repository pull requests targeting `main`
+through `.github/workflows/neon-pull-request-branches.yml`.
+
+- Opening, reopening, or pushing to a pull request creates or reuses
+  `preview/pr-<number>`.
+- Retargeting a pull request also refreshes the branch if the pull request now
+  targets `main`.
+- Retargeting a pull request away from `main` deletes the matching Neon branch.
+- Each create-and-migrate run resets the branch to its parent before applying
+  migrations, so validation runs against the current parent schema plus the pull
+  request's migrations.
+- The workflow runs `bun run db:migrate` against that branch, then runs
+  `bun run --cwd packages/database db:validate-invariants`.
+- Closing the pull request deletes the matching Neon branch. If the branch is
+  already gone, cleanup exits successfully.
+
+Required GitHub repository settings:
+
+- Secret: `NEON_API_KEY`
+- Variable: `NEON_PROJECT_ID`
+
+Optional GitHub repository variables:
+
+- `NEON_PARENT_BRANCH` (defaults to `main`)
+- `NEON_DATABASE_NAME` (defaults to `neondb`)
+- `NEON_DATABASE_ROLE` (defaults to `neondb_owner`)
+- `NEON_SUSPEND_TIMEOUT_SECONDS` (defaults to `300`)
