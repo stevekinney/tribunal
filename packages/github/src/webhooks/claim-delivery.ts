@@ -46,13 +46,23 @@ export async function releaseWebhookDeliveryClaim(
   context: GithubServiceContext,
   deliveryId: string,
   eventType: string,
-): Promise<void> {
-  await context.db
-    .delete(githubWebhookDelivery)
-    .where(
-      and(
-        eq(githubWebhookDelivery.deliveryId, deliveryId),
-        eq(githubWebhookDelivery.eventType, eventType),
-      ),
-    );
+): Promise<boolean> {
+  try {
+    await context.db
+      .delete(githubWebhookDelivery)
+      .where(
+        and(
+          eq(githubWebhookDelivery.deliveryId, deliveryId),
+          eq(githubWebhookDelivery.eventType, eventType),
+        ),
+      );
+    return true;
+  } catch (error) {
+    console.error('[github-webhook] Failed to release delivery claim:', {
+      deliveryId,
+      eventType,
+      error,
+    });
+    return false;
+  }
 }

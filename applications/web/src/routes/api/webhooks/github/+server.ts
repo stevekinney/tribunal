@@ -246,16 +246,14 @@ export const POST: RequestHandler = async (event) => {
     if (isReviewEngineTrigger) {
       console.error('[webhook] Review intent dispatch failed:', e);
       // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
-      try {
-        await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
-      } catch (releaseError) {
+      const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      if (!claimReleased) {
         console.error('[webhook] Failed to release review-engine delivery claim:', {
           deliveryId,
           eventType,
           action,
           installationId,
           repositoryId,
-          error: releaseError,
         });
         error(500, 'Review intent dispatch failed and delivery claim could not be released');
       }

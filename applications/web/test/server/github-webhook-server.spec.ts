@@ -131,7 +131,7 @@ describe('GitHub webhook route', () => {
     extractEventFieldsMock.mockReturnValue({ pullRequestNumber: 7, commitSha: 'aaa111' });
     storeWebhookEventMock.mockResolvedValue(undefined);
     handlePullRequestEventMock.mockResolvedValue(undefined);
-    releaseWebhookDeliveryClaimMock.mockResolvedValue(undefined);
+    releaseWebhookDeliveryClaimMock.mockResolvedValue(true);
   });
 
   it('claims review-engine deliveries before dispatch so redelivery cannot enqueue twice', async () => {
@@ -189,7 +189,7 @@ describe('GitHub webhook route', () => {
     expect.assertions(4);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
-    releaseWebhookDeliveryClaimMock.mockRejectedValueOnce(new Error('release failed'));
+    releaseWebhookDeliveryClaimMock.mockResolvedValueOnce(false);
     const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
