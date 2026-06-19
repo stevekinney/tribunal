@@ -5,18 +5,24 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Calculator, Pencil, Power, Save, Trash2, X } from 'lucide-svelte';
+  import { untrack } from 'svelte';
   import { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
   let { data, form } = $props();
 
-  let agentId = $state('');
-  let slug = $state('');
-  let description = $state('');
-  let body = $state('');
-  let enabled = $state(true);
-  let selectedModel = $state('sonnet');
-  let selectedEffort = $state('');
-  let sampleDiff = $state('');
+  function getDryRunValues() {
+    const values = form?.values;
+    return values && 'sampleDiff' in values ? values : null;
+  }
+
+  let agentId = $state(untrack(() => form?.values?.id ?? ''));
+  let slug = $state(untrack(() => form?.values?.slug ?? ''));
+  let description = $state(untrack(() => form?.values?.description ?? ''));
+  let body = $state(untrack(() => form?.values?.body ?? ''));
+  let enabled = $state(untrack(() => form?.values?.enabled ?? true));
+  let selectedModel = $state(untrack(() => form?.values?.model ?? 'sonnet'));
+  let selectedEffort = $state(untrack(() => form?.values?.effort ?? ''));
+  let sampleDiff = $state(untrack(() => getDryRunValues()?.sampleDiff ?? ''));
   const extraHighEffortModels = new Set(['opus', 'fable']);
   const isExtraHighEffortAllowed = $derived(extraHighEffortModels.has(selectedModel));
   const fallbackNotice = $derived(getEffortFallbackNotice(selectedModel, selectedEffort));
@@ -110,7 +116,7 @@
         <div class="dry-run-result field-wide" role="status" aria-live="polite" aria-atomic="true">
           <div>
             <span>Estimated cost</span>
-            <strong>${dryRunEstimate.costEstimateUsd.toFixed(2)}</strong>
+            <strong>${dryRunEstimate.costEstimateUsd.toFixed(4)}</strong>
           </div>
           <div>
             <span>Model</span>
@@ -131,7 +137,7 @@
         <span>Enabled</span>
       </label>
       <div class="form-actions">
-        <Button type="submit" variant="secondary" formaction="?/dryRun">
+        <Button type="submit" variant="secondary" formaction="?/dryRun" formnovalidate>
           Dry run estimate
           {#snippet leadingIcon()}<Calculator size={14} aria-hidden="true" />{/snippet}
         </Button>

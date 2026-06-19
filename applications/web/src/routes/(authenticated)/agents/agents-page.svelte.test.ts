@@ -39,7 +39,17 @@ describe('/agents page', () => {
           effort: 'high',
           estimatedInputTokens: 128,
           estimatedOutputTokens: 64,
-          costEstimateUsd: 0.42,
+          costEstimateUsd: 0.0042,
+        },
+        values: {
+          id: '',
+          slug: '',
+          description: '',
+          body: 'Review the changed authentication code.',
+          sampleDiff: 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();',
+          model: 'sonnet',
+          effort: 'high',
+          enabled: true,
         },
       },
     });
@@ -48,8 +58,11 @@ describe('/agents page', () => {
     await expect
       .element(page.getByRole('button', { name: 'Dry run estimate' }))
       .toBeInTheDocument();
-    await expect.element(page.getByText('$0.42')).toBeInTheDocument();
+    await expect.element(page.getByText('$0.0042')).toBeInTheDocument();
     await expect.element(page.getByText('128 input tokens')).toBeInTheDocument();
     await expect.element(page.getByText('64 output tokens')).toBeInTheDocument();
+    await expect
+      .element(page.getByLabelText('System prompt'))
+      .toHaveValue('Review the changed authentication code.');
   });
 });

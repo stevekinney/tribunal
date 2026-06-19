@@ -14,7 +14,9 @@ import {
   reviewRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
+import { toAgentDefinition } from '@tribunal/agents/definitions';
 import { agentSpecSchema, effortSchema, agentModelSchema } from '@tribunal/review-core/schemas';
+import type { AgentModel, Effort } from '@tribunal/review-core/types';
 import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
@@ -324,32 +326,66 @@ export type AgentDryRunEstimate = {
 };
 
 export async function estimateAgentDryRun(userId: number, formData: FormData) {
-  void userId;
-
+  const id = String(formData.get('id') ?? '').trim();
+  const slug = String(formData.get('slug') ?? '').trim();
+  const description = String(formData.get('description') ?? '').trim();
   const body = String(formData.get('body') ?? '').trim();
   const sampleDiff = String(formData.get('sampleDiff') ?? '').trim();
   const model = String(formData.get('model') ?? 'inherit').trim();
   const effortValue = String(formData.get('effort') ?? '').trim();
   const effort = effortValue === '' ? null : effortValue;
+  const values = {
+    id,
+    slug,
+    description,
+    body,
+    sampleDiff,
+    model,
+    effort: effortValue,
+    enabled: formData.get('enabled') === 'on',
+  };
 
   if (body.length === 0) {
-    return fail(400, { error: 'System prompt is required for a dry run estimate.' });
+    return fail(400, { error: 'System prompt is required for a dry run estimate.', values });
   }
 
   if (sampleDiff.length === 0) {
-    return fail(400, { error: 'Sample diff is required for a dry run estimate.' });
+    return fail(400, { error: 'Sample diff is required for a dry run estimate.', values });
   }
 
-  if (!agentModelSchema.safeParse(model).success) {
-    return fail(400, { error: 'Model is invalid.' });
+  const modelValidation = agentModelSchema.safeParse(model);
+  if (!modelValidation.success) {
+    return fail(400, { error: 'Model is invalid.', values });
   }
 
-  if (effort !== null && !effortSchema.safeParse(effort).success) {
-    return fail(400, { error: 'Effort is invalid.' });
+  const effortValidation = effort === null ? null : effortSchema.safeParse(effort);
+  if (effortValidation !== null && !effortValidation.success) {
+    return fail(400, { error: 'Effort is invalid.', values });
   }
+
+  const [settings] = await getUserReviewSettings(userId);
+  const definition = toAgentDefinition(
+    {
+      id: id || 'agent_dry_run',
+      userId,
+      slug: slug || 'dry-run',
+      description: description || 'Dry run estimate',
+      body,
+      model: modelValidation.data,
+      effort: effortValidation?.data,
+      enabled: true,
+    },
+    settings.defaultModel as Exclude<AgentModel, 'inherit'>,
+  );
 
   return {
-    dryRunEstimate: calculateAgentDryRunEstimate({ body, sampleDiff, model, effort }),
+    values,
+    dryRunEstimate: calculateAgentDryRunEstimate({
+      body,
+      sampleDiff,
+      model: definition.effectiveModel,
+      effort: definition.effectiveEffort,
+    }),
   };
 }
 
@@ -357,7 +393,7 @@ function calculateAgentDryRunEstimate(input: {
   body: string;
   sampleDiff: string;
   model: string;
-  effort: string | null;
+  effort: Effort | null;
 }): AgentDryRunEstimate {
   const estimatedInputTokens = Math.max(
     1,
@@ -393,7 +429,7 @@ function getEstimatedModelRate(model: string) {
   return { inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
 }
 
-function getEstimatedEffortMultiplier(effort: string | null): number {
+function getEstimatedEffortMultiplier(effort: Effort | null): number {
   switch (effort) {
     case 'low':
       return 0.75;

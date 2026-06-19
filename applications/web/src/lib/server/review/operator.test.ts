@@ -178,6 +178,10 @@ describe('review operator server helpers', () => {
     expect('dryRunEstimate' in result).toBe(true);
     if (!('dryRunEstimate' in result)) return;
     expect(result).toMatchObject({
+      values: {
+        body: 'Review this pull request for security issues.',
+        sampleDiff: 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();',
+      },
       dryRunEstimate: {
         model: 'sonnet',
         effort: 'high',
@@ -186,6 +190,24 @@ describe('review operator server helpers', () => {
     expect(result.dryRunEstimate.estimatedInputTokens).toBeGreaterThan(0);
     expect(result.dryRunEstimate.estimatedOutputTokens).toBeGreaterThan(0);
     expect(result.dryRunEstimate.costEstimateUsd).toBeGreaterThan(0);
+  });
+
+  it('estimates dry runs with the effective inherited model and effort fallback', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'inherit');
+    formData.set('effort', 'xhigh');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect('dryRunEstimate' in result).toBe(true);
+    if (!('dryRunEstimate' in result)) return;
+    expect(result.dryRunEstimate).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
   });
 
   it('scopes run inspection and stop control to the owning user', async () => {
