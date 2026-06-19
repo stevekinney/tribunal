@@ -75,6 +75,30 @@ describe('/agents page', () => {
     await expect.element(dryRunButton).not.toHaveAttribute('formaction');
   });
 
+  it('surfaces empty sample diff validation for dry-run estimates', async () => {
+    render(AgentsPage, {
+      data,
+      form: {
+        error: 'Sample diff is required for a dry run estimate.',
+        values: {
+          id: '',
+          slug: '',
+          description: '',
+          body: 'Review the changed authentication code.',
+          sampleDiff: '',
+          model: 'sonnet',
+          effort: 'high',
+          enabled: true,
+        },
+      },
+    });
+
+    await expect
+      .element(page.getByText('Sample diff is required for a dry run estimate.'))
+      .toBeInTheDocument();
+    await expect.element(page.getByLabelText('Sample diff')).toHaveAttribute('required');
+  });
+
   it('hides stale dry-run estimates after model or effort changes', async () => {
     render(AgentsPage, {
       data,

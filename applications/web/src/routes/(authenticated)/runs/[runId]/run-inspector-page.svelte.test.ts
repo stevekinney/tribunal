@@ -162,10 +162,10 @@ describe('/runs/[runId] page', () => {
       },
     );
 
-    render(RunInspectorPage, { data });
+    const rendered = render(RunInspectorPage, { data });
 
     expect(eventSources).toHaveLength(1);
-    expect(eventSources[0].url).toBe('/api/review/runs/run_1/events');
+    expect(eventSources[0].url).toBe('/api/review/runs/run_1/events?after=2');
 
     eventSources[0].onopen?.();
     await expect
@@ -174,6 +174,23 @@ describe('/runs/[runId] page', () => {
 
     eventSources[0].listeners.get('agent_event')?.forEach((listener) => listener());
     expect(invalidateAllMock).toHaveBeenCalledOnce();
+
+    await rendered.rerender({
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          status: 'posted',
+          finishedAt: new Date('2026-06-17T12:00:10Z'),
+        },
+      },
+    });
+
+    expect(eventSources[0].close).toHaveBeenCalledOnce();
+    expect(eventSources).toHaveLength(1);
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('disconnected');
   });
 
   it('links superseded runs to their replacement run', async () => {

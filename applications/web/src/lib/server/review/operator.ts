@@ -364,6 +364,11 @@ export async function estimateAgentDryRun(userId: number, formData: FormData) {
   }
 
   const [settings] = await getUserReviewSettings(userId);
+  const defaultModelValidation = agentModelSchema.safeParse(settings.defaultModel);
+  if (!defaultModelValidation.success || defaultModelValidation.data === 'inherit') {
+    return fail(400, { error: 'User default model is not configured.', values });
+  }
+  const defaultModel: Exclude<AgentModel, 'inherit'> = defaultModelValidation.data;
   const definition = toAgentDefinition(
     {
       id: id || 'agent_dry_run',
@@ -375,7 +380,7 @@ export async function estimateAgentDryRun(userId: number, formData: FormData) {
       effort: effortValidation?.data,
       enabled: true,
     },
-    settings.defaultModel as Exclude<AgentModel, 'inherit'>,
+    defaultModel,
   );
 
   return {
@@ -561,20 +566,22 @@ export async function streamRunAgentEvents(
   userId: number,
   runId: string,
   signal: AbortSignal,
+  afterEventId?: number,
 ): Promise<Response> {
   await requireRunAccess(userId, runId);
 
   const encoder = new TextEncoder();
-  let latestEventId = 0;
-  let interval: ReturnType<typeof setInterval> | undefined;
+  let latestEventId = afterEventId ?? (await getLatestRunAgentEventId(userId, runId));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let removeAbortListener: (() => void) | undefined;
 
   const stream = new ReadableStream({
     async start(controller) {
       const close = () => {
         closed = true;
-        if (interval) clearInterval(interval);
-        signal.removeEventListener('abort', close);
+        if (timeout) clearTimeout(timeout);
+        removeAbortListener?.();
         try {
           controller.close();
         } catch {
@@ -586,23 +593,42 @@ export async function streamRunAgentEvents(
         if (!closed) controller.enqueue(encoder.encode(chunk));
       };
 
-      const emitNewEvents = async () => {
-        if (closed) return;
+      const emitNewEvents = async (): Promise<boolean> => {
+        if (closed) return false;
         const events = await listRunAgentEvents(userId, runId, latestEventId);
+        if (events.length === 0) return false;
+
         for (const event of events) {
           latestEventId = Math.max(latestEventId, event.id);
           enqueue(`id: ${event.id}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`);
         }
+
+        return true;
+      };
+
+      const emitAndSchedule = async () => {
+        try {
+          const emittedEvents = await emitNewEvents();
+          if (!emittedEvents) enqueue(': keepalive\n\n');
+        } catch (caught) {
+          console.error('Failed to stream run agent events', { runId, error: caught });
+          enqueue(': event read failed\n\n');
+        } finally {
+          if (!closed) {
+            timeout = setTimeout(() => void emitAndSchedule(), 2_500);
+          }
+        }
       };
 
       signal.addEventListener('abort', close);
+      removeAbortListener = () => signal.removeEventListener('abort', close);
       enqueue(': connected\n\n');
-      await emitNewEvents();
-      interval = setInterval(() => void emitNewEvents(), 2_500);
+      await emitAndSchedule();
     },
     cancel() {
       closed = true;
-      if (interval) clearInterval(interval);
+      if (timeout) clearTimeout(timeout);
+      removeAbortListener?.();
     },
   });
 
@@ -613,6 +639,18 @@ export async function streamRunAgentEvents(
       connection: 'keep-alive',
     },
   });
+}
+
+async function getLatestRunAgentEventId(userId: number, runId: string): Promise<number> {
+  const [row] = await db
+    .select({ latestEventId: sql<number>`coalesce(max(${agentEvent.id}), 0)` })
+    .from(agentEvent)
+    .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
+    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
+    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .limit(1);
+
+  return Number(row?.latestEventId ?? 0);
 }
 
 async function requireRunAccess(userId: number, runId: string) {

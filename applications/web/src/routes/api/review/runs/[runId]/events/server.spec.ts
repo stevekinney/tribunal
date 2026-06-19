@@ -25,7 +25,7 @@ describe('GET /api/review/runs/[runId]/events', () => {
       headers: { 'content-type': 'text/event-stream' },
     });
     streamRunAgentEventsMock.mockResolvedValue(response);
-    const request = new Request('https://tribunal.test/api/review/runs/run_1/events');
+    const request = new Request('https://tribunal.test/api/review/runs/run_1/events?after=37');
 
     await expect(
       GET({
@@ -35,6 +35,6 @@ describe('GET /api/review/runs/[runId]/events', () => {
       } as never),
     ).resolves.toBe(response);
 
-    expect(streamRunAgentEventsMock).toHaveBeenCalledWith(42, 'run_1', request.signal);
+    expect(streamRunAgentEventsMock).toHaveBeenCalledWith(42, 'run_1', request.signal, 37);
   });
 });

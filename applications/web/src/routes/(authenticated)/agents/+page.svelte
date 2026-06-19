@@ -141,6 +141,7 @@
         <textarea
           name="sampleDiff"
           rows="6"
+          required
           bind:value={sampleDiff}
           placeholder="diff --git a/src/example.ts b/src/example.ts"
         ></textarea>

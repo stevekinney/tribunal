@@ -6,7 +6,6 @@
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
   import { invalidateAll } from '$app/navigation';
-  import { onMount } from 'svelte';
   import { Square } from 'lucide-svelte';
 
   let { data } = $props();
@@ -16,6 +15,9 @@
   const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
   const connected = $derived(canStopRun && connectionState === 'streaming');
   const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
+  const latestAgentEventId = $derived(
+    Math.max(0, ...run.agentRuns.flatMap((agentRun) => agentRun.events.map((event) => event.id))),
+  );
   const replacementRunHref = $derived(
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
   );
@@ -42,14 +44,16 @@
     return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
   }
 
-  onMount(() => {
+  $effect(() => {
     if (!canStopRun || typeof EventSource === 'undefined') {
       connectionState = 'disconnected';
       return;
     }
 
     connectionState = 'connecting';
-    const eventSource = new EventSource(`/api/review/runs/${run.id}/events`);
+    const eventSource = new EventSource(
+      `/api/review/runs/${run.id}/events?after=${latestAgentEventId}`,
+    );
 
     eventSource.onopen = () => {
       connectionState = 'streaming';

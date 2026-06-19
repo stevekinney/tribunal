@@ -14,6 +14,7 @@ import {
   repositoryReviewSettings,
   reviewRun,
   user,
+  userReviewSettings,
 } from '@tribunal/database/schema';
 import { eq } from 'drizzle-orm';
 import {
@@ -26,6 +27,7 @@ import {
   setAgentEnabled,
   stopAgent,
   stopRun,
+  streamRunAgentEvents,
 } from './operator';
 
 const mocks = vi.hoisted(() => ({
@@ -204,9 +206,26 @@ describe('review operator server helpers', () => {
 
     expect('dryRunEstimate' in result).toBe(true);
     if (!('dryRunEstimate' in result)) return;
-    expect(result.dryRunEstimate).toMatchObject({
-      model: 'claude-sonnet-4-6',
-      effort: 'high',
+    expect(result.dryRunEstimate.model).not.toBe('inherit');
+    expect(result.dryRunEstimate.model).toMatch(/^claude-[a-z0-9-]+$|^(sonnet|opus|haiku|fable)$/);
+    expect(result.dryRunEstimate.effort).toBe('high');
+  });
+
+  it('rejects dry-run inheritance when the user default model is not concrete', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db
+      .insert(userReviewSettings)
+      .values({ userId: owner.id, defaultModel: 'inherit' });
+    const formData = new FormData();
+    formData.set('body', 'Review this pull request for security issues.');
+    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
+    formData.set('model', 'inherit');
+
+    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'User default model is not configured.' },
     });
   });
 
@@ -259,6 +278,57 @@ describe('review operator server helpers', () => {
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
+  });
+
+  it('streams only new agent events and sends an idle keepalive', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await testDb.db.insert(reviewRun).values({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      reviewRunId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    const [storedEvent] = await testDb.db
+      .insert(agentEvent)
+      .values({
+        agentRunId: 'agent_run_1',
+        seq: 1,
+        kind: 'tool_pre',
+        tool: 'Read',
+        detail: { allowed: true },
+      })
+      .returning();
+    const abortController = new AbortController();
+
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, storedEvent.id),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    const firstChunk = await reader.read();
+    const secondChunk = await reader.read();
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+    const streamedText =
+      decoder.decode(firstChunk.value ?? new Uint8Array()) +
+      decoder.decode(secondChunk.value ?? new Uint8Array());
+
+    expect(streamedText).toContain(': connected');
+    expect(streamedText).toContain(': keepalive');
+    expect(streamedText).not.toContain('event: agent_event');
   });
 
   it('stops one owned agent run and signals the live engine when configured', async () => {
