@@ -376,7 +376,7 @@ export async function applyFakeReviewLifecycleEvent(
   const now = new Date();
   const finishedAt = new Date(now.getTime() + 60_000);
   const existingRunRows = await db
-    .select({ id: reviewRun.id, headSha: reviewRun.headSha })
+    .select({ id: reviewRun.id, headSha: reviewRun.headSha, status: reviewRun.status })
     .from(reviewRun)
     .where(
       and(
@@ -472,6 +472,21 @@ export async function applyFakeReviewLifecycleEvent(
           idempotencyKey: `fake-review:${deliveryId}:cost`,
         })
         .onConflictDoNothing();
+    } else if (existingRunRows.some((row) => row.id === runId && row.status === 'cancelled')) {
+      await db
+        .update(reviewRun)
+        .set({
+          status: 'posted',
+          error: null,
+          finishedAt,
+          commentsPosted: 1,
+        })
+        .where(eq(reviewRun.id, runId));
+
+      await db
+        .update(agentRun)
+        .set({ status: 'succeeded', stoppedReason: null })
+        .where(eq(agentRun.reviewRunId, runId));
     }
   }
 

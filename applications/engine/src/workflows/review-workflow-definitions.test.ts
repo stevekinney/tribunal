@@ -117,7 +117,11 @@ async function runReaper(
 }
 
 async function awaitTerminal(testEngine: TestEngineInstance, id: string) {
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
+  const deadline = Date.now() + 1_000;
+  let attempts = 0;
+
+  while (Date.now() < deadline) {
+    attempts += 1;
     const state = await testEngine.get(id);
     if (state && ['completed', 'failed', 'cancelled', 'timed-out'].includes(state.status)) {
       return state;
@@ -128,7 +132,7 @@ async function awaitTerminal(testEngine: TestEngineInstance, id: string) {
   const finalState = await testEngine.get(id);
   const status = finalState?.status ?? 'missing';
   throw new Error(
-    `Workflow ${id} did not reach a terminal state after 5 attempts; status: ${status}.`,
+    `Workflow ${id} did not reach a terminal state after ${attempts} attempts; status: ${status}.`,
   );
 }
 

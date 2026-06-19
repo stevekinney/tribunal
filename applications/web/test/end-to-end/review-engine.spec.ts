@@ -96,6 +96,29 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
   expect(closed.ok()).toBe(true);
   await expect(closed.json()).resolves.toMatchObject({ status: 'cancelled' });
 
+  const reopenedAfterClose = await request.post('/__e2e__/review-lifecycle', {
+    headers: e2eHeaders(session.workerId),
+    data: {
+      ...baseEvent,
+      kind: 'opened',
+      headSha: 'open-sha',
+      deliveryId: 'delivery-reopen-after-close',
+    },
+  });
+  expect(reopenedAfterClose.ok()).toBe(true);
+  const reopenedAfterClosePayload = (await reopenedAfterClose.json()) as {
+    runId: string;
+    status: string;
+    duplicateCostEvents: number;
+    totalCostUsd: number;
+  };
+  expect(reopenedAfterClosePayload).toMatchObject({
+    runId: openedPayload.runId,
+    status: 'posted',
+    duplicateCostEvents: 0,
+  });
+  expect(reopenedAfterClosePayload.totalCostUsd).toBe(synchronizedPayload.totalCostUsd);
+
   await page.goto('/runs');
   await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('cancelled');
 
