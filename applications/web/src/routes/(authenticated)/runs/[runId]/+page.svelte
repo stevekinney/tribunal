@@ -7,6 +7,7 @@
   import { Link } from '@lostgradient/cinder/link';
   import { invalidateAll } from '$app/navigation';
   import { Square } from 'lucide-svelte';
+  import { untrack } from 'svelte';
 
   let { data } = $props();
 
@@ -58,8 +59,9 @@
     }
 
     connectionState = 'connecting';
+    const initialAgentEventId = untrack(() => latestAgentEventId);
     const eventSource = new EventSource(
-      `/api/review/runs/${run.id}/events?after=${latestAgentEventId}`,
+      `/api/review/runs/${run.id}/events?after=${initialAgentEventId}`,
     );
 
     eventSource.onopen = () => {

@@ -37,4 +37,22 @@ describe('GET /api/review/runs/[runId]/events', () => {
 
     expect(streamRunAgentEventsMock).toHaveBeenCalledWith(42, 'run_1', request.signal, 37);
   });
+
+  it('omits the after event id when the query parameter is absent', async () => {
+    const response = new Response('event: agent_event\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+    streamRunAgentEventsMock.mockResolvedValue(response);
+    const request = new Request('https://tribunal.test/api/review/runs/run_1/events');
+
+    await expect(
+      GET({
+        locals: { user: { id: 42 } },
+        params: { runId: 'run_1' },
+        request,
+      } as never),
+    ).resolves.toBe(response);
+
+    expect(streamRunAgentEventsMock).toHaveBeenCalledWith(42, 'run_1', request.signal, undefined);
+  });
 });

@@ -16,6 +16,7 @@ const user = {
 const data = {
   user,
   agents: [],
+  defaultModel: 'opus',
   modelOptions: ['inherit', 'sonnet', 'opus', 'haiku', 'fable'],
   effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
@@ -97,6 +98,31 @@ describe('/agents page', () => {
       .element(page.getByText('Sample diff is required for a dry run estimate.'))
       .toBeInTheDocument();
     await expect.element(page.getByLabelText('Sample diff')).toHaveAttribute('required');
+  });
+
+  it('uses the default model for inherited xhigh fallback warnings', async () => {
+    render(AgentsPage, { data, form: null });
+
+    await page.getByLabelText('Model').selectOptions('inherit');
+    await page.getByLabelText('Effort').selectOptions('xhigh');
+    await expect
+      .element(page.getByText('xhigh will be stored, but this model falls back to high effort'))
+      .not.toBeInTheDocument();
+
+    cleanup();
+    render(AgentsPage, {
+      data: {
+        ...data,
+        defaultModel: 'sonnet',
+      },
+      form: null,
+    });
+
+    await page.getByLabelText('Model').selectOptions('inherit');
+    await page.getByLabelText('Effort').selectOptions('xhigh');
+    await expect
+      .element(page.getByText('xhigh will be stored, but this model falls back to high effort'))
+      .toBeInTheDocument();
   });
 
   it('hides stale dry-run estimates after model or effort changes', async () => {

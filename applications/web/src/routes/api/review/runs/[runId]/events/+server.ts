@@ -7,7 +7,8 @@ export const GET: RequestHandler = async ({ locals, params, request }) => {
   if (!user) throw redirect(302, '/login');
 
   const url = new URL(request.url);
-  const rawAfterEventId = Number(url.searchParams.get('after'));
+  const rawAfter = url.searchParams.get('after');
+  const rawAfterEventId = rawAfter === null ? Number.NaN : Number(rawAfter);
   const afterEventId =
     Number.isSafeInteger(rawAfterEventId) && rawAfterEventId >= 0 ? rawAfterEventId : undefined;
 
