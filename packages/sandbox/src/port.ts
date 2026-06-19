@@ -39,6 +39,7 @@ export type SandboxAdapter = {
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
     onStdoutLine?: (line: string) => void,
+    signal?: AbortSignal,
   ): Promise<SandboxCommandResult>;
   killProcess(sandboxId: string, processId: string): Promise<void>;
   suspend(sandboxId: string): Promise<void>;
@@ -60,7 +61,11 @@ export function createSandboxPort(
   const runningAgentProcesses = new Map<string, { processId?: string; stopRequested: boolean }>();
 
   return {
-    async ensure(prKey: string, _options: SandboxOptions) {
+    async ensure(prKey: string, options: SandboxOptions) {
+      if (!Number.isSafeInteger(options.idleSuspendSeconds) || options.idleSuspendSeconds <= 0) {
+        throw new Error('idleSuspendSeconds must be a positive integer.');
+      }
+
       const egress = buildProxyOnlyEgressConfiguration(configuration);
       return adapter.create({
         name: prKey,
@@ -68,16 +73,15 @@ export function createSandboxPort(
         cpus: 2,
         memoryMb: 4096,
         diskMb: 20_480,
-        timeoutSecs: 900,
+        timeoutSecs: options.idleSuspendSeconds,
         ...egress,
         metadata: { managedBy: 'tribunal', name: prKey },
       });
     },
     async update(sandboxId: string, repository: RepoRef, head: string, runToken: string) {
-      const sourceRepositoryUrl = makeCredentiallessRepositoryUrl(repository);
-      const validation = validateCloneInput({ repositoryUrl: sourceRepositoryUrl, headSha: head });
-      if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
       const proxiedRepositoryUrl = makeProxiedRepositoryUrl(configuration.proxyUrl, repository);
+      const validation = validateCloneInput({ repositoryUrl: proxiedRepositoryUrl, headSha: head });
+      if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
 
       const commandResult = await adapter.runCommand(
         sandboxId,
@@ -112,7 +116,7 @@ export function createSandboxPort(
       diffContext: DiffContext,
       runToken: string,
       onEvent: (event: AgentEvent) => void,
-      _signal: AbortSignal,
+      signal: AbortSignal,
     ): Promise<AgentResult> {
       const agentRunId = getAgentRunId(agent);
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -149,6 +153,7 @@ export function createSandboxPort(
           (line) => {
             if (emitAgentEventLine(line, onEvent)) streamedEvents = true;
           },
+          signal,
         );
       } finally {
         runningAgentProcesses.delete(processKey);
@@ -288,10 +293,6 @@ function parseAgentEvent(value: unknown): AgentEvent | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function makeCredentiallessRepositoryUrl(repository: RepoRef): string {
-  return `https://github.com/${repository.owner}/${repository.name}.git`;
 }
 
 function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string {

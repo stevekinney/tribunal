@@ -36,7 +36,6 @@ export async function handlePullRequestReview(
   }
 
   const result = await signalPullRequestEvent(githubContext, {
-    workspaceId: 0,
     repositoryId,
     prNumber: payload.pull_request.number,
     installationId,

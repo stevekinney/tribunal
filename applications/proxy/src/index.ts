@@ -60,6 +60,7 @@ export function createProxyGitHubCredentialResolver(environment: ProxyEnvironmen
     cache,
     getInstallationOctokit: githubApplication.getInstallationOctokit,
     getGithubApplication: githubApplication.getGithubApplication,
+    tokenEncryptionKey: environment.ENCRYPTION_KEY,
   };
 
   return async (claims: CapabilityTokenClaims): Promise<string | null> => {

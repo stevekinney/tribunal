@@ -1,10 +1,4 @@
-import type {
-  AgentEvent,
-  AgentResult,
-  AgentSpec,
-  DiffContext,
-  SandboxAgentExecutionOptions,
-} from './types';
+import type { AgentEvent, AgentResult, AgentSpec, DiffContext } from './types';
 
 export interface RepoRef {
   owner: string;
@@ -73,6 +67,7 @@ export interface GitHubPort {
 export interface SandboxOptions {
   image: string;
   proxyUrl: string;
+  idleSuspendSeconds: number;
 }
 
 export interface SandboxPort {
@@ -80,7 +75,7 @@ export interface SandboxPort {
   update(sandboxId: string, repository: RepoRef, head: string, runToken: string): Promise<void>;
   runAgent(
     sandboxId: string,
-    agent: AgentSpec & SandboxAgentExecutionOptions,
+    agent: AgentSpec,
     diffContext: DiffContext,
     runToken: string,
     onEvent: (event: AgentEvent) => void,

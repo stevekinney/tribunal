@@ -36,7 +36,6 @@ export type { PullRequestEventType, ReviewIntentKind };
 export type ReviewIntentEnqueueStatus = 'enqueued' | 'duplicate' | 'no_watchers';
 
 export interface SignalPullRequestEventInput {
-  workspaceId: number;
   repositoryId: number;
   prNumber: number;
   installationId: number;

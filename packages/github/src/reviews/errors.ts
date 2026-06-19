@@ -27,6 +27,17 @@ export function validateNonEmptyString(value: string | undefined, label: string)
   }
 }
 
+export function validatePositiveInteger(value: number | undefined, label: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new ValidationError(`${label} must be a positive integer.`);
+  }
+}
+
+export function validateRepositoryTarget(owner: string, repository: string): void {
+  validateNonEmptyString(owner, 'owner');
+  validateNonEmptyString(repository, 'repository');
+}
+
 export function classifyGitHubWriteError(error: unknown): Error {
   if (isRateLimitError(error)) {
     return new RateLimitError(

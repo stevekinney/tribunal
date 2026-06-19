@@ -11,7 +11,6 @@ import type {
   LlmEstimateInput,
   RepoRef,
   ReviewPayload,
-  SandboxAgentExecutionOptions,
   SandboxOptions,
   SandboxPort,
   ScopedToken,
@@ -76,6 +75,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(snapshot.supervisors[0]?.workflowId).toBe('review:pr:42:7');
     expect(snapshot.reviewRuns.filter((run) => run.status === 'posted')).toHaveLength(1);
     expect(ports.sandbox.ensureCalls).toHaveLength(1);
+    expect(ports.sandbox.ensureCalls[0]?.options.idleSuspendSeconds).toBe(900);
     expect(ports.intents.processedIntentIds).toEqual(['intent_1', 'intent_2']);
   });
 
@@ -1031,7 +1031,6 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls[0]).toMatchObject({
       model: 'sonnet',
       effort: 'high',
-      enablePromptCaching1h: true,
     });
     expect(ports.sandbox.runAgentCalls[0]?.diffContext.changedFiles[0]).toMatchObject({
       path: 'src/example.ts',
@@ -1563,8 +1562,8 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       proxyUrl: 'https://proxy.example.test',
       proxySigningKey: 'proxy-signing-key',
       runTokenTtlSeconds: 60 * 60,
+      idleSuspendSeconds: 900,
       defaultModel: 'sonnet',
-      enablePromptCaching1h: true,
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
   );
@@ -2025,7 +2024,6 @@ class FakeSandboxPort implements SandboxPort {
     runToken: string;
     model: string;
     effort: string | undefined;
-    enablePromptCaching1h: boolean | undefined;
   }> = [];
   readonly stopCalls: string[] = [];
   readonly terminateCalls: string[] = [];
@@ -2060,7 +2058,7 @@ class FakeSandboxPort implements SandboxPort {
 
   async runAgent(
     sandboxId: string,
-    agent: AgentSpec & SandboxAgentExecutionOptions,
+    agent: AgentSpec,
     diffContext: DiffContext,
     runToken: string,
     onEvent: (event: AgentEvent) => void,
@@ -2073,7 +2071,6 @@ class FakeSandboxPort implements SandboxPort {
       runToken,
       model: agent.model,
       effort: agent.effort,
-      enablePromptCaching1h: agent.enablePromptCaching1h,
     });
     this.runningAgents += 1;
     onEvent({

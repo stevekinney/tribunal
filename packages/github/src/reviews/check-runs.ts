@@ -1,7 +1,12 @@
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { ValidationError } from '../error-taxonomy.js';
-import { validateNonEmptyString, withGitHubWriteErrorClassification } from './errors.js';
+import {
+  validateNonEmptyString,
+  validatePositiveInteger,
+  validateRepositoryTarget,
+  withGitHubWriteErrorClassification,
+} from './errors.js';
 
 const MAX_CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
 
@@ -33,6 +38,7 @@ export interface CheckRunOutputInput {
   annotations?: CheckRunAnnotationInput[];
 }
 
+/** Inputs for creating a Check Run, which always starts with status in_progress. */
 export interface CreateCheckRunInput {
   installationId: number;
   owner: string;
@@ -220,17 +226,6 @@ async function requireInstallationOctokit(
     throw new ValidationError(`GitHub installation ${installationId} is not available.`);
   }
   return octokit;
-}
-
-function validateRepositoryTarget(owner: string, repository: string): void {
-  validateNonEmptyString(owner, 'owner');
-  validateNonEmptyString(repository, 'repository');
-}
-
-function validatePositiveInteger(value: number | undefined, label: string): void {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new ValidationError(`${label} must be a positive integer.`);
-  }
 }
 
 function validateStatus(status: string): void {

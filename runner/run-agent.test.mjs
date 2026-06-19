@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import {
   createTribunalMcpServer,
   isAgentSlug,
   isMainModule,
+  main,
   redactRuntimeValueForEvent,
   runClaudeReview,
+  writeResult,
 } from './run-agent.mjs';
 
 const diffContext = {
@@ -37,6 +40,14 @@ const validFinding = {
   title: '@team check auth',
   body: '@everyone\n/approve this',
   suggestion: 'const token = "sk-ant-secret";',
+};
+
+const baseEnvironment = {
+  TRIBUNAL_RUN_TOKEN: 'run-token',
+  TRIBUNAL_AGENT_RUN_ID: 'agent-run-1',
+  TRIBUNAL_AGENT_MODEL: 'sonnet',
+  TRIBUNAL_AGENT_EFFORT: 'xhigh',
+  TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
 };
 
 describe('runner agent wiring', () => {
@@ -261,7 +272,142 @@ describe('runner agent wiring', () => {
     expect(isAgentSlug('-security-review')).toBe(false);
     expect(isAgentSlug('security-review-')).toBe(false);
   });
+
+  it('writes partial cost when SIGTERM arrives before completion', async () => {
+    const signalSource = new EventEmitter();
+    const stdout = createWritable();
+    const exit = vi.fn();
+    let releaseQuery;
+
+    const run = main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit,
+      signalSource,
+      performanceNow: vi.fn().mockReturnValueOnce(100).mockReturnValue(125),
+      queryClient: async function* () {
+        yield {
+          type: 'result',
+          structured_output: { findings: [] },
+          modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+          usage: { input_tokens: 5 },
+          total_cost_usd: 0.09,
+        };
+        signalSource.emit('SIGTERM');
+        yield await new Promise((resolve) => {
+          releaseQuery = () => resolve({ type: 'system', subtype: 'done' });
+        });
+      },
+    });
+
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(143));
+    releaseQuery();
+    await run;
+
+    expect(stdout.records().find((record) => record.type === 'result')).toMatchObject({
+      type: 'result',
+      result: {
+        modelUsed: 'sonnet',
+        effortUsed: 'xhigh',
+        costEstimateUsd: 0.09,
+        error: 'Agent review stopped before completion.',
+      },
+    });
+  });
+
+  it('removes the SIGTERM listener after normal completion', async () => {
+    const signalSource = new EventEmitter();
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: baseEnvironment,
+      stdout: createWritable(),
+      stderr: createWritable(),
+      exit: vi.fn(),
+      signalSource,
+      queryClient: () =>
+        streamMessages([
+          {
+            type: 'result',
+            structured_output: { findings: [] },
+            usage: {},
+            total_cost_usd: 0,
+          },
+        ]),
+    });
+
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  it('keeps a successful result retryable when the first write fails', async () => {
+    const stdout = createWritableThatFailsFirstResult();
+    const result = {
+      agentSlug: 'security-review',
+      findings: [],
+      modelUsed: 'sonnet',
+      effortUsed: null,
+      usage: {},
+      costEstimateUsd: 0,
+      durationMs: 0,
+    };
+
+    await expect(writeResult(stdout, { written: false }, result)).rejects.toThrow('write failed');
+    await writeResult(stdout, { written: false }, result);
+
+    expect(stdout.records()).toEqual([{ type: 'result', result }]);
+  });
 });
+
+function createWritable() {
+  let value = '';
+  return {
+    write(chunk, callback) {
+      value += chunk;
+      callback?.();
+    },
+    once: vi.fn(),
+    off: vi.fn(),
+    records() {
+      return value
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+  };
+}
+
+function createWritableThatFailsFirstResult() {
+  const emitter = new EventEmitter();
+  let resultWrites = 0;
+  let value = '';
+  return Object.assign(emitter, {
+    write(chunk, callback) {
+      if (String(chunk).includes('"type":"result"')) {
+        resultWrites += 1;
+        if (resultWrites === 1) {
+          queueMicrotask(() => this.emit('error', new Error('write failed')));
+          return;
+        }
+      }
+      value += chunk;
+      callback?.();
+    },
+    records() {
+      return value
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+  });
+}
+
+async function* streamMessages(messages) {
+  for (const message of messages) yield message;
+}
 
 function createReviewTools() {
   return {
