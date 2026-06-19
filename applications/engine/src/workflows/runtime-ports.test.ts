@@ -1321,7 +1321,11 @@ describe('Tensorlake sandbox adapter', () => {
     const port = createEngineSandboxPort(runtimeEnvironment());
 
     await expect(
-      port.ensure('tribunal-pr-42-7', { image: 'ignored', proxyUrl: 'ignored' }),
+      port.ensure('tribunal-pr-42-7', {
+        image: 'ignored',
+        proxyUrl: 'ignored',
+        idleSuspendSeconds: 900,
+      }),
     ).resolves.toEqual({
       sandboxId: 'sandbox_1',
     });

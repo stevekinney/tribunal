@@ -48,6 +48,21 @@ function createWritable() {
   };
 }
 
+function createFailingWritable() {
+  return {
+    write(chunk, callback) {
+      if (String(chunk).includes('"type":"result"')) {
+        this.emit('error', new Error('write failed'));
+        return;
+      }
+      callback?.();
+    },
+    once: EventEmitter.prototype.once,
+    off: EventEmitter.prototype.off,
+    emit: EventEmitter.prototype.emit,
+  };
+}
+
 async function* streamMessages(messages) {
   for (const message of messages) yield message;
 }
@@ -225,6 +240,36 @@ describe('run-agent runner', () => {
     });
 
     expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  it('exits after SIGTERM when writing a partial result fails', async () => {
+    const signalSource = new EventEmitter();
+    const exit = vi.fn();
+    async function* signalDuringReview() {
+      signalSource.emit('SIGTERM');
+      yield {
+        type: 'result',
+        structured_output: { findings: [] },
+        modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
+        usage: {},
+        total_cost_usd: 0,
+      };
+    }
+
+    const run = runAgentProcess({
+      argv: ['node', 'run-agent.mjs', 'security-reviewer'],
+      environment: baseEnvironment,
+      stdout: Object.assign(createFailingWritable(), new EventEmitter()),
+      stderr: createWritable(),
+      exit,
+      signalSource,
+      queryFunction: signalDuringReview,
+    });
+
+    await waitFor(() => exit.mock.calls.length > 0);
+
+    expect(exit).toHaveBeenCalledWith(143);
+    await run;
   });
 });
 

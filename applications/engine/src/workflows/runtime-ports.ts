@@ -882,8 +882,8 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
         }
       }
     } finally {
-      signal?.removeEventListener('abort', abortListener);
       await abortPromise;
+      signal?.removeEventListener('abort', abortListener);
     }
     const completedProcess = await sandbox.getProcess(process.pid);
     const exitCode = completedProcess.exitCode;

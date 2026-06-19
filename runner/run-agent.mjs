@@ -73,7 +73,9 @@ export async function runAgentProcess({
         durationMs: elapsedMilliseconds(),
         error: 'Agent review stopped before completion.',
       }),
-    ).finally(() => exit(143));
+    )
+      .catch(() => {})
+      .finally(() => exit(143));
   };
   signalSource.once?.('SIGTERM', terminateListener);
 
