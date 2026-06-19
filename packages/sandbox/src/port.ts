@@ -61,6 +61,10 @@ export function createSandboxPort(
 
   return {
     async ensure(prKey: string, options: SandboxOptions) {
+      if (!Number.isSafeInteger(options.idleSuspendSeconds) || options.idleSuspendSeconds <= 0) {
+        throw new Error('idleSuspendSeconds must be a positive integer.');
+      }
+
       const egress = buildProxyOnlyEgressConfiguration(configuration);
       return adapter.create({
         name: prKey,

@@ -164,6 +164,42 @@ describe('runtime review intent consumer wiring', () => {
     });
   });
 
+  it('rejects non-positive idle suspend runtime values', () => {
+    expect(() =>
+      createReviewIntentConsumer({ execute: vi.fn() } as unknown as Database, {
+        ...runtimeEnvironment(),
+        IDLE_SUSPEND_SECONDS: '0',
+      }),
+    ).toThrow('IDLE_SUSPEND_SECONDS must be a positive integer.');
+    expect(() =>
+      createReviewIntentConsumer({ execute: vi.fn() } as unknown as Database, {
+        ...runtimeEnvironment(),
+        IDLE_SUSPEND_SECONDS: 0,
+      }),
+    ).toThrow('IDLE_SUSPEND_SECONDS must be a positive integer.');
+    expect(() =>
+      createReviewIntentConsumer({ execute: vi.fn() } as unknown as Database, {
+        ...runtimeEnvironment(),
+        IDLE_SUSPEND_SECONDS: '1.5',
+      }),
+    ).toThrow('IDLE_SUSPEND_SECONDS must be a positive integer.');
+  });
+
+  it('rejects non-positive daily cost cap runtime values', () => {
+    expect(() =>
+      createReviewIntentConsumer({ execute: vi.fn() } as unknown as Database, {
+        ...runtimeEnvironment(),
+        DEFAULT_DAILY_COST_CAP_USD: '0',
+      }),
+    ).toThrow('DEFAULT_DAILY_COST_CAP_USD must be a positive number.');
+    expect(() =>
+      createReviewIntentConsumer({ execute: vi.fn() } as unknown as Database, {
+        ...runtimeEnvironment(),
+        DEFAULT_DAILY_COST_CAP_USD: 0,
+      }),
+    ).toThrow('DEFAULT_DAILY_COST_CAP_USD must be a positive number.');
+  });
+
   it('creates a consumer from DATABASE_URL and exposes an empty reconciliation client', async () => {
     expect(createReviewIntentConsumerFromEnvironment(runtimeEnvironment())).toBeDefined();
     await expect(emptyUsageCostApiClient.listReviewRunCosts()).resolves.toEqual([]);

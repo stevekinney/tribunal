@@ -100,7 +100,11 @@ export function createReviewIntentConsumer(
 ) {
   const githubContext = createEngineGithubContext(database, environment);
   const intentPort = createDatabaseReviewIntentPort(database, {
-    defaultDailyCostCapUsd: parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25),
+    defaultDailyCostCapUsd: parsePositiveNumber(
+      environment.DEFAULT_DAILY_COST_CAP_USD,
+      25,
+      'DEFAULT_DAILY_COST_CAP_USD',
+    ),
     reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
   });
   const reviewWorkflowEngine = new ReviewWorkflowEngine(
@@ -123,7 +127,11 @@ export function createReviewIntentConsumer(
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
-      idleSuspendSeconds: parsePositiveNumber(environment.IDLE_SUSPEND_SECONDS, 900),
+      idleSuspendSeconds: parsePositiveInteger(
+        environment.IDLE_SUSPEND_SECONDS,
+        900,
+        'IDLE_SUSPEND_SECONDS',
+      ),
       defaultModel: requireEnvironmentValue(
         environment.TRIBUNAL_DEFAULT_MODEL,
         'TRIBUNAL_DEFAULT_MODEL',
@@ -986,10 +994,30 @@ function requireEnvironmentValue(value: string | undefined, name: string): strin
   return value;
 }
 
-function parsePositiveNumber(value: number | string | undefined, fallback: number): number {
-  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+function parsePositiveNumber(
+  value: number | string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+  throw new Error(`${name} must be a positive number.`);
+}
+
+function parsePositiveInteger(
+  value: number | string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+
+  throw new Error(`${name} must be a positive integer.`);
 }
 
 function parseBooleanFlag(value: boolean | string | undefined, fallback: boolean): boolean {

@@ -106,6 +106,32 @@ describe('sandbox port', () => {
     });
   });
 
+  it('rejects invalid idle suspend timeouts before creating a sandbox', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await expect(
+      port.ensure('tribunal-pr-42-7', {
+        image: 'ignored',
+        proxyUrl: 'ignored',
+        idleSuspendSeconds: 0,
+      }),
+    ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
+    await expect(
+      port.ensure('tribunal-pr-42-7', {
+        image: 'ignored',
+        proxyUrl: 'ignored',
+        idleSuspendSeconds: 1.5,
+      }),
+    ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
+
+    expect(calls).toEqual([]);
+  });
+
   it('uses proxy clone URLs and run-token authorization for updates', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
