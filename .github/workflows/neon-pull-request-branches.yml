@@ -13,15 +13,14 @@ permissions:
   contents: read
   pull-requests: read
 
-concurrency:
-  group: neon-pull-request-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   create-and-migrate:
     name: Create and Migrate Neon Branch
     if: ${{ github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && (github.event.action != 'edited' || github.event.changes.base.ref.from != null) }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: neon-pull-request-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     timeout-minutes: 15
     steps:
       - name: Check pull request state
@@ -193,6 +192,9 @@ jobs:
     name: Delete Neon Branch
     if: ${{ github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: neon-pull-request-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     timeout-minutes: 5
     steps:
       - name: Check pull request state
