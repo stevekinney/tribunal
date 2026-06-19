@@ -224,6 +224,11 @@ export async function seedOperatorData(
     .onConflictDoNothing();
 
   await db
+    .update(repositoryTable)
+    .set({ installationId })
+    .where(eq(repositoryTable.id, options.repositoryId));
+
+  await db
     .insert(agent)
     .values({
       id: agentId,
