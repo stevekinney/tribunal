@@ -103,7 +103,6 @@ export function createReviewIntentConsumer(
   const githubContext = createEngineGithubContext(database, environment);
   const defaultDailyCostCapUsd = parsePositiveNumber(environment.DEFAULT_DAILY_COST_CAP_USD, 25);
   const intentPort = createDatabaseReviewIntentPort(database, {
-    defaultDailyCostCapUsd,
     reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
   });
   const reviewWorkflowEngine = new ReviewWorkflowEngine(
@@ -322,9 +321,9 @@ function toNullableString(value: unknown): string | null {
 }
 
 function parseUsdDecimal(value: unknown): number {
-  if (typeof value !== 'string' && typeof value !== 'number') return 0;
+  if (typeof value !== 'string' && typeof value !== 'number') return Number.NaN;
   const amountUsd = Number(value);
-  if (!Number.isFinite(amountUsd) || amountUsd <= 0) return 0;
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0) return Number.NaN;
   return Number(amountUsd.toFixed(8));
 }
 

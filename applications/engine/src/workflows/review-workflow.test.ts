@@ -61,7 +61,6 @@ const baseInput: PullRequestReviewInput = {
   headSha: 'aaa111',
   trigger: 'opened',
   agents: [reviewAgent],
-  dailyCostCapUsd: 10,
   ignoreGlobs: [],
 };
 
@@ -997,6 +996,31 @@ describe('ReviewWorkflowEngine', () => {
       },
     });
     expect(ports.cost.llmEstimates[0]).toMatchObject({ amountUsd: 0.42 });
+  });
+
+  it('preserves zero-cost partial failed agent details from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: 0,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0,
+      durationMs: 25,
+      modelUsed: 'sonnet',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
   });
 
   it('skips agent execution when every changed file matches repository ignore globs', async () => {

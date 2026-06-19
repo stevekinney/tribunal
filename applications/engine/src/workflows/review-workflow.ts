@@ -52,7 +52,6 @@ export type PullRequestReviewInput = {
   headSha: string;
   trigger: PullRequestReviewTrigger;
   agents: AgentSpec[];
-  dailyCostCapUsd: number;
   ignoreGlobs: string[];
 };
 
@@ -1330,7 +1329,7 @@ function getPartialAgentResult(error: unknown): Partial<AgentResult> | undefined
   const record = getUnknownRecord(error);
   const candidate = getUnknownRecord(record?.partialResult);
   const costEstimateUsd = Number(candidate?.costEstimateUsd);
-  if (!Number.isFinite(costEstimateUsd) || costEstimateUsd <= 0) return undefined;
+  if (!Number.isFinite(costEstimateUsd) || costEstimateUsd < 0) return undefined;
 
   const usage = getUnknownRecord(candidate?.usage);
   return {

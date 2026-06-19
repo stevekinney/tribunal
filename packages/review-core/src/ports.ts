@@ -100,11 +100,10 @@ export interface SandboxCostInput {
   amountUsd: number;
   idempotencyKey: string;
   pricingVersion?: string;
-  runtime?: {
+  runtime: {
     runtimeSeconds: number;
-    storageSeconds?: number;
   };
-  resources?: {
+  resources: {
     cpus: number;
     memoryMb: number;
     storageMb: number;

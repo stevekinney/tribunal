@@ -815,7 +815,6 @@ describe('database review workflow state port', () => {
         headSha: 'aaa111',
         trigger: 'opened',
         agents: [],
-        dailyCostCapUsd: 25,
         ignoreGlobs: [],
       }),
     ).resolves.toEqual({ reviewRuns: [], agentRuns: [] });
@@ -939,7 +938,6 @@ describe('database review workflow state port', () => {
       headSha: 'aaa111',
       trigger: 'opened',
       agents: [],
-      dailyCostCapUsd: 25,
     });
 
     expect(state.reviewRuns).toEqual([
@@ -1620,7 +1618,6 @@ function claimedIntent() {
       headSha: 'a'.repeat(40),
       trigger: 'opened' as const,
       agents: [],
-      dailyCostCapUsd: 25,
       ignoreGlobs: [],
     },
     createdAt: new Date('2026-06-17T12:00:00.000Z'),
