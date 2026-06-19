@@ -26,6 +26,10 @@ if (resultPath) {
 const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
 const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
 const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
+const sdkEnvironment = {
+  ...process.env,
+  ANTHROPIC_API_KEY: process.env.TRIBUNAL_RUN_TOKEN,
+};
 const diffContext = createDiffContext();
 let sequence = 0;
 let latestSdkResult;
@@ -76,6 +80,7 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
     options: {
       cwd: repositoryPath,
       model,
+      env: sdkEnvironment,
       ...(effort ? { effort } : {}),
       settingSources: [],
       strictMcpConfig: true,

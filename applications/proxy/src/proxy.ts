@@ -75,7 +75,8 @@ export function createProxyHandler(
       });
     }
 
-    const token = extractBearerToken(request);
+    const service = parseService(url.pathname);
+    const token = extractCapabilityToken(request, service);
     if (!token) {
       await emitAudit(
         auditSink,
@@ -462,7 +463,12 @@ async function resolveCredential(
   return options.githubCredentialResolver?.(claims) ?? null;
 }
 
-function extractBearerToken(request: Request): string | null {
+function extractCapabilityToken(request: Request, service: ProxyService | null): string | null {
+  if (service === 'anthropic') {
+    const apiKey = request.headers.get('x-api-key');
+    if (apiKey) return apiKey;
+  }
+
   const authorization = request.headers.get('authorization');
   if (!authorization) {
     return null;
