@@ -309,9 +309,7 @@ function parseAnthropicCostReport(
     positiveUsdRowsWithoutReviewRunId > 0 &&
     positiveUsdRowsWithReviewRunId === 0
   ) {
-    throw new Error(
-      'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
-    );
+    return [];
   }
 
   return events;
