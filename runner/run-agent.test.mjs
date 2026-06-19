@@ -430,4 +430,26 @@ describe('run-agent runner', () => {
 
     expect(stdout.off).toHaveBeenCalledTimes(1);
   });
+
+  it('uses removeListener when removing result error listeners', async () => {
+    const stdout = {
+      write(_chunk, callback) {
+        callback?.();
+      },
+      once: vi.fn(),
+      removeListener: vi.fn(),
+    };
+
+    await writeResult(stdout, {
+      agentSlug: 'security-reviewer',
+      findings: [],
+      modelUsed: 'sonnet',
+      effortUsed: null,
+      usage: {},
+      costEstimateUsd: 0,
+      durationMs: 0,
+    });
+
+    expect(stdout.removeListener).toHaveBeenCalledTimes(1);
+  });
 });

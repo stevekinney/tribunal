@@ -31,6 +31,12 @@ describe('parseProxyEnvironment', () => {
     expect(() => parseProxyEnvironment(missingSigningKey)).toThrow();
   });
 
+  it('throws when Redis is missing', () => {
+    const { REDIS_URL: _removed, ...missingRedis } = fullEnvironment;
+
+    expect(() => parseProxyEnvironment(missingRedis)).toThrow();
+  });
+
   it('throws when the encryption key is not a 64-character hex string', () => {
     expect(() =>
       parseProxyEnvironment({ ...fullEnvironment, ENCRYPTION_KEY: `${'a'.repeat(64)}zz` }),

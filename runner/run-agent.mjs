@@ -272,18 +272,22 @@ export function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, dura
 
 export function writeResult(stdout, result) {
   return new Promise((resolveWrite, rejectWrite) => {
+    const removeErrorListener = () => {
+      const removeListener = stdout.off ?? stdout.removeListener;
+      removeListener?.call(stdout, 'error', handleError);
+    };
     const handleError = (error) => {
-      stdout.off?.('error', handleError);
+      removeErrorListener();
       rejectWrite(error);
     };
     stdout.once?.('error', handleError);
     try {
       stdout.write(`${JSON.stringify({ type: 'result', result })}\n`, () => {
-        stdout.off?.('error', handleError);
+        removeErrorListener();
         resolveWrite();
       });
     } catch (error) {
-      stdout.off?.('error', handleError);
+      removeErrorListener();
       rejectWrite(error);
     }
   });

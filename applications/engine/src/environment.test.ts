@@ -67,10 +67,19 @@ describe('parseEngineEnvironment', () => {
   it('throws clearly when the default daily cost cap is zero', () => {
     expect(() =>
       parseEngineEnvironment({ ...fullEnvironment, DEFAULT_DAILY_COST_CAP_USD: '0' }),
-    ).toThrow('must be greater than zero');
+    ).toThrow('must be a finite number greater than zero');
     expect(() =>
       parseEngineEnvironment({ ...fullEnvironment, DEFAULT_DAILY_COST_CAP_USD: '0.00' }),
-    ).toThrow('must be greater than zero');
+    ).toThrow('must be a finite number greater than zero');
+  });
+
+  it('throws clearly when the default daily cost cap is infinite', () => {
+    expect(() =>
+      parseEngineEnvironment({
+        ...fullEnvironment,
+        DEFAULT_DAILY_COST_CAP_USD: '9'.repeat(400),
+      }),
+    ).toThrow('must be a finite number greater than zero');
   });
 
   it('defaults prompt caching to false when omitted', () => {

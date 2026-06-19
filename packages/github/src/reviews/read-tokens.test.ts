@@ -319,6 +319,29 @@ describe('mintSingleRepositoryReadToken', () => {
     ).toThrow('Cached GitHub installation token is not encrypted.');
   });
 
+  it('validates the encryption key before minting a GitHub token', async () => {
+    delete process.env.ENCRYPTION_KEY;
+    const createInstallationAccessToken = vi.fn();
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+
+    await expect(
+      mintSingleRepositoryReadToken(context, {
+        installationId: 123,
+        repositoryId: 456,
+      }),
+    ).rejects.toThrow('ENCRYPTION_KEY is required to cache GitHub tokens.');
+    expect(createInstallationAccessToken).not.toHaveBeenCalled();
+  });
+
   it('requires a valid encryption key before caching tokens', () => {
     delete process.env.ENCRYPTION_KEY;
 

@@ -23,6 +23,7 @@ export async function mintSingleRepositoryReadToken(
 ): Promise<InstallationToken> {
   const policy = requirePolicy('mint-single-repository-read-token');
   const fetchToken = async () => {
+    getTokenEncryptionKey();
     const result = await mintInstallationAccessToken(context, {
       installationId: input.installationId,
       repositoryIds: [input.repositoryId],

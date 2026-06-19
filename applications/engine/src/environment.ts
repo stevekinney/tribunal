@@ -4,7 +4,10 @@ const positiveIntegerString = z.string().regex(/^[1-9]\d*$/);
 const positiveDecimalString = z
   .string()
   .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/)
-  .refine((value) => Number(value) > 0, 'must be greater than zero');
+  .refine((value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0;
+  }, 'must be a finite number greater than zero');
 const booleanFlag = z.enum(['true', 'false', '1', '0']).transform((value) => {
   return value === 'true' || value === '1';
 });
