@@ -4,11 +4,16 @@ import type { DiffContext } from '@tribunal/review-core';
 import { createE2ESession, e2eHeaders } from '../helpers';
 
 const diffContext: DiffContext = {
-  repository: { owner: 'lostgradient', name: 'tribunal' },
-  pr: { number: 15, title: 'Security harness', author: 'octocat' },
   baseSha: 'base',
   headSha: 'head',
-  changedFiles: [{ path: 'src/security.ts', status: 'modified', additions: 1, deletions: 1 }],
+  changedFiles: [
+    {
+      path: 'src/security.ts',
+      status: 'modified',
+      commentableLines: [{ side: 'RIGHT', line: 12 }],
+    },
+  ],
+  pr: { number: 15, title: 'Security harness', body: '', labels: [], author: 'octocat' },
 };
 
 test('prompt injection cannot enable mutating tools', () => {
