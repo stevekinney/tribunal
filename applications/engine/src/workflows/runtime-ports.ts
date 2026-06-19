@@ -218,7 +218,7 @@ export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostAp
       const endingAt = target.finishedAt ?? new Date();
       let page: string | undefined;
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let pageIndex = 0; pageIndex < 5; pageIndex += 1) {
         const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
         url.searchParams.set('starting_at', startingAt.toISOString());
         url.searchParams.set('ending_at', endingAt.toISOString());
@@ -237,7 +237,7 @@ export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostAp
           throw new Error(`Anthropic cost report request failed with status ${response.status}`);
         }
         const payload = (await response.json()) as unknown;
-        events.push(...parseAnthropicCostReport(payload, target, attempt));
+        events.push(...parseAnthropicCostReport(payload, target, pageIndex));
 
         const payloadRecord = getRecord(payload);
         if (payloadRecord?.has_more !== true) return events;
