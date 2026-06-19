@@ -18,7 +18,10 @@ import {
   handleRepositoryMetadataEvents,
   isPullRequestWebhookEvent,
 } from '$lib/server/github/webhooks';
-import { claimWebhookDelivery } from '@tribunal/github/webhooks/claim-delivery';
+import {
+  claimWebhookDelivery,
+  releaseWebhookDeliveryClaim,
+} from '@tribunal/github/webhooks/claim-delivery';
 
 // Import typed webhook handlers
 import { handlePullRequestEvent } from './handlers/pull-request.server';
@@ -242,7 +245,9 @@ export const POST: RequestHandler = async (event) => {
   } catch (e) {
     if (isReviewEngineTrigger) {
       console.error('[webhook] Review intent dispatch failed:', e);
-      // Return 500 so GitHub retries this delivery (review intent failures)
+      // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
+      await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      // Return 500 so GitHub retries this delivery (review intent failures).
       error(500, 'Review intent dispatch failed');
     } else {
       // For non-review-engine events, the delivery may already be claimed. Log and continue

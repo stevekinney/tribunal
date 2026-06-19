@@ -1,0 +1,1 @@
+- Claim-before-processing webhook delivery guards still need an explicit release path when a review-engine dispatch failure returns 500, otherwise GitHub redelivery can be deduplicated before the durable review intent is retried.

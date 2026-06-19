@@ -1254,7 +1254,7 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
     const status = result.error === undefined ? 'completed' : `failed: ${result.error}`;
     return `- ${result.agentSlug}: ${status}; model ${result.modelUsed}; effort ${effort}; findings ${result.findings.length} (${formatSeverityCounts(severityCounts)}); estimated cost $${result.costEstimateUsd.toFixed(4)}.`;
   });
-  const offDiffLines = agentResults.flatMap((result) =>
+  const findingLines = agentResults.flatMap((result) =>
     result.findings.map(
       (finding) =>
         `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
@@ -1271,7 +1271,7 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
         '',
         ...agentLines,
       ].join('\n'),
-      text: offDiffLines.length === 0 ? undefined : ['Findings:', ...offDiffLines].join('\n'),
+      text: findingLines.length === 0 ? undefined : ['Findings:', ...findingLines].join('\n'),
       annotations,
     },
   };

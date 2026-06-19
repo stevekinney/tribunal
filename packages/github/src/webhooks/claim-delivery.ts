@@ -6,6 +6,7 @@
  */
 
 import { githubWebhookDelivery } from '@tribunal/database/schema';
+import { and, eq } from 'drizzle-orm';
 import type { GithubServiceContext } from '../context.js';
 
 /**
@@ -35,4 +36,23 @@ export async function claimWebhookDelivery(
 
   // If we got a row back, we successfully claimed this delivery
   return inserted.length > 0;
+}
+
+/**
+ * Release a claimed delivery when processing fails before durable side effects
+ * complete, allowing GitHub redelivery to retry the same event.
+ */
+export async function releaseWebhookDeliveryClaim(
+  context: GithubServiceContext,
+  deliveryId: string,
+  eventType: string,
+): Promise<void> {
+  await context.db
+    .delete(githubWebhookDelivery)
+    .where(
+      and(
+        eq(githubWebhookDelivery.deliveryId, deliveryId),
+        eq(githubWebhookDelivery.eventType, eventType),
+      ),
+    );
 }
