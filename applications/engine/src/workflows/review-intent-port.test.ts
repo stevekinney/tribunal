@@ -140,6 +140,7 @@ describe('createDatabaseReviewIntentPort', () => {
       innerJoin: () => selectBuilder,
       leftJoin: () => selectBuilder,
       where: () => selectBuilder,
+      orderBy: () => selectBuilder,
       limit: () => Promise.resolve([]),
     };
     const database = {
@@ -219,6 +220,57 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('prefers the repository installation when multiple active installations are linked', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    const factories = createFactories(testDatabase.db);
+    const otherUser = await factories.user.create();
+    const otherInstallation = await factories.githubInstallation.createForUser(otherUser.id, {
+      installationId: 1000,
+      status: 'active',
+    });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: otherInstallation.installationId,
+      repositoryId: repository.id,
+      isActive: true,
+    });
+    await testDatabase.db.insert(userReviewSettings).values({
+      userId: otherUser.id,
+      dailyCostCapUsd: '1.00',
+      reviewsEnabled: true,
+    });
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_repository_installation',
+        userId: user.id,
+        slug: 'repository-installation-review',
+        description: 'Reviews for the repository installation.',
+        body: 'Use this agent.',
+        model: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent_other_installation',
+        userId: otherUser.id,
+        slug: 'other-installation-review',
+        description: 'Should not be selected.',
+        body: 'Do not use.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values([
+      { repositoryId: repository.id, agentId: 'agent_repository_installation' },
+      { repositoryId: repository.id, agentId: 'agent_other_installation' },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest).toMatchObject({
+      userId: user.id,
+      installationId: 1001,
+      agents: [{ id: 'agent_repository_installation' }],
+    });
+  });
+
   it('reclaims stale unprocessed review intents', async () => {
     const { user, repository } = await createReviewIntentFixture();
     await testDatabase.db.insert(agent).values({
@@ -291,6 +343,56 @@ describe('createDatabaseReviewIntentPort', () => {
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:02:00.000Z')),
     ).resolves.toMatchObject({ id: 'intent_1' });
+  });
+
+  it('clears previous failure state when a retry is processed', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    await testDatabase.db
+      .update(reviewIntent)
+      .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
+      .where(eq(reviewIntent.id, 'intent_1'));
+    const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
+
+    await port.markReviewIntentFailed(
+      'intent_1',
+      new Date('2026-06-17T12:00:00.000Z'),
+      new Date('2026-06-17T12:01:00.000Z'),
+      new Error('temporary failure'),
+    );
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:02:00.000Z'));
+
+    await expect(
+      port.markReviewIntentProcessed(
+        'intent_1',
+        claimed!.claimedAt,
+        new Date('2026-06-17T12:03:00.000Z'),
+      ),
+    ).resolves.toBe(true);
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      processedAt: new Date('2026-06-17T12:03:00.000Z'),
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      deadLetteredAt: null,
+    });
   });
 
   it('does not clear processed review intents after a late failure', async () => {

@@ -188,6 +188,11 @@ async function buildPullRequestReviewInput(
       ),
     )
     .where(eq(reviewIntent.id, intent.id))
+    .orderBy(
+      sql`CASE WHEN ${githubInstallation.installationId} = ${repository.installationId} THEN 0 ELSE 1 END`,
+      asc(githubInstallation.installationId),
+      asc(githubInstallation.userId),
+    )
     .limit(1);
 
   if (!target?.userId) return { status: 'missing_target' };
@@ -257,7 +262,14 @@ function markReviewIntentProcessed(
 ): Promise<boolean> {
   const update = database
     .update(reviewIntent)
-    .set({ processedAt: now })
+    .set({
+      processedAt: now,
+      failedAt: null,
+      failureCount: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      deadLetteredAt: null,
+    })
     .where(
       and(
         eq(reviewIntent.id, intentId),
