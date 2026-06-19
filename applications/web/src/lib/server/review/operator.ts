@@ -14,7 +14,9 @@ import {
   reviewRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
+import { toAgentDefinition } from '@tribunal/agents/definitions';
 import { agentSpecSchema, effortSchema, agentModelSchema } from '@tribunal/review-core/schemas';
+import type { AgentModel, Effort } from '@tribunal/review-core/types';
 import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
@@ -330,6 +332,146 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
   return { success: true };
 }
 
+export type AgentDryRunEstimate = {
+  model: string;
+  effort: string | null;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  costEstimateUsd: number;
+};
+
+export async function estimateAgentDryRun(userId: number, formData: FormData) {
+  const id = String(formData.get('id') ?? '').trim();
+  const slug = String(formData.get('slug') ?? '').trim();
+  const description = String(formData.get('description') ?? '').trim();
+  const body = String(formData.get('body') ?? '').trim();
+  const sampleDiff = String(formData.get('sampleDiff') ?? '').trim();
+  const model = String(formData.get('model') ?? 'inherit').trim();
+  const effortValue = String(formData.get('effort') ?? '').trim();
+  const effort = effortValue === '' ? null : effortValue;
+  const values = {
+    id,
+    slug,
+    description,
+    body,
+    sampleDiff,
+    model,
+    effort: effortValue,
+    enabled: formData.get('enabled') === 'on',
+  };
+
+  if (body.length === 0) {
+    return fail(400, { error: 'System prompt is required for a dry run estimate.', values });
+  }
+
+  if (sampleDiff.length === 0) {
+    return fail(400, { error: 'Sample diff is required for a dry run estimate.', values });
+  }
+
+  const modelValidation = agentModelSchema.safeParse(model);
+  if (!modelValidation.success) {
+    return fail(400, { error: 'Model is invalid.', values });
+  }
+
+  const effortValidation = effort === null ? null : effortSchema.safeParse(effort);
+  if (effortValidation !== null && !effortValidation.success) {
+    return fail(400, { error: 'Effort is invalid.', values });
+  }
+
+  const submittedModel = modelValidation.data;
+  let defaultModel: Exclude<AgentModel, 'inherit'>;
+  if (submittedModel === 'inherit') {
+    const [settings] = await getUserReviewSettings(userId);
+    const defaultModelValidation = agentModelSchema.safeParse(settings.defaultModel);
+    if (!defaultModelValidation.success || defaultModelValidation.data === 'inherit') {
+      return fail(400, { error: 'User default model is not configured.', values });
+    }
+    defaultModel = defaultModelValidation.data;
+  } else {
+    defaultModel = submittedModel;
+  }
+
+  const definition = toAgentDefinition(
+    {
+      id: id || 'agent_dry_run',
+      userId,
+      slug: slug || 'dry-run',
+      description: description || 'Dry run estimate',
+      body,
+      model: submittedModel,
+      effort: effortValidation?.data,
+      enabled: true,
+    },
+    defaultModel,
+  );
+
+  return {
+    values,
+    dryRunEstimate: calculateAgentDryRunEstimate({
+      body,
+      sampleDiff,
+      model: definition.effectiveModel,
+      effort: definition.effectiveEffort,
+    }),
+  };
+}
+
+function calculateAgentDryRunEstimate(input: {
+  body: string;
+  sampleDiff: string;
+  model: string;
+  effort: Effort | null;
+}): AgentDryRunEstimate {
+  const estimatedInputTokens = Math.max(
+    1,
+    Math.ceil((input.body.length + input.sampleDiff.length) / 4),
+  );
+  const estimatedOutputTokens = Math.max(32, Math.ceil(input.sampleDiff.length / 8));
+  const modelRate = getEstimatedModelRate(input.model);
+  const effortMultiplier = getEstimatedEffortMultiplier(input.effort);
+  const costEstimateUsd =
+    ((estimatedInputTokens * modelRate.inputPerMillionTokens +
+      estimatedOutputTokens * modelRate.outputPerMillionTokens) /
+      1_000_000) *
+    effortMultiplier;
+
+  return {
+    model: input.model,
+    effort: input.effort,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    costEstimateUsd: Number(costEstimateUsd.toFixed(4)),
+  };
+}
+
+function getEstimatedModelRate(model: string) {
+  if (model.includes('opus')) {
+    return { inputPerMillionTokens: 15, outputPerMillionTokens: 75 };
+  }
+
+  if (model.includes('haiku')) {
+    return { inputPerMillionTokens: 1, outputPerMillionTokens: 5 };
+  }
+
+  return { inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
+}
+
+function getEstimatedEffortMultiplier(effort: Effort | null): number {
+  switch (effort) {
+    case 'low':
+      return 0.75;
+    case 'high':
+      return 1.5;
+    case 'xhigh':
+      return 2;
+    case 'max':
+      return 2.5;
+    case 'medium':
+    default:
+      return 1;
+  }
+}
+
 export async function getRunsOverview(userId: number) {
   const rows = await db
     .select({
@@ -430,6 +572,149 @@ export async function getRunInspector(userId: number, runId: string) {
       findings: (findingsByAgentRun.get(row.agentRun.id) ?? []).map((entry) => entry.finding),
     })),
   };
+}
+
+export type RunAgentEventStreamEvent = {
+  id: number;
+  agentRunId: string;
+  seq: number;
+  kind: string;
+  tool: string | null;
+  detail: unknown;
+  at: string;
+};
+
+export async function streamRunAgentEvents(
+  userId: number,
+  runId: string,
+  signal: AbortSignal,
+  afterEventId?: number,
+): Promise<Response> {
+  await requireRunAccess(userId, runId);
+
+  const encoder = new TextEncoder();
+  let latestEventId = afterEventId ?? (await getLatestRunAgentEventId(userId, runId));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+  let removeAbortListener: (() => void) | undefined;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const close = () => {
+        closed = true;
+        if (timeout) clearTimeout(timeout);
+        removeAbortListener?.();
+        try {
+          controller.close();
+        } catch {
+          // The stream may already be closed by the client.
+        }
+      };
+
+      const enqueue = (chunk: string) => {
+        if (!closed) controller.enqueue(encoder.encode(chunk));
+      };
+
+      const emitNewEvents = async (): Promise<boolean> => {
+        if (closed) return false;
+        const events = await listRunAgentEvents(userId, runId, latestEventId);
+        if (events.length === 0) return false;
+
+        for (const event of events) {
+          latestEventId = Math.max(latestEventId, event.id);
+          enqueue(`id: ${event.id}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+
+        return true;
+      };
+
+      const emitAndSchedule = async () => {
+        try {
+          const emittedEvents = await emitNewEvents();
+          if (!emittedEvents) enqueue(': keepalive\n\n');
+        } catch (caught) {
+          console.error('Failed to stream run agent events', { runId, error: caught });
+          enqueue(': event read failed\n\n');
+        } finally {
+          if (!closed) {
+            timeout = setTimeout(() => void emitAndSchedule(), 2_500);
+          }
+        }
+      };
+
+      signal.addEventListener('abort', close);
+      removeAbortListener = () => signal.removeEventListener('abort', close);
+      enqueue(': connected\n\n');
+      await emitAndSchedule();
+    },
+    cancel() {
+      closed = true;
+      if (timeout) clearTimeout(timeout);
+      removeAbortListener?.();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'text/event-stream',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+async function getLatestRunAgentEventId(userId: number, runId: string): Promise<number> {
+  const [row] = await db
+    .select({ latestEventId: sql<number>`coalesce(max(${agentEvent.id}), 0)` })
+    .from(agentEvent)
+    .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
+    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
+    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .limit(1);
+
+  return Number(row?.latestEventId ?? 0);
+}
+
+async function requireRunAccess(userId: number, runId: string) {
+  const [row] = await db
+    .select({ userId: reviewRun.userId })
+    .from(reviewRun)
+    .where(eq(reviewRun.id, runId))
+    .limit(1);
+
+  if (!row) error(404, 'Run not found.');
+  if (row.userId !== userId) error(403, 'You do not have access to this run.');
+}
+
+async function listRunAgentEvents(
+  userId: number,
+  runId: string,
+  afterEventId: number,
+): Promise<RunAgentEventStreamEvent[]> {
+  const rows = await db
+    .select({
+      id: agentEvent.id,
+      agentRunId: agentEvent.agentRunId,
+      seq: agentEvent.seq,
+      kind: agentEvent.kind,
+      tool: agentEvent.tool,
+      detail: agentEvent.detail,
+      at: agentEvent.at,
+    })
+    .from(agentEvent)
+    .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
+    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
+    .where(
+      and(
+        eq(reviewRun.userId, userId),
+        eq(reviewRun.id, runId),
+        sql`${agentEvent.id} > ${afterEventId}`,
+      ),
+    )
+    .orderBy(asc(agentEvent.id))
+    .limit(100);
+
+  return rows.map((event) => ({ ...event, at: event.at.toISOString() }));
 }
 
 async function getReplacementRun(

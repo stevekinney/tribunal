@@ -4,21 +4,45 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
-  import { Pencil, Power, Save, Trash2, X } from 'lucide-svelte';
+  import { Calculator, Pencil, Power, Save, Trash2, X } from 'lucide-svelte';
+  import { untrack } from 'svelte';
   import { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
   let { data, form } = $props();
 
-  let agentId = $state('');
-  let slug = $state('');
-  let description = $state('');
-  let body = $state('');
-  let enabled = $state(true);
-  let selectedModel = $state('sonnet');
-  let selectedEffort = $state('');
-  const extraHighEffortModels = new Set(['opus', 'fable']);
-  const isExtraHighEffortAllowed = $derived(extraHighEffortModels.has(selectedModel));
-  const fallbackNotice = $derived(getEffortFallbackNotice(selectedModel, selectedEffort));
+  function getDryRunValues() {
+    const values = form?.values;
+    return values && 'sampleDiff' in values ? values : null;
+  }
+
+  let agentId = $state(untrack(() => form?.values?.id ?? ''));
+  let slug = $state(untrack(() => form?.values?.slug ?? ''));
+  let description = $state(untrack(() => form?.values?.description ?? ''));
+  let body = $state(untrack(() => form?.values?.body ?? ''));
+  let enabled = $state(untrack(() => form?.values?.enabled ?? true));
+  let selectedModel = $state(untrack(() => form?.values?.model ?? 'sonnet'));
+  let selectedEffort = $state(untrack(() => form?.values?.effort ?? ''));
+  let sampleDiff = $state(untrack(() => getDryRunValues()?.sampleDiff ?? ''));
+  const effectiveWarningModel = $derived.by(() => {
+    const model = selectedModel === 'inherit' ? data.defaultModel : selectedModel;
+    return model === 'inherit' ? null : model;
+  });
+  const fallbackNotice = $derived(
+    effectiveWarningModel === null
+      ? null
+      : getEffortFallbackNotice(effectiveWarningModel, selectedEffort),
+  );
+  const dryRunEstimate = $derived(form?.dryRunEstimate);
+  const dryRunValues = $derived(getDryRunValues());
+  const isDryRunEstimateCurrent = $derived(
+    dryRunEstimate &&
+      dryRunValues &&
+      dryRunValues.body === body &&
+      dryRunValues.sampleDiff === sampleDiff &&
+      dryRunValues.model === selectedModel &&
+      dryRunValues.effort === selectedEffort,
+  );
+  let bodyTextarea: HTMLTextAreaElement | undefined = $state();
 
   function editAgent(agent: (typeof data.agents)[number]) {
     agentId = agent.id;
@@ -27,6 +51,7 @@
     body = agent.body;
     selectedModel = agent.model;
     selectedEffort = agent.effort ?? '';
+    sampleDiff = '';
     enabled = agent.enabled;
   }
 
@@ -37,7 +62,20 @@
     body = '';
     selectedModel = 'sonnet';
     selectedEffort = '';
+    sampleDiff = '';
     enabled = true;
+  }
+
+  function clearBodyValidation() {
+    bodyTextarea?.setCustomValidity('');
+  }
+
+  function validateDryRunPrompt(event: SubmitEvent) {
+    clearBodyValidation();
+    if (body.trim() !== '') return;
+    event.preventDefault();
+    bodyTextarea?.setCustomValidity('System prompt is required for a dry run estimate.');
+    bodyTextarea?.reportValidity();
   }
 </script>
 
@@ -47,7 +85,7 @@
   {/if}
 
   <Card>
-    <form method="POST" action="?/save" class="agent-form">
+    <form method="POST" action="?/save" class="agent-form" id="agent-save-form">
       <input type="hidden" name="id" value={agentId} />
       <label class="field">
         <span>Slug</span>
@@ -81,9 +119,7 @@
         <select name="effort" bind:value={selectedEffort}>
           <option value="">Default</option>
           {#each data.effortOptions as effort (effort)}
-            <option value={effort} disabled={effort === 'xhigh' && !isExtraHighEffortAllowed}
-              >{effort}</option
-            >
+            <option value={effort}>{effort}</option>
           {/each}
         </select>
       </label>
@@ -92,7 +128,14 @@
       {/if}
       <label class="field field-wide">
         <span>System prompt</span>
-        <textarea name="body" rows="8" required bind:value={body}></textarea>
+        <textarea
+          bind:this={bodyTextarea}
+          name="body"
+          rows="8"
+          required
+          bind:value={body}
+          oninput={clearBodyValidation}
+        ></textarea>
       </label>
       <label class="enabled-control">
         <input type="checkbox" name="enabled" bind:checked={enabled} />
@@ -109,6 +152,55 @@
             {#snippet leadingIcon()}<X size={14} aria-hidden="true" />{/snippet}
           </Button>
         {/if}
+      </div>
+    </form>
+
+    <form method="POST" action="?/dryRun" class="dry-run-form" onsubmit={validateDryRunPrompt}>
+      <input type="hidden" name="id" value={agentId} />
+      <input type="hidden" name="slug" value={slug} />
+      <input type="hidden" name="description" value={description} />
+      <input type="hidden" name="body" value={body} />
+      <input type="hidden" name="model" value={selectedModel} />
+      <input type="hidden" name="effort" value={selectedEffort} />
+      <input type="hidden" name="enabled" value={enabled ? 'on' : ''} />
+
+      <label class="field">
+        <span>Sample diff</span>
+        <textarea
+          name="sampleDiff"
+          rows="6"
+          required
+          bind:value={sampleDiff}
+          placeholder="diff --git a/src/example.ts b/src/example.ts"
+        ></textarea>
+      </label>
+
+      {#if dryRunEstimate && isDryRunEstimateCurrent}
+        <div class="dry-run-result" role="status" aria-live="polite" aria-atomic="true">
+          <div>
+            <span>Estimated cost</span>
+            <strong>${dryRunEstimate.costEstimateUsd.toFixed(4)}</strong>
+          </div>
+          <div>
+            <span>Model</span>
+            <strong>{dryRunEstimate.model}</strong>
+          </div>
+          <div>
+            <span>Input</span>
+            <strong>{dryRunEstimate.estimatedInputTokens} input tokens</strong>
+          </div>
+          <div>
+            <span>Output</span>
+            <strong>{dryRunEstimate.estimatedOutputTokens} output tokens</strong>
+          </div>
+        </div>
+      {/if}
+
+      <div class="form-actions">
+        <Button type="submit" variant="secondary">
+          Dry run estimate
+          {#snippet leadingIcon()}<Calculator size={14} aria-hidden="true" />{/snippet}
+        </Button>
       </div>
     </form>
   </Card>
@@ -170,6 +262,15 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-4);
+  }
+
+  .dry-run-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-top: var(--space-4);
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-4);
   }
 
   .field,
@@ -242,6 +343,32 @@
     gap: var(--space-2);
   }
 
+  .dry-run-result {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--surface-overlay);
+  }
+
+  .dry-run-result div {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .dry-run-result span {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .dry-run-result strong {
+    color: var(--text);
+    font-size: var(--text-sm);
+  }
+
   pre {
     overflow: auto;
     margin-top: var(--space-3);
@@ -259,6 +386,10 @@
 
     .agent-row {
       flex-direction: column;
+    }
+
+    .dry-run-result {
+      grid-template-columns: 1fr;
     }
   }
 </style>
