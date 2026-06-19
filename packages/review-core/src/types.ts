@@ -13,10 +13,6 @@ export interface AgentSpec {
   enabled: boolean;
 }
 
-export interface SandboxAgentExecutionOptions {
-  enablePromptCaching1h?: boolean;
-}
-
 export interface Finding {
   path: string;
   startLine: number | null;

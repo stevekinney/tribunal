@@ -26,7 +26,6 @@ type PullRequestEventType =
 export type { PullRequestEventType, ReviewIntentKind };
 
 export interface SignalPullRequestEventInput {
-  workspaceId: number;
   repositoryId: number;
   prNumber: number;
   installationId: number;

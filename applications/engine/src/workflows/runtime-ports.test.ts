@@ -1161,6 +1161,33 @@ describe('Tensorlake sandbox adapter', () => {
     expect(sandbox.terminate).toHaveBeenCalledTimes(1);
   });
 
+  it('kills tracked sandbox processes when the abort signal fires', async () => {
+    const sandbox = new MockSandbox('sandbox_1');
+    MockSandbox.connect.mockResolvedValue(sandbox);
+    sandbox.startProcess.mockResolvedValue({ pid: 321 });
+    const controller = new AbortController();
+    sandbox.followOutput.mockImplementation(async function* () {
+      yield { line: 'before abort', stream: 'stdout' };
+      controller.abort();
+      yield { line: 'after abort', stream: 'stdout' };
+    });
+    sandbox.getProcess.mockResolvedValue({ pid: 321, exitCode: 143 });
+    const adapter = new TensorlakeSandboxAdapter(runtimeEnvironment());
+
+    const result = adapter.runTrackedCommand(
+      'sandbox_1',
+      'node',
+      ['runner.mjs'],
+      undefined,
+      async () => {},
+      undefined,
+      controller.signal,
+    );
+
+    await expect(result).resolves.toMatchObject({ exitCode: 143, stdout: 'before abort' });
+    expect(sandbox.killProcess).toHaveBeenCalledWith(321);
+  });
+
   it('connects to an existing named sandbox before creating a duplicate', async () => {
     const sandbox = new MockSandbox('sandbox_existing');
     sandboxClientListMock.mockResolvedValue([
@@ -1285,8 +1312,10 @@ function runtimeEnvironment() {
     TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
     TRIBUNAL_PROXY_CIDR: '10.0.0.8/32',
     PROXY_SIGNING_KEY: 'proxy-signing-key',
+    ENCRYPTION_KEY: 'a'.repeat(64),
     TRIBUNAL_DEFAULT_MODEL: 'sonnet',
     DEFAULT_DAILY_COST_CAP_USD: '25',
+    IDLE_SUSPEND_SECONDS: '900',
     ANTHROPIC_ADMIN_KEY: 'sk-ant-admin-test',
   };
 }

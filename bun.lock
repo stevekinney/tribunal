@@ -219,6 +219,16 @@
       "name": "@tribunal/typescript",
       "version": "0.0.1",
     },
+    "runner": {
+      "name": "@tribunal/runner",
+      "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "0.3.181",
+        "@tribunal/agents": "workspace:*",
+      },
+      "devDependencies": {
+        "vitest": "^4.0.16",
+      },
+    },
     "scripts": {
       "name": "@tribunal/scripts",
       "version": "0.0.1",
@@ -908,6 +918,8 @@
     "@tribunal/proxy": ["@tribunal/proxy@workspace:applications/proxy"],
 
     "@tribunal/review-core": ["@tribunal/review-core@workspace:packages/review-core"],
+
+    "@tribunal/runner": ["@tribunal/runner@workspace:runner"],
 
     "@tribunal/sandbox": ["@tribunal/sandbox@workspace:packages/sandbox"],
 

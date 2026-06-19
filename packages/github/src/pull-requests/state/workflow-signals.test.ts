@@ -85,7 +85,6 @@ describe('signalPullRequestEvent', () => {
     const repository = await testContext.factories.repository.create({ id: 42 });
     const context = createGithubContext();
     const input = {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 7,
       installationId: 100,
@@ -121,7 +120,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 8,
       installationId: 100,
@@ -145,7 +143,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 16,
       installationId: 100,
@@ -175,7 +172,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const first = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 14,
       installationId: 100,
@@ -186,7 +182,6 @@ describe('signalPullRequestEvent', () => {
       headSha: 'first',
     });
     const second = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 15,
       installationId: 100,
@@ -214,7 +209,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 10,
       installationId: 100,
@@ -237,7 +231,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 11,
       installationId: 100,

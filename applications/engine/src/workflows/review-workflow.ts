@@ -29,7 +29,6 @@ import {
 type RepositoryExecutionContext = RepoRef & { installationId: number };
 type AgentExecutionSpec = AgentSpec & {
   agentRunId: string;
-  enablePromptCaching1h?: boolean;
 };
 type ReviewLookupGitHubPort = GitHubPort & {
   findPostedReview(
@@ -85,6 +84,7 @@ export type ReviewWorkflowConfiguration = {
   proxyUrl: string;
   proxySigningKey: string;
   runTokenTtlSeconds: number;
+  idleSuspendSeconds: number;
   defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
   enablePromptCaching1h: boolean;
 };
@@ -890,11 +890,7 @@ export class ReviewWorkflowEngine {
     await this.persistAgentRun(agentRun);
 
     try {
-      const executionAgent: AgentExecutionSpec = {
-        ...effectiveAgent,
-        agentRunId,
-        enablePromptCaching1h: this.configuration.enablePromptCaching1h,
-      };
+      const executionAgent: AgentExecutionSpec = { ...effectiveAgent, agentRunId };
       const result = await this.ports.sandbox.runAgent(
         supervisor.sandboxId,
         executionAgent,

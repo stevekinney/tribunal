@@ -46,15 +46,23 @@ function createFakeAdapter() {
     },
     async runCommand(sandboxId, command, arguments_, environment) {
       calls.push({ method: 'runCommand', input: { sandboxId, command, arguments_, environment } });
-      return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
     },
-    async runTrackedCommand(sandboxId, command, arguments_, environment, onProcessStart) {
+    async runTrackedCommand(
+      sandboxId,
+      command,
+      arguments_,
+      environment,
+      onProcessStart,
+      _onStdoutLine,
+      signal,
+    ) {
       calls.push({
         method: 'runTrackedCommand',
-        input: { sandboxId, command, arguments_, environment },
+        input: { sandboxId, command, arguments_, environment, signal },
       });
       await onProcessStart('123');
-      return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
     },
     async killProcess(sandboxId, processId) {
       calls.push({ method: 'killProcess', input: { sandboxId, processId } });
@@ -113,9 +121,9 @@ describe('sandbox port', () => {
       input: {
         command: 'bash',
         environment: {
-          TRIBUNAL_REPOSITORY_URL:
-            'https://proxy.tribunal.local/github/github.com/stevekinney/tribunal.git',
+          TRIBUNAL_REPOSITORY_URL: 'https://github.com/stevekinney/tribunal.git',
           TRIBUNAL_HEAD_SHA: 'a'.repeat(40),
+          TRIBUNAL_PROXY_URL: 'https://proxy.tribunal.local',
           TRIBUNAL_RUN_TOKEN: 'capability-token',
         },
       },
@@ -124,9 +132,8 @@ describe('sandbox port', () => {
     expect(firstCall).toBeDefined();
     const commandArguments = (firstCall!.input as { arguments_: string[] }).arguments_;
     expect(commandArguments.join(' ')).toContain('git -C /workspace/repository');
-    expect(commandArguments.join(' ')).toContain(
-      'http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN',
-    );
+    expect(commandArguments.join(' ')).toContain('http.proxy=$TRIBUNAL_PROXY_URL');
+    expect(commandArguments.join(' ')).not.toContain('http.extraHeader');
     expect(commandArguments.join(' ')).not.toContain('clone-or-fetch');
     expect(commandArguments.join(' ')).not.toContain('capability-token');
   });
@@ -176,6 +183,7 @@ describe('sandbox port', () => {
       proxyCidr: '10.0.0.8/32',
     });
 
+    const abortController = new AbortController();
     await expect(
       port.runAgent(
         'sandbox_1',
@@ -193,7 +201,7 @@ describe('sandbox port', () => {
         diffContext,
         'token',
         () => {},
-        new AbortController().signal,
+        abortController.signal,
       ),
     ).resolves.toMatchObject({ agentSlug: 'security-reviewer' });
     await port.suspend('sandbox_1');
@@ -212,6 +220,7 @@ describe('sandbox port', () => {
           TRIBUNAL_DIFF_CONTEXT: JSON.stringify(diffContext),
           TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts']),
         },
+        signal: abortController.signal,
       },
     });
   });
@@ -555,7 +564,7 @@ describe('sandbox port', () => {
         await new Promise<void>((resolve) => {
           finishRun = resolve;
         });
-        return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+        return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
       },
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });
@@ -615,7 +624,7 @@ describe('sandbox port', () => {
         await new Promise<void>((resolve) => {
           finishRun = resolve;
         });
-        return { exitCode: 0, stdout: JSON.stringify(result), stderr: '' };
+        return { exitCode: 0, stdout: JSON.stringify({ type: 'result', result }), stderr: '' };
       },
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });

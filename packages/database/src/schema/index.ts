@@ -31,6 +31,9 @@ export * from './user';
 export * from './user-api-key';
 export * from './user-review-settings';
 export * from './webhook-event';
+// Deprecated: dormant legacy workflow schema remains exported for existing internal callers only.
+// Remove this barrel export when GitHub installation lifecycle cleanup no longer references it.
+// Removal is tracked by https://github.com/stevekinney/tribunal/issues/18.
 export * from './workflow-run';
 
 // Relations

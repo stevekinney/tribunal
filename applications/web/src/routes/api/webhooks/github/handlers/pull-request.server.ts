@@ -42,7 +42,6 @@ export async function handlePullRequestEvent(
 
       // Durable enqueue - must throw on failure for 500 response.
       const result = await signalPullRequestEvent(githubContext, {
-        workspaceId: 0,
         repositoryId,
         prNumber: payload.pull_request.number,
         installationId,

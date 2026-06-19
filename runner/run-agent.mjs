@@ -1,69 +1,120 @@
-import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { READ_ONLY_AGENT_TOOLS, enforceReadOnlyToolUse } from '@tribunal/agents';
 
-const [, , agentSlug] = process.argv;
+const allowedEfforts = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
-if (!agentSlug) {
-  console.error('Missing agent slug.');
-  process.exit(1);
+if (isMainModule(import.meta.url, process.argv[1])) {
+  await runAgentProcess();
 }
 
-if (!process.env.TRIBUNAL_RUN_TOKEN) {
-  console.error('Missing TRIBUNAL_RUN_TOKEN.');
-  process.exit(1);
-}
+export async function runAgentProcess({
+  argv = process.argv,
+  environment = process.env,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  exit = process.exit.bind(process),
+  signalSource = process,
+  queryFunction = query,
+  performanceNow = () => performance.now(),
+} = {}) {
+  const [, , agentSlug] = argv;
 
-const startedAt = performance.now();
-const resultPath = process.env.TRIBUNAL_AGENT_RESULT_FILE;
+  if (!agentSlug) {
+    stderr.write('Missing agent slug.\n');
+    exit(1);
+    return;
+  }
 
-if (resultPath) {
-  process.stdout.write(await readFile(resultPath, 'utf8'));
-  process.exit(0);
-}
+  if (!environment.TRIBUNAL_RUN_TOKEN) {
+    stderr.write('Missing TRIBUNAL_RUN_TOKEN.\n');
+    exit(1);
+    return;
+  }
 
-const repositoryPath = process.env.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
-const model = process.env.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
-const effort = process.env.TRIBUNAL_AGENT_EFFORT || null;
-const diffContext = createDiffContext();
-let sequence = 0;
-let latestSdkResult;
-let resultWritten = false;
+  const resultPath = environment.TRIBUNAL_AGENT_RESULT_FILE;
+  if (resultPath && environment.NODE_ENV === 'test') {
+    stdout.write(await readFile(resultPath, 'utf8'));
+    exit(0);
+    return;
+  }
 
-emitEvent('session_start', { agentSlug, model, effort });
-process.once('SIGTERM', () => {
-  emitEvent('stop', { reason: 'terminated' });
-  writeResult(
-    createResult({
-      agentSlug,
-      modelUsed: model,
-      effortUsed: effort,
-      sdkResult: latestSdkResult,
-      durationMs: elapsedMilliseconds(),
-      error: 'Agent review stopped before completion.',
-    }),
-  );
-  process.exit(143);
-});
+  const startedAt = performanceNow();
+  const context = {
+    agentRunId: environment.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
+    sequence: 0,
+    stdout,
+  };
+  const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
+  const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
+  const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
+  const diffContext = createDiffContext(environment);
+  let latestSdkResult;
+  let resultWritten = false;
+  const elapsedMilliseconds = () => Math.max(0, Math.round(performanceNow() - startedAt));
+  const writeOnce = (result) => {
+    if (resultWritten) return;
+    resultWritten = true;
+    writeResult(stdout, result);
+  };
 
-try {
-  const result = await runClaudeReview({ agentSlug, repositoryPath, model, effort });
-  writeResult(result);
-} catch (error) {
-  emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
-  const result = createResult({
-    agentSlug,
-    modelUsed: model,
-    effortUsed: effort,
-    sdkResult: latestSdkResult,
-    durationMs: elapsedMilliseconds(),
-    error: error instanceof Error ? error.message : 'Agent review failed.',
+  emitEvent(context, 'session_start', { agentSlug, model, effort });
+  signalSource.once?.('SIGTERM', () => {
+    emitEvent(context, 'stop', { reason: 'terminated' });
+    writeOnce(
+      createResult({
+        agentSlug,
+        modelUsed: resolveModelUsed(model, latestSdkResult),
+        effortUsed: resolveEffortUsed(effort, latestSdkResult),
+        sdkResult: latestSdkResult,
+        durationMs: elapsedMilliseconds(),
+        error: 'Agent review stopped before completion.',
+      }),
+    );
+    exit(143);
   });
-  writeResult(result);
+
+  try {
+    const result = await runClaudeReview({
+      agentSlug,
+      repositoryPath,
+      model,
+      effort,
+      diffContext,
+      queryFunction,
+      emitEvent: (kind, detail, tool) => emitEvent(context, kind, detail, tool),
+      setLatestSdkResult: (sdkResult) => {
+        latestSdkResult = sdkResult;
+      },
+      elapsedMilliseconds,
+    });
+    writeOnce(result);
+  } catch (error) {
+    emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
+    writeOnce(
+      createResult({
+        agentSlug,
+        modelUsed: resolveModelUsed(model, latestSdkResult),
+        effortUsed: resolveEffortUsed(effort, latestSdkResult),
+        sdkResult: latestSdkResult,
+        durationMs: elapsedMilliseconds(),
+        error: error instanceof Error ? error.message : 'Agent review failed.',
+      }),
+    );
+  }
 }
 
-async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
+export async function runClaudeReview({
+  agentSlug,
+  repositoryPath,
+  model,
+  effort,
+  diffContext,
+  queryFunction = query,
+  emitEvent = () => {},
+  setLatestSdkResult = () => {},
+  elapsedMilliseconds = () => 0,
+}) {
   const prompt = [
     'Review this pull request from the checked-out repository.',
     'Return only structured findings. Do not modify files. Do not run shell commands.',
@@ -71,7 +122,7 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   ].join('\n');
   let sdkResult;
 
-  const stream = query({
+  const stream = queryFunction({
     prompt,
     options: {
       cwd: repositoryPath,
@@ -153,7 +204,7 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   for await (const message of stream) {
     if (message.type === 'result') {
       sdkResult = message;
-      latestSdkResult = message;
+      setLatestSdkResult(message);
     } else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
     else if (message.type === 'system') emitEvent('notification', { subtype: message.subtype });
   }
@@ -165,21 +216,15 @@ async function runClaudeReview({ agentSlug, repositoryPath, model, effort }) {
   return {
     agentSlug,
     findings,
-    modelUsed: model,
-    effortUsed: effort,
+    modelUsed: resolveModelUsed(model, sdkResult),
+    effortUsed: resolveEffortUsed(effort, sdkResult),
     usage: normalizeUsage(sdkResult?.usage),
     costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
     durationMs: elapsedMilliseconds(),
   };
 }
 
-function writeResult(result) {
-  if (resultWritten) return;
-  resultWritten = true;
-  process.stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
-}
-
-function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs, error }) {
+export function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs, error }) {
   return {
     agentSlug,
     findings: [],
@@ -192,6 +237,20 @@ function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs,
   };
 }
 
+export function writeResult(stdout, result) {
+  stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
+}
+
+export function resolveModelUsed(requestedModel, sdkResult) {
+  const modelId = getNestedString(sdkResult, ['modelUsage', 'model_id']);
+  return modelId ?? requestedModel;
+}
+
+export function resolveEffortUsed(requestedEffort, sdkResult) {
+  const effort = getNestedString(sdkResult, ['modelUsage', 'effort']);
+  return effort && allowedEfforts.has(effort) ? effort : requestedEffort;
+}
+
 function normalizeUsage(usage = {}) {
   return {
     inputTokens: Number(usage.input_tokens ?? 0),
@@ -201,14 +260,14 @@ function normalizeUsage(usage = {}) {
   };
 }
 
-function emitEvent(kind, detail = {}, tool) {
-  sequence += 1;
-  process.stdout.write(
+export function emitEvent(context, kind, detail = {}, tool) {
+  context.sequence += 1;
+  context.stdout.write(
     `${JSON.stringify({
       type: 'event',
       event: {
-        agentRunId: process.env.TRIBUNAL_AGENT_RUN_ID ?? 'unknown',
-        seq: sequence,
+        agentRunId: context.agentRunId,
+        seq: context.sequence,
         kind,
         ...(tool ? { tool } : {}),
         detail,
@@ -218,21 +277,21 @@ function emitEvent(kind, detail = {}, tool) {
   );
 }
 
-function createDiffContext() {
-  const parsedDiffContext = parseDiffContext();
+function createDiffContext(environment = process.env) {
+  const parsedDiffContext = parseDiffContext(environment);
   if (parsedDiffContext !== null) return parsedDiffContext;
 
-  const changedFiles = parseChangedFiles();
+  const changedFiles = parseChangedFiles(environment);
   return {
-    headSha: process.env.TRIBUNAL_HEAD_SHA ?? 'unknown',
-    baseSha: process.env.TRIBUNAL_BASE_SHA ?? 'unknown',
+    headSha: environment.TRIBUNAL_HEAD_SHA ?? 'unknown',
+    baseSha: environment.TRIBUNAL_BASE_SHA ?? 'unknown',
     changedFiles: changedFiles.map((path) => ({
       path,
       status: 'modified',
       commentableLines: [],
     })),
     pr: {
-      number: Number(process.env.TRIBUNAL_PULL_REQUEST_NUMBER ?? 0),
+      number: Number(environment.TRIBUNAL_PULL_REQUEST_NUMBER ?? 0),
       title: '',
       body: '',
       labels: [],
@@ -241,9 +300,9 @@ function createDiffContext() {
   };
 }
 
-function parseDiffContext() {
+function parseDiffContext(environment) {
   try {
-    const parsed = JSON.parse(process.env.TRIBUNAL_DIFF_CONTEXT ?? 'null');
+    const parsed = JSON.parse(environment.TRIBUNAL_DIFF_CONTEXT ?? 'null');
     if (!isRecord(parsed)) return null;
     if (!Array.isArray(parsed.changedFiles)) return null;
     if (!isRecord(parsed.pr)) return null;
@@ -294,9 +353,9 @@ function normalizeCommentableLine(value) {
   return { side: value.side, line: value.line };
 }
 
-function parseChangedFiles() {
+function parseChangedFiles(environment) {
   try {
-    const parsed = JSON.parse(process.env.TRIBUNAL_CHANGED_FILES ?? '[]');
+    const parsed = JSON.parse(environment.TRIBUNAL_CHANGED_FILES ?? '[]');
     return Array.isArray(parsed) ? parsed.filter((path) => typeof path === 'string') : [];
   } catch {
     return [];
@@ -307,6 +366,16 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function elapsedMilliseconds() {
-  return Math.max(0, Math.round(performance.now() - startedAt));
+function getNestedString(value, path) {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return typeof current === 'string' && current.length > 0 ? current : undefined;
+}
+
+function isMainModule(moduleUrl, scriptPath) {
+  if (!scriptPath) return false;
+  return moduleUrl === new URL(scriptPath, 'file:').href;
 }

@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
 const positiveIntegerString = z.string().regex(/^[1-9]\d*$/);
-const positiveDecimalString = z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/);
+const positiveDecimalString = z
+  .string()
+  .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/)
+  .refine((value) => Number(value) > 0, 'must be greater than zero');
 const booleanFlag = z.enum(['true', 'false', '1', '0']).transform((value) => {
   return value === 'true' || value === '1';
 });
@@ -18,13 +21,14 @@ export const engineEnvironmentSchema = z
     TRIBUNAL_PROXY_URL: z.string().url(),
     TRIBUNAL_PROXY_CIDR: z.string().min(1),
     PROXY_SIGNING_KEY: z.string().min(1),
+    ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
     TRIBUNAL_ENGINE_CONTROL_TOKEN: z.string().min(1),
     TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE: booleanFlag.default(false),
     TRIBUNAL_DEFAULT_MODEL: z.string().min(1),
     DEFAULT_DAILY_COST_CAP_USD: positiveDecimalString.transform(Number),
     IDLE_SUSPEND_SECONDS: positiveIntegerString.transform(Number),
     SANDBOX_REAP_INTERVAL: positiveIntegerString.transform(Number),
-    ENABLE_PROMPT_CACHING_1H: booleanFlag,
+    ENABLE_PROMPT_CACHING_1H: booleanFlag.default(false),
     ANTHROPIC_ADMIN_KEY: z.string().min(1),
     REVIEWS_ENABLED: booleanFlag.default(true),
     WEFT_INSPECTOR: booleanFlag.default(false),

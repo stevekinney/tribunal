@@ -38,6 +38,7 @@ export type SandboxAdapter = {
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
     onStdoutLine?: (line: string) => void,
+    signal?: AbortSignal,
   ): Promise<SandboxCommandResult>;
   killProcess(sandboxId: string, processId: string): Promise<void>;
   suspend(sandboxId: string): Promise<void>;
@@ -76,7 +77,6 @@ export function createSandboxPort(
       const sourceRepositoryUrl = makeCredentiallessRepositoryUrl(repository);
       const validation = validateCloneInput({ repositoryUrl: sourceRepositoryUrl, headSha: head });
       if (!validation.ok) throw new Error(`invalid clone input: ${validation.reason}`);
-      const proxiedRepositoryUrl = makeProxiedRepositoryUrl(configuration.proxyUrl, repository);
 
       const commandResult = await adapter.runCommand(
         sandboxId,
@@ -86,18 +86,19 @@ export function createSandboxPort(
           [
             'set -euo pipefail',
             'mkdir -p /workspace',
-            'git_with_token() { git -c "http.extraHeader=Authorization: Bearer $TRIBUNAL_RUN_TOKEN" "$@"; }',
+            'git_with_proxy() { git -c "http.proxy=$TRIBUNAL_PROXY_URL" "$@"; }',
             'if [ -d /workspace/repository/.git ]; then',
-            '  git_with_token -C /workspace/repository fetch origin "$TRIBUNAL_HEAD_SHA"',
+            '  git_with_proxy -C /workspace/repository fetch origin "$TRIBUNAL_HEAD_SHA"',
             'else',
-            '  git_with_token clone "$TRIBUNAL_REPOSITORY_URL" /workspace/repository',
+            '  git_with_proxy clone "$TRIBUNAL_REPOSITORY_URL" /workspace/repository',
             'fi',
             'git -C /workspace/repository checkout --detach "$TRIBUNAL_HEAD_SHA"',
           ].join('\n'),
         ],
         {
-          TRIBUNAL_REPOSITORY_URL: proxiedRepositoryUrl,
+          TRIBUNAL_REPOSITORY_URL: sourceRepositoryUrl,
           TRIBUNAL_HEAD_SHA: head,
+          TRIBUNAL_PROXY_URL: configuration.proxyUrl,
           TRIBUNAL_RUN_TOKEN: runToken,
         },
       );
@@ -111,7 +112,7 @@ export function createSandboxPort(
       diffContext: DiffContext,
       runToken: string,
       onEvent: (event: AgentEvent) => void,
-      _signal: AbortSignal,
+      signal: AbortSignal,
     ): Promise<AgentResult> {
       const agentRunId = getAgentRunId(agent);
       const processKey = createAgentProcessKey(sandboxId, agentRunId);
@@ -146,6 +147,7 @@ export function createSandboxPort(
           (line) => {
             if (emitAgentEventLine(line, onEvent)) streamedEvents = true;
           },
+          signal,
         );
       } finally {
         runningAgentProcesses.delete(processKey);
@@ -289,15 +291,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function makeCredentiallessRepositoryUrl(repository: RepoRef): string {
   return `https://github.com/${repository.owner}/${repository.name}.git`;
-}
-
-function makeProxiedRepositoryUrl(proxyUrl: string, repository: RepoRef): string {
-  const url = new URL(proxyUrl);
-  const prefix = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
-  url.pathname = `${prefix}/github/github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}.git`;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
 }
 
 function makeProxiedAnthropicUrl(proxyUrl: string): string {

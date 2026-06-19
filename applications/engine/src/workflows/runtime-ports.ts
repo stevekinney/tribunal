@@ -66,8 +66,10 @@ export type ReviewIntentRuntimeEnvironment = {
   TRIBUNAL_PROXY_URL?: string;
   TRIBUNAL_PROXY_CIDR?: string;
   PROXY_SIGNING_KEY?: string;
+  ENCRYPTION_KEY?: string;
   TRIBUNAL_DEFAULT_MODEL?: string;
   DEFAULT_DAILY_COST_CAP_USD?: number | string;
+  IDLE_SUSPEND_SECONDS?: number | string;
   ENABLE_PROMPT_CACHING_1H?: boolean | string;
   ANTHROPIC_ADMIN_KEY?: string;
   REVIEWS_ENABLED?: boolean | string;
@@ -121,6 +123,7 @@ export function createReviewIntentConsumer(
       proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
+      idleSuspendSeconds: parsePositiveNumber(environment.IDLE_SUSPEND_SECONDS, 900),
       defaultModel: requireEnvironmentValue(
         environment.TRIBUNAL_DEFAULT_MODEL,
         'TRIBUNAL_DEFAULT_MODEL',
@@ -844,6 +847,7 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
     environment: Record<string, string> | undefined,
     onProcessStart: (processId: string) => Promise<void>,
     onStdoutLine?: (line: string) => void,
+    signal?: AbortSignal,
   ) {
     const sandbox = await this.getSandbox(sandboxId);
     const process = await sandbox.startProcess(command, {
@@ -854,13 +858,24 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
 
     const stdout: string[] = [];
     const stderr: string[] = [];
-    for await (const event of sandbox.followOutput(process.pid)) {
-      if (event.stream === 'stderr') {
-        stderr.push(event.line);
-      } else {
-        stdout.push(event.line);
-        onStdoutLine?.(event.line);
+    const abort = async () => {
+      await sandbox.killProcess(process.pid);
+    };
+    const abortListener = () => void abort();
+    signal?.addEventListener('abort', abortListener, { once: true });
+    try {
+      if (signal?.aborted) await abort();
+      for await (const event of sandbox.followOutput(process.pid)) {
+        if (signal?.aborted) break;
+        if (event.stream === 'stderr') {
+          stderr.push(event.line);
+        } else {
+          stdout.push(event.line);
+          onStdoutLine?.(event.line);
+        }
       }
+    } finally {
+      signal?.removeEventListener('abort', abortListener);
     }
     const completedProcess = await sandbox.getProcess(process.pid);
     const exitCode = completedProcess.exitCode;
