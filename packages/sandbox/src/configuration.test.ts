@@ -102,6 +102,22 @@ describe('sandbox configuration', () => {
     });
   });
 
+  it('keeps sandbox reuse verification limited to fields returned by the sandbox API', () => {
+    expect(
+      verifySandboxReuseIsolation(
+        {
+          network: { allowInternetAccess: false, allowOut: ['10.0.0.8/32'] },
+          secretNames: [],
+        },
+        {
+          allowInternetAccess: false,
+          allowOut: ['10.0.0.8/32'],
+          secretNames: [],
+        },
+      ),
+    ).toEqual({ ok: true });
+  });
+
   it('normalizes the Anthropic proxy base URL when the proxy URL has a trailing slash', () => {
     const configuration = buildProxyOnlyEgressConfiguration({
       proxyUrl: 'https://proxy.tribunal.local/',

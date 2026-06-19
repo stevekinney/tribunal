@@ -17,6 +17,10 @@ export type SandboxEgressConfiguration = {
 
 export type CloneInputValidationResult = { ok: true } | { ok: false; reason: string };
 export type SandboxReuseIsolationResult = { ok: true } | { ok: false; reason: string };
+export type SandboxReuseIsolationExpectation = Pick<
+  SandboxEgressConfiguration,
+  'allowInternetAccess' | 'allowOut' | 'secretNames'
+>;
 
 export type SandboxReuseIsolationCandidate = {
   allowInternetAccess?: unknown;
@@ -63,7 +67,7 @@ export function buildProxyOnlyEgressConfiguration(input: {
 
 export function verifySandboxReuseIsolation(
   candidate: SandboxReuseIsolationCandidate,
-  expected: SandboxEgressConfiguration,
+  expected: SandboxReuseIsolationExpectation,
 ): SandboxReuseIsolationResult {
   const allowInternetAccess =
     candidate.network?.allowInternetAccess ?? candidate.allowInternetAccess;

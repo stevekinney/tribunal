@@ -61,6 +61,7 @@ export async function main({
   const emitEvent = createEventEmitter({ environment, stdout });
   const resultState = { written: false };
   let latestSdkResult;
+  let latestCollectedFindings = [];
 
   emitEvent('session_start', { agentSlug, model, effort });
   process.once('SIGTERM', () => {
@@ -73,6 +74,7 @@ export async function main({
         modelUsed: model,
         effortUsed: effort,
         sdkResult: latestSdkResult,
+        findings: latestCollectedFindings,
         durationMs: elapsedMilliseconds(startedAt),
         error: 'Agent review stopped before completion.',
       }),
@@ -96,15 +98,23 @@ export async function main({
       onSdkResult: (sdkResult) => {
         latestSdkResult = sdkResult;
       },
+      onCollectedFindings: (collectedFindings) => {
+        latestCollectedFindings = collectedFindings;
+      },
     });
     writeResult(stdout, resultState, result);
   } catch (error) {
     emitEvent('error', { message: error instanceof Error ? error.message : String(error) });
+    const collectedFindings =
+      error instanceof Error && Array.isArray(error.collectedFindings)
+        ? error.collectedFindings
+        : latestCollectedFindings;
     const result = createResult({
       agentSlug,
       modelUsed: model,
       effortUsed: effort,
       sdkResult: latestSdkResult,
+      findings: collectedFindings,
       durationMs: elapsedMilliseconds(startedAt),
       error: error instanceof Error ? error.message : 'Agent review failed.',
     });
@@ -125,6 +135,7 @@ export async function runClaudeReview({
   startedAt = performance.now(),
   emitEvent = () => {},
   onSdkResult = () => {},
+  onCollectedFindings = () => {},
   queryClient = query,
   createMcpServer = createTribunalMcpServer,
   readGitObject = readGitObjectAtRevision,
@@ -140,6 +151,7 @@ export async function runClaudeReview({
     guidelines,
     readBaseFile: createGitBaseFileReader({ repositoryPath, diffContext, readGitObject }),
   });
+  onCollectedFindings(reviewTools.record_finding.collectedFindings);
   const tribunalMcpServer = createMcpServer(reviewTools);
   let sdkResult;
 
@@ -188,7 +200,7 @@ export async function runClaudeReview({
           'tool_pre',
           {
             toolName,
-            input: redactRuntimeValueForEvent(input),
+            input: redactToolInputForEvent(toolName, input),
             allowed,
             denied: !allowed,
             reason:
@@ -235,12 +247,19 @@ export async function runClaudeReview({
     },
   });
 
-  for await (const message of stream) {
-    if (message.type === 'result') {
-      sdkResult = message;
-      onSdkResult(message);
-    } else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
-    else if (message.type === 'system') emitEvent('notification', { subtype: message.subtype });
+  try {
+    for await (const message of stream) {
+      if (message.type === 'result') {
+        sdkResult = message;
+        onSdkResult(message);
+      } else if (message.type === 'assistant') emitEvent('message', { uuid: message.uuid });
+      else if (message.type === 'system') emitEvent('notification', { subtype: message.subtype });
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      error.collectedFindings = [...reviewTools.record_finding.collectedFindings];
+    }
+    throw error;
   }
 
   const findings = Array.isArray(sdkResult?.structured_output?.findings)
@@ -267,10 +286,18 @@ function writeResult(stdout, state, result) {
   stdout.write(`${JSON.stringify({ type: 'result', result })}\n`);
 }
 
-function createResult({ agentSlug, modelUsed, effortUsed, sdkResult, durationMs, error }) {
+function createResult({
+  agentSlug,
+  modelUsed,
+  effortUsed,
+  sdkResult,
+  findings = [],
+  durationMs,
+  error,
+}) {
   return {
     agentSlug,
-    findings: [],
+    findings: deduplicateFindings(findings),
     modelUsed,
     effortUsed,
     usage: normalizeUsage(sdkResult?.usage),
@@ -364,6 +391,33 @@ function toToolResult(value) {
 
 export function redactRuntimeValueForEvent(value) {
   return redactRuntimeValue(value);
+}
+
+function redactToolInputForEvent(toolName, input) {
+  if (toolName !== 'mcp__tribunal__record_finding' || !isRecord(input)) {
+    return redactRuntimeValueForEvent(input);
+  }
+
+  const finding = isRecord(input.finding) ? input.finding : {};
+  return redactRuntimeValueForEvent({
+    ...input,
+    finding: {
+      ...finding,
+      ...(typeof finding.title === 'string'
+        ? { title: summarizeFindingTextForEvent(finding.title) }
+        : {}),
+      ...(typeof finding.body === 'string'
+        ? { body: summarizeFindingTextForEvent(finding.body) }
+        : {}),
+      ...(typeof finding.suggestion === 'string'
+        ? { suggestion: summarizeFindingTextForEvent(finding.suggestion) }
+        : {}),
+    },
+  });
+}
+
+function summarizeFindingTextForEvent(value) {
+  return `[redacted ${value.length} chars]`;
 }
 
 export function createGitBaseFileReader({

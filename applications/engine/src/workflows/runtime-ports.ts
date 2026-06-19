@@ -811,10 +811,6 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
         allowInternetAccess: false,
         allowOut: input.allowOut,
         secretNames: [],
-        env: {
-          TRIBUNAL_PROXY_URL: input.env.TRIBUNAL_PROXY_URL,
-          ANTHROPIC_BASE_URL: input.env.ANTHROPIC_BASE_URL,
-        },
       });
       if (!verification.ok) {
         throw new Error(`existing sandbox isolation could not be verified: ${verification.reason}`);

@@ -36,6 +36,7 @@ const validFinding = {
   severity: 'warning',
   title: '@team check auth',
   body: '@everyone\n/approve this',
+  suggestion: 'const token = "sk-ant-secret";',
 };
 
 describe('runner agent wiring', () => {
@@ -85,6 +86,18 @@ describe('runner agent wiring', () => {
           'Read',
           { file_path: 'src/auth.ts', token: 'ghs_abcdefghijklmnopqrstuvwxyz' },
           { toolUseID: 'tool_1' },
+        );
+        await options.canUseTool(
+          'mcp__tribunal__record_finding',
+          {
+            finding: {
+              ...validFinding,
+              title: 'Raw repository title',
+              body: 'Raw repository body\nconst secret = "value";',
+              suggestion: 'const leakedRepositoryContent = true;',
+            },
+          },
+          { toolUseID: 'tool_2' },
         );
 
         const readBaseFile = captured.server.tools.find((tool) => tool.name === 'read_base_file');
@@ -143,6 +156,30 @@ describe('runner agent wiring', () => {
         reason: undefined,
       },
     });
+    expect(events).toContainEqual({
+      kind: 'tool_pre',
+      tool: 'mcp__tribunal__record_finding',
+      detail: {
+        toolName: 'mcp__tribunal__record_finding',
+        input: {
+          finding: {
+            path: 'src/auth.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT',
+            severity: 'warning',
+            title: '[redacted 20 chars]',
+            body: '[redacted 43 chars]',
+            suggestion: '[redacted 37 chars]',
+          },
+        },
+        allowed: true,
+        denied: false,
+        reason: undefined,
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('Raw repository body');
+    expect(JSON.stringify(events)).not.toContain('leakedRepositoryContent');
     expect(result.findings).toEqual([
       {
         ...validFinding,
@@ -162,6 +199,39 @@ describe('runner agent wiring', () => {
       outputTokens: 5,
       cacheReadTokens: 3,
       cacheCreationTokens: 2,
+    });
+  });
+
+  it('returns collected MCP findings when the SDK stream fails after record_finding succeeds', async () => {
+    const captured = createFakeSdk();
+
+    await expect(
+      runClaudeReview({
+        agentSlug: 'security-review',
+        repositoryPath: '/workspace/repository',
+        model: 'sonnet',
+        effort: null,
+        agentDescription: 'Find security defects.',
+        agentBody: 'Only report confirmed findings.',
+        guidelines: 'Prefer concrete evidence.',
+        diffContext,
+        createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+        queryClient: async function* () {
+          const recordFinding = captured.server.tools.find(
+            (tool) => tool.name === 'record_finding',
+          );
+          await recordFinding.execute({ finding: validFinding });
+          throw new Error('SDK stream failed');
+        },
+      }),
+    ).rejects.toMatchObject({
+      collectedFindings: [
+        {
+          ...validFinding,
+          title: 'team check auth',
+          body: 'everyone\napprove this',
+        },
+      ],
     });
   });
 
