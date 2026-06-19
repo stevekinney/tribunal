@@ -5,6 +5,9 @@ import { runWithDatabase } from '$lib/server/database';
 const { mockEnv, mockGithubRequest } = vi.hoisted(() => ({
   mockEnv: {
     GITHUB_APP_NAME: 'tribunal-review',
+    NODE_ENV: 'test',
+    E2E_TEST_MODE: '0',
+    E2E_TEST_SECRET: '',
   },
   mockGithubRequest: vi.fn(),
 }));
@@ -43,6 +46,9 @@ describe('getRepositoriesForUser', () => {
   beforeEach(async () => {
     await testDb.reset();
     mockEnv.GITHUB_APP_NAME = 'tribunal-review';
+    mockEnv.NODE_ENV = 'test';
+    mockEnv.E2E_TEST_MODE = '0';
+    mockEnv.E2E_TEST_SECRET = '';
     mockGithubRequest.mockReset();
     mockGithubRequest.mockImplementation(async (endpoint: string, options?: { page?: number }) => {
       if (endpoint !== 'GET /user/installations') {
@@ -123,5 +129,25 @@ describe('getRepositoriesForUser', () => {
       installations: [],
     });
     expect.assertions(1);
+  });
+
+  it('uses live GitHub installations in production even if E2E variables are present', async () => {
+    mockEnv.NODE_ENV = 'production';
+    mockEnv.E2E_TEST_MODE = '1';
+    mockEnv.E2E_TEST_SECRET = 'secret';
+
+    const result = await withTestDatabase(() => getRepositoriesForUser(1));
+
+    expect(result).toMatchObject({
+      ok: true,
+      repositories: [],
+      installations: [
+        {
+          installationId: 12345,
+          accountLogin: 'test-org',
+          accountAvatarUrl: 'https://example.test/test-org.png',
+        },
+      ],
+    });
   });
 });
