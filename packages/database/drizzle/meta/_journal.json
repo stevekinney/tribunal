@@ -218,6 +218,13 @@
       "when": 1781819820583,
       "tag": "0030_remove-operator-stopped-reason",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1781892156104,
+      "tag": "0031_scope-repository-review-configuration",
+      "breakpoints": true
     }
   ]
 }

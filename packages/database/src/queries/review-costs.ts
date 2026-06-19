@@ -6,6 +6,7 @@ export type CostEventSource = 'estimate' | 'reconciled';
 
 export interface CostRollupOptions {
   source?: CostEventSource;
+  userId?: number;
 }
 
 export interface ReviewRunCostRollup {
@@ -51,8 +52,11 @@ function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
-function sourceWhere(options: CostRollupOptions) {
-  return options.source ? eq(costEvent.source, options.source) : undefined;
+function rollupWhere(options: CostRollupOptions) {
+  return and(
+    options.source ? eq(costEvent.source, options.source) : undefined,
+    options.userId === undefined ? undefined : eq(costEvent.userId, options.userId),
+  );
 }
 
 export async function getCostPerReviewRun(
@@ -64,7 +68,7 @@ export async function getCostPerReviewRun(
     .from(costEvent)
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query.groupBy(costEvent.reviewRunId).orderBy(asc(costEvent.reviewRunId));
@@ -85,7 +89,7 @@ export async function getCostPerPullRequest(
     .leftJoin(reviewRun, eq(costEvent.reviewRunId, reviewRun.id))
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query
@@ -107,7 +111,7 @@ export async function getCostPerRepository(
     .from(costEvent)
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query.groupBy(costEvent.repositoryId).orderBy(asc(costEvent.repositoryId));
@@ -126,7 +130,7 @@ export async function getCostPerAgent(
     .from(costEvent)
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query.groupBy(costEvent.agentId).orderBy(asc(costEvent.agentId));
@@ -146,7 +150,7 @@ export async function getCostPerAgentPerRepository(
     .from(costEvent)
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query
@@ -169,7 +173,7 @@ export async function getCostPerUserPerDay(
     .from(costEvent)
     .$dynamic();
 
-  const where = sourceWhere(options);
+  const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query.groupBy(costEvent.userId, daySql).orderBy(asc(costEvent.userId), daySql);

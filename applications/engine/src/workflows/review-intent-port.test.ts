@@ -41,6 +41,7 @@ describe('createDatabaseReviewIntentPort', () => {
       effort: 'high',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -110,6 +111,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -206,8 +208,8 @@ describe('createDatabaseReviewIntentPort', () => {
       },
     ]);
     await testDatabase.db.insert(repositoryAgent).values([
-      { repositoryId: repository.id, agentId: 'agent_active' },
-      { repositoryId: repository.id, agentId: 'agent_inactive' },
+      { userId: user.id, repositoryId: repository.id, agentId: 'agent_active' },
+      { userId: inactiveUser.id, repositoryId: repository.id, agentId: 'agent_inactive' },
     ]);
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
 
@@ -257,8 +259,8 @@ describe('createDatabaseReviewIntentPort', () => {
       },
     ]);
     await testDatabase.db.insert(repositoryAgent).values([
-      { repositoryId: repository.id, agentId: 'agent_repository_installation' },
-      { repositoryId: repository.id, agentId: 'agent_other_installation' },
+      { userId: user.id, repositoryId: repository.id, agentId: 'agent_repository_installation' },
+      { userId: otherUser.id, repositoryId: repository.id, agentId: 'agent_other_installation' },
     ]);
     const port = createDatabaseReviewIntentPort(testDatabase.db, { defaultDailyCostCapUsd: 25 });
 
@@ -282,6 +284,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -307,6 +310,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -356,6 +360,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -527,6 +532,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -561,6 +567,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -606,6 +613,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -652,6 +660,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -692,6 +701,7 @@ describe('createDatabaseReviewIntentPort', () => {
       model: 'claude-sonnet-4-6',
     });
     await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
       repositoryId: repository.id,
       agentId: 'agent_security',
     });
@@ -767,6 +777,7 @@ async function createReviewIntentFixture(
     reviewsEnabled: true,
   });
   await testDatabase.db.insert(repositoryReviewSettings).values({
+    userId: user.id,
     repositoryId: repository.id,
     watched: options.watched ?? true,
     ignoreGlobs: ['docs/**'],

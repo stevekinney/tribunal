@@ -118,6 +118,7 @@ async function claimNextIntentRow(
           OR ${reviewIntent.nextAttemptAt} <= ${now}
         )
         AND ${repositoryReviewSettings.watched} = true
+        AND ${repositoryReviewSettings.userId} = ${githubInstallation.userId}
         AND ${userReviewSettings.reviewsEnabled} = true
         AND ${githubInstallation.status} = 'active'
       ORDER BY ${reviewIntent.createdAt}, ${reviewIntent.id}
@@ -162,10 +163,6 @@ async function buildPullRequestReviewInput(
     .from(reviewIntent)
     .innerJoin(repository, eq(repository.id, reviewIntent.repositoryId))
     .innerJoin(
-      repositoryReviewSettings,
-      eq(repositoryReviewSettings.repositoryId, reviewIntent.repositoryId),
-    )
-    .innerJoin(
       githubInstallationRepository,
       and(
         eq(githubInstallationRepository.repositoryId, repository.id),
@@ -177,6 +174,13 @@ async function buildPullRequestReviewInput(
       and(
         eq(githubInstallation.installationId, githubInstallationRepository.installationId),
         eq(githubInstallation.status, 'active'),
+      ),
+    )
+    .innerJoin(
+      repositoryReviewSettings,
+      and(
+        eq(repositoryReviewSettings.repositoryId, reviewIntent.repositoryId),
+        eq(repositoryReviewSettings.userId, githubInstallation.userId),
       ),
     )
     .innerJoin(userReviewSettings, eq(userReviewSettings.userId, githubInstallation.userId))
@@ -213,6 +217,7 @@ async function buildPullRequestReviewInput(
     .where(
       and(
         eq(repositoryAgent.repositoryId, intent.repositoryId),
+        eq(repositoryAgent.userId, target.userId),
         eq(agent.userId, target.userId),
         eq(agent.enabled, true),
       ),

@@ -1343,6 +1343,7 @@ async function createRunnableReviewIntentFixture() {
     reviewsEnabled: true,
   });
   await testDatabase.db.insert(repositoryReviewSettings).values({
+    userId: activeInstallation!.userId,
     repositoryId: createdRepository.id,
     watched: true,
   });
@@ -1361,6 +1362,7 @@ async function createRunnableReviewIntentFixture() {
     model: 'claude-sonnet-4-6',
   });
   await testDatabase.db.insert(repositoryAgent).values({
+    userId: activeInstallation!.userId,
     repositoryId: createdRepository.id,
     agentId: 'agent_security',
   });

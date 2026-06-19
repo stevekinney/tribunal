@@ -27,6 +27,8 @@ export const userRelations = relations(user, ({ many }) => ({
   agents: many(agent),
   costEvents: many(costEvent),
   githubInstallations: many(githubInstallation),
+  repositoryAssignments: many(repositoryAgent),
+  repositoryReviewSettings: many(repositoryReviewSettings),
   reviewRuns: many(reviewRun),
 }));
 
@@ -84,6 +86,7 @@ export const agentRelations = relations(agent, ({ one, many }) => ({
 }));
 
 export const repositoryAgentRelations = relations(repositoryAgent, ({ one }) => ({
+  user: one(user, { fields: [repositoryAgent.userId], references: [user.id] }),
   repository: one(repository, {
     fields: [repositoryAgent.repositoryId],
     references: [repository.id],
@@ -92,6 +95,7 @@ export const repositoryAgentRelations = relations(repositoryAgent, ({ one }) => 
 }));
 
 export const repositoryReviewSettingsRelations = relations(repositoryReviewSettings, ({ one }) => ({
+  user: one(user, { fields: [repositoryReviewSettings.userId], references: [user.id] }),
   repository: one(repository, {
     fields: [repositoryReviewSettings.repositoryId],
     references: [repository.id],
