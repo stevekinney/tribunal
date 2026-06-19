@@ -1023,6 +1023,31 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('rejects empty-string partial failed agent cost from the sandbox', async () => {
+    const ports = createFakePorts({
+      failAgentRuns: true,
+      failedAgentPartialCostEstimateUsd: '',
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      costEstimateUsd: 0,
+    });
+
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({
+      status: 'failed',
+      costEstimateUsd: 0,
+      durationMs: 0,
+      modelUsed: 'sonnet',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    });
+  });
+
   it('sanitizes invalid partial failed agent duration from the sandbox', async () => {
     const ports = createFakePorts({
       failAgentRuns: true,
@@ -1750,7 +1775,7 @@ type FakePortOptions = {
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
   holdReviewPosts?: boolean;
-  failedAgentPartialCostEstimateUsd?: number;
+  failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
 };
 

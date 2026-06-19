@@ -1462,7 +1462,15 @@ function createStoppedAgentResult(
 function getPartialAgentResult(error: unknown): Partial<AgentResult> | undefined {
   const record = getUnknownRecord(error);
   const candidate = getUnknownRecord(record?.partialResult);
-  const costEstimateUsd = Number(candidate?.costEstimateUsd);
+  const rawCostEstimateUsd = candidate?.costEstimateUsd;
+  if (
+    rawCostEstimateUsd === undefined ||
+    rawCostEstimateUsd === null ||
+    rawCostEstimateUsd === ''
+  ) {
+    return undefined;
+  }
+  const costEstimateUsd = Number(rawCostEstimateUsd);
   if (!Number.isFinite(costEstimateUsd) || costEstimateUsd < 0) return undefined;
 
   const usage = getUnknownRecord(candidate?.usage);
