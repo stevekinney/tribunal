@@ -43,6 +43,11 @@ export async function runAgentProcess({
   const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
   const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
   const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
+  // Keep SDK-required env, but replace any API key so traffic uses the scoped proxy token.
+  const sdkEnvironment = {
+    ...environment,
+    ANTHROPIC_API_KEY: environment.TRIBUNAL_RUN_TOKEN,
+  };
   const diffContext = createDiffContext(environment);
   let latestSdkResult;
   let resultWritten = false;
@@ -92,6 +97,7 @@ export async function runAgentProcess({
       repositoryPath,
       model,
       effort,
+      sdkEnvironment,
       diffContext,
       queryFunction,
       emitEvent: (kind, detail, tool) => emitEvent(context, kind, detail, tool),
@@ -125,6 +131,7 @@ export async function runClaudeReview({
   repositoryPath,
   model,
   effort,
+  sdkEnvironment,
   diffContext,
   queryFunction = query,
   emitEvent = () => {},
@@ -143,6 +150,7 @@ export async function runClaudeReview({
     options: {
       cwd: repositoryPath,
       model,
+      env: sdkEnvironment,
       ...(effort ? { effort } : {}),
       settingSources: [],
       strictMcpConfig: true,
