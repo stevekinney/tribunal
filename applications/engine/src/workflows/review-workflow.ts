@@ -1252,7 +1252,7 @@ function buildCompletedCheckRunPatch(
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
   const annotations = agentResults.flatMap((result) =>
-    result.findings.flatMap((finding) => createCheckRunAnnotation(result, finding)),
+    result.findings.flatMap((finding) => createCheckRunAnnotation(result, finding, diffContext)),
   );
   const agentLines = agentResults.map((result) => {
     const severityCounts = countSeverities(result.findings);
@@ -1262,7 +1262,7 @@ function buildCompletedCheckRunPatch(
   });
   const unanchoredFindingLines = agentResults.flatMap((result) =>
     result.findings
-      .filter((finding) => !canAnchorFindingInDiff(diffContext, finding))
+      .filter((finding) => !canAnnotateFindingInCheckRun(diffContext, finding))
       .map(
         (finding) =>
           `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
@@ -1288,10 +1288,13 @@ function buildCompletedCheckRunPatch(
   };
 }
 
-function createCheckRunAnnotation(result: AgentResult, finding: Finding) {
-  if (finding.side === 'LEFT') return [];
-  const line = getFindingAnchorLine(finding);
-  if (line === null) return [];
+function canAnnotateFindingInCheckRun(diffContext: DiffContext, finding: Finding): boolean {
+  return finding.side !== 'LEFT' && canAnchorFindingInDiff(diffContext, finding);
+}
+
+function createCheckRunAnnotation(result: AgentResult, finding: Finding, diffContext: DiffContext) {
+  if (!canAnnotateFindingInCheckRun(diffContext, finding)) return [];
+  const line = getFindingAnchorLine(finding)!;
   const startLine = finding.startLine ?? line;
   const endLine = finding.endLine ?? line;
   return [

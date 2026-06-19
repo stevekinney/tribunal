@@ -1251,7 +1251,18 @@ describe('ReviewWorkflowEngine', () => {
     expect(checkRunText).toContain(
       '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
     );
+    expect(checkRunText).toContain(
+      '- security-review: src/example.ts:99 Off-diff line: This line is not commentable in the diff.',
+    );
     expect(checkRunText).not.toContain('Check this change');
+    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          startLine: 99,
+          title: '[security-review] Off-diff line',
+        }),
+      ]),
+    );
   });
 
   it('adds per-agent details and annotations to the completed Check Run', async () => {
@@ -1280,7 +1291,9 @@ describe('ReviewWorkflowEngine', () => {
           summary: expect.stringContaining(
             'security-review: completed; model opus; effort high; findings 4',
           ),
-          text: undefined,
+          text: expect.stringContaining(
+            '- security-review: src/example.ts:2 Left side: This should sort first within the file.',
+          ),
           annotations: expect.arrayContaining([
             {
               path: 'src/example.ts',
@@ -1296,6 +1309,9 @@ describe('ReviewWorkflowEngine', () => {
       },
     });
     expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(3);
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Right side');
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Earlier right side');
+    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Second file');
     expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2159,6 +2175,15 @@ function createAgentResult(
             severity: 'warning' as const,
             title: 'File-level finding',
             body: 'This cannot be anchored inline.',
+          },
+          {
+            path: 'src/example.ts',
+            startLine: 99,
+            endLine: null,
+            side: 'RIGHT' as const,
+            severity: 'warning' as const,
+            title: 'Off-diff line',
+            body: 'This line is not commentable in the diff.',
           },
         ]
       : multiLineFinding
