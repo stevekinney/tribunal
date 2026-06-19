@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { pathToFileURL } from 'node:url';
 import {
   createTribunalMcpServer,
+  isMainModule,
   redactRuntimeValueForEvent,
   runClaudeReview,
 } from './run-agent.mjs';
@@ -148,6 +150,14 @@ describe('runner agent wiring', () => {
         { token: 'ghs_abcdefghijklmnopqrstuvwxyz' },
       ]),
     ).toEqual(['[REDACTED]', { token: '[REDACTED]' }]);
+  });
+
+  it('detects relative script paths as the main module', () => {
+    const cwd = '/workspace/repository';
+    const moduleUrl = pathToFileURL(`${cwd}/runner/run-agent.mjs`).href;
+
+    expect(isMainModule(moduleUrl, ['bun', 'runner/run-agent.mjs'], cwd)).toBe(true);
+    expect(isMainModule(moduleUrl, ['bun', 'runner/other-agent.mjs'], cwd)).toBe(false);
   });
 });
 

@@ -22,7 +22,6 @@ import {
 } from '@tribunal/github/reviews/pull-request-reviews';
 import type { GithubServiceContext } from '@tribunal/github/context';
 import {
-  buildProxyOnlyEgressConfiguration,
   createSandboxPort,
   type SandboxAdapter,
   type SandboxCreateInput,

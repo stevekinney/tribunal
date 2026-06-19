@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod/v4';
@@ -456,6 +457,11 @@ function elapsedMilliseconds(startedAt) {
   return Math.max(0, Math.round(performance.now() - startedAt));
 }
 
-function isMainModule() {
-  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+export function isMainModule(
+  moduleUrl = import.meta.url,
+  argv = process.argv,
+  cwd = process.cwd(),
+) {
+  const scriptPath = argv[1];
+  return scriptPath !== undefined && moduleUrl === pathToFileURL(resolve(cwd, scriptPath)).href;
 }
