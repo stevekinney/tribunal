@@ -47,6 +47,7 @@ describe('sandbox configuration', () => {
     expect(configuration.env.ANTHROPIC_BASE_URL).toBe(
       'https://proxy.tribunal.local/anthropic/api.anthropic.com',
     );
+    expect(configuration.env.TRIBUNAL_PROXY_URL).toBe('https://proxy.tribunal.local');
   });
 
   it('rejects invalid repository clone inputs', () => {

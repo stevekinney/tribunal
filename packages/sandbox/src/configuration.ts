@@ -44,7 +44,7 @@ export function buildProxyOnlyEgressConfiguration(input: {
     allowOut: [input.proxyCidr],
     secretNames: [],
     env: {
-      TRIBUNAL_PROXY_URL: input.proxyUrl,
+      TRIBUNAL_PROXY_URL: proxyUrl,
       ANTHROPIC_BASE_URL: `${proxyUrl}/anthropic/api.anthropic.com`,
     },
   };
