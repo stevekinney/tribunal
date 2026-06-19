@@ -48,6 +48,7 @@ export const reviewIntent = pgTable(
     index('review_intent_next_attempt_idx')
       .on(table.nextAttemptAt)
       .where(sql`${table.processedAt} IS NULL AND ${table.deadLetteredAt} IS NULL`),
+    index('review_intent_user_idx').on(table.userId),
     index('review_intent_ready_queue_idx')
       .on(table.createdAt, table.id, table.claimedAt, table.nextAttemptAt)
       .where(sql`${table.processedAt} IS NULL AND ${table.deadLetteredAt} IS NULL`),

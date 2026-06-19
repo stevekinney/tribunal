@@ -1,0 +1,1 @@
+CREATE INDEX "review_intent_user_idx" ON "review_intent" USING btree ("user_id");

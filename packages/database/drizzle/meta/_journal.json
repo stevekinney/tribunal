@@ -232,6 +232,13 @@
       "when": 1781893697867,
       "tag": "0032_scope-review-intent-tenant-fanout",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1781896843023,
+      "tag": "0033_add-review-intent-user-index",
+      "breakpoints": true
     }
   ]
 }
