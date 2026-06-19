@@ -1,89 +1,293 @@
 # Container Deployment
 
-Tribunal deploys as three long-running services plus managed Postgres and Redis:
+This document is the deployment source of truth for Tribunal's separate web,
+engine, and proxy services. `documentation/ARCHITECTURE.md` describes the same
+topology at the system level. Older notes in `documentation/WEFT_MIGRATION_PLAN.md`
+that describe an in-process Weft engine are historical context unless they are
+explicitly scoped to web-only producer behavior.
 
-- `web`: SvelteKit server for UI, API routes, and GitHub webhooks.
-- `engine`: durable review engine. This service must run exactly one replica per `WEFT_DATABASE_URL`.
-- `proxy`: credential-injecting egress broker for sandbox traffic.
+Tribunal deploys as three long-running application services plus managed
+Postgres and Redis:
 
-The container definitions live in `deployment/containers/`:
+- `tribunal-web`: public SvelteKit server for UI, API routes, and GitHub webhooks.
+- `tribunal-engine`: internal singleton review engine. This service owns
+  `WEFT_DATABASE_URL` and must run exactly one Machine per durable Weft store.
+- `tribunal-proxy`: public HTTPS credential-injecting egress broker for sandbox traffic.
 
-- `web.Dockerfile`
-- `engine.Dockerfile`
-- `proxy.Dockerfile`
-- `reviewer.Dockerfile`
+The first Fly deployment is infrastructure-ready only: deploy
+`tribunal-engine` with `REVIEWS_ENABLED=false`. Enable live review execution only
+after the proxy CIDR, Tensorlake sandbox image, health checks, and fake load gate
+all pass.
 
-Build checks:
+## Source Files
+
+Container image definitions:
+
+- `deployment/containers/web.Dockerfile`
+- `deployment/containers/engine.Dockerfile`
+- `deployment/containers/proxy.Dockerfile`
+- `deployment/containers/reviewer.Dockerfile`
+
+Fly app definitions:
+
+- `deployment/fly/web.toml`
+- `deployment/fly/engine.toml`
+- `deployment/fly/proxy.toml`
+
+The Fly configs intentionally contain only non-sensitive environment values.
+Set secrets with `flyctl secrets set`; do not commit real credentials in TOML or
+dotenv files.
+
+## Service Contract
+
+| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                 |
+| ----------------- | ------ | ---- | ----------- | ------------------ | ---------------------------- |
+| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | at least one Machine running |
+| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | exactly one Machine          |
+| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | at least one Machine running |
+
+Do not wire services through `localhost` in production. Fly app-to-app traffic
+uses private DNS:
 
 ```sh
+TRIBUNAL_ENGINE_URL=http://tribunal-engine.internal:3001
+```
+
+`tribunal-engine` intentionally has no Fly `http_service` entry. It accepts
+direct private 6PN traffic only, and `deployment/fly/engine.toml` sets
+`TRIBUNAL_ENGINE_BIND_HOST=::` so the Bun server listens on IPv6 for
+`tribunal-engine.internal` traffic.
+
+The proxy is intentionally public because Tensorlake sandboxes need a stable
+public egress target. Allocate a dedicated public IPv4 for `tribunal-proxy` and
+set `TRIBUNAL_PROXY_CIDR` to that address with a `/32` suffix.
+
+## Environment Ownership
+
+`WEFT_DATABASE_URL` belongs only on `tribunal-engine`. Never set it on
+`tribunal-web`. The web service writes review intents to the application
+database; the engine claims those intents and owns durable Weft execution state.
+
+Use pooled Neon runtime URLs for long-running Fly services unless a specific
+driver path requires direct Postgres. Use a direct, unpooled Neon URL for
+migrations:
+
+```sh
+DATABASE_URL="<direct-neon-url>" bun run db:migrate
+```
+
+Required secret groups:
+
+| App               | Required secrets                                                                                                                                                                                                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tribunal-web`    | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `PUBLIC_NEON_AUTH_URL`, `NEON_AUTH_BASE_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`, `GITHUB_APP_ID`, `GITHUB_APP_NAME`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET`, `TRIBUNAL_ENGINE_CONTROL_TOKEN` |
+| `tribunal-engine` | `DATABASE_URL`, `WEFT_DATABASE_URL`, `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `TENSORLAKE_API_KEY`, `TRIBUNAL_SANDBOX_IMAGE`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_SIGNING_KEY`, `TRIBUNAL_ENGINE_CONTROL_TOKEN`, `ANTHROPIC_ADMIN_KEY`                 |
+| `tribunal-proxy`  | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_CA_CERT`, `PROXY_SIGNING_KEY`                                                                                           |
+
+`TRIBUNAL_ENGINE_CONTROL_TOKEN` must match between web and engine.
+`PROXY_SIGNING_KEY` must match between engine and proxy.
+
+For multiline secrets, read from files outside the repository or from an ignored
+secrets directory:
+
+```sh
+flyctl secrets set -a tribunal-web GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"
+flyctl secrets set -a tribunal-engine GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"
+flyctl secrets set -a tribunal-proxy GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"
+flyctl secrets set -a tribunal-proxy PROXY_CA_CERT="$(cat /secure/path/proxy-ca.pem)"
+```
+
+## Preflight
+
+Run these gates before creating or changing Fly apps:
+
+```sh
+bun run verify
+
 docker build -f deployment/containers/web.Dockerfile -t tribunal-web:test .
 docker build -f deployment/containers/engine.Dockerfile -t tribunal-engine:test .
 docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
 docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
+
+flyctl auth whoami
+flyctl platform regions
+flyctl config validate --config deployment/fly/web.toml
+flyctl config validate --config deployment/fly/engine.toml
+flyctl config validate --config deployment/fly/proxy.toml
 ```
 
-## Ports
+Completion signal: all commands exit zero, `dfw` is available, and no local
+verification suite is skipped.
 
-Every service reads the injected `PORT` environment variable:
+Failure signal: stop before app creation if `bun run verify`, any image build,
+or any Fly config validation fails.
 
-- `web`: defaults to `3000` through SvelteKit adapter-node.
-- `engine`: defaults to `3001`.
-- `proxy`: defaults to `3002`.
+## Fly Setup
 
-The CI container harness boots the long-running application images on
-non-default ports and calls `/health`. The reviewer image is a sandbox image,
-not an HTTP service; CI runs its image self-check command instead of probing a
-port.
+Create the apps without deploying first. Use `dfw` as the primary region unless
+capacity checks fail before app creation.
 
-## Health
+```sh
+flyctl apps create tribunal-web --org <organization>
+flyctl apps create tribunal-engine --org <organization>
+flyctl apps create tribunal-proxy --org <organization>
+```
 
-`/health` is a readiness endpoint, not just a process liveness endpoint.
+Allocate a dedicated public IPv4 only for the proxy:
 
-`web` reports:
+```sh
+flyctl ips allocate-v4 --dedicated -a tribunal-proxy
+flyctl ips list -a tribunal-proxy
+```
 
-- `database`: `DATABASE_URL` is configured.
-- `redis`: `REDIS_URL` is configured.
+Copy the dedicated address and set the proxy CIDR:
 
-`engine` reports:
+```sh
+flyctl secrets set -a tribunal-engine TRIBUNAL_PROXY_CIDR="<dedicated-proxy-ip>/32"
+flyctl secrets set -a tribunal-proxy TRIBUNAL_PROXY_CIDR="<dedicated-proxy-ip>/32"
+```
 
-- `weft_database`: the durable Weft database is reachable.
-- `singleton_lock`: the process holds the advisory singleton lock.
+Verify the engine app has no public address:
 
-CI may set `TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE=1` only for image boot
-tests. Production must leave that flag unset so startup fails unless durable
-storage is configured.
+```sh
+flyctl ips list -a tribunal-engine
+```
 
-`proxy` reports:
+Completion signal: `tribunal-proxy` has a dedicated IPv4, `tribunal-engine` has
+no public IPv4, and both engine and web use `http://tribunal-engine.internal:3001`
+for engine traffic.
 
-- `configuration`: proxy configuration parsed successfully.
-- `credential_resolver`: the credential resolver is available.
+## External Services
 
-Production wiring should make the engine health check fail if either the Weft database check or the singleton lock check fails. A second engine process against the same durable store must fail fast and never report ready.
+Configure these before the first deploy:
 
-## Engine Replica Rule
+1. Add the production web domain to Neon Auth trusted domains.
+2. Set the GitHub OAuth callback URL to
+   `https://<web-domain>/connect/github/account/callback`.
+3. Set the GitHub App webhook URL to `https://<web-domain>/api/webhooks/github`.
+4. Publish the reviewer image to Tensorlake only as an explicit release
+   operation. Store the returned image identifier in `TRIBUNAL_SANDBOX_IMAGE` on
+   `tribunal-engine`.
+5. Set `TRIBUNAL_PROXY_URL` to `https://tribunal-proxy.fly.dev` or the chosen
+   custom proxy domain on both engine and proxy.
 
-Run `engine` with exactly one replica per durable store. The durable store is identified by `WEFT_DATABASE_URL`.
+Do not enable live review traffic during this step.
 
-Why this is strict: Weft recovery resumes durable workflows from the store. Two engine processes on the same store can double-resume supervisors and duplicate comments, costs, or sandbox actions.
+## Deploy Procedure
 
-Required platform settings:
+Apply database migrations with a direct Neon URL before deploying application
+images:
 
-- Minimum replicas: `1`
-- Maximum replicas: `1`
-- Rolling deploy overlap: allowed only when the new process must acquire the singleton lock before it reports ready, and the old process must release the lock before the new one can become ready.
-- Autoscaling: disabled for `engine`
-- Autoscaling: allowed for `web` and `proxy`
+```sh
+DATABASE_URL="<direct-neon-url>" bun run db:migrate
+```
 
-## Redeploy Procedure
+Deploy in dependency order:
 
-1. Apply database migrations before deploying application images.
-2. Deploy `proxy` first when proxy configuration changed.
-3. Deploy `engine` with max replicas still set to `1`.
-4. Wait for `engine /health` to report `singleton_lock: true`.
-5. Deploy `web`.
-6. Run the post-deploy review-engine load harness against fakes before enabling live review traffic.
+```sh
+flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
+```
 
-Do not enable live Tensorlake or external provider credentials for validation runs in CI. CI builds the reviewer image and application images only; pushing the reviewer image with `tl sbx image create` is a release operation that requires explicit live-service authorization.
+Force the engine to exactly one Machine after the first engine deploy and after
+any later scaling change:
+
+```sh
+flyctl scale count 1 -a tribunal-engine
+flyctl machines list -a tribunal-engine
+```
+
+Completion signal: exactly one `tribunal-engine` Machine exists, it is in `dfw`,
+and `flyctl machines list -a tribunal-engine` shows no extra started or stopped
+engine Machines.
+
+Failure signal: if a second engine Machine exists against the same
+`WEFT_DATABASE_URL`, stop the deployment and remove the duplicate before running
+health gates.
+
+## Health Gates
+
+Proxy public health:
+
+```sh
+curl -fsS https://tribunal-proxy.fly.dev/health
+```
+
+Engine private health from inside Fly private networking:
+
+```sh
+flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
+```
+
+The engine response must include `singleton_lock: true`.
+
+Web public health:
+
+```sh
+curl -fsS https://<web-domain>/health
+```
+
+Unauthorized proxy request:
+
+```sh
+status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
+test "$status" = "401" -o "$status" = "403"
+```
+
+Fake-only review-engine load gate:
+
+```sh
+bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
+```
+
+Completion signal: all health commands exit zero, the unauthorized proxy request
+returns `401` or `403`, the fake-only load harness passes, and
+`REVIEWS_ENABLED` is still `false`.
+
+Failure signal: do not change `REVIEWS_ENABLED` to `true` if any health gate
+fails or if the engine health response does not show `singleton_lock: true`.
+
+## Enabling Live Reviews
+
+Live review execution remains disabled until all of these are true:
+
+- `tribunal-proxy` has a dedicated public IPv4 and `TRIBUNAL_PROXY_CIDR` is the
+  matching `/32` on engine and proxy.
+- `TRIBUNAL_SANDBOX_IMAGE` points at a reviewer image published to Tensorlake as
+  an explicit release operation.
+- Proxy, engine, and web health gates pass.
+- Unauthorized proxy requests return `401` or `403`.
+- The fake-only load harness passes.
+- `flyctl machines list -a tribunal-engine` shows exactly one engine Machine.
+
+Only then change `REVIEWS_ENABLED` to `true` for `tribunal-engine` and redeploy
+the engine:
+
+```sh
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+```
+
+Re-run every health gate after enabling live reviews.
+
+## Rollback
+
+Rollback in reverse dependency order when a deploy breaks health:
+
+```sh
+flyctl releases list -a tribunal-web
+flyctl releases rollback <version> -a tribunal-web
+
+flyctl releases list -a tribunal-engine
+flyctl releases rollback <version> -a tribunal-engine
+flyctl scale count 1 -a tribunal-engine
+
+flyctl releases list -a tribunal-proxy
+flyctl releases rollback <version> -a tribunal-proxy
+```
+
+After any rollback, re-run the health gates and verify the engine still has
+exactly one Machine.
 
 ## Local Verification
 
@@ -92,7 +296,11 @@ Targeted commands:
 ```sh
 bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts src/routes/health/server.spec.ts
 bun run --cwd applications/engine test -- src/health.test.ts src/index.test.ts
-bun run --cwd applications/proxy test -- src/health.test.ts src/proxy.test.ts
-bun run --cwd packages/agents test -- src/security-verification.test.ts src/hooks.test.ts
-bun run --cwd packages/sandbox test -- src/security-verification.test.ts src/configuration.test.ts
+bun run --cwd applications/proxy test -- src/health.test.ts src/proxy.test.ts src/runner-proxy.integration.test.ts
+```
+
+Full release gate:
+
+```sh
+bun run verify
 ```

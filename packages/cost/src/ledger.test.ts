@@ -212,6 +212,21 @@ describe('cost ledger', () => {
     ).toEqual(['0.05000000', '1.10000000']);
   });
 
+  it('throws when reconciling a review run that no longer exists', async () => {
+    let costApiCalled = false;
+    const client: UsageCostApiClient = {
+      async listReviewRunCosts() {
+        costApiCalled = true;
+        return [];
+      },
+    };
+
+    await expect(reconcile(testDatabase.db, client, 'missing_review_run')).rejects.toThrow(
+      'Review run missing_review_run was not found for cost reconciliation.',
+    );
+    expect(costApiCalled).toBe(false);
+  });
+
   it('reconciles legacy review runs without startedAt using the estimate window', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     await testDatabase.db

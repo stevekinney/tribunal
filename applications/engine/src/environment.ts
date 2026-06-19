@@ -11,6 +11,10 @@ const positiveDecimalString = z
 const booleanFlag = z.enum(['true', 'false', '1', '0']).transform((value) => {
   return value === 'true' || value === '1';
 });
+const optionalNonEmptyString = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().min(1).optional(),
+);
 
 export const engineEnvironmentSchema = z
   .object({
@@ -26,6 +30,7 @@ export const engineEnvironmentSchema = z
     PROXY_SIGNING_KEY: z.string().min(1),
     ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
     TRIBUNAL_ENGINE_CONTROL_TOKEN: z.string().min(1),
+    TRIBUNAL_ENGINE_BIND_HOST: optionalNonEmptyString,
     TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE: booleanFlag.default(false),
     TRIBUNAL_DEFAULT_MODEL: z.string().min(1),
     DEFAULT_DAILY_COST_CAP_USD: positiveDecimalString.transform(Number),

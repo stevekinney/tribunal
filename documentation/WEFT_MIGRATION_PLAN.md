@@ -1,5 +1,12 @@
 # Weft Migration Plan
 
+> [!IMPORTANT]
+> This document is historical migration context for the earlier in-process Weft
+> topology. Current production deployment uses the separate `applications/engine`
+> service described in `documentation/ARCHITECTURE.md` and
+> `documentation/deployment/containers.md`. Do not set `WEFT_DATABASE_URL` on the
+> web service; it belongs only on the engine service.
+
 > Status: **Workflow definitions ported on Weft 0.4.0.** Weft
 > ([`@lostgradient/weft`](https://github.com/stevekinney/weft)) is Tribunal's
 > durable-execution substrate, replacing the Temporal layer Tribunal inherited

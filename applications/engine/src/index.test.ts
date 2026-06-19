@@ -18,6 +18,25 @@ describe('parsePort', () => {
 });
 
 describe('createEngineServerOptions', () => {
+  it('includes a configured bind hostname for Fly private networking', () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+      '::',
+    );
+
+    expect(server.hostname).toBe('::');
+  });
+
   it('drains review intents through the runtime endpoint', async () => {
     const server = createEngineServerOptions(
       3001,

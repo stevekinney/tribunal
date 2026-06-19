@@ -14,6 +14,7 @@ const fullEnvironment = {
   PROXY_SIGNING_KEY: 'proxy-signing-key',
   ENCRYPTION_KEY: 'a'.repeat(64),
   TRIBUNAL_ENGINE_CONTROL_TOKEN: 'engine-control-token',
+  TRIBUNAL_ENGINE_BIND_HOST: '::',
   TRIBUNAL_DEFAULT_MODEL: 'claude-sonnet-4-6',
   DEFAULT_DAILY_COST_CAP_USD: '25',
   IDLE_SUSPEND_SECONDS: '900',
@@ -29,6 +30,7 @@ describe('parseEngineEnvironment', () => {
     expect(parseEngineEnvironment(fullEnvironment)).toMatchObject({
       WEFT_DATABASE_URL: 'https://example.neon.tech/weft',
       DEFAULT_DAILY_COST_CAP_USD: 25,
+      TRIBUNAL_ENGINE_BIND_HOST: '::',
       IDLE_SUSPEND_SECONDS: 900,
       SANDBOX_REAP_INTERVAL: 300,
       ENABLE_PROMPT_CACHING_1H: true,
@@ -86,6 +88,15 @@ describe('parseEngineEnvironment', () => {
     const { ENABLE_PROMPT_CACHING_1H: _removed, ...environment } = fullEnvironment;
 
     expect(parseEngineEnvironment(environment).ENABLE_PROMPT_CACHING_1H).toBe(false);
+  });
+
+  it('treats an empty optional bind host as unset', () => {
+    expect(
+      parseEngineEnvironment({
+        ...fullEnvironment,
+        TRIBUNAL_ENGINE_BIND_HOST: '',
+      }).TRIBUNAL_ENGINE_BIND_HOST,
+    ).toBeUndefined();
   });
 
   it('allows missing Weft storage only when ephemeral storage is explicitly enabled', () => {
