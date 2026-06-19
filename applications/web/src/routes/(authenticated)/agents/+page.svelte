@@ -37,6 +37,7 @@
       dryRunValues.model === selectedModel &&
       dryRunValues.effort === selectedEffort,
   );
+  let bodyTextarea: HTMLTextAreaElement | undefined = $state();
 
   function editAgent(agent: (typeof data.agents)[number]) {
     agentId = agent.id;
@@ -58,6 +59,18 @@
     selectedEffort = '';
     sampleDiff = '';
     enabled = true;
+  }
+
+  function clearBodyValidation() {
+    bodyTextarea?.setCustomValidity('');
+  }
+
+  function validateDryRunPrompt(event: SubmitEvent) {
+    clearBodyValidation();
+    if (body.trim() !== '') return;
+    event.preventDefault();
+    bodyTextarea?.setCustomValidity('System prompt is required for a dry run estimate.');
+    bodyTextarea?.reportValidity();
   }
 </script>
 
@@ -110,7 +123,14 @@
       {/if}
       <label class="field field-wide">
         <span>System prompt</span>
-        <textarea name="body" rows="8" required bind:value={body}></textarea>
+        <textarea
+          bind:this={bodyTextarea}
+          name="body"
+          rows="8"
+          required
+          bind:value={body}
+          oninput={clearBodyValidation}
+        ></textarea>
       </label>
       <label class="enabled-control">
         <input type="checkbox" name="enabled" bind:checked={enabled} />
@@ -130,7 +150,7 @@
       </div>
     </form>
 
-    <form method="POST" action="?/dryRun" class="dry-run-form">
+    <form method="POST" action="?/dryRun" class="dry-run-form" onsubmit={validateDryRunPrompt}>
       <input type="hidden" name="id" value={agentId} />
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="description" value={description} />

@@ -100,6 +100,20 @@ describe('/agents page', () => {
     await expect.element(page.getByLabelText('Sample diff')).toHaveAttribute('required');
   });
 
+  it('requires the visible system prompt before submitting a dry-run estimate', async () => {
+    render(AgentsPage, { data, form: null });
+
+    await page
+      .getByLabelText('Sample diff')
+      .fill('diff --git a/src/auth.ts b/src/auth.ts\n+check();');
+    await page.getByRole('button', { name: 'Dry run estimate' }).click();
+
+    const systemPrompt = page.getByLabelText('System prompt').element() as HTMLTextAreaElement;
+    expect(systemPrompt.validationMessage).toBe(
+      'System prompt is required for a dry run estimate.',
+    );
+  });
+
   it('uses the default model for inherited xhigh fallback warnings', async () => {
     render(AgentsPage, { data, form: null });
 

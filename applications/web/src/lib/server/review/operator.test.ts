@@ -474,12 +474,13 @@ describe('review operator server helpers', () => {
     if (!reader) return;
     const decoder = new TextDecoder();
     const firstChunk = await reader.read();
-    const secondChunk = await reader.read();
+    let streamedText = decoder.decode(firstChunk.value ?? new Uint8Array());
+    if (!streamedText.includes(': keepalive')) {
+      const secondChunk = await reader.read();
+      streamedText += decoder.decode(secondChunk.value ?? new Uint8Array());
+    }
     abortController.abort();
     await reader.cancel().catch(() => undefined);
-    const streamedText =
-      decoder.decode(firstChunk.value ?? new Uint8Array()) +
-      decoder.decode(secondChunk.value ?? new Uint8Array());
 
     expect(streamedText).toContain(': connected');
     expect(streamedText).toContain(': keepalive');
