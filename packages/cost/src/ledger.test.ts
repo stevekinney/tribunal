@@ -17,7 +17,7 @@ import {
   recordLlmEstimate,
   recordSandbox,
 } from './ledger';
-import { PRICING, sandboxCost } from './pricing';
+import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
 import type { UsageCostApiClient } from './usage-cost-api';
 
 let testDatabase: TestDatabase;
@@ -327,6 +327,9 @@ describe('cost ledger', () => {
       reviewRunId: review.id,
       sandboxId: 'sandbox_1',
       amountUsd: 0.2,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_1:manual',
     });
     await port.reconcile(review.id);
@@ -336,10 +339,56 @@ describe('cost ledger', () => {
       estimateUsd: 1,
       reconciledUsd: 0.75,
     });
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: true,
+      capUsd: 25,
+      spendUsd: 1,
+      remainingUsd: 24,
+    });
     const rows = await testDatabase.db
       .select()
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, `llm:${run.id}:estimate`));
     expect(rows[0]?.repositoryId).toBe(repository.id);
+    const sandboxRows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
+    expect(sandboxRows[0]?.meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      sandboxId: 'sandbox_1',
+    });
+  });
+
+  it('reports a blocked daily cap through the review-core cost port', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '1.00' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '1.00',
+      idempotencyKey: 'llm:estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      usageCostApiClient: { listReviewRunCosts: async () => [] },
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
+      allowed: false,
+      capUsd: 1,
+      spendUsd: 1,
+      remainingUsd: 0,
+    });
   });
 });

@@ -178,34 +178,51 @@ describe('runtime review intent consumer wiring', () => {
       json: vi.fn().mockResolvedValue({
         data: [
           {
-            id: 'cost_1',
-            amount_usd: '1.25',
             starting_at: '2026-06-17T12:00:00.000Z',
-            metadata: {
-              review_run_id: 'run_1',
-              user_id: '7',
-              repository_id: '42',
-              agent_run_id: 'agent_run_1',
-              agent_id: 'agent_security',
-            },
+            ending_at: '2026-06-18T12:00:00.000Z',
+            results: [
+              {
+                amount: '125.00',
+                currency: 'USD',
+                workspace_id: 'wrkspc_1',
+                description: 'Claude Sonnet 4 Usage',
+                cost_type: 'tokens',
+                model: 'claude-sonnet-4-5-20250929',
+                metadata: {
+                  review_run_id: 'run_1',
+                  user_id: '7',
+                  repository_id: '42',
+                  agent_run_id: 'agent_run_1',
+                  agent_id: 'agent_security',
+                },
+              },
+              {
+                amount: '300.00',
+                currency: 'USD',
+                workspace_id: 'wrkspc_1',
+                description: 'Claude Sonnet 4 Usage',
+                metadata: { review_run_id: 'run_other', user_id: '7' },
+              },
+              {
+                amount: '0',
+                currency: 'USD',
+                workspace_id: 'wrkspc_1',
+                description: 'Claude Sonnet 4 Usage',
+                metadata: { review_run_id: 'run_1', user_id: '7' },
+              },
+              {
+                amount: '200.00',
+                currency: 'USD',
+                workspace_id: 'wrkspc_1',
+                description: 'Claude Sonnet 4 Usage',
+                metadata: { review_run_id: 'run_1' },
+              },
+              'ignored',
+            ],
           },
-          {
-            id: 'cost_other',
-            amount_usd: '3',
-            metadata: { review_run_id: 'run_other', user_id: '7' },
-          },
-          {
-            id: 'cost_zero',
-            amount_usd: '0',
-            metadata: { review_run_id: 'run_1', user_id: '7' },
-          },
-          {
-            id: 'cost_userless',
-            amount_usd: '2',
-            metadata: { review_run_id: 'run_1' },
-          },
-          'ignored',
         ],
+        has_more: false,
+        next_page: null,
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -215,7 +232,7 @@ describe('runtime review intent consumer wiring', () => {
     const client = createAnthropicUsageCostApiClient('admin-key');
     await expect(client.listReviewRunCosts('run_1')).resolves.toEqual([
       {
-        id: 'cost_1',
+        id: 'run_1:0:0',
         occurredAt: new Date('2026-06-17T12:00:00.000Z'),
         amountUsd: 1.25,
         userId: 7,
@@ -241,36 +258,56 @@ describe('runtime review intent consumer wiring', () => {
         headers: {
           'x-api-key': 'admin-key',
           'anthropic-version': '2023-06-01',
+          'user-agent': 'Tribunal/0.0.1',
         },
       },
     );
     const url = fetchMock.mock.calls[0]?.[0] as URL;
     expect(url.searchParams.get('starting_at')).toBe('2026-06-11T12:00:00.000Z');
     expect(url.searchParams.get('ending_at')).toBe('2026-06-18T12:00:00.000Z');
+    expect(url.searchParams.getAll('group_by[]')).toEqual(['workspace_id', 'description']);
   });
 
-  it('normalizes alternate Anthropic cost report row shapes', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
+  it('follows documented Anthropic cost report pagination', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({
-          results: [
+          data: [],
+          has_more: true,
+          next_page: 'page_2',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
             {
-              amountUsd: 2.5,
-              ending_at: '2026-06-17T13:00:00.000Z',
-              custom_metadata: {
-                review_run_id: 'run_2',
-                user_id: 8,
-              },
-              repository_id: 55,
-              agent_run_id: '',
-              agent_id: 'agent_docs',
+              starting_at: '2026-06-17T13:00:00.000Z',
+              ending_at: '2026-06-18T13:00:00.000Z',
+              results: [
+                {
+                  amount: '250.00',
+                  currency: 'USD',
+                  workspace_id: 'wrkspc_2',
+                  description: 'Claude Haiku Usage',
+                  metadata: {
+                    review_run_id: 'run_2',
+                    user_id: 8,
+                    repository_id: 55,
+                    agent_run_id: '',
+                    agent_id: 'agent_docs',
+                  },
+                },
+              ],
             },
           ],
+          has_more: false,
+          next_page: null,
         }),
-      }),
-    );
+      });
+    vi.stubGlobal('fetch', fetchMock);
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
 
@@ -278,7 +315,7 @@ describe('runtime review intent consumer wiring', () => {
       createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_2'),
     ).resolves.toEqual([
       {
-        id: 'run_2:0',
+        id: 'run_2:1:0',
         occurredAt: new Date('2026-06-17T13:00:00.000Z'),
         amountUsd: 2.5,
         userId: 8,
@@ -289,9 +326,80 @@ describe('runtime review intent consumer wiring', () => {
         metadata: {
           review_run_id: 'run_2',
           user_id: 8,
+          repository_id: 55,
+          agent_run_id: '',
+          agent_id: 'agent_docs',
         },
       },
     ]);
+    const secondUrl = fetchMock.mock.calls[1]?.[0] as URL;
+    expect(secondUrl.searchParams.get('page')).toBe('page_2');
+  });
+
+  it('fails loudly when Anthropic cost report pagination omits the next page token', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [],
+          has_more: true,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+    ).rejects.toThrow('Anthropic cost report response is missing next_page.');
+  });
+
+  it('fails loudly when Anthropic cost report pagination exceeds the local cap', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [],
+          has_more: true,
+          next_page: 'next_page',
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+    ).rejects.toThrow('Anthropic cost report pagination exceeded 5 pages.');
+  });
+
+  it('does not record non-USD Anthropic cost report rows as USD', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              starting_at: '2026-06-17T12:00:00.000Z',
+              ending_at: '2026-06-18T12:00:00.000Z',
+              results: [
+                {
+                  amount: '125.00',
+                  currency: 'EUR',
+                  metadata: { review_run_id: 'run_1', user_id: '7' },
+                },
+              ],
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      }),
+    );
+
+    await expect(
+      createAnthropicUsageCostApiClient('admin-key').listReviewRunCosts('run_1'),
+    ).resolves.toEqual([]);
   });
 
   it('throws when the Anthropic cost report request fails', async () => {

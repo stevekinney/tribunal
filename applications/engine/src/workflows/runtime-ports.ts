@@ -208,42 +208,64 @@ async function listOpenPullRequestSandboxes(
 export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostApiClient {
   return {
     async listReviewRunCosts(reviewRunId: string) {
-      const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
-      url.searchParams.set(
-        'starting_at',
-        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      );
-      url.searchParams.set('ending_at', new Date().toISOString());
-      const response = await fetch(url, {
-        headers: {
-          'x-api-key': adminKey,
-          'anthropic-version': '2023-06-01',
-        },
-      });
-      if (!response.ok) {
-        throw new Error(`Anthropic cost report request failed with status ${response.status}`);
+      const events: UsageCostApiEvent[] = [];
+      let page: string | undefined;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
+        url.searchParams.set(
+          'starting_at',
+          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        );
+        url.searchParams.set('ending_at', new Date().toISOString());
+        url.searchParams.append('group_by[]', 'workspace_id');
+        url.searchParams.append('group_by[]', 'description');
+        if (page !== undefined) url.searchParams.set('page', page);
+
+        const response = await fetch(url, {
+          headers: {
+            'x-api-key': adminKey,
+            'anthropic-version': '2023-06-01',
+            'user-agent': 'Tribunal/0.0.1',
+          },
+        });
+        if (!response.ok) {
+          throw new Error(`Anthropic cost report request failed with status ${response.status}`);
+        }
+        const payload = (await response.json()) as unknown;
+        events.push(...parseAnthropicCostReport(payload, reviewRunId, attempt));
+
+        const payloadRecord = getRecord(payload);
+        if (payloadRecord?.has_more !== true) return events;
+        page = toNullableString(payloadRecord.next_page) ?? undefined;
+        if (page === undefined) {
+          throw new Error('Anthropic cost report response is missing next_page.');
+        }
       }
-      const payload = (await response.json()) as unknown;
-      return parseAnthropicCostReport(payload, reviewRunId);
+
+      throw new Error('Anthropic cost report pagination exceeded 5 pages.');
     },
   };
 }
 
-function parseAnthropicCostReport(payload: unknown, reviewRunId: string): UsageCostApiEvent[] {
+function parseAnthropicCostReport(
+  payload: unknown,
+  reviewRunId: string,
+  pageIndex: number,
+): UsageCostApiEvent[] {
   const rows = getCostReportRows(payload);
   return rows.flatMap((row, index) => {
     const metadata = getRecord(row.custom_metadata ?? row.metadata);
     if (metadata?.review_run_id !== reviewRunId) return [];
-    const amountUsd = Number(row.amount_usd ?? row.amountUsd ?? row.cost_usd ?? row.costUsd ?? 0);
+    if (row.currency !== 'USD') return [];
+    const amountUsd = parseUsdFromLowestUnitString(row.amount);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) return [];
     const userId = Number(metadata.user_id ?? row.user_id ?? 0);
     if (!Number.isInteger(userId) || userId <= 0) return [];
     return [
       {
-        id: String(row.id ?? `${reviewRunId}:${index}`),
-        occurredAt: new Date(
-          String(row.starting_at ?? row.ending_at ?? row.occurred_at ?? Date.now()),
-        ),
+        id: String(row.id ?? `${reviewRunId}:${pageIndex}:${index}`),
+        occurredAt: new Date(String(row.starting_at ?? row.ending_at ?? Date.now())),
         amountUsd,
         userId,
         repositoryId: toNullableInteger(metadata.repository_id ?? row.repository_id),
@@ -258,13 +280,23 @@ function parseAnthropicCostReport(payload: unknown, reviewRunId: string): UsageC
 
 function getCostReportRows(payload: unknown): Array<Record<string, unknown>> {
   const record = getRecord(payload);
-  const rows = record?.data ?? record?.results ?? record?.items ?? payload;
-  return Array.isArray(rows)
-    ? rows.flatMap((row): Array<Record<string, unknown>> => {
-        const rowRecord = getRecord(row);
-        return rowRecord === undefined ? [] : [rowRecord];
-      })
-    : [];
+  const buckets = Array.isArray(record?.data) ? record.data : [];
+  return buckets.flatMap((bucket): Array<Record<string, unknown>> => {
+    const bucketRecord = getRecord(bucket);
+    if (bucketRecord === undefined || !Array.isArray(bucketRecord.results)) return [];
+    return bucketRecord.results.flatMap((row): Array<Record<string, unknown>> => {
+      const rowRecord = getRecord(row);
+      return rowRecord === undefined
+        ? []
+        : [
+            {
+              ...rowRecord,
+              starting_at: bucketRecord.starting_at,
+              ending_at: bucketRecord.ending_at,
+            },
+          ];
+    });
+  });
 }
 
 function getRecord(value: unknown): Record<string, unknown> | undefined {
@@ -280,6 +312,13 @@ function toNullableInteger(value: unknown): number | null {
 
 function toNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function parseUsdFromLowestUnitString(value: unknown): number {
+  if (typeof value !== 'string' && typeof value !== 'number') return 0;
+  const cents = Number(value);
+  if (!Number.isFinite(cents) || cents <= 0) return 0;
+  return Number((cents / 100).toFixed(8));
 }
 
 type ReviewIntentWorkflowHandle = {

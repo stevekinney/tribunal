@@ -3,7 +3,7 @@ import type { Database } from '@tribunal/database';
 import { and, eq, sql } from '@tribunal/database/operators';
 import { costEvent, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
-import type { CostPort, LlmEstimateInput } from '@tribunal/review-core/ports';
+import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
 import {
   CURRENT_PRICING_VERSION,
   sandboxCost,
@@ -23,13 +23,6 @@ export type RecordSandboxInput = {
   runtime: SandboxRuntime;
   resources: SandboxResources;
   occurredAt?: Date;
-};
-
-export type DailyCapDecision = {
-  allowed: boolean;
-  capUsd: number;
-  spendUsd: number;
-  remainingUsd: number;
 };
 
 export type ReviewRunCostComparison = {
@@ -234,10 +227,17 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         repositoryId: event.repositoryId,
         reviewRunId: event.reviewRunId,
         amountUsd: numericText(event.amountUsd),
+        meta: {
+          pricingVersion: event.pricingVersion ?? CURRENT_PRICING_VERSION,
+          runtime: event.runtime,
+          resources: event.resources,
+          sandboxId: event.sandboxId,
+        },
         occurredAt: options.now?.(),
         idempotencyKey: event.idempotencyKey,
       }),
     reconcile: (reviewRunId) => reconcile(database, options.usageCostApiClient, reviewRunId),
+    enforceDailyCap: (userId) => enforceDailyCap(database, userId, options.now?.() ?? new Date()),
     spendTodayEstimate: (userId) =>
       readSpendTodayEstimate(database as Database, userId, options.now?.() ?? new Date()),
   };

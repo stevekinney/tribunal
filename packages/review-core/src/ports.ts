@@ -98,11 +98,29 @@ export interface SandboxCostInput {
   sandboxId: string;
   amountUsd: number;
   idempotencyKey: string;
+  pricingVersion?: string;
+  runtime?: {
+    runtimeSeconds: number;
+    storageSeconds?: number;
+  };
+  resources?: {
+    cpus: number;
+    memoryMb: number;
+    storageMb: number;
+  };
+}
+
+export interface DailyCapDecision {
+  allowed: boolean;
+  capUsd: number;
+  spendUsd: number;
+  remainingUsd: number;
 }
 
 export interface CostPort {
   recordLlmEstimate(event: LlmEstimateInput): Promise<void>;
   recordSandbox(event: SandboxCostInput): Promise<void>;
   reconcile(reviewRunId: string): Promise<void>;
+  enforceDailyCap(userId: number): Promise<DailyCapDecision>;
   spendTodayEstimate(userId: number): Promise<number>;
 }
