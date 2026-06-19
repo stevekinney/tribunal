@@ -1,6 +1,6 @@
 {
-  "id": "32e553b6-9599-41c6-b2c4-ec48578d06cf",
-  "prevId": "013c8040-09f7-4656-8c82-21cdc6e7e73c",
+  "id": "76a7533e-f824-4cfc-a596-8d50552f29f4",
+  "prevId": "32e553b6-9599-41c6-b2c4-ec48578d06cf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2422,6 +2422,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
         "pr_number": {
           "name": "pr_number",
           "type": "integer",
@@ -2492,8 +2498,8 @@
         }
       },
       "indexes": {
-        "review_intent_delivery_kind_idx": {
-          "name": "review_intent_delivery_kind_idx",
+        "review_intent_delivery_kind_user_idx": {
+          "name": "review_intent_delivery_kind_user_idx",
           "columns": [
             {
               "expression": "delivery_id",
@@ -2503,6 +2509,12 @@
             },
             {
               "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2607,6 +2619,15 @@
           "tableFrom": "review_intent",
           "tableTo": "repository",
           "columnsFrom": ["repository_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "review_intent_user_id_user_id_fk": {
+          "name": "review_intent_user_id_user_id_fk",
+          "tableFrom": "review_intent",
+          "tableTo": "user",
+          "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
