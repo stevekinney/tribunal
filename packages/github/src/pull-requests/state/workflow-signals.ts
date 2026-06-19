@@ -165,7 +165,13 @@ async function enqueueReviewIntent(
       })),
     )
     .onConflictDoNothing({
-      target: [reviewIntent.deliveryId, reviewIntent.kind, reviewIntent.userId],
+      target: [
+        reviewIntent.deliveryId,
+        reviewIntent.kind,
+        reviewIntent.userId,
+        reviewIntent.repositoryId,
+        reviewIntent.prNumber,
+      ],
     })
     .returning();
 
