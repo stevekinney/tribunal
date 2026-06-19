@@ -142,6 +142,38 @@ describe('getDiffContext', () => {
     expect(context.cache.setCache).toHaveBeenCalled();
   });
 
+  it('uses separate cached diff contexts for separate reviewed head SHAs', async () => {
+    const listFiles = vi.fn().mockResolvedValue({ data: [createPullRequestFile(1)] });
+    const context = createContext(listFiles);
+
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'aaa111',
+    });
+    await getDiffContext(context, {
+      installationId: 1,
+      owner: 'lostgradient',
+      repository: 'tribunal',
+      pullRequestNumber: 42,
+      repositoryId: 123,
+      headSha: 'bbb222',
+    });
+
+    expect(context.cache.getCached).toHaveBeenNthCalledWith(
+      1,
+      'github:response:repository:123:pr:42:head:aaa111:diff-context',
+    );
+    expect(context.cache.getCached).toHaveBeenNthCalledWith(
+      2,
+      'github:response:repository:123:pr:42:head:bbb222:diff-context',
+    );
+    expect(listFiles).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['owner', { owner: ' ' }],
     ['repository', { repository: '' }],

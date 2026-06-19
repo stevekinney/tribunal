@@ -170,7 +170,7 @@ describe('signalPullRequestEvent', () => {
     });
   });
 
-  it('deduplicates same-delivery intents by event kind', async () => {
+  it('deduplicates same-delivery intents by event kind, repository, and pull request', async () => {
     const repository = await testContext.factories.repository.create({ id: 49 });
     const context = createGithubContext();
 
@@ -198,15 +198,16 @@ describe('signalPullRequestEvent', () => {
     });
 
     expect(first).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
-    expect(second).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: false });
+    expect(second).toMatchObject({ ok: true, intentKind: 'commit_pushed', enqueued: true });
 
     const rows = await testContext.db
       .select()
       .from(reviewIntent)
       .where(eq(reviewIntent.deliveryId, 'delivery-multiple-pull-requests'))
       .orderBy(reviewIntent.prNumber);
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ prNumber: 14, headSha: 'first' });
+    expect(rows[1]).toMatchObject({ prNumber: 15, headSha: 'second' });
   });
 
   it('returns not enqueued for ignored event types', async () => {

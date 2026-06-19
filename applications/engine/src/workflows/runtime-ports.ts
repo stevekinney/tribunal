@@ -349,6 +349,8 @@ export function createEngineGitHubPort(
           owner: repository.owner,
           repository: repository.name,
           pullRequestNumber,
+          repositoryId: repository.repositoryId,
+          headSha: head,
         }),
       ]);
       return {

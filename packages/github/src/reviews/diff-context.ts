@@ -91,9 +91,11 @@ export async function getDiffContext(
     repository: string;
     pullRequestNumber: number;
     repositoryId?: number;
+    headSha?: string;
   },
 ): Promise<DiffContext> {
   validateDiffContextInput(input);
+  if (input.headSha !== undefined) validateNonEmptyString(input.headSha, 'headSha');
   const octokit = await requireInstallationOctokit(context, input.installationId);
   const fetchFiles = () =>
     withGitHubWriteErrorClassification(() =>
@@ -112,7 +114,7 @@ export async function getDiffContext(
       const files = await fetchFiles();
       return { data: files };
     },
-    [input.repositoryId, input.pullRequestNumber],
+    [input.repositoryId, input.pullRequestNumber, input.headSha ?? 'current'],
   );
 
   return toDiffContext(input, value);

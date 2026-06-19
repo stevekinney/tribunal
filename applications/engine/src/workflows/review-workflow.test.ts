@@ -1195,19 +1195,71 @@ describe('ReviewWorkflowEngine', () => {
     ]);
   });
 
-  it('posts unanchored findings in the review body', async () => {
+  it('surfaces off-diff-only findings in the completed Check Run without posting an empty review', async () => {
     const ports = createFakePorts({ fileLevelFinding: true });
     const engine = createEngine(ports);
 
-    await engine.startPullRequestReview(baseInput);
-
-    expect(ports.github.reviews[0]).toMatchObject({
-      comments: [],
-      body: expect.stringContaining('Unanchored findings:'),
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
     });
-    expect(ports.github.reviews[0]?.body).toContain(
-      '- **src/example.ts** File-level finding: This cannot be anchored inline.',
-    );
+
+    expect(ports.github.reviews).toEqual([]);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review complete',
+          summary: expect.stringContaining('security-review: completed; model sonnet'),
+          text: expect.stringContaining(
+            '- security-review: src/example.ts File-level finding: This cannot be anchored inline.',
+          ),
+          annotations: [],
+        },
+      },
+    });
+  });
+
+  it('adds per-agent details and annotations to the completed Check Run', async () => {
+    const ports = createFakePorts({ multipleFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [
+        {
+          ...reviewAgent,
+          model: 'opus',
+          effort: 'high',
+        },
+      ],
+    });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review complete',
+          summary: expect.stringContaining(
+            'security-review: completed; model opus; effort high; findings 4',
+          ),
+          text: expect.stringContaining('Findings:'),
+          annotations: expect.arrayContaining([
+            {
+              path: 'src/example.ts',
+              startLine: 12,
+              endLine: 12,
+              annotationLevel: 'warning',
+              message: 'This should sort after the left-side comment.',
+              title: '[security-review] Right side',
+              rawDetails: 'model=opus; effort=high; estimatedCostUsd=0.0100',
+            },
+          ]),
+        },
+      },
+    });
   });
 
   it('supports operator stop for one running agent', async () => {
@@ -2072,7 +2124,7 @@ function createAgentResult(
                 startLine: 1,
                 endLine: null,
                 side: 'RIGHT' as const,
-                severity: 'warning' as const,
+                severity: 'info' as const,
                 title: 'Second file',
                 body: 'This should sort last by path.',
               },
@@ -2081,7 +2133,7 @@ function createAgentResult(
                 startLine: 3,
                 endLine: null,
                 side: 'RIGHT' as const,
-                severity: 'warning' as const,
+                severity: 'error' as const,
                 title: 'Earlier right side',
                 body: 'This should sort before the later right-side comment.',
               },

@@ -138,9 +138,9 @@ export const POST: RequestHandler = async (event) => {
 
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
 
-  // 3. Claim-Before-Processing Pattern for non-review-engine events
-  // Review-engine triggers defer claiming until after successful processing,
-  // so GitHub can retry on transient failures (500). All other events claim early.
+  // 3. Claim-Before-Processing Pattern
+  // Claim every delivery before side effects so GitHub redeliveries cannot enqueue
+  // duplicate review work or persist duplicate event records.
   const installation = data.installation as { id: number } | undefined;
   const repository = data.repository as { id: number } | undefined;
   const installationId = installation?.id;
@@ -148,7 +148,7 @@ export const POST: RequestHandler = async (event) => {
 
   const isReviewEngineTrigger = isPullRequestWebhookEvent(eventType, action, data);
 
-  if (deliveryId && eventType && !isReviewEngineTrigger) {
+  if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(
       githubContext,
       deliveryId,
@@ -254,16 +254,6 @@ export const POST: RequestHandler = async (event) => {
         error: e,
       });
     }
-  }
-
-  // Claim review-engine events after successful processing.
-  // Runs for ALL review-engine triggers including no-op paths (no workspace, bot events,
-  // unassociated checks) to prevent unnecessary GitHub retries. Matches pre-refactor behavior.
-  // For review-engine triggers: error() in the catch always throws and exits, so this is only
-  // reached on success. For non-review-engine triggers: isReviewEngineTrigger is false, so
-  // this block is skipped regardless of whether the handler threw.
-  if (isReviewEngineTrigger) {
-    await claimWebhookDelivery(githubContext, deliveryId, eventType, installationId);
   }
 
   // 7. Handle repository rename/transfer events

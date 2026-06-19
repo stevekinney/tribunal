@@ -702,7 +702,11 @@ export class ReviewWorkflowEngine {
 
     const findings = deduplicateFindings(agentResults.flatMap((result) => result.findings));
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
-    if (findings.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
+    if (
+      reviewPayload.comments.length > 0 &&
+      findings.length > 0 &&
+      !this.postedReviewRunIds.has(reviewRun.id)
+    ) {
       const claimResult = await this.claimReviewPost(reviewRun);
       let ownedClaimedAt: Date | undefined;
       if (claimResult.status === 'already_posted') {
@@ -1155,9 +1159,15 @@ function createFindingRecord(userId: number, agentRunId: string, finding: Findin
 }
 
 function repositoryExecutionContext(
-  input: Pick<PullRequestReviewInput, 'repository' | 'installationId'>,
+  input: Pick<PullRequestReviewInput, 'repository' | 'installationId'> & {
+    repositoryId?: number;
+  },
 ): RepositoryExecutionContext {
-  return { ...input.repository, installationId: input.installationId };
+  return {
+    ...input.repository,
+    installationId: input.installationId,
+    repositoryId: input.repositoryId,
+  };
 }
 
 function buildReviewPayload(
@@ -1235,15 +1245,76 @@ function buildCompletedCheckRunPatch(agentResults: AgentResult[]): CheckRunPatch
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
+  const annotations = agentResults.flatMap((result) =>
+    result.findings.flatMap((finding) => createCheckRunAnnotation(result, finding)),
+  );
+  const agentLines = agentResults.map((result) => {
+    const severityCounts = countSeverities(result.findings);
+    const effort = result.effortUsed ?? 'inherit';
+    const status = result.error === undefined ? 'completed' : `failed: ${result.error}`;
+    return `- ${result.agentSlug}: ${status}; model ${result.modelUsed}; effort ${effort}; findings ${result.findings.length} (${formatSeverityCounts(severityCounts)}); estimated cost $${result.costEstimateUsd.toFixed(4)}.`;
+  });
+  const offDiffLines = agentResults.flatMap((result) =>
+    result.findings.map(
+      (finding) =>
+        `- ${result.agentSlug}: ${finding.path}${finding.startLine === null ? '' : `:${finding.startLine}`} ${finding.title}: ${finding.body}`,
+    ),
+  );
 
   return {
     status: 'completed',
     conclusion: failures.length > 0 ? 'neutral' : 'success',
     output: {
       title: 'Tribunal review complete',
-      summary: `${agentResults.length} agents finished with ${findingsCount} findings. Estimated cost: $${costEstimateUsd.toFixed(4)}.`,
+      summary: [
+        `${agentResults.length} agents finished with ${findingsCount} findings. Estimated cost: $${costEstimateUsd.toFixed(4)}.`,
+        '',
+        ...agentLines,
+      ].join('\n'),
+      text: offDiffLines.length === 0 ? undefined : ['Findings:', ...offDiffLines].join('\n'),
+      annotations,
     },
   };
+}
+
+function createCheckRunAnnotation(result: AgentResult, finding: Finding) {
+  const line = getFindingAnchorLine(finding);
+  if (line === null) return [];
+  const startLine = finding.startLine ?? line;
+  const endLine = finding.endLine ?? line;
+  return [
+    {
+      path: finding.path,
+      startLine: Math.min(startLine, endLine),
+      endLine: Math.max(startLine, endLine),
+      annotationLevel: mapSeverityToAnnotationLevel(finding.severity),
+      message: finding.body,
+      title: `[${result.agentSlug}] ${finding.title}`,
+      rawDetails: `model=${result.modelUsed}; effort=${result.effortUsed ?? 'inherit'}; estimatedCostUsd=${result.costEstimateUsd.toFixed(4)}`,
+    },
+  ];
+}
+
+function mapSeverityToAnnotationLevel(
+  severity: Finding['severity'],
+): 'notice' | 'warning' | 'failure' {
+  if (severity === 'error') return 'failure';
+  if (severity === 'warning') return 'warning';
+  return 'notice';
+}
+
+function countSeverities(findings: Finding[]): Record<Finding['severity'], number> {
+  return findings.reduce(
+    (counts, finding) => ({
+      ...counts,
+      [finding.severity]: counts[finding.severity] + 1,
+    }),
+    { info: 0, warning: 0, error: 0 },
+  );
+}
+
+function formatSeverityCounts(counts: Record<Finding['severity'], number>): string {
+  return `info ${counts.info}, warning ${counts.warning}, error ${counts.error}`;
 }
 
 function shouldSkipIgnoredDiff(diffContext: DiffContext, ignoreGlobs: string[]): boolean {
