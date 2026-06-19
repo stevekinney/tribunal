@@ -199,7 +199,7 @@ describe('signalPullRequestEvent', () => {
     });
   });
 
-  it('deduplicates same-delivery intents by event kind', async () => {
+  it('deduplicates same-delivery intents by event kind, repository, and pull request', async () => {
     const repository = await testContext.factories.repository.create({ id: 49 });
     await createWatchedRepository(repository.id, 100);
     const context = createGithubContext();
@@ -236,8 +236,8 @@ describe('signalPullRequestEvent', () => {
     expect(second).toMatchObject({
       ok: true,
       intentKind: 'commit_pushed',
-      enqueued: false,
-      enqueueStatus: 'duplicate',
+      enqueued: true,
+      enqueueStatus: 'enqueued',
     });
 
     const rows = await testContext.db
@@ -245,8 +245,9 @@ describe('signalPullRequestEvent', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.deliveryId, 'delivery-multiple-pull-requests'))
       .orderBy(reviewIntent.prNumber);
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ prNumber: 14, headSha: 'first' });
+    expect(rows[1]).toMatchObject({ prNumber: 15, headSha: 'second' });
   });
 
   it('enqueues one intent per watched user on a shared repository', async () => {

@@ -37,10 +37,12 @@ export const reviewIntent = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('review_intent_delivery_kind_user_idx').on(
+    uniqueIndex('review_intent_delivery_kind_user_repository_pr_idx').on(
       table.deliveryId,
       table.kind,
       table.userId,
+      table.repositoryId,
+      table.prNumber,
     ),
     index('review_intent_unprocessed_claimed_idx')
       .on(table.claimedAt)

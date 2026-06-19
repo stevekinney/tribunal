@@ -1,0 +1,3 @@
+- Check Run text for review-engine findings should avoid duplicating findings already posted as inline pull request comments; cover mixed anchored and off-diff findings in regression tests.
+- Diff-context cache entries should only use repository-scoped cache keys when the reviewed head SHA is known; callers without a head SHA should fetch fresh data instead of sharing a fallback key.
+- Webhook delivery-claim release helpers should report whether a row was actually deleted so retry paths can detect no-op releases.
