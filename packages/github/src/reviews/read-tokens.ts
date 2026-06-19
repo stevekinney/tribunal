@@ -22,8 +22,9 @@ export async function mintSingleRepositoryReadToken(
   input: MintSingleRepositoryReadTokenInput,
 ): Promise<InstallationToken> {
   const policy = requirePolicy('mint-single-repository-read-token');
+  const tokenEncryptionKey = context.tokenEncryptionKey;
+  getTokenEncryptionKey(tokenEncryptionKey);
   const fetchToken = async () => {
-    getTokenEncryptionKey();
     const result = await mintInstallationAccessToken(context, {
       installationId: input.installationId,
       repositoryIds: [input.repositoryId],
@@ -42,7 +43,7 @@ export async function mintSingleRepositoryReadToken(
       throw new ValidationError(result.error.message);
     }
 
-    return { data: encryptInstallationToken(result.token) };
+    return { data: encryptInstallationToken(result.token, tokenEncryptionKey) };
   };
   const { value } = await cachedRead(context.cache, policy, fetchToken, [
     input.installationId,
@@ -50,13 +51,13 @@ export async function mintSingleRepositoryReadToken(
   ]);
 
   try {
-    return decryptInstallationToken(value);
+    return decryptInstallationToken(value, tokenEncryptionKey);
   } catch (error) {
     if (!(error instanceof ValidationError)) throw error;
   }
 
   const cacheKey = policy.keyFactory(input.installationId, input.repositoryId);
-  await context.cache.deleteCache(cacheKey);
+  await context.cache.deleteCache(cacheKey).catch(() => false);
   const fresh = await cachedRead(
     context.cache,
     policy,
@@ -66,11 +67,14 @@ export async function mintSingleRepositoryReadToken(
       bypass: true,
     },
   );
-  return decryptInstallationToken(fresh.value);
+  return decryptInstallationToken(fresh.value, tokenEncryptionKey);
 }
 
-export function encryptInstallationToken(token: InstallationToken): EncryptedInstallationToken {
-  const key = getTokenEncryptionKey();
+export function encryptInstallationToken(
+  token: InstallationToken,
+  tokenEncryptionKey = process.env.ENCRYPTION_KEY,
+): EncryptedInstallationToken {
+  const key = getTokenEncryptionKey(tokenEncryptionKey);
   const initializationVector = randomBytes(16);
   const cipher = createCipheriv(tokenEncryptionAlgorithm, key, initializationVector);
   let encryptedToken = cipher.update(token.token, 'utf8', 'hex');
@@ -86,8 +90,11 @@ export function encryptInstallationToken(token: InstallationToken): EncryptedIns
   };
 }
 
-export function decryptInstallationToken(token: EncryptedInstallationToken): InstallationToken {
-  const key = getTokenEncryptionKey();
+export function decryptInstallationToken(
+  token: EncryptedInstallationToken,
+  tokenEncryptionKey = process.env.ENCRYPTION_KEY,
+): InstallationToken {
+  const key = getTokenEncryptionKey(tokenEncryptionKey);
   if (typeof token.encryptedToken !== 'string') {
     throw new ValidationError('Cached GitHub installation token is not encrypted.');
   }
@@ -118,8 +125,7 @@ export function decryptInstallationToken(token: EncryptedInstallationToken): Ins
   };
 }
 
-function getTokenEncryptionKey(): Buffer {
-  const configuredKey = process.env.ENCRYPTION_KEY;
+function getTokenEncryptionKey(configuredKey = process.env.ENCRYPTION_KEY): Buffer {
   if (!configuredKey)
     throw new ValidationError('ENCRYPTION_KEY is required to cache GitHub tokens.');
 

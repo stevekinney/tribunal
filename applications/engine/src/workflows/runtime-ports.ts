@@ -333,6 +333,7 @@ export function createEngineGithubContext(
     cache,
     getInstallationOctokit: githubApplication.getInstallationOctokit,
     getGithubApplication: githubApplication.getGithubApplication,
+    tokenEncryptionKey: environment.ENCRYPTION_KEY,
   };
 }
 

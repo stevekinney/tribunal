@@ -35,6 +35,7 @@ function createContext(app: App): GithubServiceContext {
     },
     getInstallationOctokit: vi.fn().mockResolvedValue(null),
     getGithubApplication: vi.fn().mockReturnValue(app),
+    tokenEncryptionKey: process.env.ENCRYPTION_KEY,
   };
 }
 
@@ -158,6 +159,47 @@ describe('mintSingleRepositoryReadToken', () => {
     expect(JSON.stringify(vi.mocked(context.cache.setCache).mock.calls.at(-1))).not.toContain(
       'fresh-token',
     );
+  });
+
+  it('mints a fresh token when malformed cached token eviction fails', async () => {
+    const createInstallationAccessToken = vi.fn().mockResolvedValue({
+      data: {
+        token: 'fresh-token',
+        expires_at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const app = {
+      octokit: {
+        rest: {
+          apps: {
+            createInstallationAccessToken,
+          },
+        },
+      },
+    } as unknown as App;
+    const context = createContext(app);
+    vi.mocked(context.cache.getCached).mockResolvedValue({
+      value: {
+        token: 'legacy-plaintext-token',
+        expiresAt: '2026-01-01T00:00:00Z',
+        installationId: 123,
+      },
+      fetchedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      source: 'api',
+    });
+    vi.mocked(context.cache.deleteCache).mockRejectedValue(new Error('Redis down'));
+
+    const result = await mintSingleRepositoryReadToken(context, {
+      installationId: 123,
+      repositoryId: 456,
+    });
+
+    expect(result.token).toBe('fresh-token');
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:installation:123:repository:456:read-token',
+    );
+    expect(createInstallationAccessToken).toHaveBeenCalledTimes(1);
   });
 
   it('evicts undecryptable cached tokens and mints a fresh encrypted token', async () => {

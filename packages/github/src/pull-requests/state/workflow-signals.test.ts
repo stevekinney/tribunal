@@ -252,7 +252,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 17,
       installationId: 100,
@@ -283,7 +282,6 @@ describe('signalPullRequestEvent', () => {
     const context = createGithubContext();
 
     const result = await signalPullRequestEvent(context, {
-      workspaceId: 0,
       repositoryId: repository.id,
       prNumber: 18,
       installationId: 100,
