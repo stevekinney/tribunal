@@ -91,8 +91,9 @@ export async function runAgentProcess({
   };
   signalSource.once?.('SIGTERM', terminateListener);
 
+  let reviewResult;
   try {
-    const result = await runClaudeReview({
+    reviewResult = await runClaudeReview({
       agentSlug,
       repositoryPath,
       model,
@@ -106,9 +107,6 @@ export async function runAgentProcess({
       },
       elapsedMilliseconds,
     });
-    if (terminationRequested) return;
-    removeTerminateListener();
-    await writeOnce(result);
   } catch (error) {
     emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
     await writeOnce(
@@ -121,6 +119,16 @@ export async function runAgentProcess({
         error: error instanceof Error ? error.message : 'Agent review failed.',
       }),
     );
+    return;
+  }
+
+  if (terminationRequested) return;
+  removeTerminateListener();
+  try {
+    await writeOnce(reviewResult);
+  } catch (error) {
+    emitEvent(context, 'error', { message: error instanceof Error ? error.message : String(error) });
+    await writeOnce(reviewResult);
   } finally {
     removeTerminateListener();
   }

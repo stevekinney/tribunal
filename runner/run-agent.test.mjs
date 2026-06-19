@@ -307,7 +307,7 @@ describe('run-agent runner', () => {
     expect(resultRecord.result.error).toBeUndefined();
   });
 
-  it('emits an error result when writing a successful result fails', async () => {
+  it('preserves a successful result when the first result write fails', async () => {
     const stdout = createWritableThatFailsFirstResult();
 
     await runAgentProcess({
@@ -321,7 +321,19 @@ describe('run-agent runner', () => {
         streamMessages([
           {
             type: 'result',
-            structured_output: { findings: [] },
+            structured_output: {
+              findings: [
+                {
+                  path: 'src/example.ts',
+                  startLine: 12,
+                  endLine: 12,
+                  side: 'RIGHT',
+                  severity: 'error',
+                  title: 'Preserved finding',
+                  body: 'This finding must survive a failed result write.',
+                },
+              ],
+            },
             modelUsage: { model_id: 'claude-sonnet-4-6-20251101', effort: 'high' },
             usage: {},
             total_cost_usd: 0,
@@ -333,10 +345,18 @@ describe('run-agent runner', () => {
       expect.objectContaining({
         result: expect.objectContaining({
           agentSlug: 'security-reviewer',
-          error: 'write failed',
+          findings: [
+            expect.objectContaining({
+              path: 'src/example.ts',
+              title: 'Preserved finding',
+            }),
+          ],
         }),
       }),
     ]);
+    expect(stdout.records().find((record) => record.type === 'result').result).not.toHaveProperty(
+      'error',
+    );
   });
 
   it('exits after SIGTERM when writing a partial result fails', async () => {

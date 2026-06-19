@@ -136,7 +136,6 @@ export function createReviewIntentConsumer(
         environment.TRIBUNAL_DEFAULT_MODEL,
         'TRIBUNAL_DEFAULT_MODEL',
       ) as Exclude<PullRequestReviewInput['agents'][number]['model'], 'inherit'>,
-      enablePromptCaching1h: isEnabledFlag(environment.ENABLE_PROMPT_CACHING_1H),
     },
   );
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;

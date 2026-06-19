@@ -1388,7 +1388,6 @@ function createEngine(ports: FakePorts): ReviewWorkflowEngine {
       runTokenTtlSeconds: 60 * 60,
       idleSuspendSeconds: 900,
       defaultModel: 'sonnet',
-      enablePromptCaching1h: true,
     },
     () => new Date('2026-06-17T12:00:00.000Z'),
   );

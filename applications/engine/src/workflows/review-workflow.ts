@@ -86,7 +86,6 @@ export type ReviewWorkflowConfiguration = {
   runTokenTtlSeconds: number;
   idleSuspendSeconds: number;
   defaultModel: Exclude<AgentSpec['model'], 'inherit'>;
-  enablePromptCaching1h: boolean;
 };
 
 export type ReviewRunStatus =
