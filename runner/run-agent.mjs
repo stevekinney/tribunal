@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +12,7 @@ import {
   deduplicateFindings,
   enforceReadOnlyToolUse,
   anchorFindings,
+  isRepositoryRelativePath,
 } from '@tribunal/agents';
 import { redactRuntimeValue } from '@tribunal/review-core/redaction';
 
@@ -127,6 +129,7 @@ export async function runClaudeReview({
   onSdkResult = () => {},
   queryClient = query,
   createMcpServer = createTribunalMcpServer,
+  readGitObject = readGitObjectAtRevision,
 }) {
   const prompt = buildReviewPrompt({
     agentDescription,
@@ -134,7 +137,11 @@ export async function runClaudeReview({
     diffContext,
     guidelines,
   });
-  const reviewTools = createTribunalReviewTools({ diffContext, guidelines });
+  const reviewTools = createTribunalReviewTools({
+    diffContext,
+    guidelines,
+    readBaseFile: createGitBaseFileReader({ repositoryPath, diffContext, readGitObject }),
+  });
   const tribunalMcpServer = createMcpServer(reviewTools);
   let sdkResult;
 
@@ -358,6 +365,37 @@ function toToolResult(value) {
 
 export function redactRuntimeValueForEvent(value) {
   return redactRuntimeValue(value);
+}
+
+export function createGitBaseFileReader({
+  repositoryPath,
+  diffContext,
+  readGitObject = readGitObjectAtRevision,
+}) {
+  const changedFilePaths = new Set(diffContext.changedFiles.map((file) => file.path));
+
+  return (filePath) => {
+    if (!isRepositoryRelativePath(filePath)) return null;
+    if (!changedFilePaths.has(filePath)) return null;
+    if (!isGitObjectId(diffContext.baseSha)) return null;
+
+    return readGitObject(repositoryPath, diffContext.baseSha, filePath);
+  };
+}
+
+function readGitObjectAtRevision(repositoryPath, revision, filePath) {
+  try {
+    return execFileSync('git', ['-C', repositoryPath, 'show', `${revision}:${filePath}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function isGitObjectId(value) {
+  return /^[0-9a-f]{7,64}$/iu.test(value);
 }
 
 function createDiffContext(environment) {

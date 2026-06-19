@@ -9,7 +9,7 @@ import {
 
 const diffContext = {
   headSha: 'head',
-  baseSha: 'base',
+  baseSha: 'abc1234',
   changedFiles: [
     {
       path: 'src/auth.ts',
@@ -59,6 +59,7 @@ describe('runner agent wiring', () => {
   it('collects MCP findings, sanitizes structured output, and redacts tool events', async () => {
     const captured = createFakeSdk();
     const events = [];
+    const readGitObjectCalls = [];
     let queryOptions;
 
     const result = await runClaudeReview({
@@ -73,6 +74,10 @@ describe('runner agent wiring', () => {
       startedAt: performance.now(),
       emitEvent: (kind, detail, tool) => events.push({ kind, detail, tool }),
       createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      readGitObject: (repositoryPath, revision, filePath) => {
+        readGitObjectCalls.push({ repositoryPath, revision, filePath });
+        return `base contents for ${filePath}`;
+      },
       queryClient: async function* ({ options }) {
         queryOptions = options;
         await options.canUseTool(
@@ -80,6 +85,16 @@ describe('runner agent wiring', () => {
           { file_path: 'src/auth.ts', token: 'ghs_abcdefghijklmnopqrstuvwxyz' },
           { toolUseID: 'tool_1' },
         );
+
+        const readBaseFile = captured.server.tools.find((tool) => tool.name === 'read_base_file');
+        expect(parseToolResult(await readBaseFile.execute({ path: 'src/auth.ts' }))).toEqual({
+          path: 'src/auth.ts',
+          contents: 'base contents for src/auth.ts',
+        });
+        expect(parseToolResult(await readBaseFile.execute({ path: 'src/missing.ts' }))).toEqual({
+          path: 'src/missing.ts',
+          contents: null,
+        });
 
         const recordFinding = captured.server.tools.find((tool) => tool.name === 'record_finding');
         await recordFinding.execute({ finding: validFinding });
@@ -109,6 +124,13 @@ describe('runner agent wiring', () => {
 
     expect(queryOptions.mcpServers.tribunal).toBe(captured.server);
     expect(queryOptions.allowedTools).toContain('mcp__tribunal__record_finding');
+    expect(readGitObjectCalls).toEqual([
+      {
+        repositoryPath: '/workspace/repository',
+        revision: 'abc1234',
+        filePath: 'src/auth.ts',
+      },
+    ]);
     expect(events).toContainEqual({
       kind: 'tool_pre',
       tool: 'Read',
@@ -212,4 +234,8 @@ function createFakeSdk() {
       }),
     },
   };
+}
+
+function parseToolResult(result) {
+  return JSON.parse(result.content[0].text);
 }
