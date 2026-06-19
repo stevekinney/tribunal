@@ -68,7 +68,7 @@ export type UserRepositoriesResult =
  * caller renders an empty state and a prompt to connect the app.
  */
 export async function getRepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
-  if (env.E2E_TEST_MODE === '1') {
+  if (env.E2E_TEST_MODE === '1' && env.E2E_TEST_SECRET) {
     return getE2ERepositoriesForUser(userId);
   }
 

@@ -387,6 +387,7 @@ export async function applyFakeReviewLifecycleEvent(
     .orderBy(desc(reviewRun.startedAt));
   const existingRunIds = existingRunRows.map((row) => row.id);
   const previousHeadSha = kind === 'synchronize' ? (existingRunRows[0]?.headSha ?? null) : null;
+  const responseRunId = kind === 'closed' ? (existingRunRows[0]?.id ?? runId) : runId;
 
   if (kind === 'closed') {
     if (existingRunIds.length > 0) {
@@ -479,10 +480,14 @@ export async function applyFakeReviewLifecycleEvent(
     costKeys.set(event.idempotencyKey, (costKeys.get(event.idempotencyKey) ?? 0) + 1);
   }
 
-  const [currentRun] = await db.select().from(reviewRun).where(eq(reviewRun.id, runId)).limit(1);
+  const [currentRun] = await db
+    .select()
+    .from(reviewRun)
+    .where(eq(reviewRun.id, responseRunId))
+    .limit(1);
 
   return {
-    runId,
+    runId: responseRunId,
     status: kind === 'closed' ? 'cancelled' : (currentRun?.status ?? 'posted'),
     duplicateCostEvents: Array.from(costKeys.values()).filter((count) => count > 1).length,
     totalCostUsd: costRows.reduce((sum, row) => sum + Number(row.amountUsd), 0),
