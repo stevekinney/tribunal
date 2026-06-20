@@ -3,16 +3,36 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
+  import { Feed } from '@lostgradient/cinder/feed';
+  import type { PageData } from './$types';
 
-  let { data } = $props();
+  let { data }: { data: PageData } = $props();
 
   const activeRuns = $derived(
     data.runs.filter((run) => run.status === 'running' || run.status === 'queued'),
   );
-  const failedRuns = $derived(
-    data.runs.filter((run) => run.status === 'failed' || run.status === 'cancelled'),
-  );
+  const failedRuns = $derived(data.runs.filter((run) => isStoppedRun(run.status)));
   const latestRun = $derived(data.runs[0] ?? null);
+  const recentWorkflowRuns = $derived(data.runs.slice(0, 10));
+
+  function toDate(value: Date | string): Date {
+    return value instanceof Date ? value : new Date(value);
+  }
+
+  function toDateTime(value: Date | string): string {
+    const date = toDate(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+  }
+
+  function toTimestamp(value: Date | string | null): string {
+    if (value === null) return 'not started';
+    const date = toDate(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function isStoppedRun(status: string): boolean {
+    return status === 'failed' || status === 'cancelled' || status === 'quota_blocked';
+  }
 </script>
 
 <Page title="Workflow Inspector" subtitle="Durable Weft workflow state">
@@ -26,20 +46,40 @@
     </div>
     <div class="inspector-grid">
       <Card>
-        <h2>Step timeline</h2>
+        <h2>Recent runs</h2>
         {#if data.runs.length === 0}
           <p class="muted">No review workflows recorded.</p>
         {:else}
-          <ol>
-            {#each data.runs.slice(0, 10) as run (run.id)}
-              <li>
-                <Badge size="sm">{run.status}</Badge>
-                <strong>review-pr:{run.repositoryId}:{run.prNumber}</strong>
-                <span>{run.repositoryOwner}/{run.repositoryName} #{run.prNumber}</span>
-                <small>review-run:{run.id}</small>
-              </li>
+          <Feed aria-label="Recent review runs">
+            {#each recentWorkflowRuns as run (run.id)}
+              {#if run.startedAt}
+                <Feed.Event
+                  variant="minimal"
+                  datetime={toDateTime(run.startedAt)}
+                  timestamp={toTimestamp(run.startedAt)}
+                >
+                  <div class="workflow-run-entry">
+                    <div class="workflow-run-entry__header">
+                      <Badge size="sm">{run.status}</Badge>
+                      <strong>review-pr:{run.repositoryId}:{run.prNumber}</strong>
+                    </div>
+                    <span>{run.repositoryOwner}/{run.repositoryName} #{run.prNumber}</span>
+                    <small>review-run:{run.id}</small>
+                  </div>
+                </Feed.Event>
+              {:else}
+                <li class="workflow-run-entry workflow-run-entry--pending">
+                  <div class="workflow-run-entry__header">
+                    <Badge size="sm">{run.status}</Badge>
+                    <strong>review-pr:{run.repositoryId}:{run.prNumber}</strong>
+                  </div>
+                  <span>{run.repositoryOwner}/{run.repositoryName} #{run.prNumber}</span>
+                  <small>review-run:{run.id}</small>
+                  <small>not started</small>
+                </li>
+              {/if}
             {/each}
-          </ol>
+          </Feed>
         {/if}
       </Card>
       <Card>
@@ -51,13 +91,11 @@
           </div>
           <div>
             <dt>Failed or stopped</dt>
-            <dd>{failedRuns.length}</dd>
+            <dd aria-label="Failed or stopped count">{failedRuns.length}</dd>
           </div>
           <div>
             <dt>Latest timer</dt>
-            <dd>
-              {latestRun?.startedAt ? new Date(latestRun.startedAt).toLocaleString() : 'none'}
-            </dd>
+            <dd>{latestRun?.startedAt ? toTimestamp(latestRun.startedAt) : 'none'}</dd>
           </div>
         </dl>
       </Card>
@@ -101,7 +139,6 @@
     margin-bottom: var(--space-4);
   }
 
-  ol,
   ul {
     display: grid;
     gap: var(--space-2);
@@ -111,6 +148,23 @@
   li {
     display: grid;
     gap: var(--space-1);
+  }
+
+  .workflow-run-entry {
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  .workflow-run-entry--pending {
+    list-style: none;
+    padding-left: var(--space-9);
+  }
+
+  .workflow-run-entry__header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   dl {

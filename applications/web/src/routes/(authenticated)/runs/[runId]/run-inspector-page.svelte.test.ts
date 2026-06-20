@@ -121,8 +121,14 @@ describe('/runs/[runId] page', () => {
 
     await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: 'Stop security' })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('log', { name: 'security event stream' }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Show details' }).first())
+      .toBeInTheDocument();
     await expect.element(page.getByText('blocked').first()).toBeInTheDocument();
-    await expect.element(page.getByText('Glob')).toBeInTheDocument();
+    await expect.element(page.getByText('tool_pre: Glob blocked')).toBeInTheDocument();
     await expect.element(page.getByText('Missing authorization check')).toBeInTheDocument();
     await expect.element(page.getByText('$1.00')).toBeInTheDocument();
     await expect

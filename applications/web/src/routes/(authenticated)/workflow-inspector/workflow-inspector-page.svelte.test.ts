@@ -59,6 +59,48 @@ const data = {
       repositoryOwner: 'lost-gradient',
       repositoryName: 'tribunal',
     },
+    {
+      id: 'run_3',
+      userId: 1,
+      repositoryId: 9001,
+      prNumber: 14,
+      headSha: 'ghi789',
+      prevHeadSha: null,
+      trigger: 'manual',
+      status: 'quota_blocked',
+      workflowId: null,
+      sandboxId: 'sandbox_3',
+      checkRunId: 125,
+      commentsPosted: 0,
+      reviewPostClaimedAt: null,
+      costEstimateUsd: '0.00',
+      startedAt: new Date('2026-06-17T14:00:00Z'),
+      finishedAt: new Date('2026-06-17T14:01:00Z'),
+      error: 'Daily review quota reached.',
+      repositoryOwner: 'lost-gradient',
+      repositoryName: 'tribunal',
+    },
+    {
+      id: 'run_4',
+      userId: 1,
+      repositoryId: 9001,
+      prNumber: 15,
+      headSha: 'jkl012',
+      prevHeadSha: null,
+      trigger: 'manual',
+      status: 'queued',
+      workflowId: null,
+      sandboxId: null,
+      checkRunId: null,
+      commentsPosted: 0,
+      reviewPostClaimedAt: null,
+      costEstimateUsd: '0.00',
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+      repositoryOwner: 'lost-gradient',
+      repositoryName: 'tribunal',
+    },
   ],
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
 } satisfies PageData;
@@ -66,13 +108,21 @@ const data = {
 describe('/workflow-inspector page', () => {
   afterEach(() => cleanup());
 
-  it('renders workflow steps, signals, timers, and child links from persisted runs', async () => {
+  it('renders recent runs, signals, timers, and child links from persisted runs', async () => {
     render(WorkflowInspectorPage, { data });
 
+    await expect
+      .element(page.getByRole('list', { name: 'Recent review runs' }))
+      .toBeInTheDocument();
     await expect.element(page.getByText('review-pr:9001:12')).toBeInTheDocument();
     await expect.element(page.getByText('review-run:run_1').first()).toBeInTheDocument();
+    await expect.element(page.getByText('review-run:run_4').first()).toBeInTheDocument();
+    await expect.element(page.getByText('not started')).toBeInTheDocument();
+    expect(document.querySelector('time[datetime=""]')).toBeNull();
+    await expect.element(page.getByText('quota_blocked')).toBeInTheDocument();
     await expect.element(page.getByText('Active signals')).toBeInTheDocument();
     await expect.element(page.getByText('Failed or stopped')).toBeInTheDocument();
+    await expect.element(page.getByLabelText('Failed or stopped count')).toHaveTextContent('2');
     await expect
       .element(page.getByText('agent-review children visible').first())
       .toBeInTheDocument();

@@ -19,7 +19,7 @@
     "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
-    "@lostgradient/cinder": "^0.2.0",
+    "@lostgradient/cinder": "^0.3.0",
     "@lostgradient/weft": "^0.6.0",
     "@neondatabase/neon-js": "^0.6.1-beta",
     "@neondatabase/serverless": "^1.0.2",
