@@ -1,3 +1,18 @@
+FROM oven/bun:1.3.13 AS build
+
+WORKDIR /workspace
+COPY package.json bun.lock ./
+COPY applications/engine/package.json ./applications/engine/package.json
+COPY applications/proxy/package.json ./applications/proxy/package.json
+COPY applications/web/package.json ./applications/web/package.json
+COPY runner/package.json ./runner/package.json
+COPY packages ./packages
+COPY scripts/package.json ./scripts/package.json
+COPY scripts/install-git-hooks.ts ./scripts/install-git-hooks.ts
+RUN bun install --frozen-lockfile
+RUN bun run --cwd packages/review-core build
+RUN bun run --cwd packages/agents build
+
 FROM oven/bun:1.3.13
 
 WORKDIR /workspace
@@ -26,7 +41,7 @@ COPY packages/test/package.json ./packages/test/package.json
 COPY packages/typescript/package.json ./packages/typescript/package.json
 COPY scripts/package.json ./scripts/package.json
 RUN bun install --production --frozen-lockfile --filter @tribunal/runner
-COPY packages/agents ./packages/agents
-COPY packages/review-core ./packages/review-core
+COPY --from=build /workspace/packages/agents/dist ./packages/agents/dist
+COPY --from=build /workspace/packages/review-core/dist ./packages/review-core/dist
 COPY runner ./runner
 CMD ["bun", "runner/verify-image.mjs"]

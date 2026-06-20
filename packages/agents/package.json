@@ -4,12 +4,36 @@
   "version": "0.0.1",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./definitions": "./src/definitions.ts",
-    "./findings": "./src/findings.ts",
-    "./hooks": "./src/hooks.ts",
-    "./prompts": "./src/prompts.ts",
-    "./tools": "./src/tools.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./definitions": {
+      "types": "./dist/definitions.d.ts",
+      "import": "./dist/definitions.js",
+      "default": "./dist/definitions.js"
+    },
+    "./findings": {
+      "types": "./dist/findings.d.ts",
+      "import": "./dist/findings.js",
+      "default": "./dist/findings.js"
+    },
+    "./hooks": {
+      "types": "./dist/hooks.d.ts",
+      "import": "./dist/hooks.js",
+      "default": "./dist/hooks.js"
+    },
+    "./prompts": {
+      "types": "./dist/prompts.d.ts",
+      "import": "./dist/prompts.js",
+      "default": "./dist/prompts.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js",
+      "default": "./dist/tools.js"
+    }
   },
   "scripts": {
     "build": "tsc",
