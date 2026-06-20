@@ -5,31 +5,37 @@
   "type": "module",
   "exports": {
     ".": {
+      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./definitions": {
+      "bun": "./src/definitions.ts",
       "types": "./dist/definitions.d.ts",
       "import": "./dist/definitions.js",
       "default": "./dist/definitions.js"
     },
     "./findings": {
+      "bun": "./src/findings.ts",
       "types": "./dist/findings.d.ts",
       "import": "./dist/findings.js",
       "default": "./dist/findings.js"
     },
     "./hooks": {
+      "bun": "./src/hooks.ts",
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js",
       "default": "./dist/hooks.js"
     },
     "./prompts": {
+      "bun": "./src/prompts.ts",
       "types": "./dist/prompts.d.ts",
       "import": "./dist/prompts.js",
       "default": "./dist/prompts.js"
     },
     "./tools": {
+      "bun": "./src/tools.ts",
       "types": "./dist/tools.d.ts",
       "import": "./dist/tools.js",
       "default": "./dist/tools.js"
