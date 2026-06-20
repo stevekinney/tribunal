@@ -4,18 +4,31 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
+  import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
+  import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
   import { Link } from '@lostgradient/cinder/link';
   import { invalidateAll } from '$app/navigation';
   import { Square } from 'lucide-svelte';
   import { untrack } from 'svelte';
+  import type { PageData } from './$types';
 
-  let { data } = $props();
+  let { data }: { data: PageData } = $props();
+
+  type AgentRun = PageData['run']['agentRuns'][number];
+  type AgentEvent = AgentRun['events'][number];
 
   const run = $derived(data.run);
   let connectionState = $state<'connecting' | 'streaming' | 'disconnected'>('disconnected');
   const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
   const connected = $derived(canStopRun && connectionState === 'streaming');
   const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
+  const eventStreamConnectionState = $derived<EventStreamState>(
+    canStopRun && connectionState === 'streaming'
+      ? 'connected'
+      : connectionState === 'connecting'
+        ? 'connecting'
+        : 'disconnected',
+  );
   const latestAgentEventId = $derived.by(() => {
     let latestId = 0;
     for (const agentRun of run.agentRuns) {
@@ -41,6 +54,43 @@
       (('denied' in detail && detail.denied === true) ||
         ('allowed' in detail && detail.allowed === false))
     );
+  }
+
+  function toDate(value: Date | string): Date {
+    return value instanceof Date ? value : new Date(value);
+  }
+
+  function toDateTime(value: Date | string): string {
+    const date = toDate(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+  }
+
+  function toTimestamp(value: Date | string): string {
+    const date = toDate(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  }
+
+  function summarizeEvent(event: AgentEvent): string {
+    const base = event.tool ? `${event.kind}: ${event.tool}` : event.kind;
+    return event.kind === 'tool_pre' && isDeniedToolEvent(event.detail) ? `${base} blocked` : base;
+  }
+
+  function eventSeverity(event: AgentEvent): StreamEvent['severity'] {
+    if (event.kind === 'tool_pre' && isDeniedToolEvent(event.detail)) return 'warning';
+    if (event.kind.includes('error') || event.kind.includes('failed')) return 'error';
+    return 'info';
+  }
+
+  function toStreamEvents(events: AgentEvent[]): StreamEvent[] {
+    return events.map((event) => ({
+      id: String(event.id),
+      datetime: toDateTime(event.at),
+      timestamp: toTimestamp(event.at),
+      severity: eventSeverity(event),
+      source: event.tool ?? undefined,
+      summary: summarizeEvent(event),
+      details: event.detail ?? undefined,
+    }));
   }
 
   function canStopAgent(status: string): boolean {
@@ -179,18 +229,11 @@
           </div>
         </div>
 
-        <ol class="timeline">
-          {#each agentRun.events as event (event.id)}
-            <li>
-              <span>{event.kind}</span>
-              {#if event.tool}<strong>{event.tool}</strong>{/if}
-              <small>{new Date(event.at).toLocaleString()}</small>
-              {#if event.kind === 'tool_pre' && isDeniedToolEvent(event.detail)}
-                <Badge size="sm">blocked</Badge>
-              {/if}
-            </li>
-          {/each}
-        </ol>
+        <EventStreamViewer
+          events={toStreamEvents(agentRun.events)}
+          connectionState={canStopAgent(agentRun.status) ? eventStreamConnectionState : undefined}
+          label={`${agentRun.slug} event stream`}
+        />
 
         <details open>
           <summary>Findings</summary>
@@ -293,21 +336,21 @@
   }
 
   p,
-  .muted,
-  small {
+  .muted {
     color: var(--text-muted);
   }
 
-  .timeline,
   .finding-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     margin-block: var(--space-4);
+  }
+
+  .finding-list {
     padding-left: var(--space-5);
   }
 
-  .timeline li,
   .finding-list li {
     display: grid;
     gap: var(--space-1);
