@@ -4,14 +4,46 @@
   "version": "0.0.1",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./capability-token": "./src/capability-token.ts",
-    "./constant-time-string-equal": "./src/constant-time-string-equal.ts",
-    "./redaction": "./src/redaction.ts",
-    "./tokens": "./src/tokens.ts",
-    "./schemas": "./src/schemas.ts",
-    "./types": "./src/types.ts",
-    "./ports": "./src/ports.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./capability-token": {
+      "types": "./dist/capability-token.d.ts",
+      "import": "./dist/capability-token.js",
+      "default": "./dist/capability-token.js"
+    },
+    "./constant-time-string-equal": {
+      "types": "./dist/constant-time-string-equal.d.ts",
+      "import": "./dist/constant-time-string-equal.js",
+      "default": "./dist/constant-time-string-equal.js"
+    },
+    "./redaction": {
+      "types": "./dist/redaction.d.ts",
+      "import": "./dist/redaction.js",
+      "default": "./dist/redaction.js"
+    },
+    "./tokens": {
+      "types": "./dist/tokens.d.ts",
+      "import": "./dist/tokens.js",
+      "default": "./dist/tokens.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "import": "./dist/schemas.js",
+      "default": "./dist/schemas.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "default": "./dist/types.js"
+    },
+    "./ports": {
+      "types": "./dist/ports.d.ts",
+      "import": "./dist/ports.js",
+      "default": "./dist/ports.js"
+    }
   },
   "scripts": {
     "build": "tsc",
