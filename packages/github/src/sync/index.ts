@@ -79,8 +79,9 @@ export async function enqueueInstallationSync(
       {
         id: workflowId,
         // Restart terminal prior runs atomically rather than rejecting as a
-        // conflict. Requires an explicit id and deterministic signal.signalId
-        // (both supplied above). Shipped in @lostgradient/weft@0.7.0 (weft#604).
+        // conflict. Requires an explicit id (supplied above) and a caller-supplied
+        // signalId — stable/deduplicating when deliveryId is present, or a fresh
+        // UUID for distinct manual/non-retryable intents. Weft ≥ 0.7.0 (weft#604).
         onTerminalConflict: 'start-new',
       },
     );
