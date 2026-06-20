@@ -14,6 +14,8 @@ RUN bun install --frozen-lockfile
 FROM dependencies AS build
 COPY . .
 ENV DATABASE_URL=postgres://placeholder:placeholder@localhost:5432/placeholder
+RUN bun run --cwd packages/review-core build
+RUN bun run --cwd packages/agents build
 RUN bun run --cwd applications/web build
 
 FROM oven/bun:1.3.13 AS runtime
