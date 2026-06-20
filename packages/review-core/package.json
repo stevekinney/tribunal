@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./capability-token": "./src/capability-token.ts",
+    "./constant-time-string-equal": "./src/constant-time-string-equal.ts",
     "./redaction": "./src/redaction.ts",
     "./tokens": "./src/tokens.ts",
     "./schemas": "./src/schemas.ts",

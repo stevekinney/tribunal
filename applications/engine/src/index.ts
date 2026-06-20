@@ -157,6 +157,16 @@ export function createEngineServerOptions(
   };
 }
 
+/**
+ * Checks that the incoming `Authorization` header matches the expected control
+ * token using a constant-time SHA-256 comparison.
+ *
+ * This intentionally uses the hash-first Buffer pattern rather than the shared
+ * `constantTimeStringEqual` helper from `@tribunal/review-core`. Hashing both
+ * strings to fixed-length SHA-256 digests before calling `timingSafeEqual`
+ * avoids leaking any information about the token length — a stronger guarantee
+ * than the length-mismatch short-circuit in `constantTimeStringEqual`.
+ */
 function hasValidControlToken(request: Request, expectedToken: string): boolean {
   const authorization = request.headers.get('authorization');
   const expectedAuthorization = `Bearer ${expectedToken}`;
