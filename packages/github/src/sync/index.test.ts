@@ -213,11 +213,14 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
   });
 
   it('restarts a cancelled prior run under the same stable id (weft#604)', async () => {
-    // Workflow that returns the reason from the first signal — same definition used
-    // for both the initial (cancelled) run and the replacement run.
+    // Workflow that blocks on a second 'finish_sync' signal that is never sent,
+    // guaranteeing the run stays live long enough to be cancelled deterministically.
+    // Both the initial (to-be-cancelled) run and the replacement run use this same
+    // definition; the replacement run receives 'finish_sync' and exits normally.
     const syncWorkflow = workflow({ name: 'installation-sync' }).execute(async function* (ctx) {
-      const event = (yield* ctx.waitForSignal('sync_requested')) as { reason?: string };
-      return { reason: event?.reason };
+      yield* ctx.waitForSignal('sync_requested');
+      const finish = (yield* ctx.waitForSignal('finish_sync')) as { reason?: string };
+      return { reason: finish?.reason };
     });
 
     engine = await Engine.create({
@@ -227,8 +230,10 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     const client = new LocalClient(engine);
     const context = createContext(client);
 
-    // Start the first run and immediately cancel it to produce a terminal state.
+    // Start the first run — it will block waiting for 'finish_sync'.
     await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-cancel-first' });
+
+    // Cancel while the run is live (not yet terminal), producing a cancelled terminal state.
     await client.cancel(EXPECTED_ID);
 
     // Second dispatch — prior run is terminal (cancelled). Must restart, not error.
@@ -238,6 +243,9 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
       deliveryId: 'guid-cancel-second',
     });
     expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+
+    // Drive the replacement run to completion by sending the awaited signal.
+    await client.signal(EXPECTED_ID, 'finish_sync', { reason: 'manual' });
     const handle = await client.getHandle(EXPECTED_ID);
     const output = (await handle!.result()) as { reason?: string };
     expect(output.reason).toBe('manual');
