@@ -12,6 +12,7 @@
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { building, dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
+import { assertE2EModeNotInProduction, constantTimeStringEqual } from '$lib/server/e2e-guard';
 import {
   deleteNeonAuthTokenCookie,
   neonAuthTokenCookieName,
@@ -39,6 +40,20 @@ async function loadE2EDatabaseModule() {
 const E2E_SECRET_HEADER = 'x-e2e-secret';
 const E2E_WORKER_ID_HEADER = 'x-e2e-worker-id';
 const E2E_WORKER_ID_COOKIE = 'e2e-worker-id';
+
+// ---------------------------------------------------------------------------
+// Production safety guard
+// ---------------------------------------------------------------------------
+
+// Fail loudly at startup if the E2E backdoor is armed in production. Skipped
+// during `vite build` (SvelteKit evaluates this module to prerender) and in
+// `dev`, so it only fires for a real production server runtime.
+if (!building && !dev) {
+  assertE2EModeNotInProduction({
+    NODE_ENV: env.NODE_ENV,
+    E2E_TEST_MODE: env.E2E_TEST_MODE,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -155,7 +170,7 @@ function validateE2ERequest(request: Request): Response | null {
     return new Response('Server configuration error', { status: 500 });
   }
 
-  if (!providedSecret || providedSecret !== expectedSecret) {
+  if (!providedSecret || !constantTimeStringEqual(providedSecret, expectedSecret)) {
     return new Response('Unauthorized', { status: 401 });
   }
 
