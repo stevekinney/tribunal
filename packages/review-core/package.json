@@ -5,13 +5,11 @@
   "type": "module",
   "exports": {
     ".": {
-      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./capability-token": {
-      "bun": "./src/capability-token.ts",
       "types": "./dist/capability-token.d.ts",
       "import": "./dist/capability-token.js",
       "default": "./dist/capability-token.js"
@@ -22,31 +20,26 @@
       "default": "./dist/constant-time-string-equal.js"
     },
     "./redaction": {
-      "bun": "./src/redaction.ts",
       "types": "./dist/redaction.d.ts",
       "import": "./dist/redaction.js",
       "default": "./dist/redaction.js"
     },
     "./tokens": {
-      "bun": "./src/tokens.ts",
       "types": "./dist/tokens.d.ts",
       "import": "./dist/tokens.js",
       "default": "./dist/tokens.js"
     },
     "./schemas": {
-      "bun": "./src/schemas.ts",
       "types": "./dist/schemas.d.ts",
       "import": "./dist/schemas.js",
       "default": "./dist/schemas.js"
     },
     "./types": {
-      "bun": "./src/types.ts",
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js",
       "default": "./dist/types.js"
     },
     "./ports": {
-      "bun": "./src/ports.ts",
       "types": "./dist/ports.d.ts",
       "import": "./dist/ports.js",
       "default": "./dist/ports.js"
