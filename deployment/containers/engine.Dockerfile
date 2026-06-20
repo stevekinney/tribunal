@@ -14,6 +14,7 @@ RUN bun install --frozen-lockfile
 FROM dependencies AS build
 COPY . .
 RUN bun run --cwd packages/review-core build
+RUN bun run --cwd packages/agents build
 RUN bun run --cwd applications/engine build
 
 FROM oven/bun:1.3.13 AS runtime
