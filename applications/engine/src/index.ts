@@ -31,7 +31,14 @@ if (import.meta.main) {
   });
 
   startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime);
-  Bun.serve(createEngineServerOptions(port, runtime, environment.TRIBUNAL_ENGINE_CONTROL_TOKEN));
+  Bun.serve(
+    createEngineServerOptions(
+      port,
+      runtime,
+      environment.TRIBUNAL_ENGINE_CONTROL_TOKEN,
+      environment.TRIBUNAL_ENGINE_BIND_HOST,
+    ),
+  );
 }
 
 export function startSandboxReaper(
@@ -103,9 +110,11 @@ export function createEngineServerOptions(
   port: number,
   runtime: EngineRuntime,
   controlToken: string,
+  hostname?: string,
 ) {
   return {
     port,
+    ...(hostname === undefined ? {} : { hostname }),
     async fetch(request: Request) {
       const url = new URL(request.url);
       if (url.pathname === '/health') {

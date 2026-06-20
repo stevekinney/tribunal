@@ -139,6 +139,12 @@ describe('sandbox configuration', () => {
     ).toBe(true);
     expect(
       validateCloneInput({
+        repositoryUrl: 'not a url',
+        headSha: 'a'.repeat(40),
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateCloneInput({
         repositoryUrl: 'https://github.com/owner/repository.git',
         headSha: 'a'.repeat(40),
       }).ok,

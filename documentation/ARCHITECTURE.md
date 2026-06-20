@@ -23,6 +23,11 @@ The implemented MVP topology is designed around three application containers:
 - `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, GitHub review posting, and cost reconciliation.
 - `applications/proxy`: signed egress boundary for reviewer sandboxes.
 
+This file and [`documentation/deployment/containers.md`](./deployment/containers.md) are the source
+of truth for the separate engine service. `WEFT_DATABASE_URL` belongs to `applications/engine` only;
+do not set it on the web service. Older in-process Weft migration notes are historical unless they
+are explicitly scoped to web-only producer behavior.
+
 The `runner` directory builds the reviewer sandbox image. Its boot self-check verifies both system
 tools and runtime imports used by `runner/run-agent.mjs`.
 
