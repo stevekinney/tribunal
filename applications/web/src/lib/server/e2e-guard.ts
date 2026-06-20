@@ -10,8 +10,11 @@
  * - `assertE2EModeNotInProduction` makes an accidental `E2E_TEST_MODE=1` in a
  *   production deployment loud and fatal at startup instead of silently live.
  *
- * Kept free of SvelteKit virtual-module imports (`$app/*`, `$env/*`) so it can
- * be unit-tested under the Node `server` vitest project.
+ * CONSTRAINT: this module must NOT import SvelteKit virtual modules (`$app/*`,
+ * `$env/*`). Its consumer (`test/end-to-end/handle.ts`) is excluded from the
+ * unit-test runner, so these primitives are extracted here to be unit-testable
+ * under the Node `server` vitest project — which cannot resolve those virtual
+ * imports. Adding one would silently break `e2e-guard.test.ts`.
  */
 
 import { timingSafeEqual } from 'node:crypto';
