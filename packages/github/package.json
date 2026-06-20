@@ -59,7 +59,7 @@
     "format:check": "prettier --check --ignore-path ../../.prettierignore ."
   },
   "dependencies": {
-    "@lostgradient/weft": "^0.6.0",
+    "@lostgradient/weft": "^0.7.0",
     "@octokit/types": "^16.0.0",
     "@tribunal/database": "workspace:*",
     "drizzle-orm": "^0.45.1",

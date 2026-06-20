@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@lostgradient/cinder": "^0.3.0",
-    "@lostgradient/weft": "^0.6.0",
+    "@lostgradient/weft": "^0.7.0",
     "@neondatabase/neon-js": "^0.6.1-beta",
     "@neondatabase/serverless": "^1.0.2",
     "@tribunal/agents": "workspace:*",

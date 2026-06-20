@@ -52,7 +52,7 @@ describe('enqueueInstallationSync', () => {
         payload: { ...options, deliveryId: 'guid-123' },
         signalId: 'guid-123',
       },
-      { id: EXPECTED_ID },
+      { id: EXPECTED_ID, onTerminalConflict: 'start-new' },
     );
   });
 
@@ -166,5 +166,80 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     expect(handle).not.toBeNull();
     const output = (await handle!.result()) as { reason?: string };
     expect(output.reason).toBe('webhook:installation.created');
+  });
+
+  it('restarts a completed prior run under the same stable id (weft#604)', async () => {
+    // Workflow that completes immediately on receiving the initial signal.
+    const syncWorkflow = workflow({ name: 'installation-sync' }).execute(async function* (ctx) {
+      const event = (yield* ctx.waitForSignal('sync_requested')) as { reason?: string };
+      return { reason: event?.reason };
+    });
+
+    engine = await Engine.create({
+      storage: new MemoryStorage(),
+      workflows: { 'installation-sync': syncWorkflow },
+    });
+    const client = new LocalClient(engine);
+    const context = createContext(client);
+
+    // First dispatch — starts a fresh run and drives it to completion.
+    const firstResult = await enqueueInstallationSync(context, {
+      ...options,
+      deliveryId: 'guid-first',
+    });
+    expect(firstResult).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    // Drive the first run to its terminal (completed) state.
+    const firstHandle = await client.getHandle(EXPECTED_ID);
+    await firstHandle!.result();
+
+    // Second dispatch — prior run is terminal. With onTerminalConflict: 'start-new'
+    // the engine must restart under the same stable id rather than returning an error.
+    const secondResult = await enqueueInstallationSync(context, {
+      ...options,
+      reason: 'manual',
+      deliveryId: 'guid-second',
+    });
+    expect(secondResult).toEqual({
+      workflowId: EXPECTED_ID,
+      status: 'started',
+      outcome: 'started',
+    });
+
+    // Confirm the replacement run is live and delivers the signal.
+    const secondHandle = await client.getHandle(EXPECTED_ID);
+    expect(secondHandle).not.toBeNull();
+    const output = (await secondHandle!.result()) as { reason?: string };
+    expect(output.reason).toBe('manual');
+  });
+
+  it('restarts a cancelled prior run under the same stable id (weft#604)', async () => {
+    // Workflow that returns the reason from the first signal — same definition used
+    // for both the initial (cancelled) run and the replacement run.
+    const syncWorkflow = workflow({ name: 'installation-sync' }).execute(async function* (ctx) {
+      const event = (yield* ctx.waitForSignal('sync_requested')) as { reason?: string };
+      return { reason: event?.reason };
+    });
+
+    engine = await Engine.create({
+      storage: new MemoryStorage(),
+      workflows: { 'installation-sync': syncWorkflow },
+    });
+    const client = new LocalClient(engine);
+    const context = createContext(client);
+
+    // Start the first run and immediately cancel it to produce a terminal state.
+    await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-cancel-first' });
+    await client.cancel(EXPECTED_ID);
+
+    // Second dispatch — prior run is terminal (cancelled). Must restart, not error.
+    const result = await enqueueInstallationSync(context, {
+      ...options,
+      reason: 'manual',
+      deliveryId: 'guid-cancel-second',
+    });
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    const handle = await client.getHandle(EXPECTED_ID);
+    const output = (await handle!.result()) as { reason?: string };
+    expect(output.reason).toBe('manual');
   });
 });
