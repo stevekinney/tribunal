@@ -17,28 +17,7 @@
  * imports. Adding one would silently break `e2e-guard.test.ts`.
  */
 
-import { timingSafeEqual } from 'node:crypto';
-
-/**
- * Constant-time comparison of two secret strings.
- *
- * Uses `node:crypto`'s `timingSafeEqual` so the comparison time does not leak
- * how many leading bytes matched, matching the convention used elsewhere in the
- * codebase (`packages/review-core/src/capability-token.ts`,
- * `packages/github/src/webhooks/verify-webhook-signature.ts`). The
- * length-mismatch short-circuit only reveals secret length, which cannot be used
- * to reconstruct the secret value.
- */
-export function constantTimeStringEqual(received: string, expected: string): boolean {
-  const receivedBuffer = Buffer.from(received, 'utf8');
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-
-  if (receivedBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(receivedBuffer, expectedBuffer);
-}
+export { constantTimeStringEqual } from '@tribunal/review-core/constant-time-string-equal';
 
 /**
  * Assert that the E2E backdoor is never armed in a production runtime.

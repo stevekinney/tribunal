@@ -1,5 +1,6 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
+import { constantTimeStringEqual } from './constant-time-string-equal';
 
 const capabilityTokenVersion = 1;
 
@@ -49,7 +50,7 @@ export function verifyCapabilityToken(
   }
 
   const expectedSignatureSegment = signPayloadSegment(payloadSegment, signingKey);
-  if (!constantTimeEqual(signatureSegment, expectedSignatureSegment)) {
+  if (!constantTimeStringEqual(signatureSegment, expectedSignatureSegment)) {
     return { ok: false, reason: 'invalid_signature' };
   }
 
@@ -86,17 +87,6 @@ function parseClaims(payloadSegment: string): CapabilityTokenClaims | null {
 
 function signPayloadSegment(payloadSegment: string, signingKey: string): string {
   return createHmac('sha256', signingKey).update(payloadSegment).digest('base64url');
-}
-
-function constantTimeEqual(received: string, expected: string): boolean {
-  const receivedBuffer = Buffer.from(received);
-  const expectedBuffer = Buffer.from(expected);
-
-  if (receivedBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
 function encodeBase64Url(value: string): string {
