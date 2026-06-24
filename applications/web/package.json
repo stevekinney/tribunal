@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "bun run test:unit:server && bun run test:unit:client",
-    "test:e2e": "playwright test",
+    "test:e2e": "bun run --cwd ../../packages/review-core build && bun run --cwd ../../packages/agents build && playwright test",
     "dev": "vite dev",
     "build": "svelte-kit sync && vite build",
     "preview": "vite preview",

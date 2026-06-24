@@ -8,8 +8,8 @@
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
     "validate:skills": "bun run validate-skill-wiring.ts",
     "lint": "eslint . --max-warnings 0",
-    "format": "prettier --write --ignore-path ../../.prettierignore .",
-    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
+    "format": "prettier --write --ignore-path ../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../.prettierignore ."
   },
   "dependencies": {
     "@tribunal/database": "workspace:*",
