@@ -10,7 +10,10 @@ dist/
 **/build/
 **/.svelte-kit/
 **/.vercel/
+.tmp/
+.tmp/**
 **/.tmp/
+**/.tmp/**
 
 # Miscellaneous
 /applications/web/static/
