@@ -20,8 +20,6 @@
  *   bun run scripts/deploy.ts --help   Show this help.
  */
 
-import { resolve } from 'node:path';
-import { loadEnv } from './lib/load-env';
 import {
   sectionHeader,
   summaryHeader,
@@ -35,8 +33,6 @@ import {
   bold,
   listItem,
 } from './lib/colors';
-
-const repoRoot = resolve(import.meta.dir, '..');
 
 // ---------------------------------------------------------------------------
 // Secret and app specifications (mirrors DEPLOYMENT.md "Fly Secrets")
@@ -772,7 +768,9 @@ function printPlan(steps: Step[]): void {
     if (step.detail) console.log(dim(`        ${step.detail}`));
     for (const command of step.commands ?? []) {
       if (step.state === 'done') continue;
-      console.log(info(`        $ ${command}`));
+      // Comment-only hint lines render as dim comments, not as `$ #` commands.
+      if (command.startsWith('#')) console.log(dim(`        ${command}`));
+      else console.log(info(`        $ ${command}`));
     }
   }
   console.log('');
@@ -814,7 +812,11 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  loadEnv(repoRoot);
+  // Bun natively loads .env (and correctly handles double-quoted multiline
+  // values like GITHUB_APP_PRIVATE_KEY and PROXY_CA_CERT) before this runs, so
+  // process.env is already populated. We deliberately do not use the line-based
+  // loadEnv helper here -- it cannot represent multiline secrets, and a
+  // truncated value would pass the presence check while setting a broken secret.
 
   // Live status first: it needs only flyctl, not the secret values, so it works
   // even when the local .env is incomplete.
