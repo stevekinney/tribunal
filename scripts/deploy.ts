@@ -591,15 +591,13 @@ function buildPlan(state: FlyState): Step[] {
   // 6. Set secrets per app (proxy, engine, web).
   for (const app of APPS) {
     if (!state.existingApps.has(app.name)) {
+      // The app must exist before secrets can be set; omit the command until
+      // then (matches the proxy IPv4 and engine scale pending-prereq steps). It
+      // appears below once the app exists and has unset secrets.
       steps.push({
         title: `Set secrets for ${app.name}`,
         state: 'todo',
         detail: 'pending app creation',
-        commands: [
-          `flyctl secrets set --app ${app.name} \\\n${app.secrets
-            .map(secretAssignment)
-            .join(' \\\n')}`,
-        ],
       });
       continue;
     }
