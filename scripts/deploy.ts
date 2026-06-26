@@ -929,7 +929,12 @@ async function run(): Promise<void> {
 
   if (!Bun.which('flyctl')) {
     console.log('');
-    console.log(status('error', 'flyctl not found on PATH (install with `brew install flyctl`)'));
+    console.log(
+      status(
+        'error',
+        'flyctl not found on PATH (install from https://fly.io/docs/flyctl/install/, e.g. `brew install flyctl`)',
+      ),
+    );
     process.exit(1);
   }
 
