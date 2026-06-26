@@ -31,8 +31,8 @@
       "version": "0.0.1",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "0.3.181",
-        "@lostgradient/weft": "0.7.0",
-        "@neondatabase/serverless": "^1.0.2",
+        "@lostgradient/weft": "0.8.0",
+        "@neondatabase/serverless": "^1.1.0",
         "@tribunal/cost": "workspace:*",
         "@tribunal/database": "workspace:*",
         "@tribunal/github": "workspace:*",
@@ -70,9 +70,9 @@
       "version": "0.0.1",
       "dependencies": {
         "@lostgradient/cinder": "^0.3.0",
-        "@lostgradient/weft": "0.7.0",
+        "@lostgradient/weft": "^0.8.0",
         "@neondatabase/neon-js": "^0.6.1-beta",
-        "@neondatabase/serverless": "^1.0.2",
+        "@neondatabase/serverless": "^1.1.0",
         "@tribunal/agents": "workspace:*",
         "@tribunal/database": "workspace:*",
         "@tribunal/github": "workspace:*",
@@ -158,7 +158,7 @@
       "name": "@tribunal/github",
       "version": "0.0.1",
       "dependencies": {
-        "@lostgradient/weft": "0.7.0",
+        "@lostgradient/weft": "^0.8.0",
         "@octokit/types": "^16.0.0",
         "@tribunal/database": "workspace:*",
         "drizzle-orm": "^0.45.1",
@@ -478,7 +478,7 @@
 
     "@lostgradient/cinder": ["@lostgradient/cinder@0.3.0", "", { "dependencies": { "@floating-ui/dom": "1.7.6", "@lasercat/homogenaize": "^1.2.41", "@milkdown/ctx": "^7.17.3", "@milkdown/kit": "^7.17.3", "@milkdown/prose": "^7.17.3", "@shikijs/rehype": "^3.21.0", "@standard-schema/spec": "^1.1.0", "@tanstack/virtual-core": "^3.17.1", "ajv": "^8", "comlink": "^4.4.2", "diff-match-patch": "^1.0.5", "esm-env": "^1.2.0", "hast-util-sanitize": "^5.0.0", "js-yaml": "^4.1.0", "libphonenumber-js": "^1.13.3", "prosemirror-inputrules": "^1.5.1", "prosemirror-model": "^1.25.4", "prosemirror-state": "^1.4.4", "prosemirror-view": "^1.41.3", "rehype-katex": "^7.0.1", "rehype-sanitize": "^6.0.0", "rehype-stringify": "^10.0.1", "remark-gfm": "^4.0.1", "remark-html": "^16.0.1", "remark-math": "^6.0.0", "remark-parse": "^11.0.0", "remark-rehype": "^11.1.2", "remark-stringify": "^11.0.0", "shiki": "^3.21.0", "unified": "^11.0.5", "unist-util-remove": "^4.0.0", "unist-util-visit": "^5.0.0" }, "peerDependencies": { "lucide-svelte": ">=0.400.0 <1", "svelte": ">=5.55.0 <6" } }, "sha512-i7lsJEl+9OqC0xDZCFg7od5TaJpnwX3Q2U/j/Ww+MvaF+yNP5r6mhNne7wsBwZJ8qZO5aIUIItGupW2rFgMrKg=="],
 
-    "@lostgradient/weft": ["@lostgradient/weft@0.7.0", "", { "dependencies": { "@msgpack/msgpack": "^3.1.3", "zod": "^4.3.6" }, "optionalDependencies": { "@valibot/to-json-schema": "^1.7.0" }, "peerDependencies": { "@libsql/client": "^0.17.2", "@neondatabase/serverless": "^1.1.0", "@opentelemetry/api": "^1.0.0", "better-sqlite3": "^12.8.0", "lmdb": "^3.5.2" }, "optionalPeers": ["@libsql/client", "@neondatabase/serverless", "@opentelemetry/api", "better-sqlite3", "lmdb"], "bin": { "weft": "dist/cli-main.js", "weft-mcp": "dist/mcp/cli.js" } }, "sha512-OcZDzIlEw44h90YAIgKV9QbAOUkbUGvMHIkkImId6TKM7n7DCiIVEv8IKNtzSp69/hd9z5J/iEpFciRYm6L/1g=="],
+    "@lostgradient/weft": ["@lostgradient/weft@0.8.0", "", { "dependencies": { "@msgpack/msgpack": "^3.1.3", "zod": "^4.3.6" }, "optionalDependencies": { "@valibot/to-json-schema": "^1.7.0" }, "peerDependencies": { "@libsql/client": "^0.17.2", "@neondatabase/serverless": "^1.1.0", "@opentelemetry/api": "^1.0.0", "better-sqlite3": "^12.8.0", "lmdb": "^3.5.2" }, "optionalPeers": ["@libsql/client", "@neondatabase/serverless", "@opentelemetry/api", "better-sqlite3", "lmdb"], "bin": { "weft": "dist/cli-main.js", "weft-mcp": "dist/mcp/cli.js" } }, "sha512-fwCo8i3Ctg8+CSD1bS+L/z63B9RkkXs8j5lrvAopVTUsaJPLpQT+VMvrPikb+nk8f3YpJ3hVECEVLsdvQDC/Qw=="],
 
     "@marijn/find-cluster-break": ["@marijn/find-cluster-break@1.0.2", "", {}, "sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g=="],
 
@@ -542,7 +542,7 @@
 
     "@neondatabase/postgrest-js": ["@neondatabase/postgrest-js@0.2.0-beta", "", { "dependencies": { "@supabase/postgrest-js": "2.79.0" } }, "sha512-Uq+Qzr6g5lD41KG0TFS5lc2Wo7UnQ1PE+HWdYg8Rr4X5f2pfJvJxciaPlXxOqZji6sEeO6WmLquMG40B/0sSGQ=="],
 
-    "@neondatabase/serverless": ["@neondatabase/serverless@1.0.2", "", { "dependencies": { "@types/node": "^22.15.30", "@types/pg": "^8.8.0" } }, "sha512-I5sbpSIAHiB+b6UttofhrN/UJXII+4tZPAq1qugzwCwLIL8EZLV7F/JyHUrEIiGgQpEXzpnjlJ+zwcEhheGvCw=="],
+    "@neondatabase/serverless": ["@neondatabase/serverless@1.1.0", "", {}, "sha512-r3ZZhRjEcfEdKIZnoB1RusNgvHuaBRqfCzV4Gi+5A9yUX0S4HTws/ASWqt13wL4y4I+0rqsWGdA2w7EQXHi3+Q=="],
 
     "@noble/ciphers": ["@noble/ciphers@2.2.0", "", {}, "sha512-Z6pjIZ/8IJcCGzb2S/0Px5J81yij85xASuk1teLNeg75bfT07MV3a/O2Mtn1I2se43k3lkVEcFaR10N4cgQcZA=="],
 
@@ -2240,8 +2240,6 @@
 
     "@neondatabase/neon-js/zod": ["zod@4.1.12", "", {}, "sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ=="],
 
-    "@neondatabase/serverless/@types/node": ["@types/node@22.19.3", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-1N9SBnWYOJTrNZCdh/yJE+t910Y128BoyY+zBLWhL3r0TYzlTmFdXrPwHL9DyFZmlEXNQQolTZh3KHV31QDhyA=="],
-
     "@oslojs/jwt/@oslojs/encoding": ["@oslojs/encoding@0.4.1", "", {}, "sha512-hkjo6MuIK/kQR5CrGNdAPZhS01ZCXuWDRJ187zh6qqF2+yMHZpD9fAYpX8q2bOO6Ryhl3XpCT6kUX76N8hhm4Q=="],
 
     "@radix-ui/react-arrow/@radix-ui/react-primitive": ["@radix-ui/react-primitive@2.1.3", "", { "dependencies": { "@radix-ui/react-slot": "1.2.3" }, "peerDependencies": { "@types/react": "*", "@types/react-dom": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc", "react-dom": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react", "@types/react-dom"] }, "sha512-m9gTwRkhy2lvCPe6QJp4d3G1TYEUHn/FzJUtq9MjH46an1wJU+GdoGC5VLof8RX8Ft/DlpshApkhswDLZzHIcQ=="],
@@ -2465,8 +2463,6 @@
     "@neondatabase/auth-ui/better-auth/@better-auth/telemetry": ["@better-auth/telemetry@1.4.9", "", { "dependencies": { "@better-auth/utils": "0.3.0", "@better-fetch/fetch": "1.1.21" }, "peerDependencies": { "@better-auth/core": "1.4.9" } }, "sha512-Tthy1/Gmx+pYlbvRQPBTKfVei8+pJwvH1NZp+5SbhwA6K2EXIaoonx/K6N/AXYs2aKUpyR4/gzqDesDjL7zd6A=="],
 
     "@neondatabase/auth-ui/better-auth/better-call": ["better-call@1.1.7", "", { "dependencies": { "@better-auth/utils": "^0.3.0", "@better-fetch/fetch": "^1.1.4", "rou3": "^0.7.10", "set-cookie-parser": "^2.7.1" }, "peerDependencies": { "zod": "^4.0.0" }, "optionalPeers": ["zod"] }, "sha512-6gaJe1bBIEgVebQu/7q9saahVzvBsGaByEnE8aDVncZEDiJO7sdNB28ot9I6iXSbR25egGmmZ6aIURXyQHRraQ=="],
-
-    "@neondatabase/serverless/@types/node/undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
 
     "@radix-ui/react-arrow/@radix-ui/react-primitive/@radix-ui/react-slot": ["@radix-ui/react-slot@1.2.3", "", { "dependencies": { "@radix-ui/react-compose-refs": "1.1.2" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-aeNmHnBxbi2St0au6VBVC7JXFlhLlOnvIIlePNniyUNAClzmtAUEY8/pBiK3iHjufOlwA+c20/8jngo7xcrg8A=="],
 
