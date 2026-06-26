@@ -111,7 +111,7 @@ Allocate a dedicated IPv4 for `tribunal-proxy`, then set the CIDR to that exact
 address with `/32`.
 
 ```sh
-flyctl ips allocate-v4 --dedicated -a tribunal-proxy
+flyctl ips allocate-v4 -a tribunal-proxy
 flyctl ips list -a tribunal-proxy
 ```
 

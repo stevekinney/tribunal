@@ -150,14 +150,39 @@ function pick<T = unknown>(obj: Record<string, unknown>, ...keys: string[]): T |
 
 type FlyResult = { exitCode: number; stdout: string; stderr: string };
 
-/** Run flyctl with arguments escaped individually; never throws. */
+/** Hard ceiling on any single flyctl call so a hung CLI never wedges the script. */
+const FLYCTL_TIMEOUT_MS = 30_000;
+
+/**
+ * Run flyctl with arguments escaped individually; never throws. A hung call is
+ * killed after FLYCTL_TIMEOUT_MS and reported as a non-zero exit, which every
+ * caller already treats as a read failure ('unknown' / not authenticated).
+ */
 async function flyctl(args: string[]): Promise<FlyResult> {
-  const result = await Bun.$`flyctl ${args}`.quiet().nothrow();
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
+  const proc = Bun.spawn(['flyctl', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill(9);
+  }, FLYCTL_TIMEOUT_MS);
+  try {
+    // Read both pipes concurrently to avoid a buffer-fill deadlock.
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+    if (timedOut) {
+      return {
+        exitCode: 124,
+        stdout,
+        stderr: `flyctl ${args[0]} timed out after ${FLYCTL_TIMEOUT_MS}ms`,
+      };
+    }
+    return { exitCode, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Run a `--json` flyctl command and parse it, or return null on any failure. */
@@ -176,12 +201,14 @@ async function flyctlJson<T>(args: string[]): Promise<T | null> {
 // ---------------------------------------------------------------------------
 
 /**
- * Fly address types that are NOT publicly reachable. The "engine must stay
- * private" gate treats every other type (`v4`, `v6`, `shared_v4`, `anycast`,
- * and any future token) as public, so an unrecognized type fails closed --
- * surfacing a warning rather than silently passing a reachable engine.
+ * Fly address types that are NOT public ingress. The "engine must stay private"
+ * gate treats every other type (`v4`, `v6`, `shared_v4`, `anycast`, and any
+ * future token) as public, so an unrecognized type fails closed -- surfacing a
+ * warning rather than silently passing a reachable engine. Egress addresses are
+ * outbound-only (static egress IPs for allowlists), so they must not trip the
+ * ingress gate.
  */
-const PRIVATE_IP_TYPES = new Set(['private_v6']);
+const NON_INGRESS_IP_TYPES = new Set(['private_v6', 'egress_v4', 'egress_v6']);
 
 /**
  * `number | 'unknown'` distinguishes a real flyctl read failure from a known
@@ -219,7 +246,11 @@ async function checkAuth(): Promise<{ authenticated: boolean; account: string | 
 
 /** Returns the set of app names, or null when the `apps list` read failed. */
 async function listApps(): Promise<Set<string> | null> {
-  const apps = await flyctlJson<Array<Record<string, unknown>>>(['apps', 'list']);
+  // Scope discovery to the target org so a same-named app in another accessible
+  // org is never mistaken for ours. `flyctl apps list` spans every org by default.
+  const org = process.env.FLY_ORG?.trim();
+  const args = org ? ['apps', 'list', '--org', org] : ['apps', 'list'];
+  const apps = await flyctlJson<Array<Record<string, unknown>>>(args);
   if (apps === null) return null;
   const names = new Set<string>();
   for (const app of apps) {
@@ -257,7 +288,7 @@ async function listPublicIps(
     const address = pick<string>(ip, 'Address', 'address');
     if (!type) continue;
     // Fail closed: anything that is not a known-private type counts as public.
-    if (!PRIVATE_IP_TYPES.has(type)) isPublic = true;
+    if (!NON_INGRESS_IP_TYPES.has(type)) isPublic = true;
     if (type === 'v4' && address) dedicatedV4 = address;
   }
   return { dedicatedV4, public: isPublic };
@@ -363,6 +394,27 @@ function collectRequiredEnv(): Map<string, Set<string>> {
   return required;
 }
 
+/**
+ * Format checks for the env vars with a crisp, documented shape. Catching a
+ * malformed value here means the operator fixes it now, instead of the secret
+ * being set successfully and only failing at service boot. Only unambiguous
+ * formats are validated -- URLs and tokens of varying shape are left to presence.
+ */
+const FORMAT_VALIDATORS: Record<string, { test: (value: string) => boolean; expected: string }> = {
+  // `openssl rand -hex 32` -> exactly 64 hex characters.
+  ENCRYPTION_KEY: { test: (v) => /^[0-9a-f]{64}$/i.test(v), expected: '64 hex characters' },
+  PROXY_SIGNING_KEY: { test: (v) => /^[0-9a-f]{64}$/i.test(v), expected: '64 hex characters' },
+  TRIBUNAL_ENGINE_CONTROL_TOKEN: {
+    test: (v) => /^[0-9a-f]{64}$/i.test(v),
+    expected: '64 hex characters',
+  },
+  // Dedicated proxy IPv4 with a /32 suffix, e.g. 203.0.113.5/32.
+  TRIBUNAL_PROXY_CIDR: {
+    test: (v) => /^(\d{1,3}\.){3}\d{1,3}\/32$/.test(v),
+    expected: 'an IPv4 address with /32 (e.g. 203.0.113.5/32)',
+  },
+};
+
 function validateLocalEnv(): MissingVar[] {
   const required = collectRequiredEnv();
   const missing: MissingVar[] = [];
@@ -373,6 +425,16 @@ function validateLocalEnv(): MissingVar[] {
 
     if (!present) {
       missing.push({ envVar, reason: 'not set', usedBy: [...usedBy] });
+      continue;
+    }
+
+    const validator = FORMAT_VALIDATORS[envVar];
+    if (validator && !validator.test(rawValue.trim())) {
+      missing.push({
+        envVar,
+        reason: `invalid format (expected ${validator.expected})`,
+        usedBy: [...usedBy],
+      });
     }
   }
 
@@ -415,9 +477,13 @@ function buildPlan(state: FlyState): Step[] {
       : { title: 'Authenticate with Fly', state: 'todo', commands: ['flyctl auth login'] },
   );
 
+  // Nothing else is knowable until you authenticate; the auth step above already
+  // carries the fix, so stop rather than infer apps/secrets from empty data.
+  if (!state.authenticated) return steps;
+
   // The rest of the plan is derived from the app list. If it could not be read,
   // every step below would be built on empty data -- stop and say so plainly.
-  if (state.authenticated && !state.appsReadable) {
+  if (!state.appsReadable) {
     steps.push({
       title: 'Read Fly app state',
       state: 'manual',
@@ -459,8 +525,9 @@ function buildPlan(state: FlyState): Step[] {
     steps.push({
       title: 'Allocate dedicated proxy IPv4',
       state: 'todo',
-      detail: 'billable: a dedicated IPv4 carries a monthly charge',
-      commands: ['flyctl ips allocate-v4 --dedicated --app tribunal-proxy'],
+      detail: 'billable: a dedicated IPv4 carries a monthly charge (confirm the prompt)',
+      // Dedicated is the default for `ips allocate-v4`; there is no --dedicated flag.
+      commands: ['flyctl ips allocate-v4 --app tribunal-proxy'],
     });
   }
 
@@ -548,15 +615,13 @@ function buildPlan(state: FlyState): Step[] {
       title: `Set secrets for ${app.name}`,
       state: 'todo',
       detail: `${unset.length} of ${app.secrets.length} unset: ${unset.join(', ')}`,
+      // The app already exists and may have running Machines, where `secrets set`
+      // triggers an immediate redeploy. --stage is baked in so the copied command
+      // defers the rollout to the explicit, dependency-ordered deploy step below.
       commands: [
-        `flyctl secrets set --app ${app.name} \\\n    ${unset
+        `flyctl secrets set --stage --app ${app.name} \\\n    ${unset
           .map(secretAssignment)
           .join(' \\\n    ')}`,
-        // This app already exists, so it may have running Machines, where
-        // `secrets set` triggers an immediate redeploy. Append --stage to defer
-        // the rollout to the explicit deploy step below; omit it only for an
-        // initial secrets set on an app with no Machines yet.
-        '# append --stage to defer the redeploy to the deploy step (preserves ordering)',
       ],
     });
   }
@@ -582,15 +647,19 @@ function buildPlan(state: FlyState): Step[] {
           state: 'done',
           detail: '1 Machine running',
         });
+      } else if (count === 'unknown') {
+        // Don't print a destructive scale on unreadable state; verify first.
+        steps.push({
+          title: 'Scale engine to exactly one Machine',
+          state: 'manual',
+          detail: 'could not read Machine count from flyctl; verify before scaling',
+          commands: ['flyctl machines list --app tribunal-engine'],
+        });
       } else {
-        let detail: string;
-        if (count === null) detail = 'engine app not yet created';
-        else if (count === 'unknown') detail = 'could not read Machine count from flyctl';
-        else detail = `${count} Machines running`;
         steps.push({
           title: 'Scale engine to exactly one Machine',
           state: 'todo',
-          detail,
+          detail: count === null ? 'engine app not yet created' : `${count} Machines running`,
           commands: ['flyctl scale count 1 --app tribunal-engine'],
         });
       }
@@ -757,6 +826,11 @@ function printPlan(steps: Step[]): void {
   console.log(summaryHeader('Deploy plan'));
   console.log('');
   console.log(dim('  ✓ done   ○ to do   ● operator action (run manually; not auto-verified)'));
+  console.log('');
+  // The `KEY="$KEY"` commands below read from the shell environment. Bun loads
+  // .env for this script, but a normal shell does not -- load it first.
+  console.log(dim('  Commands referencing $VARS need .env loaded into your shell first:'));
+  console.log(info('  $ set -a && source .env && set +a'));
   console.log('');
 
   let index = 0;
