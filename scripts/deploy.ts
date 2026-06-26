@@ -549,8 +549,10 @@ function buildPlan(state: FlyState): Step[] {
     });
   }
 
-  // 4. Confirm TRIBUNAL_PROXY_CIDR matches the allocated IP.
-  const configuredCidr = process.env.TRIBUNAL_PROXY_CIDR;
+  // 4. Confirm TRIBUNAL_PROXY_CIDR matches the allocated IP. Trim to match
+  // validateLocalEnv, so a value with surrounding whitespace can't pass
+  // validation yet still report a mismatch here.
+  const configuredCidr = process.env.TRIBUNAL_PROXY_CIDR?.trim();
   if (proxyIp === 'unknown') {
     steps.push({
       title: 'Confirm TRIBUNAL_PROXY_CIDR matches allocated IP',
@@ -673,11 +675,19 @@ function buildPlan(state: FlyState): Step[] {
           detail: 'could not read Machine count from flyctl; verify before scaling',
           commands: ['flyctl machines list --app tribunal-engine'],
         });
+      } else if (count === null) {
+        // The engine must be created and deployed before it can be scaled, so
+        // omit the command here (matches the proxy IPv4 pending-app handling).
+        steps.push({
+          title: 'Scale engine to exactly one Machine',
+          state: 'todo',
+          detail: 'pending engine deploy',
+        });
       } else {
         steps.push({
           title: 'Scale engine to exactly one Machine',
           state: 'todo',
-          detail: count === null ? 'engine app not yet created' : `${count} Machines running`,
+          detail: `${count} Machines running`,
           commands: ['flyctl scale count 1 --app tribunal-engine'],
         });
       }
