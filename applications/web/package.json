@@ -22,7 +22,7 @@
     "@lostgradient/cinder": "^0.3.0",
     "@lostgradient/weft": "^0.8.0",
     "@neondatabase/neon-js": "^0.6.1-beta",
-    "@neondatabase/serverless": "^1.0.2",
+    "@neondatabase/serverless": "^1.1.0",
     "@tribunal/agents": "workspace:*",
     "@tribunal/database": "workspace:*",
     "@tribunal/github": "workspace:*",
