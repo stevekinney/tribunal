@@ -416,9 +416,11 @@ const FORMAT_VALIDATORS: Record<string, { test: (value: string) => boolean; expe
     test: (v) => /^[0-9a-f]{64}$/i.test(v),
     expected: '64 hex characters',
   },
-  // Dedicated proxy IPv4 with a /32 suffix, e.g. 203.0.113.5/32.
+  // Dedicated proxy IPv4 with a /32 suffix, e.g. 203.0.113.5/32. Each octet is
+  // bounded to 0-255 so a syntactically-shaped but invalid value (999.999...)
+  // is rejected here rather than at allocation time.
   TRIBUNAL_PROXY_CIDR: {
-    test: (v) => /^(\d{1,3}\.){3}\d{1,3}\/32$/.test(v),
+    test: (v) => /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}\/32$/.test(v),
     expected: 'an IPv4 address with /32 (e.g. 203.0.113.5/32)',
   },
 };
@@ -462,12 +464,6 @@ type Step = {
   detail?: string;
   /** Commands the operator should run for a `todo`/`manual` step. */
   commands?: string[];
-  /**
-   * Steps flyctl cannot confirm (migrations applied, health checks). These are
-   * always rendered as a manual checklist rather than a verified checkmark, so
-   * the output never claims green for something it did not actually observe.
-   */
-  unverifiable?: boolean;
 };
 
 /** Build the shell snippet that sets one secret by reference, never by value. */
@@ -588,7 +584,6 @@ function buildPlan(state: FlyState): Step[] {
   steps.push({
     title: 'Run database migrations',
     state: 'manual',
-    unverifiable: true,
     detail: 'uses the direct, unpooled Neon URL (not the pooled runtime DATABASE_URL)',
     commands: ['DATABASE_URL="$MIGRATION_DATABASE_URL" bun run db:migrate'],
   });
@@ -601,9 +596,9 @@ function buildPlan(state: FlyState): Step[] {
         state: 'todo',
         detail: 'pending app creation',
         commands: [
-          `flyctl secrets set --app ${app.name} \\\n    ${app.secrets
+          `flyctl secrets set --app ${app.name} \\\n${app.secrets
             .map(secretAssignment)
-            .join(' \\\n    ')}`,
+            .join(' \\\n')}`,
         ],
       });
       continue;
@@ -639,9 +634,9 @@ function buildPlan(state: FlyState): Step[] {
       // triggers an immediate redeploy. --stage is baked in so the copied command
       // defers the rollout to the explicit, dependency-ordered deploy step below.
       commands: [
-        `flyctl secrets set --stage --app ${app.name} \\\n    ${unset
+        `flyctl secrets set --stage --app ${app.name} \\\n${unset
           .map(secretAssignment)
-          .join(' \\\n    ')}`,
+          .join(' \\\n')}`,
       ],
     });
   }
@@ -653,7 +648,6 @@ function buildPlan(state: FlyState): Step[] {
     const step: Step = {
       title: `Deploy ${app.name}`,
       state: 'manual',
-      unverifiable: true,
       commands: [`flyctl deploy . --config ${app.config} --dockerfile ${app.dockerfile}`],
     };
     steps.push(step);
@@ -730,7 +724,6 @@ function buildPlan(state: FlyState): Step[] {
   steps.push({
     title: 'Pass health gates before enabling live reviews',
     state: 'manual',
-    unverifiable: true,
     detail:
       'health checks, unauthorized proxy 401/403, and the fake-load harness must pass; ' +
       'see documentation/deployment/containers.md. Keep REVIEWS_ENABLED=false until all gates pass.',
@@ -863,9 +856,10 @@ function printPlan(steps: Step[]): void {
   console.log(dim('  ✓ done   ○ to do   ● operator action (run manually; not auto-verified)'));
   console.log('');
   // The `KEY="$KEY"` commands below read from the shell environment. Bun loads
-  // .env for this script, but a normal shell does not -- load it first.
+  // .env for this script, but a normal shell does not -- load it first. The `.`
+  // (dot) command is POSIX-portable; `source` is the bash/zsh spelling.
   console.log(dim('  Commands referencing $VARS need .env loaded into your shell first:'));
-  console.log(info('  $ set -a && source .env && set +a'));
+  console.log(info('  $ set -a && . ./.env && set +a   # bash/zsh: source ./.env'));
   console.log('');
 
   let index = 0;
@@ -878,8 +872,15 @@ function printPlan(steps: Step[]): void {
     for (const command of step.commands ?? []) {
       if (step.state === 'done') continue;
       // Comment-only hint lines render as dim comments, not as `$ #` commands.
-      if (command.startsWith('#')) console.log(dim(`        ${command}`));
-      else console.log(info(`        $ ${command}`));
+      if (command.startsWith('#')) {
+        console.log(dim(`        ${command}`));
+        continue;
+      }
+      // Indent multi-line commands so continuation lines stay aligned under the
+      // first line's content (8 spaces of margin + "$ ").
+      const [first, ...rest] = command.split('\n');
+      console.log(info(`        $ ${first}`));
+      for (const line of rest) console.log(info(`          ${line}`));
     }
   }
   console.log('');
