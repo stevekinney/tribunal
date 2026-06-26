@@ -220,10 +220,12 @@ type FlyState = {
   authenticated: boolean;
   account: string | null;
   /**
-   * False when `flyctl apps list` could not be read. Every other field is then
-   * meaningless, so status and plan abort rather than build on bad data.
+   * False when the app inventory could not be established. Every other field is
+   * then meaningless, so status and plan abort rather than build on bad data.
+   * `appsUnreadableReason` says why.
    */
   appsReadable: boolean;
+  appsUnreadableReason: 'flyctl-error' | 'no-org' | null;
   existingApps: Set<string>;
   /**
    * Per app: the secret keys already set on Fly (names only, no values), or
@@ -244,13 +246,13 @@ async function checkAuth(): Promise<{ authenticated: boolean; account: string | 
   return { authenticated: result.exitCode === 0 && account.length > 0, account: account || null };
 }
 
-/** Returns the set of app names, or null when the `apps list` read failed. */
-async function listApps(): Promise<Set<string> | null> {
-  // Scope discovery to the target org so a same-named app in another accessible
-  // org is never mistaken for ours. `flyctl apps list` spans every org by default.
-  const org = process.env.FLY_ORG?.trim();
-  const args = org ? ['apps', 'list', '--org', org] : ['apps', 'list'];
-  const apps = await flyctlJson<Array<Record<string, unknown>>>(args);
+/**
+ * Returns the set of app names in the given org, or null when the read failed.
+ * The org is required: `flyctl apps list` spans every accessible org by default,
+ * so an unscoped list could mistake a same-named app elsewhere for ours.
+ */
+async function listApps(org: string): Promise<Set<string> | null> {
+  const apps = await flyctlJson<Array<Record<string, unknown>>>(['apps', 'list', '--org', org]);
   if (apps === null) return null;
   const names = new Set<string>();
   for (const app of apps) {
@@ -313,6 +315,7 @@ async function gatherFlyState(): Promise<FlyState> {
       authenticated: false,
       account: auth.account,
       appsReadable: false,
+      appsUnreadableReason: null,
       existingApps: new Set(),
       setSecrets: new Map(),
       proxyDedicatedIp: null,
@@ -321,21 +324,25 @@ async function gatherFlyState(): Promise<FlyState> {
     };
   }
 
-  const existingApps = await listApps();
-  if (existingApps === null) {
-    // Without the app list every downstream read is meaningless. Report the
-    // failure honestly instead of producing a plan from empty data.
-    return {
-      authenticated: true,
-      account: auth.account,
-      appsReadable: false,
-      existingApps: new Set(),
-      setSecrets: new Map(),
-      proxyDedicatedIp: 'unknown',
-      engineHasPublicIp: 'unknown',
-      engineMachineCount: 'unknown',
-    };
-  }
+  // App discovery must be scoped to the target org; without it, `apps list`
+  // spans every accessible org and could mistake a same-named app for ours.
+  const org = process.env.FLY_ORG?.trim();
+  const unreadable = (reason: 'flyctl-error' | 'no-org'): FlyState => ({
+    authenticated: true,
+    account: auth.account,
+    appsReadable: false,
+    appsUnreadableReason: reason,
+    existingApps: new Set(),
+    setSecrets: new Map(),
+    proxyDedicatedIp: 'unknown',
+    engineHasPublicIp: 'unknown',
+    engineMachineCount: 'unknown',
+  });
+
+  if (!org) return unreadable('no-org');
+
+  const existingApps = await listApps(org);
+  if (existingApps === null) return unreadable('flyctl-error');
 
   const setSecrets = new Map<AppName, Set<string> | ReadFailure>();
   await Promise.all(
@@ -362,6 +369,7 @@ async function gatherFlyState(): Promise<FlyState> {
     authenticated: true,
     account: auth.account,
     appsReadable: true,
+    appsUnreadableReason: null,
     existingApps,
     setSecrets,
     proxyDedicatedIp,
@@ -484,11 +492,14 @@ function buildPlan(state: FlyState): Step[] {
   // The rest of the plan is derived from the app list. If it could not be read,
   // every step below would be built on empty data -- stop and say so plainly.
   if (!state.appsReadable) {
+    const noOrg = state.appsUnreadableReason === 'no-org';
     steps.push({
       title: 'Read Fly app state',
       state: 'manual',
-      detail: 'could not read `flyctl apps list`; resolve the flyctl error and re-run',
-      commands: ['flyctl apps list'],
+      detail: noOrg
+        ? 'set FLY_ORG so app discovery is scoped to the target org (apps list spans all orgs)'
+        : 'could not read `flyctl apps list`; resolve the flyctl error and re-run',
+      commands: noOrg ? undefined : ['flyctl apps list --org "$FLY_ORG"'],
     });
     return steps;
   }
@@ -508,7 +519,14 @@ function buildPlan(state: FlyState): Step[] {
 
   // 3. Allocate a dedicated public IPv4 for the proxy (billable).
   const proxyIp = state.proxyDedicatedIp;
-  if (proxyIp === 'unknown') {
+  if (!state.existingApps.has('tribunal-proxy')) {
+    // The proxy app must exist before an IP can be allocated to it.
+    steps.push({
+      title: 'Allocate dedicated proxy IPv4',
+      state: 'todo',
+      detail: 'pending app creation',
+    });
+  } else if (proxyIp === 'unknown') {
     steps.push({
       title: 'Allocate dedicated proxy IPv4',
       state: 'manual',
@@ -755,7 +773,14 @@ function printStatus(state: FlyState): void {
   console.log(status('success', `Authenticated as ${state.account}`));
 
   if (!state.appsReadable) {
-    console.log(status('error', 'Could not read `flyctl apps list` (resolve and re-run)'));
+    console.log(
+      status(
+        'error',
+        state.appsUnreadableReason === 'no-org'
+          ? 'FLY_ORG is not set; cannot scope app discovery to the target org'
+          : 'Could not read `flyctl apps list` (resolve and re-run)',
+      ),
+    );
     console.log('');
     return;
   }
