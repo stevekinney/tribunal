@@ -159,7 +159,14 @@ const FLYCTL_TIMEOUT_MS = 30_000;
  * caller already treats as a read failure ('unknown' / not authenticated).
  */
 async function flyctl(args: string[]): Promise<FlyResult> {
-  const proc = Bun.spawn(['flyctl', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
+  try {
+    proc = Bun.spawn(['flyctl', ...args], { stdout: 'pipe', stderr: 'pipe' });
+  } catch (err) {
+    // Bun.spawn can throw on spawn failure (permissions, corrupted binary).
+    // Honor the never-throws contract: report it as a read failure instead.
+    return { exitCode: 126, stdout: '', stderr: err instanceof Error ? err.message : String(err) };
+  }
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -667,13 +674,15 @@ function buildPlan(state: FlyState): Step[] {
           detail: 'could not read Machine count from flyctl; verify before scaling',
           commands: ['flyctl machines list --app tribunal-engine'],
         });
-      } else if (count === null) {
-        // The engine must be created and deployed before it can be scaled, so
-        // omit the command here (matches the proxy IPv4 pending-app handling).
+      } else if (count === null || count === 0) {
+        // Scaling only makes sense after the first deploy creates a Machine.
+        // null = app not created, 0 = created but not deployed; both are
+        // pre-deploy, so omit the command (matches the IPv4 pending-app step).
         steps.push({
           title: 'Scale engine to exactly one Machine',
           state: 'todo',
-          detail: 'pending engine deploy',
+          detail:
+            count === null ? 'pending engine deploy' : 'engine has no Machines yet (deploy first)',
         });
       } else {
         steps.push({
@@ -858,6 +867,10 @@ function printPlan(steps: Step[]): void {
   // (dot) command is POSIX-portable; `source` is the bash/zsh spelling.
   console.log(dim('  Commands referencing $VARS need .env loaded into your shell first:'));
   console.log(info('  $ set -a && . ./.env && set +a   # bash/zsh: source ./.env'));
+  console.log('');
+  // The deploy/migration commands use repo-relative paths (`flyctl deploy .`,
+  // `--config deployment/...`), so they must run from the repository root.
+  console.log(dim('  Run these commands from the repository root.'));
   console.log('');
 
   let index = 0;
