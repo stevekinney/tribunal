@@ -196,10 +196,19 @@ type ReadFailure = 'unknown';
 type FlyState = {
   authenticated: boolean;
   account: string | null;
+  /**
+   * False when `flyctl apps list` could not be read. Every other field is then
+   * meaningless, so status and plan abort rather than build on bad data.
+   */
+  appsReadable: boolean;
   existingApps: Set<string>;
-  /** Per app: the set of secret keys already set on Fly (names only, no values). */
-  setSecrets: Map<AppName, Set<string>>;
-  proxyDedicatedIp: string | null;
+  /**
+   * Per app: the secret keys already set on Fly (names only, no values), or
+   * 'unknown' when the per-app `secrets list` read failed.
+   */
+  setSecrets: Map<AppName, Set<string> | ReadFailure>;
+  /** null = not allocated; 'unknown' = flyctl read failed. */
+  proxyDedicatedIp: string | null | ReadFailure;
   /** null = engine not created; 'unknown' = flyctl read failed. */
   engineHasPublicIp: boolean | null | ReadFailure;
   /** null = engine not created; 'unknown' = flyctl read failed. */
@@ -212,25 +221,28 @@ async function checkAuth(): Promise<{ authenticated: boolean; account: string | 
   return { authenticated: result.exitCode === 0 && account.length > 0, account: account || null };
 }
 
-async function listApps(): Promise<Set<string>> {
+/** Returns the set of app names, or null when the `apps list` read failed. */
+async function listApps(): Promise<Set<string> | null> {
   const apps = await flyctlJson<Array<Record<string, unknown>>>(['apps', 'list']);
+  if (apps === null) return null;
   const names = new Set<string>();
-  for (const app of apps ?? []) {
+  for (const app of apps) {
     const name = pick<string>(app, 'Name', 'name');
     if (name) names.add(name);
   }
   return names;
 }
 
-async function listSetSecrets(app: AppName): Promise<Set<string>> {
+async function listSetSecrets(app: AppName): Promise<Set<string> | ReadFailure> {
   const secrets = await flyctlJson<Array<Record<string, unknown>>>([
     'secrets',
     'list',
     '--app',
     app,
   ]);
+  if (secrets === null) return 'unknown';
   const names = new Set<string>();
-  for (const secret of secrets ?? []) {
+  for (const secret of secrets) {
     const name = pick<string>(secret, 'Name', 'name');
     if (name) names.add(name);
   }
@@ -273,6 +285,7 @@ async function gatherFlyState(): Promise<FlyState> {
     return {
       authenticated: false,
       account: auth.account,
+      appsReadable: false,
       existingApps: new Set(),
       setSecrets: new Map(),
       proxyDedicatedIp: null,
@@ -282,13 +295,27 @@ async function gatherFlyState(): Promise<FlyState> {
   }
 
   const existingApps = await listApps();
+  if (existingApps === null) {
+    // Without the app list every downstream read is meaningless. Report the
+    // failure honestly instead of producing a plan from empty data.
+    return {
+      authenticated: true,
+      account: auth.account,
+      appsReadable: false,
+      existingApps: new Set(),
+      setSecrets: new Map(),
+      proxyDedicatedIp: 'unknown',
+      engineHasPublicIp: 'unknown',
+      engineMachineCount: 'unknown',
+    };
+  }
 
-  const setSecrets = new Map<AppName, Set<string>>();
+  const setSecrets = new Map<AppName, Set<string> | ReadFailure>();
   await Promise.all(
     APPS.map(async (app) => {
       setSecrets.set(
         app.name,
-        existingApps.has(app.name) ? await listSetSecrets(app.name) : new Set(),
+        existingApps.has(app.name) ? await listSetSecrets(app.name) : new Set<string>(),
       );
     }),
   );
@@ -300,12 +327,17 @@ async function gatherFlyState(): Promise<FlyState> {
   const engineIps = engineExists ? await listPublicIps('tribunal-engine') : null;
   const engineMachineCount = engineExists ? await countMachines('tribunal-engine') : null;
 
+  // A failed proxy `ips list` must read as 'unknown', not as "not allocated".
+  let proxyDedicatedIp: string | null | ReadFailure = null;
+  if (proxyIps) proxyDedicatedIp = proxyIps.public === 'unknown' ? 'unknown' : proxyIps.dedicatedV4;
+
   return {
     authenticated: true,
     account: auth.account,
+    appsReadable: true,
     existingApps,
     setSecrets,
-    proxyDedicatedIp: proxyIps?.dedicatedV4 ?? null,
+    proxyDedicatedIp,
     engineHasPublicIp: engineIps ? engineIps.public : null,
     engineMachineCount,
   };
@@ -387,6 +419,18 @@ function buildPlan(state: FlyState): Step[] {
       : { title: 'Authenticate with Fly', state: 'todo', commands: ['flyctl auth login'] },
   );
 
+  // The rest of the plan is derived from the app list. If it could not be read,
+  // every step below would be built on empty data -- stop and say so plainly.
+  if (state.authenticated && !state.appsReadable) {
+    steps.push({
+      title: 'Read Fly app state',
+      state: 'manual',
+      detail: 'could not read `flyctl apps list`; resolve the flyctl error and re-run',
+      commands: ['flyctl apps list'],
+    });
+    return steps;
+  }
+
   // 2. Create the three apps.
   const missingApps = APPS.filter((app) => !state.existingApps.has(app.name));
   steps.push(
@@ -401,25 +445,39 @@ function buildPlan(state: FlyState): Step[] {
   );
 
   // 3. Allocate a dedicated public IPv4 for the proxy (billable).
-  steps.push(
-    state.proxyDedicatedIp
-      ? {
-          title: 'Allocate dedicated proxy IPv4',
-          state: 'done',
-          detail: `dedicated IPv4 ${state.proxyDedicatedIp}`,
-        }
-      : {
-          title: 'Allocate dedicated proxy IPv4',
-          state: 'todo',
-          detail: 'billable: a dedicated IPv4 carries a monthly charge',
-          commands: ['flyctl ips allocate-v4 --dedicated --app tribunal-proxy'],
-        },
-  );
+  const proxyIp = state.proxyDedicatedIp;
+  if (proxyIp === 'unknown') {
+    steps.push({
+      title: 'Allocate dedicated proxy IPv4',
+      state: 'manual',
+      detail: 'could not read proxy IPs from flyctl; verify before allocating',
+      commands: ['flyctl ips list --app tribunal-proxy'],
+    });
+  } else if (proxyIp) {
+    steps.push({
+      title: 'Allocate dedicated proxy IPv4',
+      state: 'done',
+      detail: `dedicated IPv4 ${proxyIp}`,
+    });
+  } else {
+    steps.push({
+      title: 'Allocate dedicated proxy IPv4',
+      state: 'todo',
+      detail: 'billable: a dedicated IPv4 carries a monthly charge',
+      commands: ['flyctl ips allocate-v4 --dedicated --app tribunal-proxy'],
+    });
+  }
 
   // 4. Confirm TRIBUNAL_PROXY_CIDR matches the allocated IP.
   const configuredCidr = process.env.TRIBUNAL_PROXY_CIDR;
-  if (state.proxyDedicatedIp) {
-    const expectedCidr = `${state.proxyDedicatedIp}/32`;
+  if (proxyIp === 'unknown') {
+    steps.push({
+      title: 'Confirm TRIBUNAL_PROXY_CIDR matches allocated IP',
+      state: 'manual',
+      detail: 'pending proxy IP read',
+    });
+  } else if (proxyIp) {
+    const expectedCidr = `${proxyIp}/32`;
     if (configuredCidr === expectedCidr) {
       steps.push({
         title: 'Confirm TRIBUNAL_PROXY_CIDR matches allocated IP',
@@ -454,9 +512,6 @@ function buildPlan(state: FlyState): Step[] {
 
   // 6. Set secrets per app (proxy, engine, web).
   for (const app of APPS) {
-    const setKeys = state.setSecrets.get(app.name) ?? new Set<string>();
-    const unset = app.secrets.filter((key) => !setKeys.has(key));
-
     if (!state.existingApps.has(app.name)) {
       steps.push({
         title: `Set secrets for ${app.name}`,
@@ -470,6 +525,19 @@ function buildPlan(state: FlyState): Step[] {
       });
       continue;
     }
+
+    const setKeys = state.setSecrets.get(app.name);
+    if (setKeys === 'unknown' || setKeys === undefined) {
+      steps.push({
+        title: `Set secrets for ${app.name}`,
+        state: 'manual',
+        detail: 'could not read current secrets from flyctl; verify before setting',
+        commands: [`flyctl secrets list --app ${app.name}`],
+      });
+      continue;
+    }
+
+    const unset = app.secrets.filter((key) => !setKeys.has(key));
 
     if (unset.length === 0) {
       steps.push({
@@ -621,26 +689,40 @@ function printStatus(state: FlyState): void {
 
   console.log(status('success', `Authenticated as ${state.account}`));
 
+  if (!state.appsReadable) {
+    console.log(status('error', 'Could not read `flyctl apps list` (resolve and re-run)'));
+    console.log('');
+    return;
+  }
+
   for (const app of APPS) {
     const exists = state.existingApps.has(app.name);
     if (!exists) {
       console.log(status('error', `${app.name}: not created`));
       continue;
     }
-    const setKeys = state.setSecrets.get(app.name) ?? new Set<string>();
+    const setKeys = state.setSecrets.get(app.name);
+    if (setKeys === 'unknown' || setKeys === undefined) {
+      console.log(status('warning', `${app.name}: could not read secrets from flyctl`));
+      continue;
+    }
     const setCount = app.secrets.filter((key) => setKeys.has(key)).length;
     const level = setCount === app.secrets.length ? 'success' : 'warning';
     console.log(status(level, `${app.name}: ${setCount}/${app.secrets.length} secrets set`));
   }
 
-  console.log(
-    status(
-      state.proxyDedicatedIp ? 'success' : 'warning',
-      state.proxyDedicatedIp
-        ? `proxy dedicated IPv4: ${state.proxyDedicatedIp}`
-        : 'proxy dedicated IPv4: not allocated',
-    ),
-  );
+  if (state.proxyDedicatedIp === 'unknown') {
+    console.log(status('warning', 'proxy dedicated IPv4: could not read from flyctl'));
+  } else {
+    console.log(
+      status(
+        state.proxyDedicatedIp ? 'success' : 'warning',
+        state.proxyDedicatedIp
+          ? `proxy dedicated IPv4: ${state.proxyDedicatedIp}`
+          : 'proxy dedicated IPv4: not allocated',
+      ),
+    );
+  }
 
   if (state.engineHasPublicIp === 'unknown') {
     console.log(status('warning', 'engine IPs: could not read from flyctl'));
