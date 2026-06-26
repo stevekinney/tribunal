@@ -650,12 +650,17 @@ function buildPlan(state: FlyState): Step[] {
   const deployOrder: AppName[] = ['tribunal-proxy', 'tribunal-engine', 'tribunal-web'];
   for (const name of deployOrder) {
     const app = APPS.find((a) => a.name === name)!;
-    const step: Step = {
-      title: `Deploy ${app.name}`,
-      state: 'manual',
-      commands: [`flyctl deploy . --config ${app.config} --dockerfile ${app.dockerfile}`],
-    };
-    steps.push(step);
+    // The app must exist before it can be deployed; omit the command until then
+    // (matches the IPv4, secrets, and scale pending-prerequisite steps).
+    steps.push(
+      state.existingApps.has(app.name)
+        ? {
+            title: `Deploy ${app.name}`,
+            state: 'manual',
+            commands: [`flyctl deploy . --config ${app.config} --dockerfile ${app.dockerfile}`],
+          }
+        : { title: `Deploy ${app.name}`, state: 'todo', detail: 'pending app creation' },
+    );
 
     // 9. After the first engine deploy, force exactly one Machine.
     if (name === 'tribunal-engine') {
@@ -676,13 +681,13 @@ function buildPlan(state: FlyState): Step[] {
         });
       } else if (count === null || count === 0) {
         // Scaling only makes sense after the first deploy creates a Machine.
-        // null = app not created, 0 = created but not deployed; both are
-        // pre-deploy, so omit the command (matches the IPv4 pending-app step).
+        // null = app not created (blocker is create), 0 = created but not
+        // deployed (blocker is deploy); both omit the command.
         steps.push({
           title: 'Scale engine to exactly one Machine',
           state: 'todo',
           detail:
-            count === null ? 'pending engine deploy' : 'engine has no Machines yet (deploy first)',
+            count === null ? 'pending app creation' : 'engine has no Machines yet (deploy first)',
         });
       } else {
         steps.push({
