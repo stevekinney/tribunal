@@ -187,10 +187,10 @@ type SyncFinalizerState = { installationId: number };
  *
  * Runs ONLY when the workflow is cancelled or times out (never on normal
  * completion), and only because the workflow staged finalizer state on entry. A
- * sync that is interrupted mid-flight — lease eviction, lifecycle teardown, or a
- * timeout — can leave `syncStatus` stuck at 'pending'/'in_progress'. This flips
- * such a row to 'failed' so the UI/operator sees an interrupted sync rather than
- * a perpetual spinner.
+ * sync that is interrupted after syncRepositories marks it active — lease
+ * eviction, lifecycle teardown, or a timeout — can leave `syncStatus` stuck at
+ * 'in_progress'. This flips such a row to 'failed' so the UI/operator sees an
+ * interrupted sync rather than a perpetual spinner.
  *
  * Idempotent by construction (the finalizer "runs at least once and must be
  * idempotent"): the update is conditional on the row STILL being 'in_progress'

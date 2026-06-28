@@ -326,7 +326,10 @@ export async function getOrCreateRepository(
  *     is the wrong latency for "user just clicked Install and expects to see
  *     their repos." The two paths are complementary, not duplicative.
  *
- * It sets `githubInstallation.syncStatus = 'idle'` and `lastSyncedAt` on success.
+ * On success, tokenless setup calls set `githubInstallation.syncStatus = 'idle'`,
+ * clear any sync error, and update `lastSyncedAt`. Workflow callers pass
+ * `syncWorkflowExecutionToken`; for them, the status settlement and token clear
+ * only happen if the installation row still carries that same token.
  */
 export async function refreshInstallationRepositories(
   context: GithubServiceContext,
