@@ -358,6 +358,10 @@ export async function refreshInstallationRepositories(
     page += 1;
   }
 
+  if (!(await ownsInstallationSync(context, installationId, options))) {
+    return { repositoryCount: 0, deactivatedRepositoryCount: 0 };
+  }
+
   const activeRepositoryIds = new Set<number>();
   const now = new Date();
 
@@ -477,6 +481,22 @@ function buildInstallationSyncPredicate(
   }
 
   return and(...predicates);
+}
+
+async function ownsInstallationSync(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+) {
+  if (options.syncWorkflowExecutionToken === undefined) return true;
+
+  const [installation] = await context.db
+    .select({ installationId: githubInstallation.installationId })
+    .from(githubInstallation)
+    .where(buildInstallationSyncPredicate(installationId, options))
+    .limit(1);
+
+  return installation !== undefined;
 }
 
 /**
