@@ -16,6 +16,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ActivityContext } from '@lostgradient/weft';
 import { TestEngine, yieldToPortableEventLoop } from '@lostgradient/weft/testing';
 
 // The /testing barrel re-exports TestEngine as a value only (not a type), so
@@ -151,6 +152,7 @@ function syncInput(installationId = 42) {
 }
 
 const WORKFLOW_ID = 'installation-sync:42';
+const WORKFLOW_EXECUTION_TOKEN = 'workflow-token-42';
 
 // Duration strings for the two timer stages.
 // The workflow sets a NEW drain timer after the sync completes, so we need
@@ -158,6 +160,19 @@ const WORKFLOW_ID = 'installation-sync:42';
 // the drain race timer after the sync activity runs.
 const PAST_DEBOUNCE = '15s';
 const PAST_DRAIN = '2s';
+
+function activityContext(overrides: Partial<ActivityContext> = {}): ActivityContext {
+  return {
+    signal: new AbortController().signal,
+    workflowExecutionToken: WORKFLOW_EXECUTION_TOKEN,
+    activityAttemptToken: 'activity-attempt-token-42',
+    heartbeat: vi.fn(),
+    completeAsync: () => {
+      throw new Error('completeAsync is not used in these tests.');
+    },
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -195,7 +210,11 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(state.status).toBe('completed');
     // The activity must have been called at least once.
     expect(mockRefresh).toHaveBeenCalledTimes(1);
-    expect(mockRefresh).toHaveBeenCalledWith(expect.objectContaining({ db: dbStub }), 42);
+    expect(mockRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({ db: dbStub }),
+      42,
+      expect.objectContaining({ syncWorkflowExecutionToken: expect.any(String) }),
+    );
   });
 
   /**
@@ -414,18 +433,26 @@ describe('installation-sync workflow (e2e, real engine)', () => {
   it('reconcileSyncStatusOnTeardown issues one conditional failed-update (no-clobber)', async () => {
     dbUpdates.length = 0;
 
-    await reconcileSyncStatusOnTeardown({ installationId: 42 });
+    await reconcileSyncStatusOnTeardown({ installationId: 42 }, activityContext());
 
     expect(dbUpdates).toHaveLength(1);
     expect((dbUpdates[0].set as { syncStatus?: string }).syncStatus).toBe('failed');
+    expect(
+      (dbUpdates[0].set as { syncWorkflowExecutionToken?: string | null })
+        .syncWorkflowExecutionToken,
+    ).toBeNull();
     // Conditional WHERE present — the load-bearing idempotency / no-clobber guard.
     expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
 
     // Idempotent: a second invocation issues the same conditional statement (the
     // predicate, not the call count, is what makes a settled row a no-op).
-    await reconcileSyncStatusOnTeardown({ installationId: 42 });
+    await reconcileSyncStatusOnTeardown({ installationId: 42 }, activityContext());
     expect(dbUpdates).toHaveLength(2);
     expect((dbUpdates[1].set as { syncStatus?: string }).syncStatus).toBe('failed');
+    expect(
+      (dbUpdates[1].set as { syncWorkflowExecutionToken?: string | null })
+        .syncWorkflowExecutionToken,
+    ).toBeNull();
     expect(dbUpdates[1].whereArgs.length).toBeGreaterThan(0);
   });
 
@@ -445,7 +472,7 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     controller.abort();
 
     await expect(
-      syncRepositories({ installationId: 42 }, { signal: controller.signal }),
+      syncRepositories({ installationId: 42 }, activityContext({ signal: controller.signal })),
     ).rejects.toThrow();
 
     // No DB write and no GitHub fetch happened — the abort check fired first.
@@ -473,7 +500,10 @@ describe('installation-sync workflow (e2e, real engine)', () => {
       return { repositoryCount: 5, deactivatedRepositoryCount: 1 };
     });
 
-    const result = await syncRepositories({ installationId: 42 }, { signal: controller.signal });
+    const result = await syncRepositories(
+      { installationId: 42 },
+      activityContext({ signal: controller.signal }),
+    );
 
     // The successful result is returned, not thrown.
     expect(result).toEqual({ repositoryCount: 5, deactivatedRepositoryCount: 1 });
@@ -483,5 +513,18 @@ describe('installation-sync workflow (e2e, real engine)', () => {
       (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
     );
     expect(failedWrites).toHaveLength(0);
+  });
+
+  it('syncRepositories passes the workflow execution token to the success write fence', async () => {
+    dbUpdates.length = 0;
+
+    await syncRepositories({ installationId: 42 }, activityContext());
+
+    expect(
+      (dbUpdates[0].set as { syncWorkflowExecutionToken?: string }).syncWorkflowExecutionToken,
+    ).toBe(WORKFLOW_EXECUTION_TOKEN);
+    expect(mockRefresh).toHaveBeenCalledWith(expect.anything(), 42, {
+      syncWorkflowExecutionToken: WORKFLOW_EXECUTION_TOKEN,
+    });
   });
 });

@@ -34,6 +34,10 @@ export interface RefreshInstallationRepositoriesResult {
   deactivatedRepositoryCount: number;
 }
 
+export type RefreshInstallationRepositoriesOptions = {
+  syncWorkflowExecutionToken?: string;
+};
+
 export type RepositorySortField =
   | 'name'
   | 'updated_at'
@@ -327,6 +331,7 @@ export async function getOrCreateRepository(
 export async function refreshInstallationRepositories(
   context: GithubServiceContext,
   installationId: number,
+  options: RefreshInstallationRepositoriesOptions = {},
 ): Promise<RefreshInstallationRepositoriesResult> {
   const octokit = await context.getInstallationOctokit(installationId);
   if (!octokit) {
@@ -438,14 +443,28 @@ export async function refreshInstallationRepositories(
       lastSyncedAt: new Date(),
       syncStatus: 'idle',
       syncError: null,
+      syncWorkflowExecutionToken: null,
       updatedAt: new Date(),
     })
-    .where(eq(githubInstallation.installationId, installationId));
+    .where(buildInstallationSyncPredicate(installationId, options.syncWorkflowExecutionToken));
 
   return {
     repositoryCount: repositories.length,
     deactivatedRepositoryCount: repositoryIdsToDeactivate.length,
   };
+}
+
+function buildInstallationSyncPredicate(
+  installationId: number,
+  syncWorkflowExecutionToken?: string,
+) {
+  const installationPredicate = eq(githubInstallation.installationId, installationId);
+  if (syncWorkflowExecutionToken === undefined) return installationPredicate;
+
+  return and(
+    installationPredicate,
+    eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+  );
 }
 
 /**
