@@ -186,4 +186,53 @@ describe('refreshInstallationRepositories', () => {
     expect(installation.syncWorkflowExecutionToken).toBe('current-workflow');
     expect(installation.syncActivityAttemptToken).toBe('current-attempt');
   });
+
+  it('settles a failed interrupted row when sync owner tokens still match', async () => {
+    expect.assertions(6);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    await testContext.db
+      .update(githubInstallation)
+      .set({
+        syncStatus: 'failed',
+        syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
+        syncWorkflowExecutionToken: 'workflow-token',
+        syncActivityAttemptToken: 'activity-token',
+      })
+      .where(eq(githubInstallation.installationId, 12345));
+
+    const context = createGithubContext(testContext, [
+      {
+        id: 100,
+        owner: { login: 'test-org' },
+        name: 'active-repository',
+        default_branch: 'main',
+      },
+    ]);
+
+    const result = await refreshInstallationRepositories(context, 12345, {
+      syncWorkflowExecutionToken: 'workflow-token',
+      syncActivityAttemptToken: 'activity-token',
+    });
+
+    expect(result).toEqual({ repositoryCount: 1, deactivatedRepositoryCount: 0 });
+
+    const [activeRepository] = await testContext.db
+      .select()
+      .from(repository)
+      .where(eq(repository.id, 100));
+    expect(activeRepository.name).toBe('active-repository');
+
+    const [installation] = await testContext.db
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, 12345));
+    expect(installation.syncStatus).toBe('idle');
+    expect(installation.syncError).toBeNull();
+    expect(installation.syncWorkflowExecutionToken).toBeNull();
+    expect(installation.syncActivityAttemptToken).toBeNull();
+  });
 });

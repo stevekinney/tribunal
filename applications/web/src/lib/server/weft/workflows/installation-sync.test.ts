@@ -444,10 +444,10 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(
       (dbUpdates[0].set as { syncWorkflowExecutionToken?: string | null })
         .syncWorkflowExecutionToken,
-    ).toBeNull();
+    ).toBeUndefined();
     expect(
       (dbUpdates[0].set as { syncActivityAttemptToken?: string | null }).syncActivityAttemptToken,
-    ).toBeNull();
+    ).toBeUndefined();
     // Conditional WHERE present — the load-bearing idempotency / no-clobber guard.
     expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
 
@@ -459,10 +459,10 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(
       (dbUpdates[1].set as { syncWorkflowExecutionToken?: string | null })
         .syncWorkflowExecutionToken,
-    ).toBeNull();
+    ).toBeUndefined();
     expect(
       (dbUpdates[1].set as { syncActivityAttemptToken?: string | null }).syncActivityAttemptToken,
-    ).toBeNull();
+    ).toBeUndefined();
     expect(dbUpdates[1].whereArgs.length).toBeGreaterThan(0);
   });
 

@@ -41,7 +41,9 @@
  * settlement requires the workflow execution token plus the activity attempt
  * token recorded by syncRepositories. Finalizer cleanup requires the workflow
  * execution token, a pre-token NULL fallback, or a stale row whose update time
- * predates the finalizing workflow run.
+ * predates the finalizing workflow run. The finalizer leaves owner tokens in
+ * place so a concurrently finishing activity can still prove ownership and
+ * settle a completed repository sync back to 'idle'.
  * `completed`/`failed` workflow terminals never run it. The workflow records its
  * finalizer payload via `ctx.setFinalizerState({ installationId, workflowStartedAt })`
  * immediately on entry so the installation id and stale-row cutoff are durable
@@ -208,13 +210,16 @@ type SyncFinalizerState = { installationId: number; workflowStartedAt?: number }
  * Idempotent by construction (the finalizer "runs at least once and must be
  * idempotent"): the update is conditional on the row STILL being 'in_progress'
  * and, when Weft provides one, still carrying this run's workflow execution
- * token. A NULL workflow-token fallback handles rows that were already
+ * token, and it leaves those tokens on the failed row. A NULL workflow-token
+ * fallback handles rows that were already
  * in-progress before this migration deployed. A stale-row fallback handles a
  * newer run that is cancelled before it can replace an older in-progress token:
  * the finalizer may clean rows updated before this workflow run started, but not
- * rows updated by a successor. A second invocation, a successor run, or a sync
- * that finished as 'idle'/'failed' before teardown landed matches no rows and is
- * a no-op — so a genuine success is never clobbered.
+ * rows updated by a successor. If this run's sync activity finishes after the
+ * finalizer, the preserved tokens let its success write settle the row to 'idle'.
+ * A second invocation, a successor run, or a sync that finished as
+ * 'idle'/'failed' before teardown landed matches no rows and is a no-op — so a
+ * genuine success is never clobbered.
  *
  * Why only 'in_progress' (not also 'pending'): nothing in the sync flow writes
  * 'pending' today (enqueueInstallationSync only startOrSignals; it does not
@@ -239,8 +244,6 @@ export async function reconcileSyncStatusOnTeardown(
       // lifecycle teardown (installation removed), a lease eviction stopping the
       // engine, and an activity timeout — without asserting which one occurred.
       syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
-      syncWorkflowExecutionToken: null,
-      syncActivityAttemptToken: null,
       updatedAt: new Date(),
     })
     .where(
