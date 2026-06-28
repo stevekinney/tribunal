@@ -253,6 +253,13 @@
       "when": 1782688434025,
       "tag": "0035_add-installation-sync-owner-token",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1782689978446,
+      "tag": "0036_add-installation-sync-attempt-token",
+      "breakpoints": true
     }
   ]
 }

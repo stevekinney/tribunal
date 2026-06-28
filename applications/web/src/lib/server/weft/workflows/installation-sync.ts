@@ -37,16 +37,18 @@
  * stuck at 'in_progress' forever (a perpetual spinner in the UI). The finalizer
  * flips only a row still showing this run's 'in_progress' to 'failed' with an
  * explanatory error, leaving an already-settled 'idle'/'failed' row untouched.
- * Weft 0.9 also passes the workflow execution token to the activity and the
- * finalizer; both status-settling writes require the token recorded by
- * syncRepositories before they can clear or fail an in-flight sync.
+ * Weft 0.9 also passes owner tokens to the activity and finalizer; activity
+ * settlement requires the workflow execution token plus the activity attempt
+ * token recorded by syncRepositories, while finalizer cleanup requires the
+ * workflow execution token or a pre-token NULL fallback for rows already
+ * in-progress during rollout.
  * `completed`/`failed` workflow terminals never run it. The workflow records its
  * finalizer payload via `ctx.setFinalizerState({ installationId })` immediately
  * on entry so the installation id is durable before any cancellable work begins.
  */
 
 import { workflow, signal, activity, type ActivityContext } from '@lostgradient/weft';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { githubInstallation } from '@tribunal/database/schema';
 import { refreshInstallationRepositories } from '@tribunal/github/repositories/service';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
@@ -117,10 +119,10 @@ const DRAIN_DURATION = '1s';
  * repositories ARE synced and `idle` is correct, so a late cancel is not a data
  * problem and must not be turned into a spurious `failed`.
  *
- * Weft 0.9 workflow execution tokens harden the late-cancel path: the activity
- * records the token with 'in_progress', and both the success write inside
- * refreshInstallationRepositories and the finalizer's failed write require that
- * same token before clearing the in-flight status.
+ * Weft 0.9 execution tokens harden the late-cancel path: the activity records
+ * both the workflow execution token and the activity attempt token with
+ * 'in_progress'. Success/failure writes from this activity attempt require both
+ * tokens, so a stale retry attempt cannot clear a newer attempt's ownership.
  */
 export async function syncRepositories(
   input: { installationId: number },
@@ -131,6 +133,7 @@ export async function syncRepositories(
 }> {
   const { installationId } = input;
   const syncWorkflowExecutionToken = context?.workflowExecutionToken;
+  const syncActivityAttemptToken = context?.activityAttemptToken;
 
   // Bail before any side effect if this run was already cancelled (e.g. cancelled
   // during the leading debounce). Throwing here means the workflow treats the run
@@ -144,6 +147,7 @@ export async function syncRepositories(
     .set({
       syncStatus: 'in_progress',
       syncWorkflowExecutionToken: syncWorkflowExecutionToken ?? null,
+      syncActivityAttemptToken: syncActivityAttemptToken ?? null,
       updatedAt: new Date(),
     })
     .where(eq(githubInstallation.installationId, installationId));
@@ -151,6 +155,7 @@ export async function syncRepositories(
   try {
     const result = await refreshInstallationRepositories(githubContext, installationId, {
       syncWorkflowExecutionToken,
+      syncActivityAttemptToken,
     });
     // refreshInstallationRepositories already set syncStatus = 'idle' on success.
     // We deliberately do NOT re-check the abort signal here: a cancel arriving
@@ -170,9 +175,16 @@ export async function syncRepositories(
         syncStatus: 'failed',
         syncError: errorMessage,
         syncWorkflowExecutionToken: null,
+        syncActivityAttemptToken: null,
         updatedAt: new Date(),
       })
-      .where(buildInstallationSyncPredicate(installationId, syncWorkflowExecutionToken));
+      .where(
+        buildActivitySyncPredicate(
+          installationId,
+          syncWorkflowExecutionToken,
+          syncActivityAttemptToken,
+        ),
+      );
 
     throw error;
   }
@@ -195,9 +207,10 @@ type SyncFinalizerState = { installationId: number };
  * Idempotent by construction (the finalizer "runs at least once and must be
  * idempotent"): the update is conditional on the row STILL being 'in_progress'
  * and, when Weft provides one, still carrying this run's workflow execution
- * token. A second invocation, a successor run, or a sync that finished as
- * 'idle'/'failed' before teardown landed matches no rows and is a no-op — so a
- * genuine success is never clobbered.
+ * token. A NULL workflow-token fallback handles rows that were already
+ * in-progress before this migration deployed. A second invocation, a successor
+ * run, or a sync that finished as 'idle'/'failed' before teardown landed matches
+ * no rows and is a no-op — so a genuine success is never clobbered.
  *
  * Why only 'in_progress' (not also 'pending'): nothing in the sync flow writes
  * 'pending' today (enqueueInstallationSync only startOrSignals; it does not
@@ -223,15 +236,36 @@ export async function reconcileSyncStatusOnTeardown(
       // engine, and an activity timeout — without asserting which one occurred.
       syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
       syncWorkflowExecutionToken: null,
+      syncActivityAttemptToken: null,
       updatedAt: new Date(),
     })
-    .where(buildInstallationSyncPredicate(installationId, syncWorkflowExecutionToken));
+    .where(buildFinalizerSyncPredicate(installationId, syncWorkflowExecutionToken));
 }
 
-function buildInstallationSyncPredicate(
+function buildActivitySyncPredicate(
   installationId: number,
   syncWorkflowExecutionToken?: string,
+  syncActivityAttemptToken?: string,
 ) {
+  const installationPredicate = eq(githubInstallation.installationId, installationId);
+  const inProgressPredicate = eq(githubInstallation.syncStatus, 'in_progress');
+  if (syncWorkflowExecutionToken === undefined) {
+    return and(installationPredicate, inProgressPredicate);
+  }
+
+  const predicates = [
+    installationPredicate,
+    inProgressPredicate,
+    eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+  ];
+  if (syncActivityAttemptToken !== undefined) {
+    predicates.push(eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken));
+  }
+
+  return and(...predicates);
+}
+
+function buildFinalizerSyncPredicate(installationId: number, syncWorkflowExecutionToken?: string) {
   const installationPredicate = eq(githubInstallation.installationId, installationId);
   const inProgressPredicate = eq(githubInstallation.syncStatus, 'in_progress');
   if (syncWorkflowExecutionToken === undefined) {
@@ -241,7 +275,10 @@ function buildInstallationSyncPredicate(
   return and(
     installationPredicate,
     inProgressPredicate,
-    eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+    or(
+      eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+      isNull(githubInstallation.syncWorkflowExecutionToken),
+    ),
   );
 }
 

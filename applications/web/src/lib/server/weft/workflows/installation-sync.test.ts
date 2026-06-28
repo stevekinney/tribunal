@@ -153,6 +153,7 @@ function syncInput(installationId = 42) {
 
 const WORKFLOW_ID = 'installation-sync:42';
 const WORKFLOW_EXECUTION_TOKEN = 'workflow-token-42';
+const ACTIVITY_ATTEMPT_TOKEN = 'activity-attempt-token-42';
 
 // Duration strings for the two timer stages.
 // The workflow sets a NEW drain timer after the sync completes, so we need
@@ -165,7 +166,7 @@ function activityContext(overrides: Partial<ActivityContext> = {}): ActivityCont
   return {
     signal: new AbortController().signal,
     workflowExecutionToken: WORKFLOW_EXECUTION_TOKEN,
-    activityAttemptToken: 'activity-attempt-token-42',
+    activityAttemptToken: ACTIVITY_ATTEMPT_TOKEN,
     heartbeat: vi.fn(),
     completeAsync: () => {
       throw new Error('completeAsync is not used in these tests.');
@@ -213,7 +214,10 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(mockRefresh).toHaveBeenCalledWith(
       expect.objectContaining({ db: dbStub }),
       42,
-      expect.objectContaining({ syncWorkflowExecutionToken: expect.any(String) }),
+      expect.objectContaining({
+        syncWorkflowExecutionToken: expect.any(String),
+        syncActivityAttemptToken: expect.any(String),
+      }),
     );
   });
 
@@ -441,6 +445,9 @@ describe('installation-sync workflow (e2e, real engine)', () => {
       (dbUpdates[0].set as { syncWorkflowExecutionToken?: string | null })
         .syncWorkflowExecutionToken,
     ).toBeNull();
+    expect(
+      (dbUpdates[0].set as { syncActivityAttemptToken?: string | null }).syncActivityAttemptToken,
+    ).toBeNull();
     // Conditional WHERE present — the load-bearing idempotency / no-clobber guard.
     expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
 
@@ -452,6 +459,9 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(
       (dbUpdates[1].set as { syncWorkflowExecutionToken?: string | null })
         .syncWorkflowExecutionToken,
+    ).toBeNull();
+    expect(
+      (dbUpdates[1].set as { syncActivityAttemptToken?: string | null }).syncActivityAttemptToken,
     ).toBeNull();
     expect(dbUpdates[1].whereArgs.length).toBeGreaterThan(0);
   });
@@ -515,7 +525,7 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(failedWrites).toHaveLength(0);
   });
 
-  it('syncRepositories passes the workflow execution token to the success write fence', async () => {
+  it('syncRepositories passes owner tokens to the success write fence', async () => {
     dbUpdates.length = 0;
 
     await syncRepositories({ installationId: 42 }, activityContext());
@@ -523,8 +533,12 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(
       (dbUpdates[0].set as { syncWorkflowExecutionToken?: string }).syncWorkflowExecutionToken,
     ).toBe(WORKFLOW_EXECUTION_TOKEN);
+    expect(
+      (dbUpdates[0].set as { syncActivityAttemptToken?: string }).syncActivityAttemptToken,
+    ).toBe(ACTIVITY_ATTEMPT_TOKEN);
     expect(mockRefresh).toHaveBeenCalledWith(expect.anything(), 42, {
       syncWorkflowExecutionToken: WORKFLOW_EXECUTION_TOKEN,
+      syncActivityAttemptToken: ACTIVITY_ATTEMPT_TOKEN,
     });
   });
 });

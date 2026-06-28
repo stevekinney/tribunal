@@ -36,6 +36,7 @@ export interface RefreshInstallationRepositoriesResult {
 
 export type RefreshInstallationRepositoriesOptions = {
   syncWorkflowExecutionToken?: string;
+  syncActivityAttemptToken?: string;
 };
 
 export type RepositorySortField =
@@ -328,8 +329,9 @@ export async function getOrCreateRepository(
  *
  * On success, tokenless setup calls set `githubInstallation.syncStatus = 'idle'`,
  * clear any sync error, and update `lastSyncedAt`. Workflow callers pass
- * `syncWorkflowExecutionToken`; for them, the status settlement and token clear
- * only happen if the installation row still carries that same token.
+ * `syncWorkflowExecutionToken` and `syncActivityAttemptToken`; for them, the
+ * status settlement and token clear only happen if the installation row still
+ * carries those same tokens.
  */
 export async function refreshInstallationRepositories(
   context: GithubServiceContext,
@@ -447,9 +449,10 @@ export async function refreshInstallationRepositories(
       syncStatus: 'idle',
       syncError: null,
       syncWorkflowExecutionToken: null,
+      syncActivityAttemptToken: null,
       updatedAt: new Date(),
     })
-    .where(buildInstallationSyncPredicate(installationId, options.syncWorkflowExecutionToken));
+    .where(buildInstallationSyncPredicate(installationId, options));
 
   return {
     repositoryCount: repositories.length,
@@ -459,15 +462,21 @@ export async function refreshInstallationRepositories(
 
 function buildInstallationSyncPredicate(
   installationId: number,
-  syncWorkflowExecutionToken?: string,
+  options: RefreshInstallationRepositoriesOptions,
 ) {
   const installationPredicate = eq(githubInstallation.installationId, installationId);
+  const { syncWorkflowExecutionToken, syncActivityAttemptToken } = options;
   if (syncWorkflowExecutionToken === undefined) return installationPredicate;
 
-  return and(
+  const predicates = [
     installationPredicate,
     eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
-  );
+  ];
+  if (syncActivityAttemptToken !== undefined) {
+    predicates.push(eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken));
+  }
+
+  return and(...predicates);
 }
 
 /**

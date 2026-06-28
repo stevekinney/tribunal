@@ -1,0 +1,1 @@
+ALTER TABLE "github_installation" ADD COLUMN "sync_activity_attempt_token" text;
