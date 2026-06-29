@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tribunal Production Operations"
+  short_description: "Deploy and triage Tribunal production services."
+  default_prompt: "Use $tribunal-production-operations to ship Tribunal to production or triage production deployment issues."
