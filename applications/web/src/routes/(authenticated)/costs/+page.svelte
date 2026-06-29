@@ -5,6 +5,15 @@
 
   let { data } = $props();
 
+  const rollupLabels: Record<string, string> = {
+    byReviewRun: 'By Review Run',
+    byPullRequest: 'By Pull Request',
+    byRepository: 'By Repository',
+    byAgent: 'By Agent',
+    byAgentPerRepository: 'By Agent per Repository',
+    byUserPerDay: 'By User per Day',
+  };
+
   const meterValue = $derived(
     data.costs.dailyCostCapUsd === 0
       ? 100
@@ -35,7 +44,7 @@
   <div class="rollup-grid">
     {#each Object.entries(data.costs.rollups) as [name, rows] (name)}
       <Card>
-        <h2>{name}</h2>
+        <h2>{rollupLabels[name] ?? name}</h2>
         {#if rows.length === 0}
           <p class="muted">No cost events.</p>
         {:else}
