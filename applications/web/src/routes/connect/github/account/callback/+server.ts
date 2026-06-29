@@ -1,8 +1,11 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Endpoints } from '@octokit/types';
+import { eq } from 'drizzle-orm';
 import { consumeOAuthStateCookie, upsertOAuthConnection } from '$lib/server/auth/authentication';
 import { getProviderClient } from '$lib/server/auth/providers';
 import { invalidateGitHubAccessCache } from '$lib/server/github/access';
+import { db } from '$lib/server/database';
+import { user as userTable } from '@tribunal/database/schema';
 import type { RequestHandler } from './$types';
 
 type GitHubUser = Endpoints['GET /user']['response']['data'];
@@ -86,5 +89,13 @@ export const GET: RequestHandler = async ({ locals, url, cookies }) => {
   const githubUser = (await githubUserResponse.json()) as GitHubUser;
 
   await saveOAuthConnection(locals.user.id, String(githubUser.id), tokens);
+
+  if (githubUser.avatar_url) {
+    await db
+      .update(userTable)
+      .set({ avatarUrl: githubUser.avatar_url })
+      .where(eq(userTable.id, locals.user.id));
+  }
+
   redirect(302, state.returnTo);
 };

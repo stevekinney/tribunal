@@ -67,9 +67,9 @@
 </div>
 
 <style>
-  /* Cinder's light-dark() tokens resolve at :root (light), not at this dark
-     subtree — hard-code the dark-arm values until Cinder supports nested
-     color-scheme regions. */
+  /* light-dark() custom properties inherit the resolved value from :root
+     (color-scheme: light), ignoring color-scheme: dark on this subtree.
+     Verified in DevTools: removing these overrides produces dark-on-dark text. */
   .app-header[data-theme='dark'] {
     --cinder-text-muted: oklch(82% 0.02 245);
     --cinder-text: oklch(92% 0.02 245);
