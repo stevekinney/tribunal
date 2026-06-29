@@ -45,7 +45,7 @@ describe('/costs page', () => {
       .element(page.getByRole('link', { name: 'Estimate' }))
       .toHaveAttribute('data-active', 'true');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
-    await expect.element(page.getByText('byAgentPerRepository')).toBeInTheDocument();
+    await expect.element(page.getByText('By Agent per Repository')).toBeInTheDocument();
     await expect.element(page.getByText('Read tokens: 25')).toBeInTheDocument();
   });
 });
