@@ -1,19 +1,39 @@
 <script lang="ts">
+  import type { PageProps } from './$types';
+  import { enhance } from '$app/forms';
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
+  import { SearchField } from '@lostgradient/cinder/search-field';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import { FolderGit2, Save } from 'lucide-svelte';
+  import { Table } from '@lostgradient/cinder/table';
+  import { FolderGit2, Plus, Eye, EyeOff } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
   import { Alert } from '@lostgradient/cinder/alert';
 
-  let { data } = $props();
+  let { data, form }: PageProps = $props();
+
+  let searchQuery = $state('');
+  let showSearch = $state(false);
 
   const repositories = $derived(data.repositories);
-  const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
+  const watchedRepositories = $derived(repositories.filter((r) => r.review.watched));
+  const searchVisible = $derived(showSearch || watchedRepositories.length === 0);
+
+  const searchResults = $derived.by(() => {
+    if (!searchQuery.trim()) return [];
+    const query = searchQuery.toLowerCase();
+    return repositories.filter(
+      (r) =>
+        r.name.toLowerCase().includes(query) ||
+        r.owner.toLowerCase().includes(query) ||
+        `${r.owner}/${r.name}`.toLowerCase().includes(query),
+    );
+  });
+
   const emptyStateTitle = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub to get started';
     if (hasInstallations) return 'No repositories selected';
@@ -36,6 +56,10 @@
     <Alert variant="error">{data.loadError}</Alert>
   {/if}
 
+  {#if form?.error}
+    <Alert variant="error">{form.error}</Alert>
+  {/if}
+
   {#if repositories.length === 0}
     <Card padding="none">
       <EmptyState title={emptyStateTitle} description={emptyStateDescription}>
@@ -49,100 +73,158 @@
       </EmptyState>
     </Card>
   {:else}
-    <ul class="repository-list">
-      {#each repositories as repository (repository.id)}
-        <li>
-          <Card>
-            <div class="repository-row">
-              <div class="repository-identity">
-                <Link href={`/repositories/${repository.id}/pull-requests`}>
+    <section class="watched-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          Watched repositories
+          <Badge size="sm">{watchedRepositories.length}</Badge>
+        </h2>
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-expanded={searchVisible}
+          aria-controls="search-section"
+          onclick={() => (showSearch = !showSearch)}
+        >
+          {#snippet leadingIcon()}
+            {#if searchVisible}<EyeOff size={14} aria-hidden="true" />{:else}<Plus
+                size={14}
+                aria-hidden="true"
+              />{/if}
+          {/snippet}
+          {searchVisible ? 'Close' : 'Add repository'}
+        </Button>
+      </div>
+
+      {#if watchedRepositories.length === 0}
+        <p class="empty-hint">
+          No repositories are being watched yet. Use the search below to add repositories to
+          Tribunal.
+        </p>
+      {:else}
+        <Card padding="none">
+          <Table density="comfortable">
+            <Table.Header>
+              <Table.HeaderCell>Repository</Table.HeaderCell>
+              <Table.HeaderCell>Branch</Table.HeaderCell>
+              <Table.HeaderCell>Last run</Table.HeaderCell>
+              <Table.HeaderCell align="right">30-day cost</Table.HeaderCell>
+            </Table.Header>
+            <Table.Body>
+              {#each watchedRepositories as repository (repository.id)}
+                <Table.Row>
+                  <Table.Cell>
+                    <Link href={`/repositories/${repository.id}/pull-requests`}>
+                      <span class="repository-owner">{repository.owner}</span>
+                      <span class="repository-separator">/</span>
+                      <span class="repository-name">{repository.name}</span>
+                    </Link>
+                  </Table.Cell>
+                  <Table.Cell>
+                    {#if repository.defaultBranch}
+                      <Badge size="sm">{repository.defaultBranch}</Badge>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell>
+                    <span class="text-muted">
+                      {repository.review.lastRunStatus ?? 'Never'}
+                    </span>
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    ${repository.review.estimatedCostLast30DaysUsd.toFixed(2)}
+                  </Table.Cell>
+                </Table.Row>
+              {/each}
+            </Table.Body>
+          </Table>
+        </Card>
+      {/if}
+    </section>
+
+    {#if searchVisible}
+      <section class="search-section" id="search-section">
+        <h2 class="section-title">Find a repository</h2>
+        <SearchField
+          id="repository-search"
+          value={searchQuery}
+          placeholder="Search by owner or name…"
+          oninput={(value) => (searchQuery = value)}
+        />
+
+        {#if searchQuery.trim() && searchResults.length === 0}
+          <p class="empty-hint">No repositories matching "{searchQuery}".</p>
+        {:else if searchResults.length > 0}
+          <ul class="search-results">
+            {#each searchResults as repository (repository.id)}
+              <li class="search-result-item">
+                <div class="search-result-identity">
                   <span class="repository-owner">{repository.owner}</span>
                   <span class="repository-separator">/</span>
                   <span class="repository-name">{repository.name}</span>
-                </Link>
-                {#if repository.defaultBranch}
-                  <Badge size="sm">{repository.defaultBranch}</Badge>
-                {/if}
-              </div>
-              <div class="repository-meta">
-                <Badge size="sm" variant={repository.review.watched ? 'success' : 'neutral'}>
-                  {repository.review.watched ? 'Watched' : 'Not watched'}
-                </Badge>
-                <span class="installation-account">{repository.accountLogin}</span>
-              </div>
-            </div>
-
-            <form method="POST" action="?/watch" class="repository-review-form">
-              <input type="hidden" name="repositoryId" value={repository.id} />
-              <label class="watch-control">
-                <input type="checkbox" name="watched" checked={repository.review.watched} />
-                <span>Watch pull requests</span>
-              </label>
-
-              <label class="field">
-                <span>Assigned agents</span>
-                <select name="agentIds" multiple size={Math.min(Math.max(agents.length, 3), 6)}>
-                  {#each agents as agent (agent.id)}
-                    <option
-                      value={agent.id}
-                      selected={repository.review.agents.some(
-                        (assigned) => assigned.id === agent.id,
-                      )}
-                    >
-                      {agent.slug}{agent.enabled ? '' : ' (disabled)'}
-                    </option>
+                  {#if repository.review.watched}
+                    <Badge size="sm" variant="success">Watched</Badge>
+                  {/if}
+                </div>
+                <form method="POST" action="?/watch" class="search-result-action" use:enhance>
+                  <input type="hidden" name="repositoryId" value={repository.id} />
+                  <input
+                    type="hidden"
+                    name="watched"
+                    value={repository.review.watched ? '' : 'on'}
+                  />
+                  <input
+                    type="hidden"
+                    name="ignoreGlobs"
+                    value={repository.review.ignoreGlobs.join('\n')}
+                  />
+                  {#each repository.review.agents as agent (agent.id)}
+                    <input type="hidden" name="agentIds" value={agent.id} />
                   {/each}
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Ignore globs</span>
-                <textarea
-                  name="ignoreGlobs"
-                  rows="3"
-                  spellcheck="false"
-                  value={repository.review.ignoreGlobs.join('\n')}
-                ></textarea>
-              </label>
-
-              <div class="review-summary">
-                <span>Last run: {repository.review.lastRunStatus ?? 'none'}</span>
-                <span>
-                  30-day estimate: ${repository.review.estimatedCostLast30DaysUsd.toFixed(2)}
-                </span>
-                <Button type="submit" size="sm" variant="secondary">
-                  Save
-                  {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
-                </Button>
-              </div>
-            </form>
-          </Card>
-        </li>
-      {/each}
-    </ul>
+                  <Button
+                    type="submit"
+                    variant={repository.review.watched ? 'ghost' : 'secondary'}
+                    size="sm"
+                  >
+                    {#snippet leadingIcon()}
+                      {#if repository.review.watched}<EyeOff
+                          size={14}
+                          aria-hidden="true"
+                        />{:else}<Eye size={14} aria-hidden="true" />{/if}
+                    {/snippet}
+                    {repository.review.watched ? 'Unwatch' : 'Watch'}
+                  </Button>
+                </form>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="empty-hint">Type to search across all accessible repositories.</p>
+        {/if}
+      </section>
+    {/if}
   {/if}
 </Page>
 
 <style>
-  .repository-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    list-style: none;
-  }
-
-  .repository-row {
+  .section-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
   }
 
-  .repository-identity {
+  .section-title {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    min-width: 0;
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+  }
+
+  .empty-hint {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
   }
 
   .repository-owner {
@@ -158,72 +240,47 @@
     color: var(--text);
   }
 
-  .repository-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
+  .text-muted {
     color: var(--text-muted);
-    white-space: nowrap;
+    font-size: var(--text-sm);
   }
 
-  .repository-review-form {
-    display: grid;
-    grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr);
-    gap: var(--space-4);
-    margin-top: var(--space-4);
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--border-muted);
-  }
-
-  .watch-control {
-    grid-column: 1 / -1;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-weight: var(--font-medium);
-    color: var(--text);
-  }
-
-  .field {
+  .search-section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
-    color: var(--text-muted);
+    gap: var(--space-4);
   }
 
-  select,
-  textarea {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    padding: var(--space-2) var(--space-3);
-    font: inherit;
+  .search-results {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
   }
 
-  .review-summary {
-    grid-column: 1 / -1;
+  .search-result-item {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--text-muted);
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-muted);
   }
 
-  @media (max-width: 640px) {
-    .repository-row,
-    .review-summary {
-      align-items: flex-start;
-      flex-direction: column;
-    }
+  .search-result-item:last-child {
+    border-bottom: none;
+  }
 
-    .repository-review-form {
-      grid-template-columns: 1fr;
-    }
+  .search-result-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .search-result-action {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-shrink: 0;
   }
 </style>
