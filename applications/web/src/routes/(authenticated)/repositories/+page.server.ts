@@ -1,4 +1,4 @@
-import { redirect } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import { getRepositoriesForUser } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
@@ -86,8 +86,8 @@ export const actions: Actions = {
 
     const formData = await request.formData();
     const repositoryId = Number(formData.get('repositoryId'));
-    if (!Number.isInteger(repositoryId)) {
-      return { error: 'Repository is invalid.' };
+    if (!Number.isInteger(repositoryId) || repositoryId <= 0) {
+      return fail(400, { error: 'Repository is invalid.' });
     }
 
     return saveRepositoryWatchSettings(user.id, {

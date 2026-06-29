@@ -1,27 +1,13 @@
 <script lang="ts">
+  import type { LayoutProps } from './$types';
   import { page } from '$app/state';
   import { NavigationBar } from '@lostgradient/cinder/navigation-bar';
-  import type { NavigationBarToggleAttributes } from '@lostgradient/cinder/navigation-bar';
   import { NavigationItem } from '@lostgradient/cinder/navigation-item';
-  import { Avatar } from '@lostgradient/cinder/avatar';
   import SkipLinks from '$lib/components/skip-links.svelte';
   import UserMenu from '$lib/components/user-menu.svelte';
-  import {
-    LogOut,
-    FolderGit2,
-    Cat,
-    Menu,
-    X,
-    Bot,
-    Activity,
-    CircleDollarSign,
-    Settings,
-    Workflow,
-  } from 'lucide-svelte';
+  import { Cat } from 'lucide-svelte';
 
-  let { data, children } = $props();
-
-  let mobileMenuOpen = $state(false);
+  let { data, children }: LayoutProps = $props();
 
   // NavigationItem owns the active styling; the app owns the routing match.
   const repositoriesActive = $derived(
@@ -41,7 +27,7 @@
 <div class="app-layout">
   <header class="app-header" data-theme="dark">
     <div class="header-content">
-      <NavigationBar bind:mobileMenuOpen>
+      <NavigationBar>
         {#snippet brand()}
           <a href="/repositories" class="brand-link">
             <div class="brand-icon">
@@ -52,78 +38,50 @@
         {/snippet}
 
         {#snippet items({ variant })}
-          {#if variant === 'mobile'}
-            <NavigationItem href="/repositories" variant="vertical" active={repositoriesActive}>
-              <FolderGit2 class="icon-md" aria-hidden="true" />
-              Repositories
+          <NavigationItem
+            href="/repositories"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={repositoriesActive}
+          >
+            Repositories
+          </NavigationItem>
+          <NavigationItem
+            href="/agents"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={agentsActive}
+          >
+            Agents
+          </NavigationItem>
+          <NavigationItem
+            href="/runs"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={runsActive}
+          >
+            Runs
+          </NavigationItem>
+          <NavigationItem
+            href="/costs"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={costsActive}
+          >
+            Costs
+          </NavigationItem>
+          <NavigationItem
+            href="/settings"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={settingsActive}
+          >
+            Settings
+          </NavigationItem>
+          {#if data.user?.isPlatformAdministrator}
+            <NavigationItem
+              href="/workflow-inspector"
+              variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+              active={workflowInspectorActive}
+            >
+              Workflows
             </NavigationItem>
-            <NavigationItem href="/agents" variant="vertical" active={agentsActive}>
-              <Bot class="icon-md" aria-hidden="true" />
-              Agents
-            </NavigationItem>
-            <NavigationItem href="/runs" variant="vertical" active={runsActive}>
-              <Activity class="icon-md" aria-hidden="true" />
-              Runs
-            </NavigationItem>
-            <NavigationItem href="/costs" variant="vertical" active={costsActive}>
-              <CircleDollarSign class="icon-md" aria-hidden="true" />
-              Costs
-            </NavigationItem>
-            <NavigationItem href="/settings" variant="vertical" active={settingsActive}>
-              <Settings class="icon-md" aria-hidden="true" />
-              Settings
-            </NavigationItem>
-            {#if data.user?.isPlatformAdministrator}
-              <NavigationItem
-                href="/workflow-inspector"
-                variant="vertical"
-                active={workflowInspectorActive}
-              >
-                <Workflow class="icon-md" aria-hidden="true" />
-                Workflows
-              </NavigationItem>
-            {/if}
-
-            <div class="drawer-footer">
-              {#if data.user}
-                <div class="drawer-user">
-                  <Avatar src={data.user.avatarUrl ?? undefined} alt={data.user.username} />
-                  <div class="drawer-user-info">
-                    <span class="drawer-username">{data.user.username}</span>
-                  </div>
-                </div>
-              {/if}
-              <form method="POST" action="/logout">
-                <button type="submit" class="sign-out-button">
-                  <LogOut class="sign-out-icon" />
-                  Sign out
-                </button>
-              </form>
-            </div>
-          {:else}
-            <NavigationItem href="/repositories" active={repositoriesActive}>
-              Repositories
-            </NavigationItem>
-            <NavigationItem href="/agents" active={agentsActive}>Agents</NavigationItem>
-            <NavigationItem href="/runs" active={runsActive}>Runs</NavigationItem>
-            <NavigationItem href="/costs" active={costsActive}>Costs</NavigationItem>
-            <NavigationItem href="/settings" active={settingsActive}>Settings</NavigationItem>
-            {#if data.user?.isPlatformAdministrator}
-              <NavigationItem href="/workflow-inspector" active={workflowInspectorActive}>
-                Workflows
-              </NavigationItem>
-            {/if}
           {/if}
-        {/snippet}
-
-        {#snippet menuToggle(attrs: NavigationBarToggleAttributes)}
-          <button type="button" {...attrs} aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}>
-            {#if mobileMenuOpen}
-              <X aria-hidden="true" />
-            {:else}
-              <Menu aria-hidden="true" />
-            {/if}
-          </button>
         {/snippet}
 
         {#snippet actions()}
@@ -132,6 +90,28 @@
           {/if}
         {/snippet}
       </NavigationBar>
+      <nav id="mobile-navigation" class="mobile-navigation" aria-label="Mobile navigation">
+        <NavigationItem href="/repositories" variant="vertical" active={repositoriesActive}>
+          Repositories
+        </NavigationItem>
+        <NavigationItem href="/agents" variant="vertical" active={agentsActive}>
+          Agents
+        </NavigationItem>
+        <NavigationItem href="/runs" variant="vertical" active={runsActive}>Runs</NavigationItem>
+        <NavigationItem href="/costs" variant="vertical" active={costsActive}>Costs</NavigationItem>
+        <NavigationItem href="/settings" variant="vertical" active={settingsActive}>
+          Settings
+        </NavigationItem>
+        {#if data.user?.isPlatformAdministrator}
+          <NavigationItem
+            href="/workflow-inspector"
+            variant="vertical"
+            active={workflowInspectorActive}
+          >
+            Workflows
+          </NavigationItem>
+        {/if}
+      </nav>
     </div>
   </header>
 
@@ -141,22 +121,12 @@
 </div>
 
 <style>
-  /*
-   * Dark-header nav text colors.
-   *
-   * The header is themed dark via `data-theme="dark"`, but Cinder's
-   * NavigationItem resolves its `light-dark()` color tokens against the root
-   * color-scheme (light), not this nested dark subtree — so labels render
-   * dark-on-dark and disappear.
-   *
-   * Overriding the Cinder CSS custom properties at this scope is the correct
-   * fix: they cascade through the subtree and survive any Cinder class rename.
-   * Tribunal's `--text`/`--text-muted` do resolve correctly against a
-   * `data-theme` element, keeping the colors themeable rather than hard-coded.
-   */
+  /* light-dark() custom properties inherit the resolved value from :root
+     (color-scheme: light), ignoring color-scheme: dark on this subtree.
+     Verified in DevTools: removing these overrides produces dark-on-dark text. */
   .app-header[data-theme='dark'] {
-    --cinder-text-muted: var(--text-muted);
-    --cinder-text: var(--text);
+    --cinder-text-muted: oklch(82% 0.02 245);
+    --cinder-text: oklch(92% 0.02 245);
   }
 
   .app-layout {
@@ -170,7 +140,6 @@
     display: flex;
     flex-direction: column;
     flex: 1 1 0;
-    min-height: 0;
   }
 
   .app-header {
@@ -227,56 +196,20 @@
     color: var(--text);
   }
 
-  .drawer-footer {
-    margin-top: auto;
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--border);
+  .mobile-navigation {
+    display: none;
+    padding-block: var(--space-2);
+    border-top: 1px solid color-mix(in oklch, var(--border-muted), transparent 35%);
   }
 
-  .drawer-user {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-  }
+  @media (max-width: 767px) {
+    :global(.cinder-navigation-bar__items) {
+      display: none;
+    }
 
-  .drawer-user-info {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .drawer-username {
-    font-weight: var(--font-medium);
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .sign-out-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-3);
-    width: 100%;
-    min-height: 3rem;
-    padding: var(--space-3) var(--space-4);
-    font-size: var(--text-base);
-    font-weight: var(--font-medium);
-    color: var(--text-muted);
-    border-radius: var(--radius-lg);
-    transition:
-      background-color var(--duration) var(--ease-standard),
-      color var(--duration) var(--ease-standard);
-  }
-
-  .sign-out-button:hover {
-    background: color-mix(in oklch, var(--danger), transparent 90%);
-    color: var(--danger);
-  }
-
-  :global(.sign-out-icon) {
-    width: 1.25rem;
-    height: 1.25rem;
+    .mobile-navigation {
+      display: grid;
+      gap: var(--space-1);
+    }
   }
 </style>

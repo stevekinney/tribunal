@@ -23,9 +23,7 @@ const baseData = {
 
 describe('/repositories page', () => {
   it('prompts users to install the GitHub App when no installation exists', async () => {
-    render(RepositoriesPage, {
-      data: baseData,
-    });
+    render(RepositoriesPage, { data: baseData, form: null, params: {} });
 
     await expect
       .element(page.getByRole('heading', { name: 'Install the GitHub App' }))
@@ -47,6 +45,8 @@ describe('/repositories page', () => {
           },
         ],
       },
+      form: null,
+      params: {},
     });
 
     await expect.element(page.getByText('No repositories selected')).toBeInTheDocument();

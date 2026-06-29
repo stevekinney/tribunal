@@ -152,7 +152,6 @@
 
   .page-content {
     flex: 1 1 0;
-    min-height: 0;
     width: 100%;
     max-width: 72rem;
     margin-inline: auto;
