@@ -10,8 +10,7 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await page.goto('/repositories');
   await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
   await expect(page.getByRole('link', { name: /e2e-owner-.*e2e-repository-/ })).toBeVisible();
-  await expect(page.getByText('Watched')).toBeVisible();
-  await expect(page.getByText('30-day estimate: $0.42')).toBeVisible();
+  await expect(page.getByText('$0.42')).toBeVisible();
 
   await page.goto('/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();

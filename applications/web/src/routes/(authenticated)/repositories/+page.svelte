@@ -105,10 +105,12 @@
         <Card padding="none">
           <Table density="comfortable">
             <Table.Header>
-              <Table.HeaderCell>Repository</Table.HeaderCell>
-              <Table.HeaderCell>Branch</Table.HeaderCell>
-              <Table.HeaderCell>Last run</Table.HeaderCell>
-              <Table.HeaderCell align="right">30-day cost</Table.HeaderCell>
+              <Table.Row>
+                <Table.HeaderCell>Repository</Table.HeaderCell>
+                <Table.HeaderCell>Branch</Table.HeaderCell>
+                <Table.HeaderCell>Last run</Table.HeaderCell>
+                <Table.HeaderCell align="right">30-day cost</Table.HeaderCell>
+              </Table.Row>
             </Table.Header>
             <Table.Body>
               {#each watchedRepositories as repository (repository.id)}
