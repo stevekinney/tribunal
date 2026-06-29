@@ -38,7 +38,57 @@ enablement.
 - `PROXY_SIGNING_KEY` must match engine and proxy.
 - `TRIBUNAL_PROXY_CIDR` must be the dedicated proxy IPv4 with `/32`.
 - `TRIBUNAL_SANDBOX_IMAGE` must be an explicit Tensorlake release identifier.
+- `ANTHROPIC_ADMIN_KEY` is an Anthropic Admin API key, not a normal model API
+  key. It should have the `sk-ant-admin...` prefix and is required by engine
+  cost reporting.
 - Keep `REVIEWS_ENABLED=false` until every safe-mode health gate passes.
+
+## Gotchas
+
+- Neon Auth sign-in and Tribunal repository authorization are separate GitHub
+  OAuth flows with different client IDs:
+  - Neon Auth uses its own GitHub OAuth App (client ID prefix `Ov23Li`). Its
+    callback should point to `{NEON_AUTH_BASE_URL}/callback/github`. Do not
+    change this to a Tribunal URL.
+  - Tribunal repository authorization uses the `GITHUB_CLIENT_ID` from the
+    `Tribunal Review` GitHub App (client ID prefix `Iv23li`). This is _not_ a
+    standalone OAuth App—it is the GitHub App's built-in OAuth. Configure that
+    GitHub App's callback URL as
+    `https://<web-domain>/connect/github/account/callback`.
+  - The GitHub App setup URL should be
+    `https://<web-domain>/connect/github/callback`.
+  - If the Connect GitHub flow returns `The redirect_uri is not associated with
+this application`, the GitHub App callback URL still points to localhost.
+    Update it in GitHub Developer Settings → GitHub Apps → Tribunal Review →
+    General → Callback URL.
+- Neon Auth trusted domains are branch-scoped. If sign-in fails with
+  `neon_auth_failed` after GitHub succeeds, verify
+  `https://<web-domain>` is in
+  `POST /projects/{project_id}/branches/{branch_id}/auth/domains` with
+  `auth_provider: "better_auth"`. Neon Auth settings (trusted domains, OAuth
+  providers, email/password toggles, Allow Localhost) are managed in the Neon
+  Console under the project → branch → Auth → Configuration tab.
+- `Allow Localhost` may stay enabled when local development intentionally uses
+  the production Neon Auth branch. It is not a substitute for the production
+  trusted domain.
+- The app UI only exposes GitHub sign-in. Remove extra Neon Auth OAuth
+  providers for production; email/password being enabled is unused surface
+  unless a future UI exposes it.
+- GitHub App `Tribunal Review` needs repository `Checks: Read and write` before
+  live reviews. The engine creates and updates check runs through
+  `packages/github/src/reviews/check-runs.ts`. `Commit statuses` may also be
+  needed if the engine writes commit statuses separately from check runs.
+- The GitHub App's webhook, callback URL, and setup URL all default to
+  localhost after initial creation. All three must be updated to production
+  URLs before first deploy. The webhook must also be marked Active with a
+  secret set and SSL verification enabled—these are off by default.
+- A repositories-page banner saying "Could not reach GitHub to list your
+  installations" with Fly logs showing `401 Bad credentials` means the stored
+  `oauth_connection` token is stale or invalid. With explicit user approval,
+  mark that row `invalid` so the UI forces `/connect/github/account` again.
+- Current Tensorlake limits may require publishing the reviewer image with
+  `--cpus 1 --memory 1024`. Publish from a narrow temporary build context, not
+  the whole repository, to avoid slow or stuck uploads.
 
 ## First Deploy Workflow
 
@@ -62,6 +112,7 @@ work. Do not print secret values.
    - Use a direct, unpooled URL for migrations.
    - Use a separate `WEFT_DATABASE_URL` database or connection for engine-owned
      durable review state.
+   - Add the production web domain to the Neon Auth branch trusted-domain list.
 5. Publish the reviewer image to Tensorlake and record the returned image
    identifier as `TRIBUNAL_SANDBOX_IMAGE`.
 6. Set Fly secrets by app according to the tables in the deployment docs.
@@ -118,8 +169,12 @@ Start with evidence, not changes:
    - **Unauthorized proxy returns 2xx**: treat as a security blocker; do not
      enable live reviews.
    - **GitHub login/webhooks fail**: verify GitHub OAuth callback, GitHub App
-     webhook URL, webhook secret, and Neon Auth trusted domain in provider
-     consoles.
+     callback/setup URL, webhook URL, webhook active state, webhook secret,
+     Checks permission, and Neon Auth trusted domain.
+   - **Repositories page says GitHub is unreachable**: inspect web logs for the
+     GitHub status. If GitHub returns `401 Bad credentials` for
+     `/user/installations`, treat it as a stale user OAuth connection and force
+     reconnect by invalidating the row only after user approval.
    - **Tensorlake failures**: verify the published reviewer image identifier,
      proxy URL/CIDR, and sandbox resource limits.
 4. Fix the smallest failing layer and re-run all safe-mode gates.
@@ -150,8 +205,21 @@ When CLI/API access cannot update provider settings, give the user a concise
 checklist and ask only for statuses, not secrets:
 
 - Neon Auth trusted domains includes the production web domain.
-- GitHub OAuth callback is
+- Neon Auth GitHub provider callback is `{NEON_AUTH_BASE_URL}/callback/github`.
+- GitHub App callback URL is
   `https://<web-domain>/connect/github/account/callback`.
+- GitHub App setup URL is `https://<web-domain>/connect/github/callback`.
 - GitHub App webhook URL is `https://<web-domain>/api/webhooks/github`.
 - GitHub App webhook secret is set, without revealing its value.
+- GitHub App webhook is active and SSL verification is enabled.
+- GitHub App repository permissions include at minimum: Checks read/write,
+  Code quality read/write, Contents read/write, Issues read/write,
+  Merge queues read/write, Metadata read-only (mandatory), Projects
+  read/write, Pull requests read/write, Webhooks read/write, and Workflows
+  read/write.
+- Neon Auth OAuth providers: GitHub only (remove Google if present).
+- Neon Auth `Allow Localhost`: confirm it matches the intended policy (on for
+  shared dev/prod Neon branch, off for isolated production).
 - GitHub sign-in reaches Tribunal without an error page.
+- Connect GitHub flow completes without a `redirect_uri` error and the
+  repositories page shows the user's repositories.
