@@ -1,7 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { NavigationBar } from '@lostgradient/cinder/navigation-bar';
-  import type { NavigationBarToggleAttributes } from '@lostgradient/cinder/navigation-bar';
   import { NavigationItem } from '@lostgradient/cinder/navigation-item';
   import { Avatar } from '@lostgradient/cinder/avatar';
   import SkipLinks from '$lib/components/skip-links.svelte';
@@ -10,8 +9,6 @@
     LogOut,
     FolderGit2,
     Cat,
-    Menu,
-    X,
     Bot,
     Activity,
     CircleDollarSign,
@@ -20,8 +17,6 @@
   } from 'lucide-svelte';
 
   let { data, children } = $props();
-
-  let mobileMenuOpen = $state(false);
 
   // NavigationItem owns the active styling; the app owns the routing match.
   const repositoriesActive = $derived(
@@ -41,7 +36,7 @@
 <div class="app-layout">
   <header class="app-header" data-theme="dark">
     <div class="header-content">
-      <NavigationBar bind:mobileMenuOpen>
+      <NavigationBar>
         {#snippet brand()}
           <a href="/repositories" class="brand-link">
             <div class="brand-icon">
@@ -116,16 +111,6 @@
           {/if}
         {/snippet}
 
-        {#snippet menuToggle(attrs: NavigationBarToggleAttributes)}
-          <button type="button" {...attrs} aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}>
-            {#if mobileMenuOpen}
-              <X aria-hidden="true" />
-            {:else}
-              <Menu aria-hidden="true" />
-            {/if}
-          </button>
-        {/snippet}
-
         {#snippet actions()}
           {#if data.user}
             <UserMenu id="header-user-menu" user={data.user} />
@@ -141,22 +126,12 @@
 </div>
 
 <style>
-  /*
-   * Dark-header nav text colors.
-   *
-   * The header is themed dark via `data-theme="dark"`, but Cinder's
-   * NavigationItem resolves its `light-dark()` color tokens against the root
-   * color-scheme (light), not this nested dark subtree — so labels render
-   * dark-on-dark and disappear.
-   *
-   * Overriding the Cinder CSS custom properties at this scope is the correct
-   * fix: they cascade through the subtree and survive any Cinder class rename.
-   * Tribunal's `--text`/`--text-muted` do resolve correctly against a
-   * `data-theme` element, keeping the colors themeable rather than hard-coded.
-   */
+  /* Cinder's light-dark() tokens resolve at :root (light), not at this dark
+     subtree — hard-code the dark-arm values until Cinder supports nested
+     color-scheme regions. */
   .app-header[data-theme='dark'] {
-    --cinder-text-muted: var(--text-muted);
-    --cinder-text: var(--text);
+    --cinder-text-muted: oklch(82% 0.02 245);
+    --cinder-text: oklch(92% 0.02 245);
   }
 
   .app-layout {
