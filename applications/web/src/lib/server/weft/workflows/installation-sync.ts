@@ -305,12 +305,8 @@ function buildActivityClaimPredicate(
   return and(
     installationPredicate,
     or(
-      isNull(githubInstallation.syncActivityAttemptToken),
-      isNull(githubInstallation.syncStartedAt),
-      and(
-        eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
-        eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
-      ),
+      isNull(githubInstallation.syncWorkflowExecutionToken),
+      eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
     ),
   );
 }
