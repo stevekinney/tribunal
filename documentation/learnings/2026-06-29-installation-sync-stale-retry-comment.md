@@ -1,0 +1,1 @@
+- When a review thread flags retry ownership on a stale diff hunk, verify the live predicate before editing; workflow execution token equality should remain the claim-retry boundary while activity attempt tokens fence settlement.
