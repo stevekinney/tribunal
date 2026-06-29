@@ -223,6 +223,7 @@
                               Save settings
                             </Button>
                             <Button
+                              type="button"
                               variant="ghost"
                               size="sm"
                               onclick={() => (expandedSettings = null)}
