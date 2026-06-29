@@ -490,6 +490,20 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(mockRefresh).not.toHaveBeenCalled();
   });
 
+  it('syncRepositories rejects partial owner token context before writing', async () => {
+    dbUpdates.length = 0;
+
+    await expect(
+      syncRepositories(
+        { installationId: 42 },
+        activityContext({ activityAttemptToken: undefined }),
+      ),
+    ).rejects.toThrow('workflow and activity attempt tokens together');
+
+    expect(dbUpdates).toHaveLength(0);
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
   /**
    * 9. A cancel landing AFTER a successful fetch must NOT mark the run failed.
    *

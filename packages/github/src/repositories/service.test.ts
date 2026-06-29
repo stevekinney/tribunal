@@ -121,7 +121,7 @@ describe('refreshInstallationRepositories', () => {
   });
 
   it('skips repository mutations when the sync attempt no longer owns the installation', async () => {
-    expect.assertions(8);
+    expect.assertions(9);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -157,12 +157,13 @@ describe('refreshInstallationRepositories', () => {
       },
     ]);
 
-    const result = await refreshInstallationRepositories(context, 12345, {
-      syncWorkflowExecutionToken: 'current-workflow',
-      syncActivityAttemptToken: 'stale-attempt',
-    });
-
-    expect(result).toEqual({ repositoryCount: 0, deactivatedRepositoryCount: 0 });
+    await expect(
+      refreshInstallationRepositories(context, 12345, {
+        syncWorkflowExecutionToken: 'current-workflow',
+        syncActivityAttemptToken: 'stale-attempt',
+      }),
+    ).rejects.toThrow('Installation sync ownership lost');
+    expect(context.getInstallationOctokit).not.toHaveBeenCalled();
 
     const staleAttemptRepositories = await testContext.db
       .select()

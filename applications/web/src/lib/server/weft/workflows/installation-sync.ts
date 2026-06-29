@@ -137,6 +137,9 @@ export async function syncRepositories(
   const { installationId } = input;
   const syncWorkflowExecutionToken = context?.workflowExecutionToken;
   const syncActivityAttemptToken = context?.activityAttemptToken;
+  if ((syncWorkflowExecutionToken === undefined) !== (syncActivityAttemptToken === undefined)) {
+    throw new Error('Installation sync requires workflow and activity attempt tokens together.');
+  }
 
   // Bail before any side effect if this run was already cancelled (e.g. cancelled
   // during the leading debounce). Throwing here means the workflow treats the run
@@ -156,10 +159,15 @@ export async function syncRepositories(
     .where(eq(githubInstallation.installationId, installationId));
 
   try {
-    const result = await refreshInstallationRepositories(githubContext, installationId, {
-      syncWorkflowExecutionToken,
-      syncActivityAttemptToken,
-    });
+    const refreshOptions =
+      syncWorkflowExecutionToken === undefined || syncActivityAttemptToken === undefined
+        ? {}
+        : { syncWorkflowExecutionToken, syncActivityAttemptToken };
+    const result = await refreshInstallationRepositories(
+      githubContext,
+      installationId,
+      refreshOptions,
+    );
     // refreshInstallationRepositories already set syncStatus = 'idle' on success.
     // We deliberately do NOT re-check the abort signal here: a cancel arriving
     // AFTER a successful fetch is not a data problem — the repositories ARE synced

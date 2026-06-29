@@ -34,10 +34,15 @@ export interface RefreshInstallationRepositoriesResult {
   deactivatedRepositoryCount: number;
 }
 
-export type RefreshInstallationRepositoriesOptions = {
-  syncWorkflowExecutionToken?: string;
-  syncActivityAttemptToken?: string;
-};
+export type RefreshInstallationRepositoriesOptions =
+  | {
+      syncWorkflowExecutionToken?: undefined;
+      syncActivityAttemptToken?: undefined;
+    }
+  | {
+      syncWorkflowExecutionToken: string;
+      syncActivityAttemptToken: string;
+    };
 
 export type RepositorySortField =
   | 'name'
@@ -338,6 +343,10 @@ export async function refreshInstallationRepositories(
   installationId: number,
   options: RefreshInstallationRepositoriesOptions = {},
 ): Promise<RefreshInstallationRepositoriesResult> {
+  if (!(await ownsInstallationSync(context, installationId, options))) {
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+  }
+
   const octokit = await context.getInstallationOctokit(installationId);
   if (!octokit) {
     throw new Error(`Could not create GitHub client for installation ${installationId}`);
@@ -359,7 +368,7 @@ export async function refreshInstallationRepositories(
   }
 
   if (!(await ownsInstallationSync(context, installationId, options))) {
-    return { repositoryCount: 0, deactivatedRepositoryCount: 0 };
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
   }
 
   const activeRepositoryIds = new Set<number>();
@@ -446,7 +455,7 @@ export async function refreshInstallationRepositories(
       );
   }
 
-  await context.db
+  const settledInstallations = await context.db
     .update(githubInstallation)
     .set({
       lastSyncedAt: new Date(),
@@ -456,7 +465,12 @@ export async function refreshInstallationRepositories(
       syncActivityAttemptToken: null,
       updatedAt: new Date(),
     })
-    .where(buildInstallationSyncPredicate(installationId, options));
+    .where(buildInstallationSyncPredicate(installationId, options))
+    .returning({ installationId: githubInstallation.installationId });
+
+  if (options.syncWorkflowExecutionToken !== undefined && settledInstallations.length === 0) {
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+  }
 
   return {
     repositoryCount: repositories.length,
@@ -472,15 +486,11 @@ function buildInstallationSyncPredicate(
   const { syncWorkflowExecutionToken, syncActivityAttemptToken } = options;
   if (syncWorkflowExecutionToken === undefined) return installationPredicate;
 
-  const predicates = [
+  return and(
     installationPredicate,
     eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
-  ];
-  if (syncActivityAttemptToken !== undefined) {
-    predicates.push(eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken));
-  }
-
-  return and(...predicates);
+    eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+  );
 }
 
 async function ownsInstallationSync(
