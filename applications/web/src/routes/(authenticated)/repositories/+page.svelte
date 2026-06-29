@@ -143,7 +143,18 @@
                     </Table.Cell>
                     <Table.Cell align="right">
                       <div class="row-actions">
-                        <form method="POST" action="?/watch" use:enhance>
+                        <form
+                          method="POST"
+                          action="?/watch"
+                          use:enhance={() => {
+                            return async ({ update }) => {
+                              if (expandedSettings === repository.id) {
+                                expandedSettings = null;
+                              }
+                              await update();
+                            };
+                          }}
+                        >
                           <input type="hidden" name="repositoryId" value={repository.id} />
                           <input type="hidden" name="watched" value="" />
                           <input
