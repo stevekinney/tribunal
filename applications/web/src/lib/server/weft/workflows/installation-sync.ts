@@ -308,6 +308,7 @@ function buildActivityClaimPredicate(
     installationPredicate,
     or(
       isNull(githubInstallation.syncActivityAttemptToken),
+      isNull(githubInstallation.syncStartedAt),
       eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
       lte(githubInstallation.syncStartedAt, claimStartedAt),
     ),
