@@ -32,7 +32,7 @@ enablement.
 - Tribunal has three Fly apps: `tribunal-web`, `tribunal-engine`, and
   `tribunal-proxy`.
 - `tribunal-engine` is private, has no public IP, and must run exactly one
-  Machine per `WEFT_DATABASE_URL`.
+  Machine.
 - `WEFT_DATABASE_URL` belongs only on `tribunal-engine`; never set it on web.
 - `TRIBUNAL_ENGINE_CONTROL_TOKEN` must match web and engine.
 - `PROXY_SIGNING_KEY` must match engine and proxy.
@@ -57,8 +57,8 @@ enablement.
     `https://<web-domain>/connect/github/account/callback`.
   - The GitHub App setup URL should be
     `https://<web-domain>/connect/github/callback`.
-  - If the Connect GitHub flow returns `The redirect_uri is not associated with
-    this application`, the GitHub App callback URL still points to localhost.
+  - If the Connect GitHub flow says the redirect URI is not associated with
+    this application, the GitHub App callback URL still points to localhost.
     Update it in GitHub Developer Settings → GitHub Apps → Tribunal Review →
     General → Callback URL.
 - Neon Auth trusted domains are branch-scoped. If sign-in fails with
@@ -137,7 +137,7 @@ curl -fsS https://tribunal-proxy.fly.dev/health
 curl -fsS https://<web-domain>/health
 flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
 status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
-test "$status" = "401" -o "$status" = "403"
+test "$status" = "401" || test "$status" = "403"
 bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
 flyctl machines list --app tribunal-engine
 flyctl ips list --app tribunal-engine
