@@ -307,7 +307,10 @@ function buildActivityClaimPredicate(
     or(
       isNull(githubInstallation.syncActivityAttemptToken),
       isNull(githubInstallation.syncStartedAt),
-      eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+      and(
+        eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+        eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+      ),
     ),
   );
 }
