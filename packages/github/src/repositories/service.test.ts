@@ -236,4 +236,68 @@ describe('refreshInstallationRepositories', () => {
     expect(installation.syncWorkflowExecutionToken).toBeNull();
     expect(installation.syncActivityAttemptToken).toBeNull();
   });
+
+  it('preserves durable sync ownership during tokenless setup refreshes', async () => {
+    expect.assertions(5);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    await testContext.db
+      .update(githubInstallation)
+      .set({
+        syncStatus: 'in_progress',
+        syncError: 'still syncing',
+        syncStartedAt: new Date('2026-06-28T00:00:00.000Z'),
+        syncWorkflowExecutionToken: 'workflow-token',
+        syncActivityAttemptToken: 'activity-token',
+      })
+      .where(eq(githubInstallation.installationId, 12345));
+
+    const context = createGithubContext(testContext, [
+      {
+        id: 100,
+        owner: { login: 'test-org' },
+        name: 'active-repository',
+        default_branch: 'main',
+      },
+    ]);
+
+    await refreshInstallationRepositories(context, 12345);
+
+    const [installation] = await testContext.db
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, 12345));
+    expect(installation.syncStatus).toBe('idle');
+    expect(installation.syncError).toBeNull();
+    expect(installation.syncStartedAt).toEqual(new Date('2026-06-28T00:00:00.000Z'));
+    expect(installation.syncWorkflowExecutionToken).toBe('workflow-token');
+    expect(installation.syncActivityAttemptToken).toBe('activity-token');
+  });
+
+  it('batches repository writes for large installations', async () => {
+    expect.assertions(3);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    const repositories = Array.from({ length: 1_001 }, (_, index) => ({
+      id: 10_000 + index,
+      owner: { login: 'test-org' },
+      name: `repository-${index}`,
+      default_branch: 'main',
+    }));
+    const context = createGithubContext(testContext, repositories);
+
+    const result = await refreshInstallationRepositories(context, 12345);
+
+    expect(result).toEqual({ repositoryCount: 1_001, deactivatedRepositoryCount: 0 });
+    const storedRepositories = await testContext.db.select().from(repository);
+    expect(storedRepositories).toHaveLength(1_001);
+    const storedLinks = await testContext.db.select().from(githubInstallationRepository);
+    expect(storedLinks).toHaveLength(1_001);
+  });
 });

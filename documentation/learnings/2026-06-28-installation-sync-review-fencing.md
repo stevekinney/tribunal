@@ -1,0 +1,3 @@
+- Tokenless setup refreshes should not clear durable workflow ownership columns; preserve owner tokens unless the caller supplied the matching workflow and activity attempt tokens.
+- Activity retry claim predicates should allow a new attempt token for the same workflow execution token while still rejecting claims from other workflow executions.
+- Bulk repository sync SQL should batch `VALUES` writes so large installations stay below PostgreSQL parameter limits.

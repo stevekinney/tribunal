@@ -29,6 +29,16 @@ export interface RepositoryMetadata {
 type InstallationRepository =
   Endpoints['GET /installation/repositories']['response']['data']['repositories'][number];
 
+type RepositorySyncRow = {
+  id: number;
+  owner: string;
+  name: string;
+  uri: string;
+  defaultBranch: string;
+};
+
+const REPOSITORY_SYNC_BATCH_SIZE = 1_000;
+
 export interface RefreshInstallationRepositoriesResult {
   repositoryCount: number;
   deactivatedRepositoryCount: number;
@@ -375,7 +385,6 @@ export async function refreshInstallationRepositories(
   const now = new Date();
 
   if (repositories.length > 0) {
-    const ownershipSql = buildInstallationOwnershipSql(installationId, options);
     const repositoryRows = repositories.map((gitHubRepository) => {
       const owner = gitHubRepository.owner.login;
       activeRepositoryIds.add(gitHubRepository.id);
@@ -388,65 +397,11 @@ export async function refreshInstallationRepositories(
         defaultBranch: gitHubRepository.default_branch,
       };
     });
-    const repositoryValuesSql = sql.join(
-      repositoryRows.map(
-        (gitHubRepository) =>
-          sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.uri}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint, ${now}::timestamp)`,
-      ),
-      sql`, `,
-    );
-    const repositoryResult = await context.db.execute(sql`
-      INSERT INTO ${repository}
-        ("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
-      SELECT *
-      FROM (
-        VALUES ${repositoryValuesSql}
-      ) AS incoming("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
-      WHERE ${ownershipSql}
-      ON CONFLICT ("id") DO UPDATE SET
-        "owner" = excluded."owner",
-        "name" = excluded."name",
-        "uri" = excluded."uri",
-        "default_branch" = excluded."default_branch",
-        "installation_id" = excluded."installation_id",
-        "updated_at" = excluded."updated_at"
-      WHERE ${ownershipSql}
-      RETURNING "id"
-    `);
-    assertOwnedMutationResult(
-      installationId,
-      options,
-      repositoryRows.length,
-      getRows<{ id: number }>(repositoryResult).length,
-    );
 
-    const linkValuesSql = sql.join(
-      repositoryRows.map(
-        (gitHubRepository) =>
-          sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean, NULL::timestamp)`,
-      ),
-      sql`, `,
-    );
-    const linkResult = await context.db.execute(sql`
-      INSERT INTO ${githubInstallationRepository}
-        ("installation_id", "repository_id", "is_active", "removed_at")
-      SELECT *
-      FROM (
-        VALUES ${linkValuesSql}
-      ) AS incoming("installation_id", "repository_id", "is_active", "removed_at")
-      WHERE ${ownershipSql}
-      ON CONFLICT ("installation_id", "repository_id") DO UPDATE SET
-        "is_active" = excluded."is_active",
-        "removed_at" = excluded."removed_at"
-      WHERE ${ownershipSql}
-      RETURNING "repository_id"
-    `);
-    assertOwnedMutationResult(
-      installationId,
-      options,
-      repositoryRows.length,
-      getRows<{ repository_id: number }>(linkResult).length,
-    );
+    for (const repositoryBatch of chunkArray(repositoryRows, REPOSITORY_SYNC_BATCH_SIZE)) {
+      await upsertRepositoryBatch(context, installationId, options, repositoryBatch, now);
+      await upsertInstallationRepositoryBatch(context, installationId, options, repositoryBatch);
+    }
   }
 
   const activeLinks = await context.db
@@ -486,17 +441,23 @@ export async function refreshInstallationRepositories(
     );
   }
 
+  const settlementAt = new Date();
+  const settlement = {
+    lastSyncedAt: settlementAt,
+    syncStatus: 'idle' as const,
+    syncError: null,
+    updatedAt: settlementAt,
+    ...(options.syncWorkflowExecutionToken === undefined
+      ? {}
+      : {
+          syncStartedAt: null,
+          syncWorkflowExecutionToken: null,
+          syncActivityAttemptToken: null,
+        }),
+  };
   const settledInstallations = await context.db
     .update(githubInstallation)
-    .set({
-      lastSyncedAt: new Date(),
-      syncStatus: 'idle',
-      syncError: null,
-      syncStartedAt: null,
-      syncWorkflowExecutionToken: null,
-      syncActivityAttemptToken: null,
-      updatedAt: new Date(),
-    })
+    .set(settlement)
     .where(buildInstallationSyncPredicate(installationId, options))
     .returning({ installationId: githubInstallation.installationId });
 
@@ -508,6 +469,83 @@ export async function refreshInstallationRepositories(
     repositoryCount: repositories.length,
     deactivatedRepositoryCount: repositoryIdsToDeactivate.length,
   };
+}
+
+async function upsertRepositoryBatch(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  repositoryRows: RepositorySyncRow[],
+  now: Date,
+) {
+  const ownershipSql = buildInstallationOwnershipSql(installationId, options);
+  const repositoryValuesSql = sql.join(
+    repositoryRows.map(
+      (gitHubRepository) =>
+        sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.uri}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint, ${now}::timestamp)`,
+    ),
+    sql`, `,
+  );
+  const repositoryResult = await context.db.execute(sql`
+      INSERT INTO ${repository}
+        ("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      SELECT *
+      FROM (
+        VALUES ${repositoryValuesSql}
+      ) AS incoming("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("id") DO UPDATE SET
+        "owner" = excluded."owner",
+        "name" = excluded."name",
+        "uri" = excluded."uri",
+        "default_branch" = excluded."default_branch",
+        "installation_id" = excluded."installation_id",
+        "updated_at" = excluded."updated_at"
+      WHERE ${ownershipSql}
+      RETURNING "id"
+    `);
+  assertOwnedMutationResult(
+    installationId,
+    options,
+    repositoryRows.length,
+    getRows<{ id: number }>(repositoryResult).length,
+  );
+}
+
+async function upsertInstallationRepositoryBatch(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  repositoryRows: RepositorySyncRow[],
+) {
+  const ownershipSql = buildInstallationOwnershipSql(installationId, options);
+  const linkValuesSql = sql.join(
+    repositoryRows.map(
+      (gitHubRepository) =>
+        sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean, NULL::timestamp)`,
+    ),
+    sql`, `,
+  );
+  const linkResult = await context.db.execute(sql`
+      INSERT INTO ${githubInstallationRepository}
+        ("installation_id", "repository_id", "is_active", "removed_at")
+      SELECT *
+      FROM (
+        VALUES ${linkValuesSql}
+      ) AS incoming("installation_id", "repository_id", "is_active", "removed_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("installation_id", "repository_id") DO UPDATE SET
+        "is_active" = excluded."is_active",
+        "removed_at" = excluded."removed_at"
+      WHERE ${ownershipSql}
+      RETURNING "repository_id"
+    `);
+  assertOwnedMutationResult(
+    installationId,
+    options,
+    repositoryRows.length,
+    getRows<{ repository_id: number }>(linkResult).length,
+  );
 }
 
 function buildInstallationSyncPredicate(
@@ -574,6 +612,14 @@ function getRows<T>(result: unknown): T[] {
     return (result as { rows: T[] }).rows;
   }
   return [];
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 /**

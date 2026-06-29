@@ -308,6 +308,7 @@ function buildActivityClaimPredicate(
       isNull(githubInstallation.syncActivityAttemptToken),
       isNull(githubInstallation.syncStartedAt),
       eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+      eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
     ),
   );
 }
