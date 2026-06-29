@@ -37,16 +37,48 @@
           </a>
         {/snippet}
 
-        {#snippet items()}
-          <NavigationItem href="/repositories" active={repositoriesActive}>
+        {#snippet items({ variant })}
+          <NavigationItem
+            href="/repositories"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={repositoriesActive}
+          >
             Repositories
           </NavigationItem>
-          <NavigationItem href="/agents" active={agentsActive}>Agents</NavigationItem>
-          <NavigationItem href="/runs" active={runsActive}>Runs</NavigationItem>
-          <NavigationItem href="/costs" active={costsActive}>Costs</NavigationItem>
-          <NavigationItem href="/settings" active={settingsActive}>Settings</NavigationItem>
+          <NavigationItem
+            href="/agents"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={agentsActive}
+          >
+            Agents
+          </NavigationItem>
+          <NavigationItem
+            href="/runs"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={runsActive}
+          >
+            Runs
+          </NavigationItem>
+          <NavigationItem
+            href="/costs"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={costsActive}
+          >
+            Costs
+          </NavigationItem>
+          <NavigationItem
+            href="/settings"
+            variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+            active={settingsActive}
+          >
+            Settings
+          </NavigationItem>
           {#if data.user?.isPlatformAdministrator}
-            <NavigationItem href="/workflow-inspector" active={workflowInspectorActive}>
+            <NavigationItem
+              href="/workflow-inspector"
+              variant={variant === 'mobile' ? 'vertical' : 'horizontal'}
+              active={workflowInspectorActive}
+            >
               Workflows
             </NavigationItem>
           {/if}
@@ -58,6 +90,28 @@
           {/if}
         {/snippet}
       </NavigationBar>
+      <nav id="mobile-navigation" class="mobile-navigation" aria-label="Mobile navigation">
+        <NavigationItem href="/repositories" variant="vertical" active={repositoriesActive}>
+          Repositories
+        </NavigationItem>
+        <NavigationItem href="/agents" variant="vertical" active={agentsActive}>
+          Agents
+        </NavigationItem>
+        <NavigationItem href="/runs" variant="vertical" active={runsActive}>Runs</NavigationItem>
+        <NavigationItem href="/costs" variant="vertical" active={costsActive}>Costs</NavigationItem>
+        <NavigationItem href="/settings" variant="vertical" active={settingsActive}>
+          Settings
+        </NavigationItem>
+        {#if data.user?.isPlatformAdministrator}
+          <NavigationItem
+            href="/workflow-inspector"
+            variant="vertical"
+            active={workflowInspectorActive}
+          >
+            Workflows
+          </NavigationItem>
+        {/if}
+      </nav>
     </div>
   </header>
 
@@ -140,5 +194,22 @@
     font-size: var(--text-lg);
     font-weight: var(--font-semibold);
     color: var(--text);
+  }
+
+  .mobile-navigation {
+    display: none;
+    padding-block: var(--space-2);
+    border-top: 1px solid color-mix(in oklch, var(--border-muted), transparent 35%);
+  }
+
+  @media (max-width: 767px) {
+    :global(.cinder-navigation-bar__items) {
+      display: none;
+    }
+
+    .mobile-navigation {
+      display: grid;
+      gap: var(--space-1);
+    }
   }
 </style>
