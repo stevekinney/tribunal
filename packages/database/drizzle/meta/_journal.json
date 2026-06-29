@@ -246,6 +246,27 @@
       "when": 1781899500000,
       "tag": "0034_restore-review-intent-pr-scope",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1782688434025,
+      "tag": "0035_add-installation-sync-owner-token",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1782689978446,
+      "tag": "0036_add-installation-sync-attempt-token",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1782691960595,
+      "tag": "0037_peaceful_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,3 @@
+- Tokenless setup refresh settlement must not mark a live durable workflow row idle when owner tokens are still present; the owning workflow or finalizer needs the `in_progress` state to record failure or completion.
+- Activity claim predicates should use workflow execution token ownership as the retry boundary so a new activity attempt for the same workflow can replace the stored attempt token.
+- Activity attempt tokens should fence settlement writes, not claim retries; avoid activity-attempt-only claim matches and avoid `sync_started_at IS NULL` fallbacks when a different workflow token already owns the row.

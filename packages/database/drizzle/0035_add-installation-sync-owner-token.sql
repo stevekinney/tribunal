@@ -1,0 +1,1 @@
+ALTER TABLE "github_installation" ADD COLUMN "sync_workflow_execution_token" text;

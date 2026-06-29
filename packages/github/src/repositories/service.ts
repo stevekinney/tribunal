@@ -1,5 +1,5 @@
 import type { Endpoints } from '@octokit/types';
-import { eq, and, desc, inArray, sql } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { Repository } from '@tribunal/database/schema';
 import {
   repository,
@@ -29,10 +29,30 @@ export interface RepositoryMetadata {
 type InstallationRepository =
   Endpoints['GET /installation/repositories']['response']['data']['repositories'][number];
 
+type RepositorySyncRow = {
+  id: number;
+  owner: string;
+  name: string;
+  uri: string;
+  defaultBranch: string;
+};
+
+const REPOSITORY_SYNC_BATCH_SIZE = 1_000;
+
 export interface RefreshInstallationRepositoriesResult {
   repositoryCount: number;
   deactivatedRepositoryCount: number;
 }
+
+export type RefreshInstallationRepositoriesOptions =
+  | {
+      syncWorkflowExecutionToken?: undefined;
+      syncActivityAttemptToken?: undefined;
+    }
+  | {
+      syncWorkflowExecutionToken: string;
+      syncActivityAttemptToken: string;
+    };
 
 export type RepositorySortField =
   | 'name'
@@ -322,12 +342,21 @@ export async function getOrCreateRepository(
  *     is the wrong latency for "user just clicked Install and expects to see
  *     their repos." The two paths are complementary, not duplicative.
  *
- * It sets `githubInstallation.syncStatus = 'idle'` and `lastSyncedAt` on success.
+ * On success, tokenless setup calls set `githubInstallation.syncStatus = 'idle'`,
+ * clear any sync error, and update `lastSyncedAt`. Workflow callers pass
+ * `syncWorkflowExecutionToken` and `syncActivityAttemptToken`; for them, the
+ * status settlement and token clear only happen if the installation row still
+ * carries those same tokens.
  */
 export async function refreshInstallationRepositories(
   context: GithubServiceContext,
   installationId: number,
+  options: RefreshInstallationRepositoriesOptions = {},
 ): Promise<RefreshInstallationRepositoriesResult> {
+  if (!(await ownsInstallationSync(context, installationId, options))) {
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+  }
+
   const octokit = await context.getInstallationOctokit(installationId);
   if (!octokit) {
     throw new Error(`Could not create GitHub client for installation ${installationId}`);
@@ -348,59 +377,31 @@ export async function refreshInstallationRepositories(
     page += 1;
   }
 
+  if (!(await ownsInstallationSync(context, installationId, options))) {
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+  }
+
   const activeRepositoryIds = new Set<number>();
   const now = new Date();
 
   if (repositories.length > 0) {
-    await context.db
-      .insert(repository)
-      .values(
-        repositories.map((gitHubRepository) => {
-          const owner = gitHubRepository.owner.login;
-          activeRepositoryIds.add(gitHubRepository.id);
+    const repositoryRows = repositories.map((gitHubRepository) => {
+      const owner = gitHubRepository.owner.login;
+      activeRepositoryIds.add(gitHubRepository.id);
 
-          return {
-            id: gitHubRepository.id,
-            owner,
-            name: gitHubRepository.name,
-            uri: computeRepositoryUri(owner, gitHubRepository.name),
-            defaultBranch: gitHubRepository.default_branch,
-            installationId,
-          };
-        }),
-      )
-      .onConflictDoUpdate({
-        target: repository.id,
-        set: {
-          owner: sql`excluded.owner`,
-          name: sql`excluded.name`,
-          uri: sql`excluded.uri`,
-          defaultBranch: sql`excluded.default_branch`,
-          installationId: sql`excluded.installation_id`,
-          updatedAt: now,
-        },
-      });
+      return {
+        id: gitHubRepository.id,
+        owner,
+        name: gitHubRepository.name,
+        uri: computeRepositoryUri(owner, gitHubRepository.name),
+        defaultBranch: gitHubRepository.default_branch,
+      };
+    });
 
-    await context.db
-      .insert(githubInstallationRepository)
-      .values(
-        repositories.map((gitHubRepository) => ({
-          installationId,
-          repositoryId: gitHubRepository.id,
-          isActive: true,
-          removedAt: null,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [
-          githubInstallationRepository.installationId,
-          githubInstallationRepository.repositoryId,
-        ],
-        set: {
-          isActive: true,
-          removedAt: null,
-        },
-      });
+    for (const repositoryBatch of chunkArray(repositoryRows, REPOSITORY_SYNC_BATCH_SIZE)) {
+      await upsertRepositoryBatch(context, installationId, options, repositoryBatch, now);
+      await upsertInstallationRepositoryBatch(context, installationId, options, repositoryBatch);
+    }
   }
 
   const activeLinks = await context.db
@@ -418,7 +419,7 @@ export async function refreshInstallationRepositories(
     .map((link) => link.repositoryId);
 
   if (repositoryIdsToDeactivate.length > 0) {
-    await context.db
+    const deactivatedRepositories = await context.db
       .update(githubInstallationRepository)
       .set({
         isActive: false,
@@ -428,24 +429,210 @@ export async function refreshInstallationRepositories(
         and(
           eq(githubInstallationRepository.installationId, installationId),
           inArray(githubInstallationRepository.repositoryId, repositoryIdsToDeactivate),
+          buildInstallationOwnershipSql(installationId, options),
         ),
-      );
+      )
+      .returning({ repositoryId: githubInstallationRepository.repositoryId });
+    assertOwnedMutationResult(
+      installationId,
+      options,
+      repositoryIdsToDeactivate.length,
+      deactivatedRepositories.length,
+    );
   }
 
-  await context.db
+  const settlementAt = new Date();
+  const settlement = {
+    lastSyncedAt: settlementAt,
+    syncStatus: 'idle' as const,
+    syncError: null,
+    updatedAt: settlementAt,
+    ...(options.syncWorkflowExecutionToken === undefined
+      ? {}
+      : {
+          syncStartedAt: null,
+          syncWorkflowExecutionToken: null,
+          syncActivityAttemptToken: null,
+        }),
+  };
+  const settledInstallations = await context.db
     .update(githubInstallation)
-    .set({
-      lastSyncedAt: new Date(),
-      syncStatus: 'idle',
-      syncError: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(githubInstallation.installationId, installationId));
+    .set(settlement)
+    .where(buildInstallationSettlementPredicate(installationId, options))
+    .returning({ installationId: githubInstallation.installationId });
+
+  if (options.syncWorkflowExecutionToken !== undefined && settledInstallations.length === 0) {
+    throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+  }
 
   return {
     repositoryCount: repositories.length,
     deactivatedRepositoryCount: repositoryIdsToDeactivate.length,
   };
+}
+
+async function upsertRepositoryBatch(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  repositoryRows: RepositorySyncRow[],
+  now: Date,
+) {
+  const ownershipSql = buildInstallationOwnershipSql(installationId, options);
+  const repositoryValuesSql = sql.join(
+    repositoryRows.map(
+      (gitHubRepository) =>
+        sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.uri}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint, ${now}::timestamp)`,
+    ),
+    sql`, `,
+  );
+  const repositoryResult = await context.db.execute(sql`
+      INSERT INTO ${repository}
+        ("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      SELECT *
+      FROM (
+        VALUES ${repositoryValuesSql}
+      ) AS incoming("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("id") DO UPDATE SET
+        "owner" = excluded."owner",
+        "name" = excluded."name",
+        "uri" = excluded."uri",
+        "default_branch" = excluded."default_branch",
+        "installation_id" = excluded."installation_id",
+        "updated_at" = excluded."updated_at"
+      WHERE ${ownershipSql}
+      RETURNING "id"
+    `);
+  assertOwnedMutationResult(
+    installationId,
+    options,
+    repositoryRows.length,
+    getRows<{ id: number }>(repositoryResult).length,
+  );
+}
+
+async function upsertInstallationRepositoryBatch(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  repositoryRows: RepositorySyncRow[],
+) {
+  const ownershipSql = buildInstallationOwnershipSql(installationId, options);
+  const linkValuesSql = sql.join(
+    repositoryRows.map(
+      (gitHubRepository) =>
+        sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean, NULL::timestamp)`,
+    ),
+    sql`, `,
+  );
+  const linkResult = await context.db.execute(sql`
+      INSERT INTO ${githubInstallationRepository}
+        ("installation_id", "repository_id", "is_active", "removed_at")
+      SELECT *
+      FROM (
+        VALUES ${linkValuesSql}
+      ) AS incoming("installation_id", "repository_id", "is_active", "removed_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("installation_id", "repository_id") DO UPDATE SET
+        "is_active" = excluded."is_active",
+        "removed_at" = excluded."removed_at"
+      WHERE ${ownershipSql}
+      RETURNING "repository_id"
+    `);
+  assertOwnedMutationResult(
+    installationId,
+    options,
+    repositoryRows.length,
+    getRows<{ repository_id: number }>(linkResult).length,
+  );
+}
+
+function buildInstallationSyncPredicate(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+) {
+  const installationPredicate = eq(githubInstallation.installationId, installationId);
+  const { syncWorkflowExecutionToken, syncActivityAttemptToken } = options;
+  if (syncWorkflowExecutionToken === undefined) return installationPredicate;
+
+  return and(
+    installationPredicate,
+    eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
+    eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+  );
+}
+
+function buildInstallationSettlementPredicate(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+) {
+  const installationPredicate = buildInstallationSyncPredicate(installationId, options);
+  if (options.syncWorkflowExecutionToken !== undefined) return installationPredicate;
+
+  return and(
+    installationPredicate,
+    sql`not (${githubInstallation.syncStatus} = 'in_progress' and ${githubInstallation.syncWorkflowExecutionToken} is not null)`,
+  );
+}
+
+async function ownsInstallationSync(
+  context: GithubServiceContext,
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+) {
+  if (options.syncWorkflowExecutionToken === undefined) return true;
+
+  const [installation] = await context.db
+    .select({ installationId: githubInstallation.installationId })
+    .from(githubInstallation)
+    .where(buildInstallationSyncPredicate(installationId, options))
+    .limit(1);
+
+  return installation !== undefined;
+}
+
+function buildInstallationOwnershipSql(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+): SQL {
+  if (options.syncWorkflowExecutionToken === undefined) return sql`true`;
+
+  return sql`exists (
+    select 1
+    from ${githubInstallation}
+    where ${githubInstallation.installationId} = ${installationId}
+      and ${githubInstallation.syncWorkflowExecutionToken} = ${options.syncWorkflowExecutionToken}
+      and ${githubInstallation.syncActivityAttemptToken} = ${options.syncActivityAttemptToken}
+  )`;
+}
+
+function assertOwnedMutationResult(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  expectedCount: number,
+  actualCount: number,
+) {
+  if (options.syncWorkflowExecutionToken === undefined) return;
+  if (actualCount === expectedCount) return;
+
+  throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+}
+
+function getRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 /**

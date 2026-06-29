@@ -119,4 +119,186 @@ describe('refreshInstallationRepositories', () => {
       .where(eq(githubInstallation.installationId, 12345));
     expect(installation.lastSyncedAt).toBeInstanceOf(Date);
   });
+
+  it('skips repository mutations when the sync attempt no longer owns the installation', async () => {
+    expect.assertions(9);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    await testContext.db
+      .update(githubInstallation)
+      .set({
+        syncStatus: 'in_progress',
+        syncError: 'still syncing',
+        syncWorkflowExecutionToken: 'current-workflow',
+        syncActivityAttemptToken: 'current-attempt',
+      })
+      .where(eq(githubInstallation.installationId, 12345));
+    const existingRepository = await testContext.factories.repository.create({
+      id: 999,
+      owner: 'test-org',
+      name: 'existing-repository',
+      installationId: 12345,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 12345,
+      repositoryId: existingRepository.id,
+      isActive: true,
+    });
+
+    const context = createGithubContext(testContext, [
+      {
+        id: 100,
+        owner: { login: 'test-org' },
+        name: 'stale-attempt-repository',
+        default_branch: 'main',
+      },
+    ]);
+
+    await expect(
+      refreshInstallationRepositories(context, 12345, {
+        syncWorkflowExecutionToken: 'current-workflow',
+        syncActivityAttemptToken: 'stale-attempt',
+      }),
+    ).rejects.toThrow('Installation sync ownership lost');
+    expect(context.getInstallationOctokit).not.toHaveBeenCalled();
+
+    const staleAttemptRepositories = await testContext.db
+      .select()
+      .from(repository)
+      .where(eq(repository.id, 100));
+    expect(staleAttemptRepositories).toHaveLength(0);
+
+    const [existingLink] = await testContext.db
+      .select()
+      .from(githubInstallationRepository)
+      .where(eq(githubInstallationRepository.repositoryId, 999));
+    expect(existingLink.isActive).toBe(true);
+    expect(existingLink.removedAt).toBeNull();
+
+    const [installation] = await testContext.db
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, 12345));
+    expect(installation.syncStatus).toBe('in_progress');
+    expect(installation.syncError).toBe('still syncing');
+    expect(installation.syncWorkflowExecutionToken).toBe('current-workflow');
+    expect(installation.syncActivityAttemptToken).toBe('current-attempt');
+  });
+
+  it('settles a failed interrupted row when sync owner tokens still match', async () => {
+    expect.assertions(6);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    await testContext.db
+      .update(githubInstallation)
+      .set({
+        syncStatus: 'failed',
+        syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
+        syncWorkflowExecutionToken: 'workflow-token',
+        syncActivityAttemptToken: 'activity-token',
+      })
+      .where(eq(githubInstallation.installationId, 12345));
+
+    const context = createGithubContext(testContext, [
+      {
+        id: 100,
+        owner: { login: 'test-org' },
+        name: 'active-repository',
+        default_branch: 'main',
+      },
+    ]);
+
+    const result = await refreshInstallationRepositories(context, 12345, {
+      syncWorkflowExecutionToken: 'workflow-token',
+      syncActivityAttemptToken: 'activity-token',
+    });
+
+    expect(result).toEqual({ repositoryCount: 1, deactivatedRepositoryCount: 0 });
+
+    const [activeRepository] = await testContext.db
+      .select()
+      .from(repository)
+      .where(eq(repository.id, 100));
+    expect(activeRepository.name).toBe('active-repository');
+
+    const [installation] = await testContext.db
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, 12345));
+    expect(installation.syncStatus).toBe('idle');
+    expect(installation.syncError).toBeNull();
+    expect(installation.syncWorkflowExecutionToken).toBeNull();
+    expect(installation.syncActivityAttemptToken).toBeNull();
+  });
+
+  it('preserves live durable sync status during tokenless setup refreshes', async () => {
+    expect.assertions(6);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    await testContext.db
+      .update(githubInstallation)
+      .set({
+        syncStatus: 'in_progress',
+        syncError: 'still syncing',
+        syncStartedAt: new Date('2026-06-28T00:00:00.000Z'),
+        syncWorkflowExecutionToken: 'workflow-token',
+        syncActivityAttemptToken: 'activity-token',
+      })
+      .where(eq(githubInstallation.installationId, 12345));
+
+    const context = createGithubContext(testContext, [
+      {
+        id: 100,
+        owner: { login: 'test-org' },
+        name: 'active-repository',
+        default_branch: 'main',
+      },
+    ]);
+
+    await refreshInstallationRepositories(context, 12345);
+
+    const [installation] = await testContext.db
+      .select()
+      .from(githubInstallation)
+      .where(eq(githubInstallation.installationId, 12345));
+    expect(installation.lastSyncedAt).toBeNull();
+    expect(installation.syncStatus).toBe('in_progress');
+    expect(installation.syncError).toBe('still syncing');
+    expect(installation.syncStartedAt).toEqual(new Date('2026-06-28T00:00:00.000Z'));
+    expect(installation.syncWorkflowExecutionToken).toBe('workflow-token');
+    expect(installation.syncActivityAttemptToken).toBe('activity-token');
+  });
+
+  it('batches repository writes for large installations', async () => {
+    expect.assertions(3);
+
+    await testContext.factories.githubInstallation.create({
+      installationId: 12345,
+      accountLogin: 'test-org',
+    });
+    const repositories = Array.from({ length: 1_001 }, (_, index) => ({
+      id: 10_000 + index,
+      owner: { login: 'test-org' },
+      name: `repository-${index}`,
+      default_branch: 'main',
+    }));
+    const context = createGithubContext(testContext, repositories);
+
+    const result = await refreshInstallationRepositories(context, 12345);
+
+    expect(result).toEqual({ repositoryCount: 1_001, deactivatedRepositoryCount: 0 });
+    const storedRepositories = await testContext.db.select().from(repository);
+    expect(storedRepositories).toHaveLength(1_001);
+    const storedLinks = await testContext.db.select().from(githubInstallationRepository);
+    expect(storedLinks).toHaveLength(1_001);
+  });
 });
