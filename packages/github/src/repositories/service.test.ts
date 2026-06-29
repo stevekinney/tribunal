@@ -237,8 +237,8 @@ describe('refreshInstallationRepositories', () => {
     expect(installation.syncActivityAttemptToken).toBeNull();
   });
 
-  it('preserves durable sync ownership during tokenless setup refreshes', async () => {
-    expect.assertions(5);
+  it('preserves live durable sync status during tokenless setup refreshes', async () => {
+    expect.assertions(6);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -270,8 +270,9 @@ describe('refreshInstallationRepositories', () => {
       .select()
       .from(githubInstallation)
       .where(eq(githubInstallation.installationId, 12345));
-    expect(installation.syncStatus).toBe('idle');
-    expect(installation.syncError).toBeNull();
+    expect(installation.lastSyncedAt).toBeNull();
+    expect(installation.syncStatus).toBe('in_progress');
+    expect(installation.syncError).toBe('still syncing');
     expect(installation.syncStartedAt).toEqual(new Date('2026-06-28T00:00:00.000Z'));
     expect(installation.syncWorkflowExecutionToken).toBe('workflow-token');
     expect(installation.syncActivityAttemptToken).toBe('activity-token');

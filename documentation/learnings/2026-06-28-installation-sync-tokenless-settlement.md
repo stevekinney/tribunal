@@ -1,0 +1,1 @@
+- Tokenless setup refresh settlement must not mark a live durable workflow row idle when owner tokens are still present; the owning workflow or finalizer needs the `in_progress` state to record failure or completion.

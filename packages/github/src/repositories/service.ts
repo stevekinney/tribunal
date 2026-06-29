@@ -458,7 +458,7 @@ export async function refreshInstallationRepositories(
   const settledInstallations = await context.db
     .update(githubInstallation)
     .set(settlement)
-    .where(buildInstallationSyncPredicate(installationId, options))
+    .where(buildInstallationSettlementPredicate(installationId, options))
     .returning({ installationId: githubInstallation.installationId });
 
   if (options.syncWorkflowExecutionToken !== undefined && settledInstallations.length === 0) {
@@ -560,6 +560,19 @@ function buildInstallationSyncPredicate(
     installationPredicate,
     eq(githubInstallation.syncWorkflowExecutionToken, syncWorkflowExecutionToken),
     eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+  );
+}
+
+function buildInstallationSettlementPredicate(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+) {
+  const installationPredicate = buildInstallationSyncPredicate(installationId, options);
+  if (options.syncWorkflowExecutionToken !== undefined) return installationPredicate;
+
+  return and(
+    installationPredicate,
+    sql`not (${githubInstallation.syncStatus} = 'in_progress' and ${githubInstallation.syncWorkflowExecutionToken} is not null)`,
   );
 }
 
