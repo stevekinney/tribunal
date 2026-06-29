@@ -163,7 +163,6 @@ export async function syncRepositories(
         installationId,
         syncWorkflowExecutionToken,
         syncActivityAttemptToken,
-        claimStartedAt,
       ),
     );
 
@@ -297,7 +296,6 @@ function buildActivityClaimPredicate(
   installationId: number,
   syncWorkflowExecutionToken: string | undefined,
   syncActivityAttemptToken: string | undefined,
-  claimStartedAt: Date,
 ) {
   const installationPredicate = eq(githubInstallation.installationId, installationId);
   if (syncWorkflowExecutionToken === undefined || syncActivityAttemptToken === undefined) {
@@ -310,7 +308,6 @@ function buildActivityClaimPredicate(
       isNull(githubInstallation.syncActivityAttemptToken),
       isNull(githubInstallation.syncStartedAt),
       eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
-      lte(githubInstallation.syncStartedAt, claimStartedAt),
     ),
   );
 }

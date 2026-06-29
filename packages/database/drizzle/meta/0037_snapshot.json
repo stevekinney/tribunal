@@ -1060,7 +1060,7 @@
         },
         "sync_started_at": {
           "name": "sync_started_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
