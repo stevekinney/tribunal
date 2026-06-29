@@ -40,8 +40,8 @@
  * Weft 0.9 also passes owner tokens to the activity and finalizer; activity
  * settlement requires the workflow execution token plus the activity attempt
  * token recorded by syncRepositories. Finalizer cleanup requires the workflow
- * execution token, a pre-token NULL fallback, or a stale row whose update time
- * predates the finalizing workflow run. The finalizer leaves owner tokens in
+ * execution token, a pre-token NULL fallback, or a stale row whose sync start
+ * time predates the finalizing workflow run. The finalizer leaves owner tokens in
  * place so a concurrently finishing activity can still prove ownership and
  * settle a completed repository sync back to 'idle'.
  * `completed`/`failed` workflow terminals never run it. The workflow records its
@@ -148,15 +148,24 @@ export async function syncRepositories(
   context?.signal.throwIfAborted();
 
   // Mark in-progress before hitting GitHub API so the UI reflects active work.
+  const claimStartedAt = new Date();
   await githubContext.db
     .update(githubInstallation)
     .set({
       syncStatus: 'in_progress',
+      syncStartedAt: claimStartedAt,
       syncWorkflowExecutionToken: syncWorkflowExecutionToken ?? null,
       syncActivityAttemptToken: syncActivityAttemptToken ?? null,
-      updatedAt: new Date(),
+      updatedAt: claimStartedAt,
     })
-    .where(eq(githubInstallation.installationId, installationId));
+    .where(
+      buildActivityClaimPredicate(
+        installationId,
+        syncWorkflowExecutionToken,
+        syncActivityAttemptToken,
+        claimStartedAt,
+      ),
+    );
 
   try {
     const refreshOptions =
@@ -185,6 +194,7 @@ export async function syncRepositories(
       .set({
         syncStatus: 'failed',
         syncError: errorMessage,
+        syncStartedAt: null,
         syncWorkflowExecutionToken: null,
         syncActivityAttemptToken: null,
         updatedAt: new Date(),
@@ -222,8 +232,8 @@ type SyncFinalizerState = { installationId: number; workflowStartedAt?: number }
  * fallback handles rows that were already
  * in-progress before this migration deployed. A stale-row fallback handles a
  * newer run that is cancelled before it can replace an older in-progress token:
- * the finalizer may clean rows updated before this workflow run started, but not
- * rows updated by a successor. If this run's sync activity finishes after the
+ * the finalizer may clean rows whose sync started before this workflow run
+ * started, but not rows updated by a successor. If this run's sync activity finishes after the
  * finalizer, the preserved tokens let its success write settle the row to 'idle'.
  * A second invocation, a successor run, or a sync that finished as
  * 'idle'/'failed' before teardown landed matches no rows and is a no-op — so a
@@ -252,6 +262,7 @@ export async function reconcileSyncStatusOnTeardown(
       // lifecycle teardown (installation removed), a lease eviction stopping the
       // engine, and an activity timeout — without asserting which one occurred.
       syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
+      syncStartedAt: null,
       updatedAt: new Date(),
     })
     .where(
@@ -282,6 +293,27 @@ function buildActivitySyncPredicate(
   return and(...predicates);
 }
 
+function buildActivityClaimPredicate(
+  installationId: number,
+  syncWorkflowExecutionToken: string | undefined,
+  syncActivityAttemptToken: string | undefined,
+  claimStartedAt: Date,
+) {
+  const installationPredicate = eq(githubInstallation.installationId, installationId);
+  if (syncWorkflowExecutionToken === undefined || syncActivityAttemptToken === undefined) {
+    return installationPredicate;
+  }
+
+  return and(
+    installationPredicate,
+    or(
+      isNull(githubInstallation.syncActivityAttemptToken),
+      eq(githubInstallation.syncActivityAttemptToken, syncActivityAttemptToken),
+      lte(githubInstallation.syncStartedAt, claimStartedAt),
+    ),
+  );
+}
+
 function buildFinalizerSyncPredicate(
   installationId: number,
   syncWorkflowExecutionToken?: string,
@@ -298,7 +330,7 @@ function buildFinalizerSyncPredicate(
     isNull(githubInstallation.syncWorkflowExecutionToken),
   ];
   if (workflowStartedAt !== undefined) {
-    tokenPredicates.push(lte(githubInstallation.updatedAt, new Date(workflowStartedAt)));
+    tokenPredicates.push(lte(githubInstallation.syncStartedAt, new Date(workflowStartedAt)));
   }
 
   return and(installationPredicate, inProgressPredicate, or(...tokenPredicates));

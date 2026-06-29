@@ -40,6 +40,7 @@ export const githubInstallation = pgTable(
     lastSyncedAt: timestamp('last_synced_at'),
     syncStatus: syncStatusEnum('sync_status').notNull().default('idle'),
     syncError: text('sync_error'),
+    syncStartedAt: timestamp('sync_started_at'),
     syncWorkflowExecutionToken: text('sync_workflow_execution_token'),
     syncActivityAttemptToken: text('sync_activity_attempt_token'),
 

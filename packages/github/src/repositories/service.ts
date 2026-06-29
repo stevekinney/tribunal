@@ -1,5 +1,5 @@
 import type { Endpoints } from '@octokit/types';
-import { eq, and, desc, inArray, sql } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { Repository } from '@tribunal/database/schema';
 import {
   repository,
@@ -375,55 +375,78 @@ export async function refreshInstallationRepositories(
   const now = new Date();
 
   if (repositories.length > 0) {
-    await context.db
-      .insert(repository)
-      .values(
-        repositories.map((gitHubRepository) => {
-          const owner = gitHubRepository.owner.login;
-          activeRepositoryIds.add(gitHubRepository.id);
+    const ownershipSql = buildInstallationOwnershipSql(installationId, options);
+    const repositoryRows = repositories.map((gitHubRepository) => {
+      const owner = gitHubRepository.owner.login;
+      activeRepositoryIds.add(gitHubRepository.id);
 
-          return {
-            id: gitHubRepository.id,
-            owner,
-            name: gitHubRepository.name,
-            uri: computeRepositoryUri(owner, gitHubRepository.name),
-            defaultBranch: gitHubRepository.default_branch,
-            installationId,
-          };
-        }),
-      )
-      .onConflictDoUpdate({
-        target: repository.id,
-        set: {
-          owner: sql`excluded.owner`,
-          name: sql`excluded.name`,
-          uri: sql`excluded.uri`,
-          defaultBranch: sql`excluded.default_branch`,
-          installationId: sql`excluded.installation_id`,
-          updatedAt: now,
-        },
-      });
+      return {
+        id: gitHubRepository.id,
+        owner,
+        name: gitHubRepository.name,
+        uri: computeRepositoryUri(owner, gitHubRepository.name),
+        defaultBranch: gitHubRepository.default_branch,
+      };
+    });
+    const repositoryValuesSql = sql.join(
+      repositoryRows.map(
+        (gitHubRepository) =>
+          sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.uri}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint, ${now}::timestamp)`,
+      ),
+      sql`, `,
+    );
+    const repositoryResult = await context.db.execute(sql`
+      INSERT INTO ${repository}
+        ("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      SELECT *
+      FROM (
+        VALUES ${repositoryValuesSql}
+      ) AS incoming("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("id") DO UPDATE SET
+        "owner" = excluded."owner",
+        "name" = excluded."name",
+        "uri" = excluded."uri",
+        "default_branch" = excluded."default_branch",
+        "installation_id" = excluded."installation_id",
+        "updated_at" = excluded."updated_at"
+      WHERE ${ownershipSql}
+      RETURNING "id"
+    `);
+    assertOwnedMutationResult(
+      installationId,
+      options,
+      repositoryRows.length,
+      getRows<{ id: number }>(repositoryResult).length,
+    );
 
-    await context.db
-      .insert(githubInstallationRepository)
-      .values(
-        repositories.map((gitHubRepository) => ({
-          installationId,
-          repositoryId: gitHubRepository.id,
-          isActive: true,
-          removedAt: null,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [
-          githubInstallationRepository.installationId,
-          githubInstallationRepository.repositoryId,
-        ],
-        set: {
-          isActive: true,
-          removedAt: null,
-        },
-      });
+    const linkValuesSql = sql.join(
+      repositoryRows.map(
+        (gitHubRepository) =>
+          sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean, NULL::timestamp)`,
+      ),
+      sql`, `,
+    );
+    const linkResult = await context.db.execute(sql`
+      INSERT INTO ${githubInstallationRepository}
+        ("installation_id", "repository_id", "is_active", "removed_at")
+      SELECT *
+      FROM (
+        VALUES ${linkValuesSql}
+      ) AS incoming("installation_id", "repository_id", "is_active", "removed_at")
+      WHERE ${ownershipSql}
+      ON CONFLICT ("installation_id", "repository_id") DO UPDATE SET
+        "is_active" = excluded."is_active",
+        "removed_at" = excluded."removed_at"
+      WHERE ${ownershipSql}
+      RETURNING "repository_id"
+    `);
+    assertOwnedMutationResult(
+      installationId,
+      options,
+      repositoryRows.length,
+      getRows<{ repository_id: number }>(linkResult).length,
+    );
   }
 
   const activeLinks = await context.db
@@ -441,7 +464,7 @@ export async function refreshInstallationRepositories(
     .map((link) => link.repositoryId);
 
   if (repositoryIdsToDeactivate.length > 0) {
-    await context.db
+    const deactivatedRepositories = await context.db
       .update(githubInstallationRepository)
       .set({
         isActive: false,
@@ -451,8 +474,16 @@ export async function refreshInstallationRepositories(
         and(
           eq(githubInstallationRepository.installationId, installationId),
           inArray(githubInstallationRepository.repositoryId, repositoryIdsToDeactivate),
+          buildInstallationOwnershipSql(installationId, options),
         ),
-      );
+      )
+      .returning({ repositoryId: githubInstallationRepository.repositoryId });
+    assertOwnedMutationResult(
+      installationId,
+      options,
+      repositoryIdsToDeactivate.length,
+      deactivatedRepositories.length,
+    );
   }
 
   const settledInstallations = await context.db
@@ -461,6 +492,7 @@ export async function refreshInstallationRepositories(
       lastSyncedAt: new Date(),
       syncStatus: 'idle',
       syncError: null,
+      syncStartedAt: null,
       syncWorkflowExecutionToken: null,
       syncActivityAttemptToken: null,
       updatedAt: new Date(),
@@ -507,6 +539,41 @@ async function ownsInstallationSync(
     .limit(1);
 
   return installation !== undefined;
+}
+
+function buildInstallationOwnershipSql(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+): SQL {
+  if (options.syncWorkflowExecutionToken === undefined) return sql`true`;
+
+  return sql`exists (
+    select 1
+    from ${githubInstallation}
+    where ${githubInstallation.installationId} = ${installationId}
+      and ${githubInstallation.syncWorkflowExecutionToken} = ${options.syncWorkflowExecutionToken}
+      and ${githubInstallation.syncActivityAttemptToken} = ${options.syncActivityAttemptToken}
+  )`;
+}
+
+function assertOwnedMutationResult(
+  installationId: number,
+  options: RefreshInstallationRepositoriesOptions,
+  expectedCount: number,
+  actualCount: number,
+) {
+  if (options.syncWorkflowExecutionToken === undefined) return;
+  if (actualCount === expectedCount) return;
+
+  throw new Error(`Installation sync ownership lost for installation ${installationId}`);
+}
+
+function getRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
 }
 
 /**
