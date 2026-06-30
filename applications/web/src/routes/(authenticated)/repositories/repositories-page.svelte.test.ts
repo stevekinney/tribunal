@@ -94,6 +94,7 @@ describe('/repositories page', () => {
             accountLogin: 'test-org',
             accountAvatarUrl: null,
             review: {
+              hasSavedSettings: true,
               watched: false,
               lastRunStatus: null,
               estimatedCostLast30DaysUsd: 0,
@@ -129,5 +130,60 @@ describe('/repositories page', () => {
     await expect
       .element(page.getByLabelText('Ignore globs'))
       .toHaveValue('generated/**\nvendor/**');
+  });
+
+  it('preserves empty saved agent assignments when re-watching a repository', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        agents: [
+          {
+            id: '1',
+            userId: 1,
+            slug: 'security',
+            description: 'Security reviews',
+            body: 'Review security risks.',
+            model: 'gpt-5',
+            effort: null,
+            enabled: true,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+            updatedAt: new Date('2026-01-01T00:00:00Z'),
+          },
+        ],
+        repositories: [
+          {
+            id: 101,
+            owner: 'test-org',
+            name: 'review-target',
+            defaultBranch: 'main',
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+            review: {
+              hasSavedSettings: true,
+              watched: false,
+              lastRunStatus: null,
+              estimatedCostLast30DaysUsd: 0,
+              ignoreGlobs: ['generated/**'],
+              agents: [],
+            },
+          },
+        ],
+        installations: [
+          {
+            installationId: 12345,
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+          },
+        ],
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('searchbox').fill('review-target');
+    await expect.element(page.getByText('test-org')).toBeInTheDocument();
+
+    const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
+    expect(Array.from(agentsSelect.selectedOptions)).toHaveLength(0);
   });
 });

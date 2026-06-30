@@ -130,6 +130,7 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
   const details = new Map<number, RepositoryOperatorDetails>();
   for (const repositoryId of repositoryIds) {
     details.set(repositoryId, {
+      hasSavedSettings: false,
       watched: false,
       ignoreGlobs: [],
       agents: [],
@@ -141,6 +142,7 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
   for (const settings of settingsRows) {
     const detail = details.get(settings.repositoryId);
     if (!detail) continue;
+    detail.hasSavedSettings = true;
     detail.watched = settings.watched;
     detail.ignoreGlobs = settings.ignoreGlobs;
   }
@@ -171,6 +173,7 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
 }
 
 export type RepositoryOperatorDetails = {
+  hasSavedSettings: boolean;
   watched: boolean;
   ignoreGlobs: string[];
   agents: { id: string; slug: string; enabled: boolean }[];

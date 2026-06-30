@@ -309,7 +309,7 @@
                           {#each agents as agent (agent.id)}
                             <option
                               value={agent.id}
-                              selected={repository.review.agents.length > 0
+                              selected={repository.review.hasSavedSettings
                                 ? repository.review.agents.some(
                                     (assigned) => assigned.id === agent.id,
                                   )
