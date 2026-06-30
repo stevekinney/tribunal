@@ -206,6 +206,56 @@ Failure signal: if a second engine Machine exists against the same
 `WEFT_DATABASE_URL`, stop the deployment and remove the duplicate before running
 health gates.
 
+## Automatic Main Deploy
+
+`.github/workflows/deploy-production.yml` runs the deploy procedure after the
+`CI` workflow succeeds on `main`. It can also be started manually with
+`workflow_dispatch`. The workflow uses GitHub Actions environment `production`
+for deploy credentials and audit history.
+
+Required `production` environment secrets:
+
+- `FLY_API_TOKEN`
+- `MIGRATION_DATABASE_URL`: direct, unpooled Neon URL for migrations.
+- `TENSORLAKE_API_KEY`
+
+Required `production` environment variables:
+
+- `FLY_ORG`: Fly organization that owns `tribunal-web`, `tribunal-engine`, and
+  `tribunal-proxy`.
+- `PRODUCTION_WEB_ORIGIN`: production web origin used for `/health`.
+- `PRODUCTION_PROXY_ORIGIN`: production proxy origin used for proxy health and
+  unauthorized-request checks. If unset, the workflow defaults to
+  `https://tribunal-proxy.fly.dev`.
+
+The workflow performs these steps:
+
+1. Check out the exact `main` commit that passed CI.
+2. Set up Bun and `flyctl`.
+3. Validate Fly authentication, Fly configs, and live Fly state with
+   `bun run deploy:status -- --live-status-only --allow-missing-sandbox-image --allow-pending-engine-machine`
+   before publishing the reviewer image.
+4. Build and run the reviewer image, register the reviewer Dockerfile with
+   Tensorlake, and stage the returned `TRIBUNAL_SANDBOX_IMAGE` on
+   `tribunal-engine`.
+5. Run `bun run db:migrate` with `MIGRATION_DATABASE_URL`.
+6. Deploy proxy, engine, and web in dependency order.
+7. Run `flyctl scale count 1 --app tribunal-engine`.
+8. Run every health gate below plus explicit checks that the engine has exactly
+   one non-destroyed Machine and no public ingress IP.
+
+The pre-deploy live-state check permits `TRIBUNAL_SANDBOX_IMAGE` to be missing
+because the workflow refreshes that secret in the same run, and permits zero
+engine Machines so a first automatic deploy can create one. The post-deploy
+live-state check uses `bun run deploy:status -- --live-status-only` without
+those allowances, so the refreshed engine secret and singleton engine Machine
+are required before the workflow can finish.
+
+The workflow does not create apps, allocate the proxy IPv4, configure provider
+consoles, set long-lived runtime application secrets, enable live reviews, or
+perform automatic rollback. Failed post-deploy health gates fail the workflow
+loudly; use the rollback runbook when a migration-safe rollback is appropriate.
+
 ## Health Gates
 
 Proxy public health:
