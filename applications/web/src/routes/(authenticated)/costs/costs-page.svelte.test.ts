@@ -33,13 +33,14 @@ const data = {
     },
   },
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+  reviewsEnabled: false,
 } satisfies PageData;
 
 describe('/costs page', () => {
   afterEach(() => cleanup());
 
   it('renders source toggle, cap meter, six rollups, and cache split', async () => {
-    render(CostsPage, { data });
+    render(CostsPage, { data, params: {}, form: null });
 
     await expect
       .element(page.getByRole('link', { name: 'Estimate' }))

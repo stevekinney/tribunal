@@ -25,7 +25,19 @@ vi.mock('$lib/server/auth/authentication', () => ({
     userId: 1,
   })),
   upsertOAuthConnection: vi.fn().mockResolvedValue(undefined),
+  // Faithful stand-in for the real helper: return the token expiry, tolerating
+  // providers that omit it (Arctic throws → null).
+  readAccessTokenExpiresAt: (tokens: { accessTokenExpiresAt: () => Date }) => {
+    try {
+      return tokens.accessTokenExpiresAt();
+    } catch {
+      return null;
+    }
+  },
 }));
+
+// GitHub App user-to-server tokens expire (~8h); the callback must persist it.
+const tokenExpiry = new Date('2026-07-01T00:00:00.000Z');
 
 vi.mock('$lib/server/auth/providers', () => ({
   getProviderClient: () => ({
@@ -49,6 +61,7 @@ describe('GET /connect/github/account/callback', () => {
       accessToken: () => 'github-access-token',
       hasRefreshToken: () => true,
       refreshToken: () => 'github-refresh-token',
+      accessTokenExpiresAt: () => tokenExpiry,
     });
     mockFetch.mockResolvedValue({
       ok: true,
@@ -100,7 +113,7 @@ describe('GET /connect/github/account/callback', () => {
       providerUserId: '12345',
       accessToken: 'github-access-token',
       refreshToken: 'github-refresh-token',
-      expiresAt: null,
+      expiresAt: tokenExpiry,
       scope: 'repo,user:email',
     });
     expect(invalidateGitHubAccessCache).toHaveBeenCalledWith(1);

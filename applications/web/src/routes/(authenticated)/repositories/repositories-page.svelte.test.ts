@@ -19,6 +19,7 @@ const baseData = {
   needsConnect: false,
   loadError: null,
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+  reviewsEnabled: false,
 } satisfies PageData;
 
 describe('/repositories page', () => {
@@ -123,7 +124,9 @@ describe('/repositories page', () => {
 
     await page.getByRole('searchbox').fill('review-target');
 
-    await expect.element(page.getByText('test-org')).toBeInTheDocument();
+    // exact:true disambiguates the owner span from the icon button's sr-only
+    // "Settings for test-org/…" label (Playwright getByText defaults to substring).
+    await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 
     const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
     expect(Array.from(agentsSelect.selectedOptions).map((option) => option.value)).toEqual(['2']);
@@ -181,7 +184,9 @@ describe('/repositories page', () => {
     });
 
     await page.getByRole('searchbox').fill('review-target');
-    await expect.element(page.getByText('test-org')).toBeInTheDocument();
+    // exact:true disambiguates the owner span from the icon button's sr-only
+    // "Settings for test-org/…" label (Playwright getByText defaults to substring).
+    await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 
     const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
     expect(Array.from(agentsSelect.selectedOptions)).toHaveLength(0);

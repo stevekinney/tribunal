@@ -1,4 +1,5 @@
 import type { Cookies } from '@sveltejs/kit';
+import type { OAuth2Tokens } from 'arctic';
 import { dev } from '$app/environment';
 import { eq, and } from 'drizzle-orm';
 import { encodeBase64url } from '@oslojs/encoding';
@@ -196,6 +197,33 @@ export async function validateAndUpdateConnectionHealth(
   return isValid;
 }
 
+/**
+ * Read a token response's access-token expiry, tolerating providers that issue
+ * non-expiring tokens. GitHub App user-to-server tokens include `expires_in`
+ * (≈8h) plus a refresh token; classic OAuth App tokens omit it, and Arctic's
+ * `accessTokenExpiresAt()` throws when the field is absent. A missing expiry is
+ * returned as null, which `refreshGitHubTokenIfNeeded` treats as "never
+ * expires" (so it is never refreshed). Shared by the connect callback and the
+ * refresh path so both classify the expiry identically.
+ */
+/** Exact message Arctic throws from `accessTokenExpiresAt()` when the token
+ * response carries no usable `expires_in` field (classic OAuth App tokens). */
+const MISSING_EXPIRES_IN_MESSAGE = "Missing or invalid 'expires_in' field";
+
+export function readAccessTokenExpiresAt(tokens: OAuth2Tokens): Date | null {
+  try {
+    return tokens.accessTokenExpiresAt();
+  } catch (error) {
+    // Only the known "no expiry" case is a non-expiring token. Re-throw anything
+    // else so a genuinely malformed token response fails loudly at the callback
+    // instead of being silently persisted as a token that never expires.
+    if (error instanceof Error && error.message === MISSING_EXPIRES_IN_MESSAGE) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export async function refreshGitHubTokenIfNeeded(userId: number): Promise<string | null> {
   const connection = await getOAuthConnection(userId, 'github');
   if (!connection) return null;
@@ -221,7 +249,7 @@ export async function refreshGitHubTokenIfNeeded(userId: number): Promise<string
       providerUserId: connection.providerUserId,
       accessToken: tokens.accessToken(),
       refreshToken: tokens.hasRefreshToken() ? tokens.refreshToken() : null,
-      expiresAt: tokens.accessTokenExpiresAt() ?? null,
+      expiresAt: readAccessTokenExpiresAt(tokens),
       scope: connection.scope,
     });
 

@@ -10,6 +10,7 @@
     --space-2: 0.5rem;
     --space-2-5: 0.625rem;
     --space-3: 0.75rem;
+    --space-3-5: 0.875rem;
     --space-4: 1rem;
     --space-5: 1.25rem;
     --space-6: 1.5rem;
@@ -138,8 +139,8 @@
     --border-strong: light-dark(oklch(75% 0.035 245), oklch(45% 0.06 245));
     --divider: light-dark(oklch(88% 0.02 245), oklch(32% 0.045 245));
 
-    /* Accent - cyan (hue 195) */
-    --accent: light-dark(oklch(45% 0.14 195), oklch(78% 0.15 195));
+    /* Accent - indigo (hue 270) */
+    --accent: light-dark(oklch(50% 0.22 270), oklch(72% 0.14 270));
     --accent-contrast: light-dark(oklch(100% 0 0), oklch(15% 0.035 245));
 
     /* Secondary - lavender (hue 285) */
@@ -168,8 +169,8 @@
     --ring-offset: 1px;
     --ring-offset-color: var(--bg);
     --ring-color: light-dark(
-      oklch(from var(--accent) 55% 0.12 195),
-      oklch(from var(--accent) 70% 0.14 195)
+      oklch(from var(--accent) 55% 0.12 270),
+      oklch(from var(--accent) 70% 0.14 270)
     );
     /* Alias for components using --focus-ring (deprecated, use --ring-color) */
     --focus-ring: var(--ring-color);

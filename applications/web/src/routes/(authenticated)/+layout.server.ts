@@ -1,4 +1,5 @@
 import { redirect } from '@sveltejs/kit';
+import { getReviewsEnabled } from '$lib/server/review/operator';
 import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
@@ -10,5 +11,11 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
     redirect(302, `/login?returnTo=${encodeURIComponent(returnTo)}`);
   }
 
-  return { user };
+  // Pure read (no upsert) so a settings-table write can never gate the whole
+  // authenticated app. Surfaces the real global review state in the sidebar pill
+  // instead of a hardcoded "Reviews active". Layout loads are cached across
+  // client-side navigations, so this does not run on every page transition.
+  const reviewsEnabled = await getReviewsEnabled(user.id);
+
+  return { user, reviewsEnabled };
 };

@@ -20,6 +20,7 @@ const data = {
   modelOptions: ['inherit', 'sonnet', 'opus', 'haiku', 'fable'],
   effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'],
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+  reviewsEnabled: false,
 } satisfies PageData;
 
 describe('/agents page', () => {

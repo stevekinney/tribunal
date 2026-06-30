@@ -6,6 +6,7 @@
   import { getNeonAuthClient } from '$lib/auth/neon-client';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
   import GithubIcon from 'lucide-svelte/icons/github';
+  import Gavel from 'lucide-svelte/icons/gavel';
 
   const errorParam = $derived(page.url.searchParams.get('error'));
   const errorMessage = $derived(errorParam ? LOGIN_ERROR_MESSAGES[errorParam] : null);
@@ -55,32 +56,72 @@
 </svelte:head>
 
 <div class="login-page">
-  <div class="login-container">
-    <div class="login-header">
-      <h1 class="title">Sign in to Tribunal</h1>
-      <p class="description">Sign in with your GitHub account to continue</p>
+  <div class="login-card">
+    <!-- Dark brand panel — always rendered with dark theme tokens -->
+    <aside class="brand-panel" data-theme="dark">
+      <div class="wordmark">
+        <div class="wordmark-icon" aria-hidden="true">
+          <Gavel size={18} />
+        </div>
+        <span class="wordmark-name">Tribunal</span>
+      </div>
+
+      <p class="brand-headline">Opinionated review on every pull request.</p>
+      <p class="brand-description">
+        Point AI review agents at the repositories that matter. They comment directly on GitHub —
+        you stay in your workflow.
+      </p>
+
+      <ol class="steps" aria-label="Onboarding steps">
+        <li class="step step-current" aria-current="step">
+          <span class="step-marker step-marker-current" aria-hidden="true">1</span>
+          <span class="step-label step-label-current">Sign in with GitHub</span>
+        </li>
+        <li class="step">
+          <span class="step-marker" aria-hidden="true">2</span>
+          <span class="step-label">Install the GitHub App</span>
+        </li>
+        <li class="step">
+          <span class="step-marker" aria-hidden="true">3</span>
+          <span class="step-label">Choose repositories to watch</span>
+        </li>
+      </ol>
+
+      <p class="trust-line">
+        Tribunal requests read access to code and write access to pull request comments only.
+      </p>
+    </aside>
+
+    <!-- Sign-in panel — follows the user's active color scheme -->
+    <div class="signin-panel">
+      <div class="signin-content">
+        <div class="signin-header">
+          <h1 class="signin-title">Sign in to Tribunal</h1>
+          <p class="signin-description">Connect your GitHub account to get started.</p>
+        </div>
+
+        {#if errorMessage}
+          <Alert variant="danger">
+            {errorMessage}
+          </Alert>
+        {/if}
+
+        <Button
+          variant="primary"
+          size="md"
+          fullWidth
+          onclick={startGithubSignIn}
+          disabled={loading}
+        >
+          {loading ? 'Redirecting...' : 'Continue with GitHub'}
+          {#snippet leadingIcon()}<GithubIcon width="20" height="20" aria-hidden="true" />{/snippet}
+        </Button>
+
+        <p class="privacy-note">
+          By signing in, you agree to our Terms of Service and Privacy Policy.
+        </p>
+      </div>
     </div>
-
-    {#if errorMessage}
-      <Alert variant="error">
-        {errorMessage}
-      </Alert>
-    {/if}
-
-    <div class="providers">
-      <Button
-        variant="secondary"
-        size="sm"
-        class="provider-button"
-        onclick={startGithubSignIn}
-        disabled={loading}
-      >
-        {loading ? 'Redirecting...' : 'Continue with GitHub'}
-        {#snippet leadingIcon()}<GithubIcon width="20" height="20" aria-hidden="true" />{/snippet}
-      </Button>
-    </div>
-
-    <p class="footer-text">By signing in, you agree to our Terms of Service and Privacy Policy.</p>
   </div>
 </div>
 
@@ -90,50 +131,197 @@
     min-height: 100vh;
     align-items: center;
     justify-content: center;
-    background: var(--surface);
-    padding: var(--space-4) var(--space-6);
+    background: var(--bg);
+    padding: var(--space-6) var(--space-4);
   }
 
-  .login-container {
+  .login-card {
+    display: grid;
+    grid-template-columns: 320px 1fr;
     width: 100%;
-    max-width: 24rem;
+    max-width: 760px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* ---- Brand panel ---- */
+
+  /*
+   * light-dark() tokens are resolved at :root (color-scheme: light) and do NOT
+   * re-evaluate under a data-theme="dark" subtree — verified app-wide (the
+   * authenticated sidebar applies the same workaround). Without these explicit
+   * dark-arm overrides the panel renders light. Pin the tokens it consumes.
+   */
+  .brand-panel[data-theme='dark'] {
+    --surface: oklch(20% 0.04 245);
+    --text: oklch(92% 0.02 245);
+    --text-muted: oklch(82% 0.02 245);
+    --text-subtle: oklch(72% 0.02 245);
+    --border-muted: oklch(30% 0.04 245);
+  }
+
+  .brand-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
+    padding: var(--space-8) var(--space-6);
+    background: var(--surface);
+    border-inline-end: 1px solid var(--border-muted);
   }
 
-  .login-header {
-    text-align: center;
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2-5);
+    margin-bottom: var(--space-8);
   }
 
-  .title {
-    font-size: var(--text-2xl);
-    font-weight: var(--font-bold);
+  .wordmark-icon {
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: var(--accent-contrast);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .wordmark-name {
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
     color: var(--text);
-    letter-spacing: 0;
   }
 
-  .description {
-    margin-top: var(--space-2);
+  .brand-headline {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+    margin: 0 0 var(--space-3);
+    text-wrap: balance;
+  }
+
+  .brand-description {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    line-height: var(--leading-normal);
+    margin: 0 0 var(--space-8);
+  }
+
+  /* ---- Onboarding steps ---- */
+
+  .steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .step {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .step-marker {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--radius-full);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    border: 1px solid var(--border-muted);
+    color: var(--text-subtle);
+    background: transparent;
+  }
+
+  .step-marker-current {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    border-color: transparent;
+  }
+
+  .step-label {
     font-size: var(--text-sm);
     color: var(--text-muted);
   }
 
-  .providers {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
+  .step-label-current {
+    color: var(--text);
+    font-weight: var(--font-medium);
   }
 
-  :global(.provider-button) {
-    width: 100%;
+  .trust-line {
+    margin-top: auto;
+    font-size: var(--text-xs);
+    color: var(--text-subtle);
+    line-height: var(--leading-normal);
+  }
+
+  /* ---- Sign-in panel ---- */
+
+  .signin-panel {
+    display: flex;
+    align-items: center;
     justify-content: center;
+    padding: var(--space-8) var(--space-6);
+    background: var(--surface);
+  }
+
+  .signin-content {
+    width: 100%;
+    max-width: 20rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  .signin-header {
+    display: flex;
+    flex-direction: column;
     gap: var(--space-2);
   }
 
-  .footer-text {
-    text-align: center;
+  .signin-title {
+    font-size: var(--text-xl);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+    margin: 0;
+    letter-spacing: 0;
+  }
+
+  .signin-description {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .privacy-note {
     font-size: var(--text-xs);
     color: var(--text-disabled);
+    text-align: center;
+    margin: 0;
+  }
+
+  /* ---- Responsive ---- */
+
+  @media (max-width: 600px) {
+    .login-card {
+      grid-template-columns: 1fr;
+    }
+
+    .brand-panel {
+      border-inline-end: none;
+      border-block-end: 1px solid var(--border-muted);
+    }
   }
 </style>

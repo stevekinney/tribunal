@@ -3,91 +3,168 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
-  import { Save } from 'lucide-svelte';
+  import { Input } from '@lostgradient/cinder/input';
+  import { Select } from '@lostgradient/cinder/select';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
+  import { Toggle } from '@lostgradient/cinder/toggle';
+  import OctagonAlert from 'lucide-svelte/icons/octagon-alert';
+  import Save from 'lucide-svelte/icons/save';
+  import { untrack } from 'svelte';
+  import type { PageProps } from './$types';
 
-  let { data, form } = $props();
+  let { data, form }: PageProps = $props();
+
+  // Editable form state seeded once from server data (untrack avoids the
+  // state_referenced_locally warning; matches the agents page pattern).
+  let dailyCostCapUsd = $state(untrack(() => data.settings.dailyCostCapUsd));
+  let defaultModel = $state(untrack(() => data.settings.defaultModel));
+  let reviewsEnabled = $state(untrack(() => data.settings.reviewsEnabled));
+
+  const modelOptions = $derived<{ value: string; label: string }[]>(
+    data.modelOptions.map((model) => ({ value: model, label: model })),
+  );
+
+  const reviewStatus = $derived(reviewsEnabled ? 'success' : 'neutral');
+
+  const reviewLabel = $derived(reviewsEnabled ? 'Reviews active' : 'Reviews paused');
 </script>
 
 <Page title="Settings" subtitle="Review safety controls">
+  {#snippet actions()}
+    <Button type="submit" form="settings-form" variant="primary">
+      {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
+      Save settings
+    </Button>
+  {/snippet}
+
   {#if form?.error}
-    <Alert variant="error">{form.error}</Alert>
+    <Alert variant="danger">{form.error}</Alert>
   {/if}
 
-  <Card>
-    <form method="POST" action="?/save" class="settings-form">
-      <label class="field">
-        <span>Daily cost cap</span>
-        <input
-          type="number"
-          name="dailyCostCapUsd"
-          min="0"
-          step="0.01"
-          value={data.settings.dailyCostCapUsd}
-          required
+  <form id="settings-form" method="POST" action="?/save" class="settings-form">
+    <Card
+      title="Daily cost cap"
+      description="Reviews pause automatically once the day's estimated spend reaches this amount."
+      headingLevel={2}
+    >
+      <div class="cost-cap-body">
+        <div class="cost-input-wrapper">
+          <Input
+            id="daily-cost-cap"
+            type="number"
+            name="dailyCostCapUsd"
+            bind:value={dailyCostCapUsd}
+            min={0}
+            step={0.01}
+            required
+            aria-label="Daily cost cap in US dollars"
+          >
+            {#snippet leading()}<span aria-hidden="true">$</span>{/snippet}
+          </Input>
+        </div>
+      </div>
+    </Card>
+
+    <Card
+      title="Default model"
+      description="Used by any agent set to 'Inherit default.' Changing it does not affect agents with an explicit model."
+      headingLevel={2}
+    >
+      <div class="model-body">
+        <Select
+          id="default-model"
+          name="defaultModel"
+          bind:value={defaultModel}
+          options={modelOptions}
+          label="Default model"
         />
-      </label>
-      <label class="field">
-        <span>Default model</span>
-        <select name="defaultModel">
-          {#each data.modelOptions as model (model)}
-            <option value={model} selected={model === data.settings.defaultModel}>{model}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="kill-switch">
-        <input type="checkbox" name="reviewsEnabled" checked={data.settings.reviewsEnabled} />
-        <span>Reviews enabled</span>
-      </label>
-      <p class="muted">Reconciliation status: waiting for authoritative cost events.</p>
-      <Button type="submit" variant="primary">
-        Save settings
-        {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
-      </Button>
-    </form>
-  </Card>
+      </div>
+    </Card>
+
+    <div class="kill-switch-wrapper">
+      <Card>
+        {#snippet header()}
+          <h2 class="kill-switch-title">
+            <span class="icon-danger" aria-hidden="true"><OctagonAlert size={15} /></span>
+            Kill switch
+          </h2>
+          <p class="kill-switch-desc">
+            Immediately stop dispatching new reviews everywhere. In-flight runs finish. Use this if
+            costs spike or an agent misbehaves.
+          </p>
+        {/snippet}
+        <div class="kill-switch-body">
+          <StatusDot status={reviewStatus} label={reviewLabel} showLabel />
+          <Toggle
+            id="reviews-enabled"
+            bind:checked={reviewsEnabled}
+            name="reviewsEnabled"
+            label="Reviews enabled"
+          />
+        </div>
+      </Card>
+    </div>
+  </form>
 </Page>
 
 <style>
   .settings-form {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    max-width: 680px;
+  }
+
+  .cost-cap-body {
+    display: flex;
+    align-items: center;
     gap: var(--space-4);
   }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    color: var(--text-muted);
-    font-size: var(--text-sm);
+  .cost-input-wrapper {
+    width: 160px;
   }
 
-  .kill-switch {
-    grid-column: 1 / -1;
+  .model-body {
+    max-width: 280px;
+  }
+
+  .kill-switch-wrapper :global(.cinder-card) {
+    border-color: var(--cinder-color-danger-border);
+  }
+
+  .kill-switch-wrapper :global(.cinder-card__header) {
+    border-bottom-color: var(--cinder-color-danger-border);
+  }
+
+  .kill-switch-title {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2);
-    color: var(--text);
+    gap: var(--space-1-5);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--cinder-color-danger-fg);
+    margin: 0;
   }
 
-  input,
-  select {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    padding: var(--space-2) var(--space-3);
-    font: inherit;
+  .icon-danger {
+    color: var(--cinder-color-danger-fg);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
   }
 
-  .muted {
-    grid-column: 1 / -1;
-    color: var(--text-muted);
+  .kill-switch-desc {
+    font-size: var(--text-sm);
+    color: var(--text-subtle);
+    margin: 0;
+    margin-top: var(--space-1-5);
   }
 
-  @media (max-width: 640px) {
-    .settings-form {
-      grid-template-columns: 1fr;
-    }
+  .kill-switch-body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
   }
 </style>

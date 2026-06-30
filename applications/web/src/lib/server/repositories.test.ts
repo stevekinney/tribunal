@@ -131,6 +131,31 @@ describe('getRepositoriesForUser', () => {
     expect.assertions(1);
   });
 
+  it('maps a 401 from GitHub to no_github_token (revoked/expired token)', async () => {
+    // A 401 means the stored OAuth token is dead. It must surface as
+    // `no_github_token` (a reconnect prompt) — not `github_unavailable`, which
+    // would imply a transient outage and re-use the dead token on every load.
+    mockGithubRequest.mockImplementation(async () => {
+      throw Object.assign(new Error('Bad credentials'), { status: 401 });
+    });
+
+    const result = await withTestDatabase(() => getRepositoriesForUser(1));
+
+    expect(result).toMatchObject({ ok: false, error: 'no_github_token' });
+    expect.assertions(1);
+  });
+
+  it('maps a non-401 GitHub error to github_unavailable (transient)', async () => {
+    mockGithubRequest.mockImplementation(async () => {
+      throw Object.assign(new Error('Service unavailable'), { status: 503 });
+    });
+
+    const result = await withTestDatabase(() => getRepositoriesForUser(1));
+
+    expect(result).toMatchObject({ ok: false, error: 'github_unavailable' });
+    expect.assertions(1);
+  });
+
   it('uses live GitHub installations in production even if E2E variables are present', async () => {
     mockEnv.NODE_ENV = 'production';
     mockEnv.E2E_TEST_MODE = '1';

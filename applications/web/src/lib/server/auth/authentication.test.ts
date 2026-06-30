@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OAuth2Tokens } from 'arctic';
 
 vi.mock('$env/dynamic/private', () => ({
   env: {
@@ -143,6 +144,34 @@ describe('authentication GitHub connection helpers', () => {
     );
     expect(mockOnConflictDoUpdate).toHaveBeenCalledTimes(1);
     expect.assertions(4);
+  });
+
+  it('reads the access token expiry, tolerating non-expiring tokens', async () => {
+    const { readAccessTokenExpiresAt } = await import('./authentication');
+
+    // GitHub App user-to-server tokens carry an expiry.
+    const expires = new Date('2026-06-30T20:00:00.000Z');
+    const expiringToken = { accessTokenExpiresAt: () => expires } as unknown as OAuth2Tokens;
+    expect(readAccessTokenExpiresAt(expiringToken)).toBe(expires);
+
+    // Classic OAuth App tokens omit `expires_in`; Arctic throws. Treat as null
+    // (a non-expiring token) instead of letting the throw escape the callback.
+    const nonExpiringToken = {
+      accessTokenExpiresAt: () => {
+        throw new Error("Missing or invalid 'expires_in' field");
+      },
+    } as unknown as OAuth2Tokens;
+    expect(readAccessTokenExpiresAt(nonExpiringToken)).toBeNull();
+
+    // An unexpected failure (not the known "no expiry" case) must propagate, not
+    // be swallowed into a silently non-expiring token.
+    const brokenToken = {
+      accessTokenExpiresAt: () => {
+        throw new Error('Unexpected token parsing failure');
+      },
+    } as unknown as OAuth2Tokens;
+    expect(() => readAccessTokenExpiresAt(brokenToken)).toThrow('Unexpected token parsing failure');
+    expect.assertions(3);
   });
 
   it('sanitizes unsafe return paths', async () => {

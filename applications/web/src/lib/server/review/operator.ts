@@ -42,7 +42,13 @@ export function parseIgnoreGlobs(value: string): string[] {
     .filter((glob) => glob.length > 0);
 }
 
-async function userOwnsRepository(userId: number, repositoryId: number): Promise<boolean> {
+/**
+ * Returns whether the user has active installation access to a repository,
+ * without throwing. Use this to pre-authorize a batch of repository ids before
+ * writing, so a mixed owned/unauthorized submission fails fast with no partial
+ * writes. Use {@link requireRepositoryOwnership} when a thrown 403 is desired.
+ */
+export async function userOwnsRepository(userId: number, repositoryId: number): Promise<boolean> {
   const [row] = await db
     .select({ repositoryId: githubInstallationRepository.repositoryId })
     .from(githubInstallationRepository)
@@ -917,6 +923,39 @@ function rollup<T>(rows: T[], getKey: (row: T) => string) {
   return Array.from(totals.entries())
     .map(([label, amountUsd]) => ({ label, amountUsd }))
     .sort((a, b) => b.amountUsd - a.amountUsd);
+}
+
+/**
+ * Returns whether the user is watching at least one repository. A cheap bounded
+ * existence check (LIMIT 1) used by the post-login landing to decide whether to
+ * guide a fresh user to onboarding (no watched repos) instead of straight into
+ * the repositories list. Preferred over a count for a zero/non-zero decision.
+ */
+export async function hasWatchedRepositories(userId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ repositoryId: repositoryReviewSettings.repositoryId })
+    .from(repositoryReviewSettings)
+    .where(
+      and(eq(repositoryReviewSettings.userId, userId), eq(repositoryReviewSettings.watched, true)),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
+ * Reads whether reviews are globally enabled for a user WITHOUT creating a
+ * settings row. The authenticated layout load uses this so it stays a pure read
+ * — an upsert there would gate every authenticated route behind a settings-table
+ * write. Defaults to true (the schema default) when no settings row exists yet,
+ * matching the value an upsert-then-read would have produced.
+ */
+export async function getReviewsEnabled(userId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ reviewsEnabled: userReviewSettings.reviewsEnabled })
+    .from(userReviewSettings)
+    .where(eq(userReviewSettings.userId, userId))
+    .limit(1);
+  return row?.reviewsEnabled ?? true;
 }
 
 export async function getUserReviewSettings(userId: number) {
