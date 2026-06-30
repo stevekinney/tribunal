@@ -294,13 +294,13 @@ flyctl config validate --config deployment/fly/proxy.toml
 Deploy in dependency order after migrations:
 
 ```sh
-flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
+flyctl deploy . --config deployment/fly/proxy.toml
 flyctl scale count 1 --yes -a tribunal-proxy
 
-flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+flyctl deploy . --config deployment/fly/engine.toml
 flyctl scale count 1 --yes -a tribunal-engine
 
-flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
+flyctl deploy . --config deployment/fly/web.toml
 flyctl scale count 1 --yes -a tribunal-web
 ```
 

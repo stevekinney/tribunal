@@ -2,7 +2,7 @@ app = "tribunal-web"
 primary_region = "dfw"
 
 [build]
-  dockerfile = "deployment/containers/web.Dockerfile"
+  dockerfile = "../containers/web.Dockerfile"
 
 [env]
   NODE_ENV = "production"
