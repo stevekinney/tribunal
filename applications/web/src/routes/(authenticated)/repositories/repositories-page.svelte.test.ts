@@ -410,4 +410,62 @@ describe('/repositories page', () => {
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
   });
+
+  it('submits a retoggle that happens while the previous update is still applying', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        agents: [
+          {
+            id: '1',
+            userId: 1,
+            slug: 'security',
+            description: 'Security reviews',
+            body: 'Review security risks.',
+            model: 'gpt-5',
+            effort: null,
+            enabled: true,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+            updatedAt: new Date('2026-01-01T00:00:00Z'),
+          },
+        ],
+        repositories: [
+          {
+            id: 101,
+            owner: 'test-org',
+            name: 'review-target',
+            defaultBranch: 'main',
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+            review: {
+              hasSavedSettings: false,
+              watched: false,
+              lastRunStatus: null,
+              estimatedCostLast30DaysUsd: 0,
+              ignoreGlobs: [],
+              agents: [],
+            },
+          },
+        ],
+        installations: [
+          {
+            installationId: 12345,
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+          },
+        ],
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+
+    enhancedFormTesting.submissions[0]?.resolveResult();
+
+    await page.getByRole('switch', { name: 'Unwatch repository' }).click();
+    await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
+    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
+  });
 });

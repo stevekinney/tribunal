@@ -128,32 +128,31 @@
     }
   }
 
-  function submitWatchForm(repositoryId: number, watched: boolean): void {
+  function submitWatchForm(repositoryId: number, watched: boolean): boolean {
     const watchForm = document.getElementById(`watch-form-${repositoryId}`);
-    if (!(watchForm instanceof HTMLFormElement)) return;
+    if (!(watchForm instanceof HTMLFormElement)) return false;
 
     setWatchedFormValue(watchForm, watched);
 
     if (activeWatchSubmissions.has(repositoryId)) {
       queuedWatchStates.set(repositoryId, watched);
-      return;
+      return true;
     }
 
     activeWatchSubmissions.add(repositoryId);
     watchForm.requestSubmit();
+    return true;
   }
 
-  function completeWatchSubmission(repositoryId: number): void {
-    activeWatchSubmissions.delete(repositoryId);
-
+  function submitQueuedWatchState(repositoryId: number): boolean {
     if (queuedWatchStates.has(repositoryId)) {
       const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
+      if (!submitWatchForm(repositoryId, queuedWatched)) return false;
       queuedWatchStates.delete(repositoryId);
-      submitWatchForm(repositoryId, queuedWatched);
-      return;
+      return true;
     }
 
-    localWatchStates.delete(repositoryId);
+    return false;
   }
 </script>
 
@@ -305,18 +304,18 @@
 
                           return async ({ update }) => {
                             if (expandedSettings === id) expandedSettings = null;
-                            if (queuedWatchStates.has(id)) {
-                              const queuedWatched = queuedWatchStates.get(id) as boolean;
-                              activeWatchSubmissions.delete(id);
-                              queuedWatchStates.delete(id);
-                              submitWatchForm(id, queuedWatched);
+                            activeWatchSubmissions.delete(id);
+
+                            if (submitQueuedWatchState(id)) {
                               return;
                             }
 
                             try {
                               await update();
                             } finally {
-                              completeWatchSubmission(id);
+                              if (!submitQueuedWatchState(id) && !activeWatchSubmissions.has(id)) {
+                                localWatchStates.delete(id);
+                              }
                             }
                           };
                         }}
