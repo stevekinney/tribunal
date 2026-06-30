@@ -210,10 +210,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          reviewer_context="$RUNNER_TEMP/tensorlake-reviewer-context"
+          rm -rf "$reviewer_context"
+          mkdir -p "$reviewer_context"
+
+          git archive HEAD -- \
+            package.json \
+            bun.lock \
+            applications/engine/package.json \
+            applications/proxy/package.json \
+            applications/web/package.json \
+            packages \
+            runner \
+            scripts/package.json \
+            scripts/install-git-hooks.ts \
+            deployment/containers/reviewer.Dockerfile \
+            | tar -x -C "$reviewer_context"
+
+          cp "$reviewer_context/deployment/containers/reviewer.Dockerfile" "$reviewer_context/Dockerfile"
+
           docker build -f deployment/containers/web.Dockerfile -t tribunal-web:test .
           docker build -f deployment/containers/engine.Dockerfile -t tribunal-engine:test .
           docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
-          docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
+          docker build -f "$reviewer_context/Dockerfile" -t tribunal-reviewer:test "$reviewer_context"
           docker run --rm tribunal-reviewer:test
       - name: Publish reviewer image to Tensorlake
         if: ${{ env.TENSORLAKE_API_KEY != '' }}

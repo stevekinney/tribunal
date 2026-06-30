@@ -95,14 +95,39 @@ jobs:
       - name: Verify pre-deploy Fly state
         run: bun run deploy:status -- --live-status-only --allow-missing-sandbox-image --allow-pending-engine-machine --allow-pending-cost-optimization
 
+      - name: Stage reviewer image context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          reviewer_context="$RUNNER_TEMP/tensorlake-reviewer-context"
+          rm -rf "$reviewer_context"
+          mkdir -p "$reviewer_context"
+
+          git archive HEAD -- \
+            package.json \
+            bun.lock \
+            applications/engine/package.json \
+            applications/proxy/package.json \
+            applications/web/package.json \
+            packages \
+            runner \
+            scripts/package.json \
+            scripts/install-git-hooks.ts \
+            deployment/containers/reviewer.Dockerfile \
+            | tar -x -C "$reviewer_context"
+
+          cp "$reviewer_context/deployment/containers/reviewer.Dockerfile" "$reviewer_context/Dockerfile"
+          echo "REVIEWER_IMAGE_CONTEXT=$reviewer_context" >> "$GITHUB_ENV"
+
       - name: Build reviewer image
         shell: bash
         run: |
           set -euo pipefail
           docker build \
-            -f deployment/containers/reviewer.Dockerfile \
+            -f "$REVIEWER_IMAGE_CONTEXT/Dockerfile" \
             -t "tribunal-reviewer:${DEPLOY_SHA}" \
-            .
+            "$REVIEWER_IMAGE_CONTEXT"
           docker run --rm "tribunal-reviewer:${DEPLOY_SHA}"
 
       - name: Publish reviewer image to Tensorlake
@@ -111,7 +136,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir "tensorlake==${TENSORLAKE_CLI_VERSION}"
           registered_image_name="tribunal-reviewer-${DEPLOY_SHA}"
-          tl sbx image create deployment/containers/reviewer.Dockerfile \
+          tl sbx image create "$REVIEWER_IMAGE_CONTEXT/Dockerfile" \
             --cpus 1 \
             --memory 1024 \
             --registered-name "$registered_image_name" \
