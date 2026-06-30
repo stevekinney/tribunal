@@ -286,7 +286,8 @@ loudly; use the rollback runbook when a migration-safe rollback is appropriate.
 Proxy public health:
 
 ```sh
-curl -fsS https://tribunal-proxy.fly.dev/health
+proxy_origin="${PRODUCTION_PROXY_ORIGIN:-https://tribunal-proxy.fly.dev}"
+curl -fsS "${proxy_origin%/}/health"
 ```
 
 Engine private health from inside Fly private networking:
@@ -306,7 +307,8 @@ curl -fsS https://<web-domain>/health
 Unauthorized proxy request:
 
 ```sh
-status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
+proxy_origin="${PRODUCTION_PROXY_ORIGIN:-https://tribunal-proxy.fly.dev}"
+status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
 test "$status" = "401" -o "$status" = "403"
 ```
 
