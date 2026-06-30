@@ -232,6 +232,7 @@ export function createReviewIntentKickScheduler(
     options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
 
   let activeDrain: Promise<void> | undefined;
+  let drainGeneration = 0;
   let idleShutdownTimer: ReturnType<typeof setTimeout> | undefined;
   let kickRequestedDuringDrain = false;
   let released = false;
@@ -265,6 +266,7 @@ export function createReviewIntentKickScheduler(
       return { started: false, reason: 'already_running' };
     }
 
+    drainGeneration += 1;
     activeDrain = drainUntilIdle()
       .catch((error) => {
         logger.error('[engine] review intent kick drain failed', error);
@@ -302,15 +304,20 @@ export function createReviewIntentKickScheduler(
 
   const shutdownIfIdle = async () => {
     if (released || activeDrain !== undefined) return;
+    const observedDrainGeneration = drainGeneration;
+    const hasNewDrainActivity = () =>
+      activeDrain !== undefined || drainGeneration !== observedDrainGeneration;
 
     try {
       const processed = await runtime.drainReviewIntents(drainLimit);
+      if (hasNewDrainActivity()) return;
       if (processed > 0) {
         startDrain();
         return;
       }
 
       const queueStatus = await runtime.getReviewIntentQueueStatus(now());
+      if (hasNewDrainActivity()) return;
       if (queueStatus.readyCount > 0) {
         startDrain();
         return;
@@ -324,11 +331,12 @@ export function createReviewIntentKickScheduler(
         return;
       }
 
-      await runtime.release();
       released = true;
+      await runtime.release();
       logger.log('[engine] idle shutdown complete');
       exit(0);
     } catch (error) {
+      released = false;
       logger.error('[engine] idle shutdown check failed', error);
       scheduleConfiguredIdleShutdown();
     }

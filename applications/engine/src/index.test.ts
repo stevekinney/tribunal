@@ -478,6 +478,59 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('does not release from a stale idle check after a kick starts', async () => {
+    vi.useFakeTimers();
+    const staleQueueStatus = createDeferred<{
+      readyCount: number;
+      deferredCount: number;
+      claimedCount: number;
+    }>();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const getReviewIntentQueueStatus = vi
+      .fn()
+      .mockResolvedValue({
+        readyCount: 0,
+        deferredCount: 0,
+        claimedCount: 0,
+      })
+      .mockReturnValueOnce(staleQueueStatus.promise);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents,
+        getReviewIntentQueueStatus,
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(getReviewIntentQueueStatus).toHaveBeenCalledTimes(1);
+    expect(scheduler.kick()).toEqual({ started: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    staleQueueStatus.resolve({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(release).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
   it('retries idle shutdown when releasing the runtime fails', async () => {
     vi.useFakeTimers();
     const release = vi
