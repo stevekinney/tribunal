@@ -506,7 +506,24 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toEqual({
       readyCount: 1,
       deferredCount: 1,
+      claimedCount: 0,
       nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
+    });
+  });
+
+  it('reports active claimed review intents separately from claimable work', async () => {
+    await createReviewIntentFixture();
+    await testDatabase.db
+      .update(reviewIntent)
+      .set({ claimedAt: new Date('2026-06-17T12:00:00.000Z') })
+      .where(eq(reviewIntent.id, 'intent_1'));
+
+    await expect(
+      getReviewIntentQueueStatus(testDatabase.db, new Date('2026-06-17T12:02:00.000Z')),
+    ).resolves.toEqual({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 1,
     });
   });
 
@@ -518,7 +535,7 @@ describe('createDatabaseReviewIntentPort', () => {
       getReviewIntentQueueStatus(
         {
           execute: async () => ({
-            rows: [{ readyCount: '2', deferredCount: 1n, nextAttemptAt }],
+            rows: [{ readyCount: '2', deferredCount: 1n, claimedCount: '3', nextAttemptAt }],
           }),
         } as never,
         now,
@@ -526,6 +543,7 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toEqual({
       readyCount: 2,
       deferredCount: 1,
+      claimedCount: 3,
       nextAttemptAt: new Date(nextAttemptAt),
     });
 
@@ -539,6 +557,7 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toEqual({
       readyCount: 0,
       deferredCount: 0,
+      claimedCount: 0,
     });
   });
 

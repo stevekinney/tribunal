@@ -31,11 +31,20 @@ if (import.meta.main) {
     reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
     allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
   });
+  let activeSandboxReaperRuns = 0;
   const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
     idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
+    isBackgroundWorkActive: () => activeSandboxReaperRuns > 0,
   });
 
-  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime);
+  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime, setInterval, {
+    onRunStart: () => {
+      activeSandboxReaperRuns += 1;
+    },
+    onRunComplete: () => {
+      activeSandboxReaperRuns = Math.max(0, activeSandboxReaperRuns - 1);
+    },
+  });
   const server = Bun.serve(
     createEngineServerOptions(
       port,
@@ -53,17 +62,29 @@ export function startSandboxReaper(
   intervalSeconds: number,
   runtime: Pick<EngineRuntime, 'reapClosedPullRequestSandboxes'>,
   setIntervalFunction: typeof setInterval = setInterval,
+  hooks: SandboxReaperHooks = {},
 ): ReturnType<typeof setInterval> | undefined {
   if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return undefined;
 
   const timer = setIntervalFunction(() => {
-    void runtime.reapClosedPullRequestSandboxes().catch((error) => {
-      console.error('[engine] sandbox reaper failed', error);
-    });
+    hooks.onRunStart?.();
+    void Promise.resolve()
+      .then(() => runtime.reapClosedPullRequestSandboxes())
+      .catch((error) => {
+        console.error('[engine] sandbox reaper failed', error);
+      })
+      .finally(() => {
+        hooks.onRunComplete?.();
+      });
   }, intervalSeconds * 1_000);
   timer.unref?.();
   return timer;
 }
+
+export type SandboxReaperHooks = {
+  onRunStart?: () => void;
+  onRunComplete?: () => void;
+};
 
 export function createStorageConfigurationFromEnvironment(environment: {
   NODE_ENV?: string;
@@ -186,6 +207,7 @@ export type ReviewIntentKickSchedulerOptions = {
   logger?: Pick<typeof console, 'error' | 'log'>;
   setTimeoutFunction?: typeof setTimeout;
   clearTimeoutFunction?: typeof clearTimeout;
+  isBackgroundWorkActive?: () => boolean;
 };
 
 export function createReviewIntentKickScheduler(
@@ -198,6 +220,7 @@ export function createReviewIntentKickScheduler(
   const logger = options.logger ?? console;
   const setTimeoutFunction = options.setTimeoutFunction ?? setTimeout;
   const clearTimeoutFunction = options.clearTimeoutFunction ?? clearTimeout;
+  const isBackgroundWorkActive = options.isBackgroundWorkActive ?? (() => false);
   const idleShutdownMs =
     options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
 
@@ -256,6 +279,10 @@ export function createReviewIntentKickScheduler(
     return queueStatus.deferredCount > 0;
   };
 
+  const hasClaimedWork = (queueStatus: ReviewIntentQueueStatus): boolean => {
+    return queueStatus.claimedCount > 0;
+  };
+
   const getDeferredDelay = (queueStatus: ReviewIntentQueueStatus): number => {
     if (idleShutdownMs === undefined) return 0;
     if (queueStatus.nextAttemptAt === undefined) return idleShutdownMs;
@@ -283,6 +310,10 @@ export function createReviewIntentKickScheduler(
       }
       if (hasDeferredWork(queueStatus)) {
         scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
+        return;
+      }
+      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive()) {
+        scheduleConfiguredIdleShutdown();
         return;
       }
 

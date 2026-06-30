@@ -30,7 +30,11 @@ describe('createEngineServerOptions', () => {
         engine: {},
         healthDependencies: () => [],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -53,7 +57,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 3,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -86,7 +94,11 @@ describe('createEngineServerOptions', () => {
           drainCalled = true;
           return 3;
         },
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -115,7 +127,11 @@ describe('createEngineServerOptions', () => {
         engine: {},
         healthDependencies: () => [],
         drainReviewIntents,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -145,7 +161,11 @@ describe('createEngineServerOptions', () => {
         engine: {},
         healthDependencies: () => [],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -176,7 +196,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: false, detail: 'advisory lock not held' },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -208,7 +232,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async (reviewRunId) => {
           stoppedRunIds.push(reviewRunId);
@@ -242,7 +270,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -276,7 +308,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => {
           stopCalled = true;
@@ -310,7 +346,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async (reviewRunId, agentId) => {
@@ -344,7 +384,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
-        getReviewIntentQueueStatus: async () => ({ readyCount: 0, deferredCount: 0 }),
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -380,6 +424,7 @@ describe('createReviewIntentKickScheduler', () => {
         getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
           readyCount: 0,
           deferredCount: 0,
+          claimedCount: 0,
         }),
         release,
       },
@@ -409,6 +454,7 @@ describe('createReviewIntentKickScheduler', () => {
         getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
           readyCount: 0,
           deferredCount: 0,
+          claimedCount: 0,
         }),
         release,
       },
@@ -449,9 +495,10 @@ describe('createReviewIntentKickScheduler', () => {
               ? {
                   readyCount: 0,
                   deferredCount: 1,
+                  claimedCount: 0,
                   nextAttemptAt: new Date(Date.now() + 2_000),
                 }
-              : { readyCount: 0, deferredCount: 0 },
+              : { readyCount: 0, deferredCount: 0, claimedCount: 0 },
           );
         }),
         release,
@@ -471,10 +518,87 @@ describe('createReviewIntentKickScheduler', () => {
     expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
+
+  it('waits for active claimed review intents before exiting', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let queueStatusCalls = 0;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockImplementation(() => {
+          queueStatusCalls += 1;
+          return Promise.resolve(
+            queueStatusCalls === 1
+              ? {
+                  readyCount: 0,
+                  deferredCount: 0,
+                  claimedCount: 1,
+                }
+              : { readyCount: 0, deferredCount: 0, claimedCount: 0 },
+          );
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('waits for active background work before exiting', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let backgroundWorkActive = true;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        release,
+      },
+      {
+        idleShutdownSeconds: 1,
+        exit,
+        logger,
+        isBackgroundWorkActive: () => backgroundWorkActive,
+      },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    backgroundWorkActive = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
 });
 
 describe('startSandboxReaper', () => {
-  it('schedules sandbox cleanup on the configured interval', () => {
+  it('schedules sandbox cleanup on the configured interval', async () => {
     const runtime = {
       reapClosedPullRequestSandboxes: vi.fn().mockResolvedValue([]),
     };
@@ -485,9 +609,35 @@ describe('startSandboxReaper', () => {
     });
 
     startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await Promise.resolve();
 
     expect(setIntervalFunction).toHaveBeenCalledTimes(1);
     expect(runtime.reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks sandbox cleanup activity until the async run settles', async () => {
+    const cleanup = createDeferred<unknown[]>();
+    const events: string[] = [];
+    const runtime = {
+      reapClosedPullRequestSandboxes: vi.fn().mockReturnValue(cleanup.promise),
+    };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval, {
+      onRunStart: () => events.push('start'),
+      onRunComplete: () => events.push('complete'),
+    });
+
+    expect(events).toEqual(['start']);
+    await Promise.resolve();
+
+    cleanup.resolve([]);
+    await flushPromises();
+
+    expect(events).toEqual(['start', 'complete']);
   });
 
   it('does not schedule sandbox cleanup for non-positive intervals', () => {
@@ -513,6 +663,10 @@ function createDeferred<T>() {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+function flushPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe('createStorageConfigurationFromEnvironment', () => {

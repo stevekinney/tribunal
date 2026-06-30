@@ -217,6 +217,7 @@ describe('runtime review intent consumer wiring', () => {
     await expect(consumer.getQueueStatus(new Date('2026-06-17T12:00:00.000Z'))).resolves.toEqual({
       readyCount: 1,
       deferredCount: 0,
+      claimedCount: 0,
     });
   });
 

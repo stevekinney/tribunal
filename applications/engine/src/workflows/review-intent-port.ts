@@ -44,6 +44,7 @@ export type ReviewIntentPortOptions = {
 export type ReviewIntentQueueStatus = {
   readyCount: number;
   deferredCount: number;
+  claimedCount: number;
   nextAttemptAt?: Date;
 };
 
@@ -98,7 +99,9 @@ export async function getReviewIntentQueueStatus(
   now: Date,
   options: ReviewIntentPortOptions = {},
 ): Promise<ReviewIntentQueueStatus> {
-  if (options.reviewsEnabled === false) return { readyCount: 0, deferredCount: 0 };
+  if (options.reviewsEnabled === false) {
+    return { readyCount: 0, deferredCount: 0, claimedCount: 0 };
+  }
 
   const staleClaimCutoff = new Date(now.getTime() - 5 * 60 * 1000);
   const result = await database.execute(sql`
@@ -112,7 +115,15 @@ export async function getReviewIntentQueueStatus(
       )::int AS "deferredCount",
       MIN(${reviewIntent.nextAttemptAt}) FILTER (
         WHERE ${reviewIntent.nextAttemptAt} > ${now}
-      ) AS "nextAttemptAt"
+      ) AS "nextAttemptAt",
+      (
+        SELECT COUNT(*)::int
+        FROM ${reviewIntent}
+        WHERE ${reviewIntent.processedAt} IS NULL
+          AND ${reviewIntent.deadLetteredAt} IS NULL
+          AND ${reviewIntent.claimedAt} IS NOT NULL
+          AND ${reviewIntent.claimedAt} >= ${staleClaimCutoff}
+      ) AS "claimedCount"
     FROM ${reviewIntent}
     INNER JOIN ${repositoryReviewSettings}
       ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
@@ -141,12 +152,14 @@ export async function getReviewIntentQueueStatus(
   const row = getRows<{
     readyCount: number | string | bigint | null;
     deferredCount: number | string | bigint | null;
+    claimedCount: number | string | bigint | null;
     nextAttemptAt: Date | string | null;
   }>(result)[0];
 
   return {
     readyCount: toCount(row?.readyCount),
     deferredCount: toCount(row?.deferredCount),
+    claimedCount: toCount(row?.claimedCount),
     ...(row?.nextAttemptAt === null || row?.nextAttemptAt === undefined
       ? {}
       : { nextAttemptAt: toDate(row.nextAttemptAt) }),
