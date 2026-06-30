@@ -286,8 +286,8 @@ export function createReviewIntentKickScheduler(
         return;
       }
 
-      released = true;
       await runtime.release();
+      released = true;
       logger.log('[engine] idle shutdown complete');
       exit(0);
     } catch (error) {

@@ -395,6 +395,44 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('retries idle shutdown when releasing the runtime fails', async () => {
+    vi.useFakeTimers();
+    const release = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('release failed'))
+      .mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      '[engine] idle shutdown check failed',
+      expect.any(Error),
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
   it('waits for deferred retry work instead of exiting immediately', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);
