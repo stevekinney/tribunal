@@ -50,7 +50,6 @@ type AppName = 'tribunal-proxy' | 'tribunal-engine' | 'tribunal-web';
 type App = {
   name: AppName;
   config: string;
-  dockerfile: string;
   /**
    * The complete set of secret keys this app requires. Each is read from the
    * local environment and set on Fly under the same name (multiline values like
@@ -73,7 +72,6 @@ const APPS: App[] = [
   {
     name: 'tribunal-proxy',
     config: 'deployment/fly/proxy.toml',
-    dockerfile: '../containers/proxy.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -90,7 +88,6 @@ const APPS: App[] = [
   {
     name: 'tribunal-engine',
     config: 'deployment/fly/engine.toml',
-    dockerfile: '../containers/engine.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'WEFT_DATABASE_URL',
@@ -109,7 +106,6 @@ const APPS: App[] = [
   {
     name: 'tribunal-web',
     config: 'deployment/fly/web.toml',
-    dockerfile: '../containers/web.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -822,7 +818,7 @@ function buildPlan(state: FlyState): Step[] {
         ? {
             title: `Deploy ${app.name}`,
             state: 'manual',
-            commands: [`flyctl deploy . --config ${app.config} --dockerfile ${app.dockerfile}`],
+            commands: [`flyctl deploy . --config ${app.config}`],
           }
         : { title: `Deploy ${app.name}`, state: 'todo', detail: 'pending app creation' },
     );
@@ -1235,8 +1231,8 @@ function printPlan(steps: Step[]): void {
   console.log(info('  $ set -a && . ./.env && set +a   # bash/zsh: source ./.env'));
   console.log('');
   // The deploy/migration commands assume `flyctl deploy .` and
-  // `--config deployment/...` are run from the repository root. Fly resolves
-  // `--dockerfile` relative to the repository-root deploy context.
+  // `--config deployment/...` are run from the repository root. Fly reads the
+  // Dockerfile path from each app's deployment/fly/*.toml file.
   console.log(dim('  Run these commands from the repository root.'));
   console.log('');
 
