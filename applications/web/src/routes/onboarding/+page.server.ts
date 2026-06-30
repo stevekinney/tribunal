@@ -3,6 +3,7 @@ import type { PageServerLoad, Actions } from './$types';
 import { getRepositoriesForUser } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
+  listAgents,
   saveRepositoryWatchSettings,
   userOwnsRepository,
 } from '$lib/server/review/operator';
@@ -122,6 +123,14 @@ export const actions: Actions = {
       }
     }
 
+    // Assign every enabled agent, mirroring the repositories page's "default to
+    // all enabled agents on first watch" behaviour. Watching with an empty agent
+    // list would persist a settings row that suppresses that default, leaving the
+    // onboarded repository watched but unreviewed.
+    const enabledAgentIds = (await listAgents(user.id))
+      .filter((agent) => agent.enabled)
+      .map((agent) => agent.id);
+
     // Every id is pre-authorized, so the internal ownership check won't throw.
     // Forward an ActionFailure if a write somehow reports one.
     for (const repositoryId of repositoryIds) {
@@ -129,7 +138,7 @@ export const actions: Actions = {
         repositoryId,
         watched: true,
         ignoreGlobs: [],
-        agentIds: [],
+        agentIds: enabledAgentIds,
       });
       if (!('success' in result)) {
         return result;
