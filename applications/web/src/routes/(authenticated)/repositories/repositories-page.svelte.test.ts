@@ -18,6 +18,7 @@ const enhancedFormTesting = vi.hoisted(() => {
   return {
     submissions: [] as Array<{
       formData: FormData;
+      resolveResult: () => void;
       rejectUpdate: (reason?: unknown) => void;
       resolveUpdate: () => void;
     }>,
@@ -62,22 +63,27 @@ vi.mock('$app/forms', () => ({
         formElement,
         submitter: event.submitter,
       });
+      const deferredResult = enhancedFormTesting.createDeferred();
       const deferredUpdate = enhancedFormTesting.createDeferred();
       enhancedFormTesting.submissions.push({
         formData,
+        resolveResult: deferredResult.resolve,
         rejectUpdate: deferredUpdate.reject,
         resolveUpdate: deferredUpdate.resolve,
       });
 
-      if (typeof resultHandler === 'function') {
-        void resultHandler({
-          action,
-          formData,
-          formElement,
-          result: { type: 'success', status: 200, data: {} },
-          update: () => deferredUpdate.promise,
-        }).catch(() => {});
-      }
+      void deferredResult.promise
+        .then(() => {
+          if (typeof resultHandler !== 'function') return;
+          return resultHandler({
+            action,
+            formData,
+            formElement,
+            result: { type: 'success', status: 200, data: {} },
+            update: () => deferredUpdate.promise,
+          });
+        })
+        .catch(() => {});
     };
 
     formElement.addEventListener('submit', handleSubmit);
@@ -338,7 +344,7 @@ describe('/repositories page', () => {
     await page.getByRole('switch', { name: 'Unwatch repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
-    enhancedFormTesting.submissions[0]?.resolveUpdate();
+    enhancedFormTesting.submissions[0]?.resolveResult();
 
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
@@ -395,6 +401,7 @@ describe('/repositories page', () => {
     await page.getByRole('switch', { name: 'Watch repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
+    enhancedFormTesting.submissions[0]?.resolveResult();
     enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
 
     await expect.element(page.getByRole('switch', { name: 'Watch repository' })).toBeVisible();

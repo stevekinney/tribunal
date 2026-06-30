@@ -305,6 +305,15 @@
 
                           return async ({ update }) => {
                             if (expandedSettings === id) expandedSettings = null;
+                            if (queuedWatchStates.has(id)) {
+                              const queuedWatched = queuedWatchStates.get(id) as boolean;
+                              activeWatchSubmissions.delete(id);
+                              queuedWatchStates.delete(id);
+                              submitWatchForm(id, queuedWatched);
+                              await update();
+                              return;
+                            }
+
                             try {
                               await update();
                             } finally {
