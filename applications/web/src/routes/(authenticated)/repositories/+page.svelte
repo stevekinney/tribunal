@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { PageProps } from './$types';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { enhance } from '$app/forms';
+  import { invalidateAll } from '$app/navigation';
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
@@ -29,10 +30,12 @@
   /**
    * Optimistic watch states keyed by repository ID. Populated on toggle click and
    * cleared after the form action's `update()` resolves, so the server state takes
-   * over again. Rolled back automatically when the action fails because `update()`
-   * does not invalidate on failure, leaving the server value unchanged.
+   * over again. On failure, clearing the local state rolls the UI back to the
+   * last server-confirmed value.
    */
   const localWatchStates = new SvelteMap<number, boolean>();
+  const activeWatchSubmissions = new SvelteSet<number>();
+  const queuedWatchStates = new SvelteMap<number, boolean>();
 
   const repositories = $derived(data.repositories);
   const agents = $derived(data.agents ?? []);
@@ -117,6 +120,71 @@
    */
   function watchedFor(id: number, serverValue: boolean): boolean {
     return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
+  }
+
+  function formDataForWatch(
+    repository: (typeof data.repositories)[number],
+    watched: boolean,
+  ): FormData {
+    const formData = new FormData();
+    formData.set('repositoryId', String(repository.id));
+    formData.set('watched', watched ? 'on' : '');
+    for (const agentId of agentIdsForWatch(repository)) {
+      formData.append('agentIds', agentId);
+    }
+    formData.set('ignoreGlobs', repository.review.ignoreGlobs.join('\n'));
+    return formData;
+  }
+
+  function setWatchedFormValue(form: HTMLFormElement, watched: boolean): void {
+    const watchedField = form.elements.namedItem('watched');
+    if (watchedField instanceof HTMLInputElement) {
+      watchedField.value = watched ? 'on' : '';
+    }
+  }
+
+  function submitWatchForm(repositoryId: number, watched: boolean): boolean {
+    const watchForm = document.getElementById(`watch-form-${repositoryId}`);
+    if (!(watchForm instanceof HTMLFormElement)) return false;
+
+    setWatchedFormValue(watchForm, watched);
+
+    if (activeWatchSubmissions.has(repositoryId)) {
+      queuedWatchStates.set(repositoryId, watched);
+      return true;
+    }
+
+    activeWatchSubmissions.add(repositoryId);
+    watchForm.requestSubmit();
+    return true;
+  }
+
+  async function submitQueuedWatchState(
+    repository: (typeof data.repositories)[number],
+  ): Promise<boolean> {
+    const repositoryId = repository.id;
+    if (queuedWatchStates.has(repositoryId)) {
+      const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
+      queuedWatchStates.delete(repositoryId);
+      if (!submitWatchForm(repositoryId, queuedWatched)) {
+        try {
+          const response = await fetch('?/watch', {
+            method: 'POST',
+            body: formDataForWatch(repository, queuedWatched),
+          });
+          if (response.ok) {
+            await invalidateAll();
+          }
+        } finally {
+          if (!activeWatchSubmissions.has(repositoryId)) {
+            localWatchStates.delete(repositoryId);
+          }
+        }
+      }
+      return true;
+    }
+
+    return false;
   }
 </script>
 
@@ -256,24 +324,29 @@
                   </Table.Cell>
                   <Table.Cell align="center">
                     <div class="watching-cell">
-                      <!--
-                        The watch form submits the INVERSE of the current server-confirmed state
-                        so the hidden `watched` input is already correct the instant the user
-                        clicks the toggle — no DOM-flush race with the Toggle's own hidden checkbox.
-                        Note: the Toggle requires JS to submit; without JS the toggle has no effect,
-                        but the expanded settings form below continues to work progressively.
-                      -->
                       <form
                         id="watch-form-{repository.id}"
                         method="POST"
                         action="?/watch"
                         class="watch-form"
-                        use:enhance={() => {
+                        use:enhance={({ formData }) => {
                           const id = repository.id;
+                          const watched = watchedFor(id, repository.review.watched);
+                          formData.set('watched', watched ? 'on' : '');
+
                           return async ({ update }) => {
                             if (expandedSettings === id) expandedSettings = null;
-                            await update();
-                            localWatchStates.delete(id);
+                            try {
+                              await update();
+                            } finally {
+                              activeWatchSubmissions.delete(id);
+                              if (
+                                !(await submitQueuedWatchState(repository)) &&
+                                !activeWatchSubmissions.has(id)
+                              ) {
+                                localWatchStates.delete(id);
+                              }
+                            }
                           };
                         }}
                       >
@@ -310,12 +383,8 @@
                             value={repository.review.ignoreGlobs.join('\n')}
                           ></textarea>
                         </label>
-                        <!-- Submit the next desired state (inverse of current server state). -->
-                        <input
-                          type="hidden"
-                          name="watched"
-                          value={repository.review.watched ? '' : 'on'}
-                        />
+                        <!-- Submit the current optimistic watch state. -->
+                        <input type="hidden" name="watched" value={isWatching ? 'on' : ''} />
                         <Toggle
                           id="watching-{repository.id}"
                           checked={isWatching}
@@ -323,12 +392,7 @@
                           hideLabel
                           onValueChange={(next) => {
                             localWatchStates.set(repository.id, next);
-                            const watchForm = document.getElementById(
-                              `watch-form-${repository.id}`,
-                            );
-                            if (watchForm instanceof HTMLFormElement) {
-                              watchForm.requestSubmit();
-                            }
+                            submitWatchForm(repository.id, next);
                             return next;
                           }}
                         />
