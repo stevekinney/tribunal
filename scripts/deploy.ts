@@ -923,7 +923,7 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
 
   if (state.engineMachineCount === 'unknown') {
     failures.push('could not read engine Machines');
-  } else if (state.engineMachineCount !== 1) {
+  } else if (state.engineMachineCount !== null && state.engineMachineCount !== 1) {
     failures.push(`tribunal-engine has ${state.engineMachineCount ?? 0} Machines; expected 1`);
   }
 
@@ -1014,8 +1014,7 @@ async function run(): Promise<void> {
 
   console.log(sectionHeader('Tribunal Deploy Manager'));
 
-  const liveStatusOnly =
-    process.argv.includes('--live-status-only') || process.argv.includes('--status-only');
+  const liveStatusOnly = process.argv.includes('--live-status-only');
   const allowMissingSandboxImage = process.argv.includes('--allow-missing-sandbox-image');
 
   if (!Bun.which('flyctl')) {
