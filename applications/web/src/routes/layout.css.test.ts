@@ -11,15 +11,37 @@ describe('layout.css @layer ordering', () => {
     /*
      * This test guards the @layer ordering contract in layout.css.
      * The declaration interleaves Cinder and Tribunal layers so that
-     * Tribunal tokens win over Cinder tokens, and Cinder component
-     * styles win over Tribunal element resets. Changing this order
+     * Tribunal tokens win over Cinder tokens, while Cinder owns every
+     * base element reset via cinder.foundation. Changing this order
      * will silently invert CSS specificity for the entire app.
      *
      * If you need to change the layer order, update this test to match.
      */
     expect(css).toContain(
-      '@layer cinder.tokens, cinder.foundation, foundation, cinder.components,\n  cinder.utilities, utilities, components, tokens;',
+      '@layer cinder.tokens, cinder.foundation, cinder.components, cinder.utilities,\n  utilities, components, tokens;',
     );
+  });
+
+  it('does not reintroduce a bare Tribunal foundation layer', () => {
+    /*
+     * Regression guard: the app's former foundation.css was a verbatim,
+     * token-drifted clone of cinder.foundation. Because cross-stylesheet
+     * layer order is fixed at first encounter (Vite dev sorted the app's
+     * implicit `foundation` layer AFTER all of Cinder's), it clobbered
+     * Cinder component styling — most visibly, primary buttons rendered
+     * inherited dark text over the indigo accent. Cinder's foundation now
+     * owns the resets; reintroducing a bare `foundation` layer would
+     * resurrect that bug.
+     */
+    // Extract the `@layer ...;` declaration and inspect its layer names.
+    const layerStatement = css.match(/@layer\s+([^;{]+);/);
+    expect(layerStatement).not.toBeNull();
+    const layerNames = layerStatement![1].split(',').map((name) => name.trim());
+    // `cinder.foundation` is allowed; a standalone `foundation` is the bug.
+    expect(layerNames).not.toContain('foundation');
+    // The clone file must not be imported back in (a prose mention in the
+    // explanatory comment is fine; an actual @import is the regression).
+    expect(css).not.toMatch(/@import\s+['"][^'"]*foundation\.css/);
   });
 
   it('imports Cinder styles after the @layer declaration', () => {

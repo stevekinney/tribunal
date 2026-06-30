@@ -1,37 +1,90 @@
 <script lang="ts">
+  import type { PageProps } from './$types';
+  import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
+  import type { BadgeVariant } from '@lostgradient/cinder/badge';
   import Page from '$lib/components/page.svelte';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
-  import { Link } from '@lostgradient/cinder/link';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
+  import { Table } from '@lostgradient/cinder/table';
   import { formatDuration } from '$lib/utilities/format-duration';
+  import { goto } from '$app/navigation';
 
-  let { data } = $props();
+  let { data }: PageProps = $props();
+
+  type StatusConfig = { dot: StatusDotStatus; badge: BadgeVariant; label: string };
+
+  const STATUS_CONFIG: Record<string, StatusConfig> = {
+    queued: { dot: 'pending', badge: 'neutral', label: 'Queued' },
+    running: { dot: 'accent', badge: 'accent', label: 'Running' },
+    posted: { dot: 'success', badge: 'success', label: 'Posted' },
+    superseded: { dot: 'neutral', badge: 'neutral', label: 'Superseded' },
+    failed: { dot: 'danger', badge: 'danger', label: 'Failed' },
+    cancelled: { dot: 'neutral', badge: 'neutral', label: 'Cancelled' },
+    quota_blocked: { dot: 'warning', badge: 'warning', label: 'Quota blocked' },
+  };
+
+  const DEFAULT_STATUS: StatusConfig = { dot: 'neutral', badge: 'neutral', label: 'Unknown' };
+
+  function getStatusConfig(status: string): StatusConfig {
+    return STATUS_CONFIG[status] ?? DEFAULT_STATUS;
+  }
 </script>
 
 <Page title="Runs" subtitle="Recent review runs">
   {#if data.runs.length === 0}
-    <Card><p class="muted">No review runs have started yet.</p></Card>
+    <Card>
+      <p class="muted">No review runs have started yet.</p>
+    </Card>
   {:else}
     <Card padding="none">
-      <div class="run-table" role="table" aria-label="Review runs">
-        <div class="run-row run-header" role="row">
-          <span role="columnheader">Pull request</span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader">Trigger</span>
-          <span role="columnheader">Findings</span>
-          <span role="columnheader">Estimate</span>
-          <span role="columnheader">Duration</span>
-        </div>
-        {#each data.runs as run (run.id)}
-          <Link href={`/runs/${run.id}`} class="run-row" role="row">
-            <span role="cell">{run.repositoryOwner}/{run.repositoryName} #{run.prNumber}</span>
-            <span role="cell"><Badge size="sm">{run.status}</Badge></span>
-            <span role="cell">{run.trigger}</span>
-            <span role="cell">{run.commentsPosted}</span>
-            <span role="cell">${Number(run.costEstimateUsd).toFixed(2)}</span>
-            <span role="cell">{formatDuration(run.startedAt, run.finishedAt)}</span>
-          </Link>
-        {/each}
+      <div class="table-scroll">
+        <Table aria-label="Review runs" density="comfortable">
+          <Table.Header>
+            <Table.Row>
+              <Table.HeaderCell>Pull request</Table.HeaderCell>
+              <Table.HeaderCell>Status</Table.HeaderCell>
+              <Table.HeaderCell align="right">Findings</Table.HeaderCell>
+              <Table.HeaderCell align="right">Cost</Table.HeaderCell>
+              <Table.HeaderCell align="right">Duration</Table.HeaderCell>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {#each data.runs as run (run.id)}
+              {@const statusConfig = getStatusConfig(run.status)}
+              <Table.Row class="run-row" onclick={() => goto(`/runs/${run.id}`)}>
+                <Table.Cell as="th">
+                  <a href={`/runs/${run.id}`} class="pr-link" onclick={(e) => e.stopPropagation()}>
+                    <div class="pr-cell">
+                      <span class="pr-title">{run.repositoryOwner}/{run.repositoryName}</span>
+                      <span class="pr-ref">#{run.prNumber}</span>
+                    </div>
+                  </a>
+                </Table.Cell>
+                <Table.Cell>
+                  <Badge variant={statusConfig.badge} size="sm">
+                    <StatusDot
+                      status={statusConfig.dot}
+                      size="sm"
+                      showLabel={false}
+                      aria-hidden="true"
+                    />
+                    {statusConfig.label}
+                  </Badge>
+                </Table.Cell>
+                <Table.Cell align="right">
+                  <span class="mono">{run.commentsPosted}</span>
+                </Table.Cell>
+                <Table.Cell align="right">
+                  <span class="mono">${Number(run.costEstimateUsd).toFixed(2)}</span>
+                </Table.Cell>
+                <Table.Cell align="right">
+                  <span class="duration">{formatDuration(run.startedAt, run.finishedAt)}</span>
+                </Table.Cell>
+              </Table.Row>
+            {/each}
+          </Table.Body>
+        </Table>
       </div>
     </Card>
   {/if}
@@ -42,33 +95,50 @@
     color: var(--text-muted);
   }
 
-  .run-table {
-    display: grid;
+  .table-scroll {
+    overflow-x: auto;
   }
 
-  .run-row {
-    display: grid;
-    grid-template-columns: minmax(12rem, 2fr) repeat(5, minmax(6rem, 1fr));
-    gap: var(--space-3);
-    align-items: center;
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--border-muted);
+  :global(.run-row) {
+    cursor: pointer;
+  }
+
+  :global(.run-row:hover) {
+    background: var(--cinder-surface-inset);
+  }
+
+  .pr-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .pr-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pr-title {
+    font-weight: var(--font-medium);
     color: var(--text);
   }
 
-  .run-header {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
+  .pr-ref {
+    font-size: var(--text-xs);
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
   }
 
-  @media (max-width: 760px) {
-    .run-row {
-      grid-template-columns: 1fr;
-    }
+  .mono {
+    font-family: var(--font-mono);
+    color: var(--text);
+    font-size: var(--text-sm);
+  }
 
-    .run-header {
-      display: none;
-    }
+  .duration {
+    color: var(--text-subtle);
+    white-space: nowrap;
+    font-size: var(--text-sm);
   }
 </style>

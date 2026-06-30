@@ -22,13 +22,16 @@ import {
   estimateAgentDryRun,
   getRepositoryOperatorDetails,
   getCostOverview,
+  getReviewsEnabled,
   getRunInspector,
+  hasWatchedRepositories,
   saveAgent,
   saveRepositoryWatchSettings,
   setAgentEnabled,
   stopAgent,
   stopRun,
   streamRunAgentEvents,
+  userOwnsRepository,
 } from './operator';
 
 const mocks = vi.hoisted(() => ({
@@ -198,6 +201,64 @@ describe('review operator server helpers', () => {
         }),
       ),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('authorizes only the owning user for a repository', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+
+    expect(await withTestDatabase(() => userOwnsRepository(owner.id, 9001))).toBe(true);
+    // A non-owner must not pass the pre-authorization gate the onboarding batch
+    // relies on to avoid partial writes from a crafted submission.
+    expect(await withTestDatabase(() => userOwnsRepository(otherUser.id, 9001))).toBe(false);
+    // An unknown repository id is owned by no one.
+    expect(await withTestDatabase(() => userOwnsRepository(owner.id, 9999))).toBe(false);
+  });
+
+  it('reports whether a user is watching any repository', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    expect(await withTestDatabase(() => hasWatchedRepositories(owner.id))).toBe(false);
+
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: true,
+        ignoreGlobs: [],
+        agentIds: [],
+      }),
+    );
+    expect(await withTestDatabase(() => hasWatchedRepositories(owner.id))).toBe(true);
+
+    // Unwatching returns the user to the no-watched state, which drives the
+    // post-login redirect back to onboarding.
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: false,
+        ignoreGlobs: [],
+        agentIds: [],
+      }),
+    );
+    expect(await withTestDatabase(() => hasWatchedRepositories(owner.id))).toBe(false);
+  });
+
+  it('reads reviews-enabled without creating a settings row, defaulting to enabled', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    // No settings row yet → schema default (enabled).
+    expect(await withTestDatabase(() => getReviewsEnabled(owner.id))).toBe(true);
+
+    // The read must NOT create a row — it runs in the authenticated layout load,
+    // which must stay a pure read so a write can never gate the whole app.
+    const rowsAfterRead = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+    expect(rowsAfterRead).toHaveLength(0);
+
+    // An explicit row is reflected without mutation.
+    await testDb.db.insert(userReviewSettings).values({ userId: owner.id, reviewsEnabled: false });
+    expect(await withTestDatabase(() => getReviewsEnabled(owner.id))).toBe(false);
   });
 
   it('keeps watch settings and assignments separate for two users with the same repository', async () => {

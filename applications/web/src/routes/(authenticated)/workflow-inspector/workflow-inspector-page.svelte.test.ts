@@ -103,6 +103,7 @@ const data = {
     },
   ],
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+  reviewsEnabled: false,
 } satisfies PageData;
 
 describe('/workflow-inspector page', () => {

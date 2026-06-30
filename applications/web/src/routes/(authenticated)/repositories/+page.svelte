@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PageProps } from './$types';
+  import { SvelteMap } from 'svelte/reactivity';
   import { enhance } from '$app/forms';
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
@@ -9,26 +10,46 @@
   import { SearchField } from '@lostgradient/cinder/search-field';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Table } from '@lostgradient/cinder/table';
-  import { FolderGit2, Plus, Eye, EyeOff, Settings } from 'lucide-svelte';
-  import GithubIcon from 'lucide-svelte/icons/github';
+  import { Toggle } from '@lostgradient/cinder/toggle';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
+  import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
+  import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
+  import { Segment } from '@lostgradient/cinder/segment';
   import { Alert } from '@lostgradient/cinder/alert';
+  import { FolderGit2, Plus, Settings } from 'lucide-svelte';
+  import GitBranch from 'lucide-svelte/icons/git-branch';
+  import GithubIcon from 'lucide-svelte/icons/github';
 
   let { data, form }: PageProps = $props();
 
   let searchQuery = $state('');
-  let showSearch = $state(false);
   let expandedSettings = $state<number | null>(null);
+  let viewFilter = $state<'all' | 'watched'>('all');
+
+  /**
+   * Optimistic watch states keyed by repository ID. Populated on toggle click and
+   * cleared after the form action's `update()` resolves, so the server state takes
+   * over again. Rolled back automatically when the action fails because `update()`
+   * does not invalidate on failure, leaving the server value unchanged.
+   */
+  const localWatchStates = new SvelteMap<number, boolean>();
 
   const repositories = $derived(data.repositories);
   const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
   const watchedRepositories = $derived(repositories.filter((r) => r.review.watched));
-  const searchVisible = $derived(showSearch || watchedRepositories.length === 0);
 
-  const searchResults = $derived.by(() => {
-    if (!searchQuery.trim()) return [];
+  const subtitle = $derived(
+    repositories.length > 0
+      ? `${watchedRepositories.length} watched · ${repositories.length} accessible via GitHub App`
+      : 'Repositories from your GitHub App installations',
+  );
+
+  const filteredRepositories = $derived.by(() => {
+    const base = viewFilter === 'watched' ? watchedRepositories : repositories;
+    if (!searchQuery.trim()) return base;
     const query = searchQuery.toLowerCase();
-    return repositories.filter(
+    return base.filter(
       (r) =>
         r.name.toLowerCase().includes(query) ||
         r.owner.toLowerCase().includes(query) ||
@@ -51,15 +72,79 @@
     if (hasInstallations) return 'Manage repository access';
     return 'Install GitHub App';
   });
+
+  /** Maps a run status string to the nearest StatusDot semantic status. */
+  function statusDotForRun(status: string): StatusDotStatus {
+    const map: Record<string, StatusDotStatus> = {
+      completed: 'success',
+      failed: 'danger',
+      running: 'accent',
+      pending: 'pending',
+      skipped: 'neutral',
+    };
+    return map[status] ?? 'neutral';
+  }
+
+  /** Sentence-case display label for a run status. */
+  function statusLabel(status: string): string {
+    const map: Record<string, string> = {
+      completed: 'Completed',
+      failed: 'Failed',
+      running: 'Running',
+      pending: 'Pending',
+      skipped: 'Skipped',
+    };
+    return map[status] ?? status;
+  }
+
+  /**
+   * Returns the agent IDs to submit when toggling watch state.
+   *
+   * - Already watched → preserve the current agent assignment.
+   * - Not watched with saved settings → use the saved agent assignment.
+   * - Not watched with no saved settings → default to all enabled agents.
+   */
+  function agentIdsForWatch(repository: (typeof data.repositories)[number]): string[] {
+    if (!repository.review.watched && !repository.review.hasSavedSettings) {
+      return agents.filter((a) => a.enabled).map((a) => a.id);
+    }
+    return repository.review.agents.map((a) => a.id);
+  }
+
+  /**
+   * Resolves the effective watch state: returns the optimistic local state if
+   * a toggle is pending, otherwise falls back to the confirmed server state.
+   */
+  function watchedFor(id: number, serverValue: boolean): boolean {
+    return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
+  }
 </script>
 
-<Page title="Repositories" subtitle="Repositories from your GitHub App installations">
+<Page title="Repositories" {subtitle}>
+  {#snippet actions()}
+    <Button href="/connect/github" variant="secondary" size="sm">
+      {#snippet leadingIcon()}<GitBranch size={14} aria-hidden="true" />{/snippet}
+      Manage access
+    </Button>
+    <Button
+      variant="primary"
+      size="sm"
+      onclick={() => {
+        viewFilter = 'all';
+        document.getElementById('repository-search')?.focus();
+      }}
+    >
+      {#snippet leadingIcon()}<Plus size={14} aria-hidden="true" />{/snippet}
+      Add repository
+    </Button>
+  {/snippet}
+
   {#if data.loadError}
-    <Alert variant="error">{data.loadError}</Alert>
+    <Alert variant="danger">{data.loadError}</Alert>
   {/if}
 
   {#if form?.error}
-    <Alert variant="error">{form.error}</Alert>
+    <Alert variant="danger">{form.error}</Alert>
   {/if}
 
   {#if repositories.length === 0}
@@ -75,304 +160,273 @@
       </EmptyState>
     </Card>
   {:else}
-    <section class="watched-section">
-      <div class="section-header">
-        <h2 class="section-title">
-          Watched repositories
-          <Badge size="sm">{watchedRepositories.length}</Badge>
-        </h2>
-        {#if watchedRepositories.length > 0}
-          <Button
-            variant="secondary"
-            size="sm"
-            aria-expanded={searchVisible}
-            aria-controls="search-section"
-            onclick={() => (showSearch = !showSearch)}
-          >
-            {#snippet leadingIcon()}
-              {#if searchVisible}<EyeOff size={14} aria-hidden="true" />{:else}<Plus
-                  size={14}
-                  aria-hidden="true"
-                />{/if}
-            {/snippet}
-            {searchVisible ? 'Close' : 'Add repository'}
-          </Button>
-        {/if}
-      </div>
-
-      {#if watchedRepositories.length === 0}
-        <p class="empty-hint">
-          No repositories are being watched yet. Use the search below to add repositories to
-          Tribunal.
-        </p>
-      {:else}
-        <Card padding="none">
-          <div class="cinder-table-scroll">
-            <Table density="comfortable">
-              <Table.Header>
-                <Table.Row>
-                  <Table.HeaderCell>Repository</Table.HeaderCell>
-                  <Table.HeaderCell>Branch</Table.HeaderCell>
-                  <Table.HeaderCell>Last run</Table.HeaderCell>
-                  <Table.HeaderCell align="right">30-day cost</Table.HeaderCell>
-                  <Table.HeaderCell align="right">Actions</Table.HeaderCell>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each watchedRepositories as repository (repository.id)}
-                  <Table.Row>
-                    <Table.Cell>
-                      <Link href={`/repositories/${repository.id}/pull-requests`}>
-                        <span class="repository-owner">{repository.owner}</span>
-                        <span class="repository-separator">/</span>
-                        <span class="repository-name">{repository.name}</span>
-                      </Link>
-                    </Table.Cell>
-                    <Table.Cell>
-                      {#if repository.defaultBranch}
-                        <Badge size="sm">{repository.defaultBranch}</Badge>
-                      {/if}
-                    </Table.Cell>
-                    <Table.Cell>
-                      <span class="text-muted">
-                        {repository.review.lastRunStatus ?? 'Never'}
-                      </span>
-                    </Table.Cell>
-                    <Table.Cell align="right">
-                      ${repository.review.estimatedCostLast30DaysUsd.toFixed(2)}
-                    </Table.Cell>
-                    <Table.Cell align="right">
-                      <div class="row-actions">
-                        <form
-                          method="POST"
-                          action="?/watch"
-                          use:enhance={() => {
-                            return async ({ update }) => {
-                              if (expandedSettings === repository.id) {
-                                expandedSettings = null;
-                              }
-                              await update();
-                            };
-                          }}
-                        >
-                          <input type="hidden" name="repositoryId" value={repository.id} />
-                          <input type="hidden" name="watched" value="" />
-                          <input
-                            type="hidden"
-                            name="ignoreGlobs"
-                            value={repository.review.ignoreGlobs.join('\n')}
-                          />
-                          {#each repository.review.agents as agent (agent.id)}
-                            <input type="hidden" name="agentIds" value={agent.id} />
-                          {/each}
-                          <Button type="submit" variant="ghost" size="sm">
-                            {#snippet leadingIcon()}<EyeOff
-                                size={14}
-                                aria-hidden="true"
-                              />{/snippet}
-                            Unwatch
-                          </Button>
-                        </form>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-expanded={expandedSettings === repository.id}
-                          onclick={() =>
-                            (expandedSettings =
-                              expandedSettings === repository.id ? null : repository.id)}
-                        >
-                          {#snippet leadingIcon()}<Settings
-                              size={14}
-                              aria-hidden="true"
-                            />{/snippet}
-                          Settings
-                        </Button>
-                      </div>
-                    </Table.Cell>
-                  </Table.Row>
-                  {#if expandedSettings === repository.id}
-                    <Table.Row>
-                      <Table.Cell colspan={5}>
-                        <form method="POST" action="?/watch" class="settings-form" use:enhance>
-                          <input type="hidden" name="repositoryId" value={repository.id} />
-                          <input type="hidden" name="watched" value="on" />
-                          {#if agents.length > 0}
-                            <label class="settings-field">
-                              <span class="settings-label">Assigned agents</span>
-                              <select
-                                name="agentIds"
-                                multiple
-                                size={Math.min(Math.max(agents.length, 2), 5)}
-                                class="settings-select"
-                              >
-                                {#each agents as agent (agent.id)}
-                                  <option
-                                    value={agent.id}
-                                    selected={repository.review.agents.some(
-                                      (assigned) => assigned.id === agent.id,
-                                    )}
-                                  >
-                                    {agent.slug}{agent.enabled ? '' : ' (disabled)'}
-                                  </option>
-                                {/each}
-                              </select>
-                            </label>
-                          {/if}
-                          <label class="settings-field">
-                            <span class="settings-label">Ignore globs</span>
-                            <textarea
-                              name="ignoreGlobs"
-                              rows="3"
-                              spellcheck="false"
-                              class="settings-textarea"
-                              value={repository.review.ignoreGlobs.join('\n')}
-                            ></textarea>
-                            <span class="settings-hint">One glob pattern per line.</span>
-                          </label>
-                          <div class="settings-actions">
-                            <Button type="submit" variant="secondary" size="sm">
-                              Save settings
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onclick={() => (expandedSettings = null)}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        </form>
-                      </Table.Cell>
-                    </Table.Row>
-                  {/if}
-                {/each}
-              </Table.Body>
-            </Table>
-          </div>
-        </Card>
-      {/if}
-    </section>
-
-    {#if searchVisible}
-      <section class="search-section" id="search-section">
-        <h2 class="section-title">Find a repository</h2>
+    <div class="toolbar">
+      <div class="search-wrapper">
         <SearchField
           id="repository-search"
           value={searchQuery}
-          placeholder="Search by owner or name…"
+          placeholder="Search repositories…"
           oninput={(value) => (searchQuery = value)}
         />
+      </div>
+      <SegmentedControl
+        id="repo-filter"
+        selectionMode="single"
+        bind:value={viewFilter}
+        label="Filter repositories"
+        density="toolbar"
+      >
+        <Segment value="all">All</Segment>
+        <Segment value="watched">Watched</Segment>
+      </SegmentedControl>
+    </div>
 
-        {#if searchQuery.trim() && searchResults.length === 0}
-          <p class="empty-hint">No repositories matching "{searchQuery}".</p>
-        {:else if searchResults.length > 0}
-          <ul class="search-results">
-            {#each searchResults as repository (repository.id)}
-              <li class="search-result-item">
-                <div class="search-result-identity">
-                  <span class="repository-owner">{repository.owner}</span>
-                  <span class="repository-separator">/</span>
-                  <span class="repository-name">{repository.name}</span>
-                  {#if repository.review.watched}
-                    <Badge size="sm" variant="success">Watched</Badge>
-                  {/if}
-                </div>
-                <form method="POST" action="?/watch" class="search-result-action" use:enhance>
-                  <input type="hidden" name="repositoryId" value={repository.id} />
-                  <input
-                    type="hidden"
-                    name="watched"
-                    value={repository.review.watched ? '' : 'on'}
-                  />
-                  {#if repository.review.watched}
-                    <!-- Preserve existing settings when unwatching -->
-                    <input
-                      type="hidden"
-                      name="ignoreGlobs"
-                      value={repository.review.ignoreGlobs.join('\n')}
-                    />
-                    {#each repository.review.agents as agent (agent.id)}
-                      <input type="hidden" name="agentIds" value={agent.id} />
-                    {/each}
-                  {:else}
-                    <!-- Configurable settings for new watches -->
-                    {#if agents.length > 0}
-                      <label class="search-result-field">
-                        <span class="settings-label">Agents</span>
-                        <select
-                          name="agentIds"
-                          multiple
-                          size={Math.min(agents.length, 3)}
-                          class="settings-select"
-                        >
-                          {#each agents as agent (agent.id)}
-                            <option
-                              value={agent.id}
-                              selected={repository.review.hasSavedSettings
-                                ? repository.review.agents.some(
-                                    (assigned) => assigned.id === agent.id,
-                                  )
-                                : agent.enabled}
-                            >
-                              {agent.slug}{agent.enabled ? '' : ' (disabled)'}
-                            </option>
-                          {/each}
-                        </select>
-                      </label>
-                    {/if}
-                    <label class="search-result-field">
-                      <span class="settings-label">Ignore globs</span>
-                      <textarea
-                        name="ignoreGlobs"
-                        rows="2"
-                        spellcheck="false"
-                        class="settings-textarea"
-                        placeholder="One glob per line…"
-                        value={repository.review.ignoreGlobs.join('\n')}
-                      ></textarea>
-                    </label>
-                  {/if}
-                  <Button
-                    type="submit"
-                    variant={repository.review.watched ? 'ghost' : 'secondary'}
-                    size="sm"
-                  >
-                    {#snippet leadingIcon()}
-                      {#if repository.review.watched}<EyeOff
-                          size={14}
-                          aria-hidden="true"
-                        />{:else}<Eye size={14} aria-hidden="true" />{/if}
-                    {/snippet}
-                    {repository.review.watched ? 'Unwatch' : 'Watch'}
-                  </Button>
-                </form>
-              </li>
-            {/each}
-          </ul>
+    {#if filteredRepositories.length === 0}
+      <p class="empty-hint">
+        {#if searchQuery.trim()}
+          No repositories matching "{searchQuery}".
+        {:else if viewFilter === 'watched'}
+          No repositories are being watched yet. Switch to "All" to find and watch repositories.
         {:else}
-          <p class="empty-hint">Type to search across all accessible repositories.</p>
+          No repositories found.
         {/if}
-      </section>
+      </p>
+    {:else}
+      <Card padding="none">
+        <div class="table-scroll">
+          <Table density="comfortable">
+            <Table.Header>
+              <Table.Row>
+                <Table.HeaderCell>Repository</Table.HeaderCell>
+                <Table.HeaderCell>Agents</Table.HeaderCell>
+                <Table.HeaderCell>Last run</Table.HeaderCell>
+                <Table.HeaderCell align="right">30-day est.</Table.HeaderCell>
+                <Table.HeaderCell align="center">Watching</Table.HeaderCell>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {#each filteredRepositories as repository (repository.id)}
+                {@const isWatching = watchedFor(repository.id, repository.review.watched)}
+                <Table.Row>
+                  <Table.Cell>
+                    <div class="repository-identity">
+                      {#if repository.review.watched}
+                        <Link href={`/repositories/${repository.id}/pull-requests`}>
+                          <span class="repository-owner">{repository.owner}</span><span
+                            class="repository-separator">/</span
+                          ><span class="repository-name">{repository.name}</span>
+                        </Link>
+                      {:else}
+                        <span class="repository-owner">{repository.owner}</span><span
+                          class="repository-separator">/</span
+                        ><span class="repository-name">{repository.name}</span>
+                      {/if}
+                      {#if repository.defaultBranch}
+                        <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
+                      {/if}
+                    </div>
+                  </Table.Cell>
+                  <Table.Cell>
+                    {#if repository.review.agents.length > 0}
+                      <div class="agent-badges">
+                        {#each repository.review.agents as agent (agent.id)}
+                          <Badge size="sm" variant="accent">{agent.slug}</Badge>
+                        {/each}
+                      </div>
+                    {:else}
+                      <span class="text-muted">—</span>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell>
+                    {#if repository.review.lastRunStatus}
+                      <StatusDot
+                        status={statusDotForRun(repository.review.lastRunStatus)}
+                        label={statusLabel(repository.review.lastRunStatus)}
+                        showLabel
+                        size="sm"
+                      />
+                    {:else}
+                      <span class="text-muted">Never</span>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    <span class="cost"
+                      >${repository.review.estimatedCostLast30DaysUsd.toFixed(2)}</span
+                    >
+                  </Table.Cell>
+                  <Table.Cell align="center">
+                    <div class="watching-cell">
+                      <!--
+                        The watch form submits the INVERSE of the current server-confirmed state
+                        so the hidden `watched` input is already correct the instant the user
+                        clicks the toggle — no DOM-flush race with the Toggle's own hidden checkbox.
+                        Note: the Toggle requires JS to submit; without JS the toggle has no effect,
+                        but the expanded settings form below continues to work progressively.
+                      -->
+                      <form
+                        id="watch-form-{repository.id}"
+                        method="POST"
+                        action="?/watch"
+                        class="watch-form"
+                        use:enhance={() => {
+                          const id = repository.id;
+                          return async ({ update }) => {
+                            if (expandedSettings === id) expandedSettings = null;
+                            await update();
+                            localWatchStates.delete(id);
+                          };
+                        }}
+                      >
+                        <input type="hidden" name="repositoryId" value={repository.id} />
+                        <!--
+                          These labeled controls are visually hidden (sr-only) so they are present
+                          in the DOM and queryable by label without requiring the gear panel to open.
+                          They replace the old hidden inputs, preserving saved settings on toggle.
+                        -->
+                        {#if agents.length > 0}
+                          {@const selectedAgentIds = agentIdsForWatch(repository)}
+                          <label class="settings-visually-hidden">
+                            <span>Agents</span>
+                            <!-- Visually hidden, but kept in the DOM to preserve
+                                 saved settings on toggle. tabindex=-1 removes the
+                                 invisible control from the keyboard tab order. -->
+                            <select name="agentIds" multiple tabindex="-1">
+                              {#each agents as agent (agent.id)}
+                                <option
+                                  value={agent.id}
+                                  selected={selectedAgentIds.includes(agent.id)}
+                                >
+                                  {agent.slug}
+                                </option>
+                              {/each}
+                            </select>
+                          </label>
+                        {/if}
+                        <label class="settings-visually-hidden">
+                          <span>Ignore globs</span>
+                          <textarea
+                            name="ignoreGlobs"
+                            tabindex="-1"
+                            value={repository.review.ignoreGlobs.join('\n')}
+                          ></textarea>
+                        </label>
+                        <!-- Submit the next desired state (inverse of current server state). -->
+                        <input
+                          type="hidden"
+                          name="watched"
+                          value={repository.review.watched ? '' : 'on'}
+                        />
+                        <Toggle
+                          id="watching-{repository.id}"
+                          checked={isWatching}
+                          label={isWatching ? 'Unwatch repository' : 'Watch repository'}
+                          hideLabel
+                          onValueChange={(next) => {
+                            localWatchStates.set(repository.id, next);
+                            const watchForm = document.getElementById(
+                              `watch-form-${repository.id}`,
+                            );
+                            if (watchForm instanceof HTMLFormElement) {
+                              watchForm.requestSubmit();
+                            }
+                            return next;
+                          }}
+                        />
+                      </form>
+                      <Button
+                        iconOnly
+                        label={`Settings for ${repository.owner}/${repository.name}`}
+                        variant="ghost"
+                        size="sm"
+                        aria-expanded={expandedSettings === repository.id}
+                        aria-controls="settings-{repository.id}"
+                        onclick={() =>
+                          (expandedSettings =
+                            expandedSettings === repository.id ? null : repository.id)}
+                      >
+                        {#snippet leadingIcon()}<Settings size={14} aria-hidden="true" />{/snippet}
+                      </Button>
+                    </div>
+                  </Table.Cell>
+                </Table.Row>
+                {#if expandedSettings === repository.id}
+                  <Table.Row id="settings-{repository.id}">
+                    <Table.Cell colspan={5}>
+                      <form method="POST" action="?/watch" class="settings-form" use:enhance>
+                        <input type="hidden" name="repositoryId" value={repository.id} />
+                        <input type="hidden" name="watched" value="on" />
+                        {#if agents.length > 0}
+                          <label class="settings-field">
+                            <span class="settings-label">Assigned agents</span>
+                            <select
+                              name="agentIds"
+                              multiple
+                              size={Math.min(Math.max(agents.length, 2), 5)}
+                              class="settings-select"
+                            >
+                              {#each agents as agent (agent.id)}
+                                <option
+                                  value={agent.id}
+                                  selected={repository.review.agents.some(
+                                    (assigned) => assigned.id === agent.id,
+                                  )}
+                                >
+                                  {agent.slug}{agent.enabled ? '' : ' (disabled)'}
+                                </option>
+                              {/each}
+                            </select>
+                          </label>
+                        {/if}
+                        <label class="settings-field">
+                          <span class="settings-label">Ignore globs</span>
+                          <textarea
+                            name="ignoreGlobs"
+                            rows="3"
+                            spellcheck="false"
+                            class="settings-textarea"
+                            value={repository.review.ignoreGlobs.join('\n')}
+                          ></textarea>
+                          <span class="settings-hint">One glob pattern per line.</span>
+                        </label>
+                        <div class="settings-actions">
+                          <Button type="submit" variant="secondary" size="sm">Save settings</Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onclick={() => (expandedSettings = null)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </form>
+                    </Table.Cell>
+                  </Table.Row>
+                {/if}
+              {/each}
+            </Table.Body>
+          </Table>
+        </div>
+      </Card>
+      <p class="table-hint">
+        Showing {filteredRepositories.length} of {repositories.length}
+        {repositories.length === 1 ? 'repository' : 'repositories'}.
+      </p>
     {/if}
   {/if}
 </Page>
 
 <style>
-  .section-header {
+  .toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
 
-  .section-title {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-base);
-    font-weight: var(--font-semibold);
-    color: var(--text);
+  .search-wrapper {
+    flex: 1;
+    min-width: 240px;
   }
 
   .empty-hint {
@@ -380,12 +434,24 @@
     color: var(--text-muted);
   }
 
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .repository-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
   .repository-owner {
     color: var(--text-muted);
   }
 
   .repository-separator {
-    color: var(--text-disabled);
+    color: var(--text-subtle);
   }
 
   .repository-name {
@@ -393,16 +459,39 @@
     color: var(--text);
   }
 
-  .text-muted {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-  }
-
-  .row-actions {
+  .agent-badges {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    justify-content: flex-end;
+    gap: var(--space-1);
+    flex-wrap: wrap;
+  }
+
+  .cost {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+  }
+
+  .text-muted {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .watching-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+  }
+
+  .watch-form {
+    display: flex;
+    align-items: center;
+  }
+
+  .table-hint {
+    font-size: var(--text-xs);
+    color: var(--text-subtle);
   }
 
   .settings-form {
@@ -454,67 +543,18 @@
     gap: var(--space-2);
   }
 
-  .search-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .search-results {
-    display: flex;
-    flex-direction: column;
-    list-style: none;
-  }
-
-  .search-result-item {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--border-muted);
-  }
-
-  .search-result-item:last-child {
-    border-bottom: none;
-  }
-
-  .search-result-identity {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-
-  .search-result-action {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: var(--space-3);
-    flex-shrink: 0;
-  }
-
-  .search-result-field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    width: 16rem;
-  }
-
-  @media (max-width: 640px) {
-    .search-result-item {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .search-result-action {
-      align-items: stretch;
-      flex-shrink: 1;
-      width: 100%;
-    }
-
-    .search-result-field {
-      width: 100%;
-    }
+  /* Visually hides an element while keeping it in the DOM and accessibility tree.
+     Controls labeled this way are queryable by assistive technology and by tests
+     without requiring the gear settings panel to be expanded. */
+  .settings-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border-width: 0;
   }
 </style>

@@ -1,7 +1,11 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Endpoints } from '@octokit/types';
 import { eq } from 'drizzle-orm';
-import { consumeOAuthStateCookie, upsertOAuthConnection } from '$lib/server/auth/authentication';
+import {
+  consumeOAuthStateCookie,
+  readAccessTokenExpiresAt,
+  upsertOAuthConnection,
+} from '$lib/server/auth/authentication';
 import { getProviderClient } from '$lib/server/auth/providers';
 import { invalidateGitHubAccessCache } from '$lib/server/github/access';
 import { db } from '$lib/server/database';
@@ -13,6 +17,7 @@ type GitHubUser = Endpoints['GET /user']['response']['data'];
 interface OAuthTokens {
   accessToken: string;
   refreshToken: string | null;
+  expiresAt: Date | null;
   scopes: string;
 }
 
@@ -25,7 +30,7 @@ async function saveOAuthConnection(
     providerUserId: githubUserId,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
-    expiresAt: null,
+    expiresAt: tokens.expiresAt,
     scope: tokens.scopes,
   });
 
@@ -71,6 +76,7 @@ export const GET: RequestHandler = async ({ locals, url, cookies }) => {
   const tokens: OAuthTokens = {
     accessToken,
     refreshToken: rawTokens.hasRefreshToken() ? rawTokens.refreshToken() : null,
+    expiresAt: readAccessTokenExpiresAt(rawTokens),
     scopes: '',
   };
 

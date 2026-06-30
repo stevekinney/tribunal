@@ -2,12 +2,16 @@
   import Page from '$lib/components/page.svelte';
   import { Alert } from '@lostgradient/cinder/alert';
   import { Badge } from '@lostgradient/cinder/badge';
+  import type { BadgeVariant } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
   import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
   import { Link } from '@lostgradient/cinder/link';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
+  import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
   import { invalidateAll } from '$app/navigation';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
   import { Square } from 'lucide-svelte';
   import { untrack } from 'svelte';
   import type { PageData } from './$types';
@@ -20,8 +24,6 @@
   const run = $derived(data.run);
   let connectionState = $state<'connecting' | 'streaming' | 'disconnected'>('disconnected');
   const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
-  const connected = $derived(canStopRun && connectionState === 'streaming');
-  const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
   const eventStreamConnectionState = $derived<EventStreamState>(
     canStopRun && connectionState === 'streaming'
       ? 'connected'
@@ -29,6 +31,7 @@
         ? 'connecting'
         : 'disconnected',
   );
+  const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
   const latestAgentEventId = $derived.by(() => {
     let latestId = 0;
     for (const agentRun of run.agentRuns) {
@@ -45,6 +48,12 @@
     run.checkRunId === null
       ? null
       : `https://github.com/${run.repositoryOwner}/${run.repositoryName}/runs/${run.checkRunId}`,
+  );
+  const prHref = $derived(
+    `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}`,
+  );
+  const totalFindings = $derived(
+    run.agentRuns.reduce((sum, agentRun) => sum + agentRun.findings.length, 0),
   );
 
   function isDeniedToolEvent(detail: unknown): boolean {
@@ -101,6 +110,78 @@
     return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
   }
 
+  function runStatusVariant(status: string): BadgeVariant {
+    switch (status) {
+      case 'running':
+        // Match the runs list (STATUS_CONFIG.running.badge) so the same status reads identically.
+        return 'accent';
+      case 'posted':
+        return 'success';
+      case 'failed':
+        return 'danger';
+      case 'quota_blocked':
+        return 'warning';
+      default:
+        return 'neutral';
+    }
+  }
+
+  function agentStatusVariant(status: string): BadgeVariant {
+    switch (status) {
+      case 'running':
+        return 'info';
+      case 'succeeded':
+        return 'success';
+      case 'failed':
+        return 'danger';
+      default:
+        return 'neutral';
+    }
+  }
+
+  function agentStatusDot(status: string): StatusDotStatus {
+    switch (status) {
+      case 'running':
+        return 'accent';
+      case 'succeeded':
+        return 'success';
+      case 'failed':
+        return 'danger';
+      case 'queued':
+        return 'pending';
+      default:
+        return 'neutral';
+    }
+  }
+
+  function findingSeverityVariant(severity: string): BadgeVariant {
+    switch (severity) {
+      case 'error':
+        return 'danger';
+      case 'warning':
+        return 'warning';
+      default:
+        return 'info';
+    }
+  }
+
+  function formatDurationMs(ms: number | null | undefined): string | null {
+    if (ms == null) return null;
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  }
+
+  function agentMetaSummary(agentRun: AgentRun): string | null {
+    return formatDurationMs(agentRun.durationMs);
+  }
+
+  function formatStatus(status: string): string {
+    const words = status.replace(/_/g, ' ');
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
   $effect(() => {
     if (!canStopRun) {
       connectionState = 'disconnected';
@@ -145,89 +226,124 @@
 
 <Page
   title={`Run ${run.id}`}
-  subtitle={`${run.repositoryOwner}/${run.repositoryName} pull request #${run.prNumber}`}
+  subtitle={`${run.repositoryOwner}/${run.repositoryName} · PR #${run.prNumber}`}
+  breadcrumbs={[{ label: 'Runs', href: '/runs' }, { label: `Run ${run.id}` }]}
 >
   {#snippet actions()}
-    <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
-      <Button type="submit" variant="danger" size="sm" disabled={!canStopRun}>
-        Stop run
-        {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
+    <div class="page-actions">
+      <Button href={prHref} variant="secondary" size="sm" target="_blank" rel="noopener noreferrer">
+        Open PR
+        {#snippet trailingIcon()}<ExternalLink size={14} aria-hidden="true" />{/snippet}
       </Button>
-    </form>
+      <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
+        <Button type="submit" variant="danger" size="sm" disabled={!canStopRun}>
+          Stop run
+          {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
+        </Button>
+      </form>
+    </div>
   {/snippet}
 
-  <Card>
-    <div class="status-row">
-      <Badge size="sm">{run.status}</Badge>
-      <span class:connected class="connection-dot" aria-hidden="true"></span>
-      <span aria-label="Run event stream state">{connectionLabel}</span>
-      {#if run.status === 'superseded'}
-        {#if replacementRunHref}
-          <Link href={replacementRunHref}>Superseded by a newer run</Link>
-        {:else}
-          <span>Superseded by a newer run</span>
-        {/if}
-      {/if}
-    </div>
-    {#if run.error}
-      <Alert variant="error">{run.error}</Alert>
-    {/if}
-    <dl class="run-summary">
-      <div>
-        <dt>Estimated cost</dt>
-        <dd>${Number(run.costEstimateUsd).toFixed(2)}</dd>
-      </div>
-      <div>
-        <dt>Check Run</dt>
-        <dd>
-          {#if checkRunHref}
-            <Link href={checkRunHref}>Open GitHub Check Run</Link>
-          {:else}
-            <span>No Check Run recorded</span>
-          {/if}
-        </dd>
-      </div>
-    </dl>
-  </Card>
+  {#if run.error}
+    <Alert variant="danger">{run.error}</Alert>
+  {/if}
 
-  <div class="surface-states" aria-label="Surface states">
-    {#each data.surfaceStates as state (state)}
-      <Badge size="sm">{state}</Badge>
-    {/each}
+  <div class="status-row">
+    <Badge variant={runStatusVariant(run.status)}>{formatStatus(run.status)}</Badge>
+    {#if canStopRun}
+      <StatusDot connectionState={eventStreamConnectionState} size="sm" />
+    {/if}
+    <span aria-label="Run event stream state" class="sr-only">{connectionLabel}</span>
+    {#if run.status === 'superseded'}
+      {#if replacementRunHref}
+        <Link href={replacementRunHref}>Superseded by a newer run</Link>
+      {:else}
+        <span class="text-muted">Superseded by a newer run</span>
+      {/if}
+    {/if}
+  </div>
+
+  <div class="summary-strip" aria-label="Run summary statistics">
+    <Card padding="none">
+      <div class="stat">
+        <span class="stat-label">Agents</span>
+        <span class="stat-value">{run.agentRuns.length}</span>
+      </div>
+    </Card>
+    <Card padding="none">
+      <div class="stat">
+        <span class="stat-label">Est. cost</span>
+        <span class="stat-value mono">${Number(run.costEstimateUsd).toFixed(2)}</span>
+      </div>
+    </Card>
+    <Card padding="none">
+      <div class="stat">
+        <span class="stat-label">Findings</span>
+        <span class="stat-value">{totalFindings}</span>
+      </div>
+    </Card>
+    <Card padding="none">
+      <div class="stat">
+        <span class="stat-label">Check run</span>
+        {#if checkRunHref}
+          <span class="stat-check-link">
+            <Link href={checkRunHref} external>Open GitHub Check Run</Link>
+          </span>
+        {:else}
+          <span class="stat-dash">—</span>
+        {/if}
+      </div>
+    </Card>
   </div>
 
   <section class="agent-grid" aria-label="Agent timelines">
     {#if run.agentRuns.length === 0}
       <Card>
-        <p class="muted">No agent runs recorded.</p>
+        <p class="empty-state">No agent runs recorded.</p>
       </Card>
     {/if}
     {#each run.agentRuns as agentRun (agentRun.id)}
-      <Card>
-        <div class="agent-header">
-          <div>
-            <h2>{agentRun.slug}</h2>
-            <p>{agentRun.description}</p>
-          </div>
-          <div class="agent-actions">
-            <Badge size="sm">{agentRun.status}</Badge>
-            <form
-              method="POST"
-              action={`/api/review/runs/${run.id}/agents/${agentRun.agentId}/stop`}
-            >
-              <Button
-                type="submit"
-                variant="danger"
+      <Card padding="none">
+        {#snippet header()}
+          <div class="agent-header">
+            <div class="agent-identity">
+              <StatusDot
+                status={agentStatusDot(agentRun.status)}
+                showLabel={false}
                 size="sm"
-                disabled={!canStopAgent(agentRun.status)}
-                aria-label={`Stop ${agentRun.slug}`}
-              >
-                Stop
-                {#snippet leadingIcon()}<Square size={14} aria-hidden="true" />{/snippet}
-              </Button>
-            </form>
+                aria-hidden="true"
+              />
+              <h2 class="agent-slug">{agentRun.slug}</h2>
+              <Badge size="sm" variant={agentStatusVariant(agentRun.status)}>
+                {formatStatus(agentRun.status)}
+              </Badge>
+            </div>
+            <div class="agent-controls">
+              {#if agentMetaSummary(agentRun)}
+                <span class="agent-meta">{agentMetaSummary(agentRun)}</span>
+              {/if}
+              {#if canStopAgent(agentRun.status)}
+                <form
+                  method="POST"
+                  action={`/api/review/runs/${run.id}/agents/${agentRun.agentId}/stop`}
+                >
+                  <Button
+                    type="submit"
+                    variant="soft-danger"
+                    size="xs"
+                    aria-label={`Stop ${agentRun.slug}`}
+                  >
+                    Stop
+                  </Button>
+                </form>
+              {/if}
+            </div>
           </div>
-        </div>
+        {/snippet}
+
+        {#if agentRun.description}
+          <p class="agent-description">{agentRun.description}</p>
+        {/if}
 
         <EventStreamViewer
           events={toStreamEvents(agentRun.events)}
@@ -235,130 +351,236 @@
           label={`${agentRun.slug} event stream`}
         />
 
-        <details open>
-          <summary>Findings</summary>
+        <div class="findings">
+          <h3 class="findings-heading">Findings ({agentRun.findings.length})</h3>
           {#if agentRun.findings.length === 0}
-            <p class="muted">No findings recorded.</p>
+            <p class="empty-state">No findings recorded.</p>
           {:else}
             <ul class="finding-list">
               {#each agentRun.findings as finding (finding.id)}
-                <li>
-                  <strong>{finding.title}</strong>
-                  <span>{finding.path}:{finding.startLine ?? '?'}</span>
-                  {#if finding.githubCommentId}
-                    <a href={githubCommentHref(finding.githubCommentId)}>GitHub comment</a>
-                  {/if}
+                <li class="finding-item">
+                  <Badge size="sm" variant={findingSeverityVariant(finding.severity)}>
+                    {formatStatus(finding.severity)}
+                  </Badge>
+                  <div class="finding-body">
+                    <span class="finding-title">{finding.title}</span>
+                    <span class="finding-location">
+                      <code class="finding-path">
+                        {finding.path}{finding.startLine != null ? `:${finding.startLine}` : ''}
+                      </code>
+                      {#if finding.githubCommentId}
+                        <Link href={githubCommentHref(finding.githubCommentId)} external>
+                          GitHub comment
+                        </Link>
+                      {/if}
+                    </span>
+                  </div>
                 </li>
               {/each}
             </ul>
           {/if}
-        </details>
+        </div>
       </Card>
     {/each}
   </section>
 </Page>
 
 <style>
-  .status-row,
+  /* ---- Page actions ---- */
+  .page-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* ---- Status row ---- */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .text-muted {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  /* ---- Summary strip ---- */
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-3);
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .stat-label {
+    font-size: var(--text-2xs);
+    color: var(--text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: var(--font-medium);
+  }
+
+  .stat-value {
+    font-size: var(--text-lg);
+    font-weight: var(--font-semibold);
+    color: var(--text);
+    line-height: 1.2;
+  }
+
+  .stat-dash {
+    font-size: var(--text-lg);
+    font-weight: var(--font-semibold);
+    color: var(--text-muted);
+    line-height: 1.2;
+  }
+
+  .stat-check-link {
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  /* ---- Agent grid ---- */
+  .agent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+  }
+
+  /* ---- Agent card header ---- */
   .agent-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
+    width: 100%;
   }
 
-  .status-row {
-    justify-content: flex-start;
-    color: var(--text-muted);
-  }
-
-  .agent-actions {
+  .agent-identity {
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    min-width: 0;
   }
 
-  .run-summary {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-3);
-    margin-top: var(--space-4);
-  }
-
-  .run-summary div {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--space-3);
-    background: var(--surface-overlay);
-  }
-
-  .run-summary dt {
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-  }
-
-  .run-summary dd {
-    color: var(--text);
+  .agent-slug {
+    margin: 0;
+    font-family: var(--font-mono);
     font-size: var(--text-sm);
     font-weight: var(--font-semibold);
-  }
-
-  .connection-dot {
-    width: 0.625rem;
-    height: 0.625rem;
-    border-radius: 999px;
-    background: var(--danger);
-  }
-
-  .connection-dot.connected {
-    background: var(--success);
-  }
-
-  .agent-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
-    gap: var(--space-4);
-  }
-
-  .surface-states {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-  }
-
-  h2 {
-    font-size: var(--text-base);
-    font-weight: var(--font-semibold);
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  p,
-  .muted {
+  .agent-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .agent-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-subtle);
+  }
+
+  .agent-description {
+    margin: 0;
+    padding: var(--space-3) var(--space-4) 0;
+    font-size: var(--text-sm);
     color: var(--text-muted);
+  }
+
+  /* ---- Findings ---- */
+  .findings {
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .findings-heading {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--font-medium);
+    color: var(--text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .finding-list {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    margin-block: var(--space-4);
+    list-style: none;
+    padding: 0;
+    margin: 0;
   }
 
-  .finding-list {
-    padding-left: var(--space-5);
+  .finding-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
   }
 
-  .finding-list li {
-    display: grid;
+  .finding-body {
+    display: flex;
+    flex-direction: column;
     gap: var(--space-1);
+    min-width: 0;
+    font-size: var(--text-sm);
   }
 
-  @media (max-width: 640px) {
-    .run-summary {
+  .finding-title {
+    color: var(--text);
+    line-height: 1.4;
+  }
+
+  .finding-location {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .finding-path {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  .empty-state {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  /* ---- Responsive ---- */
+  @media (max-width: 768px) {
+    .summary-strip {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .agent-grid {
       grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .summary-strip {
+      grid-template-columns: 1fr 1fr;
     }
   }
 </style>

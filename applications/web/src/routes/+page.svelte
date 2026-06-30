@@ -8,8 +8,8 @@
 
   const errorParam = $derived(page.url.searchParams.get('error'));
   const errorMessage = $derived(errorParam ? LOGIN_ERROR_MESSAGES[errorParam] : null);
-  // User cancellations (*_denied) should be info, actual errors should be error
-  const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'error');
+  // User cancellations (*_denied) should be info, actual errors should be danger
+  const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'danger');
 </script>
 
 <main class="landing-page">

@@ -26,6 +26,16 @@ import {
 } from '@tribunal/database/schema';
 import { getUserOctokit } from '$lib/server/github/user-oauth';
 import { listUserInstallations } from '$lib/server/github/user-installations';
+import { markGitHubTokenInvalid } from '$lib/server/github/access';
+
+/**
+ * Detect an Octokit 401. Octokit's `RequestError` carries a numeric `status`,
+ * so a 401 from `GET /user/installations` means the stored OAuth token was
+ * revoked or has expired — not a transient outage.
+ */
+function isUnauthorizedError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'status' in error && error.status === 401;
+}
 
 /** A repository the user can access, paired with its resolving installation. */
 export interface UserRepository {
@@ -99,6 +109,18 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
     }));
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
+    if (isUnauthorizedError(error)) {
+      // The stored OAuth token was revoked or expired. Persist that fact so the
+      // next request returns `no_github_token` (a reconnect prompt) instead of
+      // re-using the dead token and repeating this 401 on every load. Mirrors
+      // the invalid-token handling in access.ts.
+      await markGitHubTokenInvalid(userId);
+      return {
+        ok: false,
+        error: 'no_github_token',
+        message: 'Your GitHub connection is no longer valid. Reconnect GitHub to continue.',
+      };
+    }
     return {
       ok: false,
       error: 'github_unavailable',

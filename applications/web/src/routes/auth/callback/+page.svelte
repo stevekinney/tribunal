@@ -68,7 +68,7 @@
 
 <main class="auth-callback-page">
   {#if status === 'error'}
-    <Alert variant="error">Sign in failed. Redirecting...</Alert>
+    <Alert variant="danger">Sign in failed. Redirecting...</Alert>
   {:else}
     <p class="status">Completing sign in...</p>
   {/if}

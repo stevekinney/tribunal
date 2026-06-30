@@ -22,12 +22,14 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByRole('table', { name: 'Review runs' })).toContainText(
     `${session.repository.owner}/${session.repository.name} #17`,
   );
-  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('posted');
+  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('Posted');
 
   await page.goto('/costs');
   await expect(page.getByRole('heading', { name: 'Costs' })).toBeVisible();
   await expect(page.getByText('$0.42 of $25.00')).toBeVisible();
-  await expect(page.getByText(`security-review @ ${session.repository.owner}/`)).toBeVisible();
+  // The breakdown is a segmented single-dimension view defaulting to "By Agent";
+  // the agent's cost row confirms per-agent attribution rendered.
+  await expect(page.getByText('security-review', { exact: true })).toBeVisible();
 
   await page.goto('/settings');
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();

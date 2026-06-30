@@ -25,7 +25,23 @@ vi.mock('$lib/server/auth/authentication', () => ({
     userId: 1,
   })),
   upsertOAuthConnection: vi.fn().mockResolvedValue(undefined),
+  // Faithful stand-in for the real helper: return the token expiry, returning
+  // null only for Arctic's known "missing expires_in" case and re-throwing any
+  // other failure (so the mock cannot mask an unexpected error).
+  readAccessTokenExpiresAt: (tokens: { accessTokenExpiresAt: () => Date }) => {
+    try {
+      return tokens.accessTokenExpiresAt();
+    } catch (error) {
+      if (error instanceof Error && error.message === "Missing or invalid 'expires_in' field") {
+        return null;
+      }
+      throw error;
+    }
+  },
 }));
+
+// GitHub App user-to-server tokens expire (~8h); the callback must persist it.
+const tokenExpiry = new Date('2026-07-01T00:00:00.000Z');
 
 vi.mock('$lib/server/auth/providers', () => ({
   getProviderClient: () => ({
@@ -49,6 +65,7 @@ describe('GET /connect/github/account/callback', () => {
       accessToken: () => 'github-access-token',
       hasRefreshToken: () => true,
       refreshToken: () => 'github-refresh-token',
+      accessTokenExpiresAt: () => tokenExpiry,
     });
     mockFetch.mockResolvedValue({
       ok: true,
@@ -100,7 +117,7 @@ describe('GET /connect/github/account/callback', () => {
       providerUserId: '12345',
       accessToken: 'github-access-token',
       refreshToken: 'github-refresh-token',
-      expiresAt: null,
+      expiresAt: tokenExpiry,
       scope: 'repo,user:email',
     });
     expect(invalidateGitHubAccessCache).toHaveBeenCalledWith(1);

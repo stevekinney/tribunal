@@ -120,9 +120,14 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
   expect(reopenedAfterClosePayload.totalCostUsd).toBe(synchronizedPayload.totalCostUsd);
 
   await page.goto('/runs');
-  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('cancelled');
+  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('Cancelled');
 
   await page.goto('/costs');
-  await expect(page.getByText('By Review Run')).toBeVisible();
-  await expect(page.getByRole('rowheader', { name: /^run-e2e-.*open-sha-opened$/ })).toBeVisible();
+  // The breakdown defaults to "By Agent"; switch to "By Review Run" to see rows
+  // labelled by run id. Selecting a segment is hydration-dependent, so retry the
+  // click until the SvelteKit island is interactive and the rows render.
+  await expect(async () => {
+    await page.getByRole('radio', { name: 'By Review Run', exact: true }).click();
+    await expect(page.getByText(/^run-e2e-.*open-sha-opened$/)).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
 });
