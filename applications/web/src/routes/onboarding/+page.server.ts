@@ -3,6 +3,7 @@ import type { PageServerLoad, Actions } from './$types';
 import { getRepositoriesForUser } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
+  getUserReviewSettings,
   listAgents,
   saveRepositoryWatchSettings,
   userOwnsRepository,
@@ -15,12 +16,13 @@ const MAX_ONBOARDING_REPOSITORIES = 100;
 /**
  * Why the repository picker cannot be shown yet. `disconnected` = no/revoked
  * GitHub token (reconnect); `unavailable` = transient GitHub outage (retry);
- * `no_installation` = healthy connection but the app is not installed (install).
- * `null` connectReason means the picker is ready. Pinning this union (rather than
- * letting the literals widen to `string`) lets the page's switch be exhaustively
- * type-checked.
+ * `no_installation` = healthy connection but the app is not installed (install);
+ * `no_repositories` = app installed but it can access no repositories yet (grant
+ * repository access). `null` connectReason means the picker is ready. Pinning
+ * this union (rather than letting the literals widen to `string`) lets the page's
+ * switch be exhaustively type-checked.
  */
-type ConnectReason = 'disconnected' | 'unavailable' | 'no_installation';
+type ConnectReason = 'disconnected' | 'unavailable' | 'no_installation' | 'no_repositories';
 
 /**
  * Onboarding: repository selection step.
@@ -56,6 +58,14 @@ export const load: PageServerLoad = async ({ locals }) => {
   if (result.installations.length === 0) {
     const connectReason: ConnectReason = 'no_installation';
     return { repositories: [], installations: [], connectReason };
+  }
+
+  // App is installed but can see no repositories (none granted yet, or the local
+  // sync hasn't produced rows). An empty picker with a disabled button is a
+  // dead-end; prompt the user to grant repository access instead.
+  if (result.repositories.length === 0) {
+    const connectReason: ConnectReason = 'no_repositories';
+    return { repositories: [], installations: result.installations, connectReason };
   }
 
   const repositoryIds = result.repositories.map((entry) => entry.repository.id);
@@ -123,6 +133,22 @@ export const actions: Actions = {
       }
     }
 
+    // Skip repositories that are already watched. saveRepositoryWatchSettings
+    // replaces ignore globs and agent assignments wholesale, so re-watching a
+    // preselected repo with onboarding's defaults would silently wipe any
+    // exclusions or agent choices the user already configured for it.
+    const operatorDetails = await getRepositoryOperatorDetails(user.id, repositoryIds);
+    const repositoriesToWatch = repositoryIds.filter(
+      (repositoryId) => !operatorDetails.get(repositoryId)?.watched,
+    );
+
+    // Ensure a user_review_settings row exists. The review-intent fanout INNER
+    // JOINs user_review_settings with reviewsEnabled = true, so without this row a
+    // freshly onboarded user's repositories are watched but their review intents
+    // are never claimed. getUserReviewSettings upserts the schema defaults
+    // (reviewsEnabled = true) without overwriting an existing row.
+    await getUserReviewSettings(user.id);
+
     // Assign every enabled agent, mirroring the repositories page's "default to
     // all enabled agents on first watch" behaviour. Watching with an empty agent
     // list would persist a settings row that suppresses that default, leaving the
@@ -133,7 +159,7 @@ export const actions: Actions = {
 
     // Every id is pre-authorized, so the internal ownership check won't throw.
     // Forward an ActionFailure if a write somehow reports one.
-    for (const repositoryId of repositoryIds) {
+    for (const repositoryId of repositoriesToWatch) {
       const result = await saveRepositoryWatchSettings(user.id, {
         repositoryId,
         watched: true,

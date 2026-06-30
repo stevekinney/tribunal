@@ -15,7 +15,7 @@
   import GitBranch from 'lucide-svelte/icons/git-branch';
   import GithubIcon from 'lucide-svelte/icons/github';
 
-  let { data }: PageProps = $props();
+  let { data, form }: PageProps = $props();
 
   // Pre-select repositories that are already being watched. untrack keeps this a
   // one-time seed (the set is then user-mutated) and avoids state_referenced_locally.
@@ -84,6 +84,14 @@
           title: 'Install the GitHub App',
           description: 'Install the Tribunal GitHub App to make your repositories accessible.',
           ctaLabel: 'Install GitHub App',
+          ctaHref: '/connect/github',
+        };
+      case 'no_repositories':
+        return {
+          title: 'Grant repository access',
+          description:
+            "The Tribunal GitHub App is installed but can't see any repositories yet. Grant it access to the repositories you want reviewed.",
+          ctaLabel: 'Manage repository access',
           ctaHref: '/connect/github',
         };
       case null:
@@ -171,6 +179,15 @@
           {#each [...selectedIds] as id (id)}
             <input type="hidden" name="repositoryId" value={id} />
           {/each}
+
+          <!--
+            Surface a failed batch-watch (e.g. too many repositories selected, or
+            a stale selection the user no longer owns). Without this the enhanced
+            POST stays on the picker and drops the server's explanation.
+          -->
+          {#if form?.error}
+            <p class="form-error" role="alert">{form.error}</p>
+          {/if}
 
           <div class="picker-header">
             <div class="picker-heading-row">
@@ -480,6 +497,15 @@
     color: var(--text-muted);
     line-height: var(--leading-normal);
     margin: 0;
+  }
+
+  .form-error {
+    margin: 0;
+    padding: var(--space-3) var(--space-6);
+    font-size: var(--text-sm);
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-bottom: 1px solid var(--border-muted);
   }
 
   /* ── Repo list ─────────────────────────────────────────────────── */

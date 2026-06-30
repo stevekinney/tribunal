@@ -67,6 +67,23 @@ describe('/onboarding page', () => {
       .toHaveAttribute('href', '/connect/github');
   });
 
+  it('prompts the user to grant repository access when installed but no repos exist', async () => {
+    const data = {
+      repositories: [],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: 'no_repositories',
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await expect
+      .element(page.getByRole('heading', { name: 'Grant repository access' }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Manage repository access' }))
+      .toHaveAttribute('href', '/connect/github');
+  });
+
   it('renders the repository picker when the connection is healthy', async () => {
     const data = {
       repositories: [
@@ -84,5 +101,25 @@ describe('/onboarding page', () => {
     // Exact + case-sensitive so this resolves to the repo-name span only, not
     // the "Tribunal" wordmark or the surrounding prose.
     await expect.element(page.getByText('tribunal', { exact: true })).toBeInTheDocument();
+  });
+
+  it('surfaces a batch-watch failure message on the picker', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, {
+      data,
+      form: { error: 'Too many repositories selected.' },
+      params: {},
+    });
+
+    await expect
+      .element(page.getByRole('alert'))
+      .toHaveTextContent('Too many repositories selected.');
   });
 });

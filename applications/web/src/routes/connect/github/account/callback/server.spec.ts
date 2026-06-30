@@ -25,13 +25,17 @@ vi.mock('$lib/server/auth/authentication', () => ({
     userId: 1,
   })),
   upsertOAuthConnection: vi.fn().mockResolvedValue(undefined),
-  // Faithful stand-in for the real helper: return the token expiry, tolerating
-  // providers that omit it (Arctic throws → null).
+  // Faithful stand-in for the real helper: return the token expiry, returning
+  // null only for Arctic's known "missing expires_in" case and re-throwing any
+  // other failure (so the mock cannot mask an unexpected error).
   readAccessTokenExpiresAt: (tokens: { accessTokenExpiresAt: () => Date }) => {
     try {
       return tokens.accessTokenExpiresAt();
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Missing or invalid 'expires_in' field") {
+        return null;
+      }
+      throw error;
     }
   },
 }));
