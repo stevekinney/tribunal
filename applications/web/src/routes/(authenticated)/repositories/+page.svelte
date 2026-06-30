@@ -165,16 +165,22 @@
     const repositoryId = repository.id;
     if (queuedWatchStates.has(repositoryId)) {
       const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
+      queuedWatchStates.delete(repositoryId);
       if (!submitWatchForm(repositoryId, queuedWatched)) {
-        const response = await fetch('?/watch', {
-          method: 'POST',
-          body: formDataForWatch(repository, queuedWatched),
-        });
-        if (response.ok) {
-          await invalidateAll();
+        try {
+          const response = await fetch('?/watch', {
+            method: 'POST',
+            body: formDataForWatch(repository, queuedWatched),
+          });
+          if (response.ok) {
+            await invalidateAll();
+          }
+        } finally {
+          if (!activeWatchSubmissions.has(repositoryId)) {
+            localWatchStates.delete(repositoryId);
+          }
         }
       }
-      queuedWatchStates.delete(repositoryId);
       return true;
     }
 
