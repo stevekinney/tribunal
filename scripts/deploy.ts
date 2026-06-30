@@ -250,7 +250,7 @@ type AppMachineState = {
   machines: AppMachineSummary[];
 };
 
-type FlyState = {
+export type FlyState = {
   authenticated: boolean;
   account: string | null;
   /**
@@ -1033,13 +1033,13 @@ function printStatus(state: FlyState): void {
   console.log('');
 }
 
-type LiveStateOptions = {
+export type LiveStateOptions = {
   allowMissingSandboxImage: boolean;
   allowPendingEngineMachine: boolean;
   allowPendingCostOptimization: boolean;
 };
 
-function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): string[] {
+export function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): string[] {
   const failures: string[] = [];
 
   if (!state.authenticated) {
@@ -1092,7 +1092,7 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
   }
 
   if (!options.allowPendingCostOptimization) {
-    collectMachineCostFailures(state, failures);
+    collectMachineCostFailures(state, options, failures);
   }
 
   if (state.existingApps.has('tribunal-engine')) {
@@ -1122,14 +1122,26 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
   return failures;
 }
 
-function collectMachineCostFailures(state: FlyState, failures: string[]): void {
+function allowsPendingEngineMachine(
+  app: AppName,
+  count: number | ReadFailure | null,
+  options: LiveStateOptions,
+): boolean {
+  return options.allowPendingEngineMachine && app === 'tribunal-engine' && count === 0;
+}
+
+function collectMachineCostFailures(
+  state: FlyState,
+  options: LiveStateOptions,
+  failures: string[],
+): void {
   for (const app of APPS) {
     const count = getMachineCount(state, app.name);
     if (count === 'unknown') {
       failures.push(`could not read Machines for ${app.name}`);
       continue;
     }
-    if (count !== null && count !== 1) {
+    if (count !== null && count !== 1 && !allowsPendingEngineMachine(app.name, count, options)) {
       failures.push(`${app.name} has ${count} Machines; expected 1`);
     }
   }
@@ -1174,24 +1186,27 @@ function collectMachineCostFailures(state: FlyState, failures: string[]): void {
     failures.push(`tribunal-engine binds ${engineBindHost}; expected 0.0.0.0 for Flycast`);
   }
 
-  const engineServices = servicesForApp(state, 'tribunal-engine');
-  if (engineServices === 'unknown') {
-    failures.push('could not read service configuration for tribunal-engine');
-  } else if (engineServices !== null) {
-    if (engineServices.length === 0) {
-      failures.push('tribunal-engine has no private Flycast service configuration');
-    } else if (
-      !engineServices.some(
-        (service) =>
-          service.internalPort === 3001 &&
-          serviceAutoStarts(service) &&
-          serviceKeepsZeroMachinesWarm(service) &&
-          serviceAutoStopDisabled(service),
-      )
-    ) {
-      failures.push(
-        'tribunal-engine Flycast service must use internal port 3001, auto-start, min 0, and autostop off',
-      );
+  const engineMachineCount = getMachineCount(state, 'tribunal-engine');
+  if (!allowsPendingEngineMachine('tribunal-engine', engineMachineCount, options)) {
+    const engineServices = servicesForApp(state, 'tribunal-engine');
+    if (engineServices === 'unknown') {
+      failures.push('could not read service configuration for tribunal-engine');
+    } else if (engineServices !== null) {
+      if (engineServices.length === 0) {
+        failures.push('tribunal-engine has no private Flycast service configuration');
+      } else if (
+        !engineServices.some(
+          (service) =>
+            service.internalPort === 3001 &&
+            serviceAutoStarts(service) &&
+            serviceKeepsZeroMachinesWarm(service) &&
+            serviceAutoStopDisabled(service),
+        )
+      ) {
+        failures.push(
+          'tribunal-engine Flycast service must use internal port 3001, auto-start, min 0, and autostop off',
+        );
+      }
     }
   }
 }
@@ -1352,9 +1367,11 @@ async function run(): Promise<void> {
   console.log('');
 }
 
-run().catch((err) => {
-  console.error(
-    error(`Deploy manager failed: ${err instanceof Error ? err.message : String(err)}`),
-  );
-  process.exit(1);
-});
+if (import.meta.main) {
+  run().catch((err) => {
+    console.error(
+      error(`Deploy manager failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    process.exit(1);
+  });
+}
