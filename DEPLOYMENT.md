@@ -219,6 +219,41 @@ flyctl secrets set -a tribunal-proxy \
   PROXY_CA_CERT="$(cat /secure/path/proxy-ca.pem)"
 ```
 
+## GitHub Production Environment
+
+After the Fly apps, provider settings, runtime secrets, and proxy IPv4 exist,
+merges to `main` deploy through `.github/workflows/deploy-production.yml`. The
+workflow starts only after the `CI` workflow succeeds on `main`; it can also be
+started manually with `workflow_dispatch`.
+
+Create a GitHub Actions environment named `production` with these inputs:
+
+- Secrets:
+  - `FLY_API_TOKEN`
+  - `MIGRATION_DATABASE_URL`: direct, unpooled Neon URL for migrations.
+  - `TENSORLAKE_API_KEY`
+- Variables:
+  - `FLY_ORG`: Fly organization that owns the three apps.
+  - `PRODUCTION_WEB_ORIGIN`: production web origin, for example
+    `https://<web-domain>`.
+  - `PRODUCTION_PROXY_ORIGIN`: production proxy origin. Omit this only when
+    using the default `https://tribunal-proxy.fly.dev`.
+
+Keep long-lived runtime application secrets in Fly. The deploy workflow does not
+copy database, Redis, GitHub App, Anthropic, encryption, proxy signing, or control
+token secrets into GitHub Actions. It only publishes a fresh Tensorlake reviewer
+image and stages the returned `TRIBUNAL_SANDBOX_IMAGE` value on
+`tribunal-engine` before deploying the engine.
+
+The automatic deploy still assumes these one-time operator actions are complete:
+
+- Fly apps exist.
+- `tribunal-proxy` has a dedicated IPv4.
+- Runtime Fly secrets are set on each app.
+- Neon Auth, GitHub OAuth, and GitHub App production console settings are set.
+- `REVIEWS_ENABLED` remains `false` unless live reviews are enabled separately
+  through the runbook.
+
 ## Preflight Gates
 
 Run these before the first deploy:

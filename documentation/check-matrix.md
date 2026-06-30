@@ -16,6 +16,7 @@ Every automated check that runs across git hooks and CI, with its authoritative 
 | Build verification           | —                                | `HOOKS_STRICT=1` only | `bunx turbo run build`                                                                    | Full                      | Always (turbo `--affected` on PRs)          |
 | Migration consistency        | Schema files staged              | —                     | `bun run db:check` + apply loop + structure verify + drift check                          | `packages/database/`      | Always (push check gated on schema changes) |
 | Container image smoke        | —                                | —                     | Docker build/boot for web, engine, proxy, reviewer                                        | Deployment images         | Always                                      |
+| Production deploy            | —                                | —                     | `.github/workflows/deploy-production.yml` after `CI` succeeds on `main`                   | Fly production apps       | `main` only                                 |
 
 ## Authoritative context policy
 
@@ -55,6 +56,12 @@ Change detection uses Turborepo's `--affected` flag (dependency-graph-aware) for
 The `migration` job applies every numbered SQL file in `packages/database/drizzle/` against a Postgres service container, verifies the resulting schema structure (table count and applied-file-count vs. the journal), and replays historical rename/missing-table scenarios to guard against regressions in migration ordering. It finishes with a drift check (`bun run --cwd packages/database check:migrations`) that fails if the committed migrations diverge from the schema definitions.
 
 The `container-images` job builds the web, engine, proxy, and reviewer images. The reviewer image runs `runner/verify-image.mjs`, which checks system binaries and imports the runtime packages used by `runner/run-agent.mjs` (`@anthropic-ai/claude-agent-sdk` and `@tribunal/agents`) before an agent run can fail later from a missing package.
+
+The `Deploy Production` workflow is separate from CI. It is triggered by a
+successful `CI` workflow run on `main`, publishes a fresh Tensorlake reviewer
+image, applies production migrations with the direct Neon URL, deploys proxy,
+engine, and web in dependency order, enforces one engine Machine, and runs the
+production health gates from `documentation/deployment/containers.md`.
 
 ## Notes on CI separation
 

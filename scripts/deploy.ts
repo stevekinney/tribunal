@@ -16,8 +16,11 @@
  * what to run and in what order.
  *
  * Usage:
- *   bun run scripts/deploy.ts          Validate env, report status, print plan.
- *   bun run scripts/deploy.ts --help   Show this help.
+ *   bun run scripts/deploy.ts                     Validate env, report status, print plan.
+ *   bun run scripts/deploy.ts --live-status-only  Check Fly production invariants only.
+ *   bun run scripts/deploy.ts --live-status-only --allow-missing-sandbox-image
+ *                                                 Allow pre-deploy image refresh.
+ *   bun run scripts/deploy.ts --help              Show this help.
  */
 
 import {
@@ -856,6 +859,77 @@ function printStatus(state: FlyState): void {
   console.log('');
 }
 
+type LiveStateOptions = {
+  allowMissingSandboxImage: boolean;
+};
+
+function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): string[] {
+  const failures: string[] = [];
+
+  if (!state.authenticated) {
+    failures.push('not authenticated with Fly');
+    return failures;
+  }
+
+  if (!state.appsReadable) {
+    failures.push(
+      state.appsUnreadableReason === 'no-org'
+        ? 'FLY_ORG is not set'
+        : 'could not read Fly app list',
+    );
+    return failures;
+  }
+
+  for (const app of APPS) {
+    if (!state.existingApps.has(app.name)) {
+      failures.push(`${app.name} does not exist`);
+      continue;
+    }
+
+    const setKeys = state.setSecrets.get(app.name);
+    if (setKeys === 'unknown' || setKeys === undefined) {
+      failures.push(`could not read secrets for ${app.name}`);
+      continue;
+    }
+
+    const missingSecrets = app.secrets.filter((key) => {
+      if (
+        options.allowMissingSandboxImage &&
+        app.name === 'tribunal-engine' &&
+        key === 'TRIBUNAL_SANDBOX_IMAGE'
+      ) {
+        return false;
+      }
+      return !setKeys.has(key);
+    });
+    if (missingSecrets.length > 0) {
+      failures.push(`${app.name} is missing secrets: ${missingSecrets.join(', ')}`);
+    }
+  }
+
+  if (state.proxyDedicatedIp === 'unknown') {
+    failures.push('could not read proxy IPs');
+  } else if (!state.proxyDedicatedIp) {
+    failures.push('tribunal-proxy does not have a dedicated IPv4');
+  }
+
+  if (state.engineHasPublicIp === 'unknown') {
+    failures.push('could not read engine IPs');
+  } else if (state.engineHasPublicIp === true) {
+    failures.push('tribunal-engine has a public IP');
+  } else if (state.engineHasPublicIp === null) {
+    failures.push('tribunal-engine does not exist');
+  }
+
+  if (state.engineMachineCount === 'unknown') {
+    failures.push('could not read engine Machines');
+  } else if (state.engineMachineCount !== 1) {
+    failures.push(`tribunal-engine has ${state.engineMachineCount ?? 0} Machines; expected 1`);
+  }
+
+  return failures;
+}
+
 const STATE_SYMBOL: Record<StepState, string> = {
   done: success('✓'),
   todo: warning('○'),
@@ -913,6 +987,14 @@ function printHelp(): void {
   console.log('');
   console.log(bold('  Usage:'));
   console.log(listItem('bun run scripts/deploy.ts          Validate, report status, print plan'));
+  console.log(listItem('bun run scripts/deploy.ts --live-status-only'));
+  console.log(
+    dim('    Check live Fly production invariants without requiring local secret values.'),
+  );
+  console.log(
+    listItem('bun run scripts/deploy.ts --live-status-only --allow-missing-sandbox-image'),
+  );
+  console.log(dim('    Allow pre-deploy automation to refresh TRIBUNAL_SANDBOX_IMAGE.'));
   console.log(listItem('bun run scripts/deploy.ts --help   Show this help'));
   console.log('');
   console.log(dim('  All values live in .env; multiline secrets (GITHUB_APP_PRIVATE_KEY,'));
@@ -931,6 +1013,10 @@ async function run(): Promise<void> {
   }
 
   console.log(sectionHeader('Tribunal Deploy Manager'));
+
+  const liveStatusOnly =
+    process.argv.includes('--live-status-only') || process.argv.includes('--status-only');
+  const allowMissingSandboxImage = process.argv.includes('--allow-missing-sandbox-image');
 
   if (!Bun.which('flyctl')) {
     console.log('');
@@ -953,6 +1039,21 @@ async function run(): Promise<void> {
   // even when the local .env is incomplete.
   const state = await gatherFlyState();
   printStatus(state);
+
+  if (liveStatusOnly) {
+    const failures = collectLiveStateFailures(state, { allowMissingSandboxImage });
+    if (failures.length > 0) {
+      console.log(errorHeader('Live production invariant failures'));
+      console.log('');
+      for (const failure of failures) console.log(`  ${error('✗')} ${failure}`);
+      console.log('');
+      process.exit(1);
+    }
+
+    console.log(success('  Live Fly production invariants passed.'));
+    console.log('');
+    return;
+  }
 
   // The plan is built from live state and is always useful, even with a partial
   // .env -- it shows which steps remain regardless of local configuration.

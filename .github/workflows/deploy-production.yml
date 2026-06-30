@@ -1,0 +1,189 @@
+name: Deploy Production
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Production
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_ORG: ${{ vars.FLY_ORG }}
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+      PRODUCTION_PROXY_ORIGIN: ${{ vars.PRODUCTION_PROXY_ORIGIN || 'https://tribunal-proxy.fly.dev' }}
+      PRODUCTION_WEB_ORIGIN: ${{ vars.PRODUCTION_WEB_ORIGIN }}
+      TENSORLAKE_API_KEY: ${{ secrets.TENSORLAKE_API_KEY }}
+      TENSORLAKE_CLI_VERSION: 0.5.47
+    steps:
+      - name: Checkout CI commit
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Checkout selected commit
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for variable_name in \
+            FLY_API_TOKEN \
+            FLY_ORG \
+            MIGRATION_DATABASE_URL \
+            PRODUCTION_WEB_ORIGIN \
+            TENSORLAKE_API_KEY
+          do
+            if [ -z "${!variable_name:-}" ]; then
+              echo "::error::${variable_name} is required for production deploys"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          flyctl auth whoami
+          flyctl config validate --config deployment/fly/web.toml
+          flyctl config validate --config deployment/fly/engine.toml
+          flyctl config validate --config deployment/fly/proxy.toml
+
+      - name: Verify pre-deploy Fly state
+        run: bun run deploy:status -- --live-status-only --allow-missing-sandbox-image
+
+      - name: Build reviewer image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deployment/containers/reviewer.Dockerfile \
+            -t "tribunal-reviewer:${DEPLOY_SHA}" \
+            .
+          docker run --rm "tribunal-reviewer:${DEPLOY_SHA}"
+
+      - name: Publish reviewer image to Tensorlake
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "tensorlake==${TENSORLAKE_CLI_VERSION}"
+          published_image="$(tl sbx image create --image "tribunal-reviewer:${DEPLOY_SHA}")"
+          if [ -z "$published_image" ]; then
+            echo "::error::Tensorlake did not return a reviewer image identifier"
+            exit 1
+          fi
+          echo "TRIBUNAL_SANDBOX_IMAGE=${published_image}" >> "$GITHUB_ENV"
+          echo "- Tensorlake reviewer image: \`${published_image}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stage reviewer image secret
+        run: flyctl secrets set --stage --app tribunal-engine TRIBUNAL_SANDBOX_IMAGE="$TRIBUNAL_SANDBOX_IMAGE"
+
+      - name: Run production migrations
+        run: bun run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+
+      - name: Deploy proxy
+        run: flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
+
+      - name: Deploy engine
+        run: flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+
+      - name: Enforce singleton engine
+        run: flyctl scale count 1 --app tribunal-engine
+
+      - name: Deploy web
+        run: flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
+
+      - name: Verify post-deploy Fly state
+        run: bun run deploy:status -- --live-status-only
+
+      - name: Verify public health checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          proxy_origin="${PRODUCTION_PROXY_ORIGIN%/}"
+          web_origin="${PRODUCTION_WEB_ORIGIN%/}"
+
+          curl -fsS "${proxy_origin}/health"
+          curl -fsS "${web_origin}/health"
+
+      - name: Verify private engine health
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); const health = await response.json(); console.log(JSON.stringify(health)); const singleton = health.dependencies?.find((dependency) => dependency.name === \"singleton_lock\"); process.exit(response.ok && health.ok === true && singleton?.ok === true ? 0 : 1)"'
+
+      - name: Verify unauthorized proxy behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          proxy_origin="${PRODUCTION_PROXY_ORIGIN%/}"
+          status="$(curl -sS -o "$RUNNER_TEMP/tribunal-proxy-unauthorized.json" -w '%{http_code}' "${proxy_origin}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
+          if [ "$status" != "401" ] && [ "$status" != "403" ]; then
+            echo "::error::Expected unauthorized proxy request to return 401 or 403, got ${status}"
+            cat "$RUNNER_TEMP/tribunal-proxy-unauthorized.json"
+            exit 1
+          fi
+
+      - name: Run fake review-engine load gate
+        run: bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
+
+      - name: Verify engine singleton and private ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flyctl machines list --app tribunal-engine --json > "$RUNNER_TEMP/tribunal-engine-machines.json"
+          machine_count="$(jq '[.[] | select((.state // .State) != "destroyed")] | length' "$RUNNER_TEMP/tribunal-engine-machines.json")"
+          if [ "$machine_count" != "1" ]; then
+            echo "::error::Expected exactly one non-destroyed tribunal-engine Machine, got ${machine_count}"
+            cat "$RUNNER_TEMP/tribunal-engine-machines.json"
+            exit 1
+          fi
+
+          flyctl ips list --app tribunal-engine --json > "$RUNNER_TEMP/tribunal-engine-ips.json"
+          public_ip_count="$(jq '[.[] | select(((.Type // .type) != "private_v6") and ((.Type // .type) != "egress_v4") and ((.Type // .type) != "egress_v6"))] | length' "$RUNNER_TEMP/tribunal-engine-ips.json")"
+          if [ "$public_ip_count" != "0" ]; then
+            echo "::error::tribunal-engine must not have public ingress IPs"
+            cat "$RUNNER_TEMP/tribunal-engine-ips.json"
+            exit 1
+          fi
+
+      - name: Write deployment summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Production deploy"
+            echo ""
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- Proxy: \`${PRODUCTION_PROXY_ORIGIN%/}\`"
+            echo "- Web: \`${PRODUCTION_WEB_ORIGIN%/}\`"
+            echo "- Reviews enabled: \`false\` unless changed separately through the live-review runbook"
+          } >> "$GITHUB_STEP_SUMMARY"
