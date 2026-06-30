@@ -225,7 +225,7 @@ jobs:
             scripts/package.json \
             scripts/install-git-hooks.ts \
             deployment/containers/reviewer.Dockerfile \
-            | tar -x -C "$reviewer_context"
+            | tar -x -f - -C "$reviewer_context"
 
           cp "$reviewer_context/deployment/containers/reviewer.Dockerfile" "$reviewer_context/Dockerfile"
 
