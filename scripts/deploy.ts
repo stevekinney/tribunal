@@ -73,7 +73,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-proxy',
     config: 'deployment/fly/proxy.toml',
-    dockerfile: 'deployment/containers/proxy.Dockerfile',
+    dockerfile: '../containers/proxy.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -90,7 +90,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-engine',
     config: 'deployment/fly/engine.toml',
-    dockerfile: 'deployment/containers/engine.Dockerfile',
+    dockerfile: '../containers/engine.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'WEFT_DATABASE_URL',
@@ -109,7 +109,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-web',
     config: 'deployment/fly/web.toml',
-    dockerfile: 'deployment/containers/web.Dockerfile',
+    dockerfile: '../containers/web.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',

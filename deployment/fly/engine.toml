@@ -2,7 +2,7 @@ app = "tribunal-engine"
 primary_region = "dfw"
 
 [build]
-  dockerfile = "deployment/containers/engine.Dockerfile"
+  dockerfile = "../containers/engine.Dockerfile"
 
 [env]
   NODE_ENV = "production"
