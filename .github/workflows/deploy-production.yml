@@ -104,15 +104,23 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir "tensorlake==${TENSORLAKE_CLI_VERSION}"
-          published_image="$(
-            tl sbx image create deployment/containers/reviewer.Dockerfile \
-              --registered-name "tribunal-reviewer-${DEPLOY_SHA}"
-          )"
+          registered_image_name="tribunal-reviewer-${DEPLOY_SHA}"
+          tl sbx image create deployment/containers/reviewer.Dockerfile \
+            --registered-name "$registered_image_name" \
+            | tee "$RUNNER_TEMP/tensorlake-image-create.log"
+          published_image="$(grep -Fo "$registered_image_name" "$RUNNER_TEMP/tensorlake-image-create.log" | tail -n 1 || true)"
+          if [ -z "$published_image" ]; then
+            published_image="$registered_image_name"
+          fi
           if [ -z "$published_image" ]; then
             echo "::error::Tensorlake did not return a reviewer image identifier"
             exit 1
           fi
-          echo "TRIBUNAL_SANDBOX_IMAGE=${published_image}" >> "$GITHUB_ENV"
+          {
+            echo 'TRIBUNAL_SANDBOX_IMAGE<<TRIBUNAL_SANDBOX_IMAGE_EOF'
+            printf '%s\n' "$published_image"
+            echo 'TRIBUNAL_SANDBOX_IMAGE_EOF'
+          } >> "$GITHUB_ENV"
           echo "- Tensorlake reviewer image: \`${published_image}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stage reviewer image secret

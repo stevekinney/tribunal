@@ -910,28 +910,30 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
     }
   }
 
-  if (state.proxyDedicatedIp === 'unknown') {
-    failures.push('could not read proxy IPs');
-  } else if (!state.proxyDedicatedIp) {
-    failures.push('tribunal-proxy does not have a dedicated IPv4');
+  if (state.existingApps.has('tribunal-proxy')) {
+    if (state.proxyDedicatedIp === 'unknown') {
+      failures.push('could not read proxy IPs');
+    } else if (!state.proxyDedicatedIp) {
+      failures.push('tribunal-proxy does not have a dedicated IPv4');
+    }
   }
 
-  if (state.engineHasPublicIp === 'unknown') {
-    failures.push('could not read engine IPs');
-  } else if (state.engineHasPublicIp === true) {
-    failures.push('tribunal-engine has a public IP');
-  } else if (state.engineHasPublicIp === null) {
-    failures.push('tribunal-engine does not exist');
-  }
+  if (state.existingApps.has('tribunal-engine')) {
+    if (state.engineHasPublicIp === 'unknown') {
+      failures.push('could not read engine IPs');
+    } else if (state.engineHasPublicIp === true) {
+      failures.push('tribunal-engine has a public IP');
+    }
 
-  if (state.engineMachineCount === 'unknown') {
-    failures.push('could not read engine Machines');
-  } else if (
-    state.engineMachineCount !== null &&
-    state.engineMachineCount !== 1 &&
-    !(options.allowPendingEngineMachine && state.engineMachineCount === 0)
-  ) {
-    failures.push(`tribunal-engine has ${state.engineMachineCount ?? 0} Machines; expected 1`);
+    if (state.engineMachineCount === 'unknown') {
+      failures.push('could not read engine Machines');
+    } else if (
+      state.engineMachineCount !== null &&
+      state.engineMachineCount !== 1 &&
+      !(options.allowPendingEngineMachine && state.engineMachineCount === 0)
+    ) {
+      failures.push(`tribunal-engine has ${state.engineMachineCount} Machines; expected 1`);
+    }
   }
 
   return failures;
