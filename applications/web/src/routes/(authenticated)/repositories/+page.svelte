@@ -2,6 +2,7 @@
   import type { PageProps } from './$types';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { enhance } from '$app/forms';
+  import { invalidateAll } from '$app/navigation';
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
@@ -121,6 +122,20 @@
     return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
   }
 
+  function formDataForWatch(
+    repository: (typeof data.repositories)[number],
+    watched: boolean,
+  ): FormData {
+    const formData = new FormData();
+    formData.set('repositoryId', String(repository.id));
+    formData.set('watched', watched ? 'on' : '');
+    for (const agentId of agentIdsForWatch(repository)) {
+      formData.append('agentIds', agentId);
+    }
+    formData.set('ignoreGlobs', repository.review.ignoreGlobs.join('\n'));
+    return formData;
+  }
+
   function setWatchedFormValue(form: HTMLFormElement, watched: boolean): void {
     const watchedField = form.elements.namedItem('watched');
     if (watchedField instanceof HTMLInputElement) {
@@ -144,10 +159,21 @@
     return true;
   }
 
-  function submitQueuedWatchState(repositoryId: number): boolean {
+  async function submitQueuedWatchState(
+    repository: (typeof data.repositories)[number],
+  ): Promise<boolean> {
+    const repositoryId = repository.id;
     if (queuedWatchStates.has(repositoryId)) {
       const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
-      if (!submitWatchForm(repositoryId, queuedWatched)) return false;
+      if (!submitWatchForm(repositoryId, queuedWatched)) {
+        const response = await fetch('?/watch', {
+          method: 'POST',
+          body: formDataForWatch(repository, queuedWatched),
+        });
+        if (response.ok) {
+          await invalidateAll();
+        }
+      }
       queuedWatchStates.delete(repositoryId);
       return true;
     }
@@ -304,16 +330,14 @@
 
                           return async ({ update }) => {
                             if (expandedSettings === id) expandedSettings = null;
-                            activeWatchSubmissions.delete(id);
-
-                            if (submitQueuedWatchState(id)) {
-                              return;
-                            }
-
                             try {
                               await update();
                             } finally {
-                              if (!submitQueuedWatchState(id) && !activeWatchSubmissions.has(id)) {
+                              activeWatchSubmissions.delete(id);
+                              if (
+                                !(await submitQueuedWatchState(repository)) &&
+                                !activeWatchSubmissions.has(id)
+                              ) {
                                 localWatchStates.delete(id);
                               }
                             }

@@ -345,6 +345,8 @@ describe('/repositories page', () => {
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    enhancedFormTesting.submissions[0]?.resolveUpdate();
 
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
@@ -465,6 +467,9 @@ describe('/repositories page', () => {
     enhancedFormTesting.submissions[0]?.resolveResult();
 
     await page.getByRole('switch', { name: 'Unwatch repository' }).click();
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    enhancedFormTesting.submissions[0]?.resolveUpdate();
+
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
   });
