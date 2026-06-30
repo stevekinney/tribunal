@@ -7,14 +7,20 @@ import type { PageData } from './$types';
 const enhancedFormTesting = vi.hoisted(() => {
   function createDeferred() {
     let resolve!: () => void;
-    const promise = new Promise<void>((resolvePromise) => {
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
       resolve = resolvePromise;
+      reject = rejectPromise;
     });
-    return { promise, resolve };
+    return { promise, reject, resolve };
   }
 
   return {
-    submissions: [] as Array<{ formData: FormData; resolveUpdate: () => void }>,
+    submissions: [] as Array<{
+      formData: FormData;
+      rejectUpdate: (reason?: unknown) => void;
+      resolveUpdate: () => void;
+    }>,
     createDeferred,
     reset() {
       this.submissions.length = 0;
@@ -59,17 +65,18 @@ vi.mock('$app/forms', () => ({
       const deferredUpdate = enhancedFormTesting.createDeferred();
       enhancedFormTesting.submissions.push({
         formData,
+        rejectUpdate: deferredUpdate.reject,
         resolveUpdate: deferredUpdate.resolve,
       });
 
       if (typeof resultHandler === 'function') {
-        await resultHandler({
+        void resultHandler({
           action,
           formData,
           formElement,
           result: { type: 'success', status: 200, data: {} },
           update: () => deferredUpdate.promise,
-        });
+        }).catch(() => {});
       }
     };
 
@@ -335,5 +342,65 @@ describe('/repositories page', () => {
 
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
+  });
+
+  it('allows watch toggles after an enhanced update rejects', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        agents: [
+          {
+            id: '1',
+            userId: 1,
+            slug: 'security',
+            description: 'Security reviews',
+            body: 'Review security risks.',
+            model: 'gpt-5',
+            effort: null,
+            enabled: true,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+            updatedAt: new Date('2026-01-01T00:00:00Z'),
+          },
+        ],
+        repositories: [
+          {
+            id: 101,
+            owner: 'test-org',
+            name: 'review-target',
+            defaultBranch: 'main',
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+            review: {
+              hasSavedSettings: false,
+              watched: false,
+              lastRunStatus: null,
+              estimatedCostLast30DaysUsd: 0,
+              ignoreGlobs: [],
+              agents: [],
+            },
+          },
+        ],
+        installations: [
+          {
+            installationId: 12345,
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+          },
+        ],
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+
+    enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
+
+    await expect.element(page.getByRole('switch', { name: 'Watch repository' })).toBeVisible();
+
+    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
+    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
   });
 });

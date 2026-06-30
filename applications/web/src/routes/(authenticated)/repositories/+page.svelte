@@ -142,6 +142,19 @@
     activeWatchSubmissions.add(repositoryId);
     watchForm.requestSubmit();
   }
+
+  function completeWatchSubmission(repositoryId: number): void {
+    activeWatchSubmissions.delete(repositoryId);
+
+    if (queuedWatchStates.has(repositoryId)) {
+      const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
+      queuedWatchStates.delete(repositoryId);
+      submitWatchForm(repositoryId, queuedWatched);
+      return;
+    }
+
+    localWatchStates.delete(repositoryId);
+  }
 </script>
 
 <Page title="Repositories" {subtitle}>
@@ -292,17 +305,11 @@
 
                           return async ({ update }) => {
                             if (expandedSettings === id) expandedSettings = null;
-                            await update();
-                            activeWatchSubmissions.delete(id);
-
-                            if (queuedWatchStates.has(id)) {
-                              const queuedWatched = queuedWatchStates.get(id) as boolean;
-                              queuedWatchStates.delete(id);
-                              submitWatchForm(id, queuedWatched);
-                              return;
+                            try {
+                              await update();
+                            } finally {
+                              completeWatchSubmission(id);
                             }
-
-                            localWatchStates.delete(id);
                           };
                         }}
                       >
