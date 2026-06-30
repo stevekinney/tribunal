@@ -934,7 +934,7 @@ function printMissingEnv(missing: MissingVar[]): void {
   console.log('');
 }
 
-function printStatus(state: FlyState): void {
+export function printStatus(state: FlyState): void {
   console.log(summaryHeader('Fly status'));
   console.log('');
 
@@ -1003,7 +1003,7 @@ function printStatus(state: FlyState): void {
 
   if (state.enginePrivateFlycastIp === 'unknown') {
     console.log(status('warning', 'engine Flycast IP: could not read from flyctl'));
-  } else if (state.enginePrivateFlycastIp !== null) {
+  } else if (state.existingApps.has('tribunal-engine')) {
     console.log(
       status(
         state.enginePrivateFlycastIp ? 'success' : 'error',

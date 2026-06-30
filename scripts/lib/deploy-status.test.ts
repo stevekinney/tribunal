@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { collectLiveStateFailures, type FlyState, type LiveStateOptions } from '../deploy';
+import {
+  collectLiveStateFailures,
+  printStatus,
+  type FlyState,
+  type LiveStateOptions,
+} from '../deploy';
 
 const requiredSecrets = {
   'tribunal-proxy': [
@@ -90,6 +95,7 @@ function createFlyState(
   engineMachineCount: number,
   overrides: {
     engineEnvironment?: Record<string, string>;
+    enginePrivateFlycastIp?: FlyState['enginePrivateFlycastIp'];
     webEnvironment?: Record<string, string>;
   } = {},
 ): FlyState {
@@ -112,7 +118,10 @@ function createFlyState(
     setSecrets: createSetSecrets(),
     proxyDedicatedIp: '37.16.12.55',
     engineHasPublicIp: false,
-    enginePrivateFlycastIp: 'fdaa:38:9b3e:0:1::3',
+    enginePrivateFlycastIp:
+      overrides.enginePrivateFlycastIp === undefined
+        ? 'fdaa:38:9b3e:0:1::3'
+        : overrides.enginePrivateFlycastIp,
     appMachines: new Map([
       ['tribunal-proxy', createReadyMachine('proxy-machine', {}, 3000, 'stop')],
       ['tribunal-engine', engineMachineState],
@@ -129,6 +138,10 @@ function createFlyState(
     engineMachineCount,
   };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('collectLiveStateFailures', () => {
   it('allows the engine Machine to be pending during first-deploy live status checks', () => {
@@ -158,5 +171,19 @@ describe('collectLiveStateFailures', () => {
     ).toContain(
       'tribunal-engine TRIBUNAL_ENGINE_BIND_HOST is not set; expected 0.0.0.0 for Flycast',
     );
+  });
+});
+
+describe('printStatus', () => {
+  it('reports a missing engine Flycast address when the engine app exists', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    printStatus(createFlyState(1, { enginePrivateFlycastIp: null }));
+
+    expect(
+      log.mock.calls
+        .flat()
+        .some((line) => String(line).includes('engine Flycast private IPv6: not allocated')),
+    ).toBe(true);
   });
 });
