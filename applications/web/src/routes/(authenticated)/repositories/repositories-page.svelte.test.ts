@@ -124,9 +124,8 @@ describe('/repositories page', () => {
 
     await expect.element(page.getByText('test-org')).toBeInTheDocument();
 
-    const options = Array.from(document.querySelectorAll<HTMLOptionElement>('option'));
-    expect(options.find((option) => option.value === '1')?.selected).toBe(false);
-    expect(options.find((option) => option.value === '2')?.selected).toBe(true);
+    const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
+    expect(Array.from(agentsSelect.selectedOptions).map((option) => option.value)).toEqual(['2']);
     await expect
       .element(page.getByLabelText('Ignore globs'))
       .toHaveValue('generated/**\nvendor/**');
