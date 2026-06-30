@@ -89,6 +89,25 @@ describe('createEngineRuntime', () => {
     await runtime.release();
   });
 
+  it('does not start the review intent poller when the interval is zero', async () => {
+    const consumer = {
+      drain: vi.fn().mockResolvedValue(0),
+    };
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: consumer,
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(consumer.drain).not.toHaveBeenCalled();
+    await expect(runtime.drainReviewIntents(5)).resolves.toBe(0);
+    expect(consumer.drain).toHaveBeenCalledWith(5);
+
+    await runtime.release();
+  });
+
   it('registers review workflows and binds the created Weft engine to the consumer', async () => {
     const bindWorkflowEngine = vi.fn();
     const reviewWorkflow = workflow({ name: 'review-pr' }).execute(async function* () {

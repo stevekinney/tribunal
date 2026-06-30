@@ -210,6 +210,16 @@ describe('runtime review intent consumer wiring', () => {
     ).rejects.toThrow('Authoritative usage cost reconciliation is not configured.');
   });
 
+  it('exposes eligible review intent queue status', async () => {
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+
+    await expect(consumer.getQueueStatus(new Date('2026-06-17T12:00:00.000Z'))).resolves.toEqual({
+      readyCount: 1,
+      deferredCount: 0,
+    });
+  });
+
   it('fetches and parses Anthropic cost report rows for a review run', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

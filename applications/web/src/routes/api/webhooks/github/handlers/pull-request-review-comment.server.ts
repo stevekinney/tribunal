@@ -8,6 +8,10 @@ import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
 import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/workflow-signals';
 import type { PullRequestEventType } from '@tribunal/github/pull-requests/state/workflow-signals';
+import {
+  hasDurableReviewIntentForDrain,
+  kickReviewEngineAfterDurableIntent,
+} from './review-engine-kick.server';
 
 /**
  * Handle pull_request_review_comment webhook events.
@@ -68,10 +72,11 @@ export async function handlePullRequestReviewComment(
     );
   }
 
-  if (!result.enqueued) {
+  if (!hasDurableReviewIntentForDrain(result)) {
     logger.debug(`PR review comment ${action} did not map to a durable review intent`);
     return;
   }
 
   logger.info(`PR review comment ${action} review intent enqueued`);
+  await kickReviewEngineAfterDurableIntent(result, logger);
 }

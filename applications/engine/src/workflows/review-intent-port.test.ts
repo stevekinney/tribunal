@@ -11,7 +11,7 @@ import {
 } from '@tribunal/database/schema';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
-import { createDatabaseReviewIntentPort } from './review-intent-port';
+import { createDatabaseReviewIntentPort, getReviewIntentQueueStatus } from './review-intent-port';
 
 let testDatabase: TestDatabase;
 
@@ -486,6 +486,60 @@ describe('createDatabaseReviewIntentPort', () => {
     await expect(
       port.claimNextReviewIntent(new Date('2026-06-17T12:02:00.000Z')),
     ).resolves.toMatchObject({ id: 'intent_1' });
+  });
+
+  it('reports ready and deferred queue status for eligible review intents', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(reviewIntent).values({
+      id: 'intent_2',
+      deliveryId: 'delivery_2',
+      kind: 'start',
+      repositoryId: repository.id,
+      userId: user.id,
+      prNumber: 8,
+      headSha: null,
+      nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
+    });
+
+    await expect(
+      getReviewIntentQueueStatus(testDatabase.db, new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toEqual({
+      readyCount: 1,
+      deferredCount: 1,
+      nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
+    });
+  });
+
+  it('normalizes raw queue status count shapes from database drivers', async () => {
+    const now = new Date('2026-06-17T12:00:00.000Z');
+    const nextAttemptAt = '2026-06-17T12:05:00.000Z';
+
+    await expect(
+      getReviewIntentQueueStatus(
+        {
+          execute: async () => ({
+            rows: [{ readyCount: '2', deferredCount: 1n, nextAttemptAt }],
+          }),
+        } as never,
+        now,
+      ),
+    ).resolves.toEqual({
+      readyCount: 2,
+      deferredCount: 1,
+      nextAttemptAt: new Date(nextAttemptAt),
+    });
+
+    await expect(
+      getReviewIntentQueueStatus(
+        {
+          execute: async () => ({ rows: [{}] }),
+        } as never,
+        now,
+      ),
+    ).resolves.toEqual({
+      readyCount: 0,
+      deferredCount: 0,
+    });
   });
 
   it('clears previous failure state when a retry is processed', async () => {

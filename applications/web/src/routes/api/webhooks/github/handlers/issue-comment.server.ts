@@ -18,6 +18,10 @@ import {
   type IssueCommentEditedEvent,
   type IssueCommentDeletedEvent,
 } from '@tribunal/github/webhooks/validate-github-webhook';
+import {
+  hasDurableReviewIntentForDrain,
+  kickReviewEngineAfterDurableIntent,
+} from './review-engine-kick.server';
 
 export async function handleIssueComment(
   action: string | null,
@@ -80,10 +84,11 @@ async function signalIssueComment(
     );
   }
 
-  if (!result.enqueued) {
+  if (!hasDurableReviewIntentForDrain(result)) {
     logger.debug(`Issue comment ${action} did not map to a durable review intent`);
     return;
   }
 
   logger.info(`Issue comment ${action} review intent enqueued`);
+  await kickReviewEngineAfterDurableIntent(result, logger);
 }

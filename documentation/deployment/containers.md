@@ -6,8 +6,9 @@ topology at the system level. Older notes in `documentation/WEFT_MIGRATION_PLAN.
 that describe an in-process Weft engine are historical context unless they are
 explicitly scoped to web-only producer behavior.
 
-Tribunal deploys as three long-running application services plus managed
-Postgres and Redis:
+Tribunal deploys as three Fly application services plus managed Postgres and
+Redis. Public web/proxy Machines stop when idle; the private engine wakes
+through Flycast and exits after idle review work drains:
 
 - `tribunal-web`: public SvelteKit server for UI, API routes, and GitHub webhooks.
 - `tribunal-engine`: internal singleton review engine. This service owns
@@ -40,23 +41,25 @@ dotenv files.
 
 ## Service Contract
 
-| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                 |
-| ----------------- | ------ | ---- | ----------- | ------------------ | ---------------------------- |
-| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | at least one Machine running |
-| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | exactly one Machine          |
-| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | at least one Machine running |
+| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                |
+| ----------------- | ------ | ---- | ----------- | ------------------ | --------------------------- |
+| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | one Machine, stop on idle   |
+| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | one Machine, self-exit idle |
+| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | one Machine, stop on idle   |
 
 Do not wire services through `localhost` in production. Fly app-to-app traffic
-uses private DNS:
+that must wake stopped private Machines uses Flycast:
 
 ```sh
-TRIBUNAL_ENGINE_URL=http://tribunal-engine.internal:3001
+TRIBUNAL_ENGINE_URL=http://tribunal-engine.flycast
 ```
 
-`tribunal-engine` intentionally has no Fly `http_service` entry. It accepts
-direct private 6PN traffic only, and `deployment/fly/engine.toml` sets
-`TRIBUNAL_ENGINE_BIND_HOST=::` so the Bun server listens on IPv6 for
-`tribunal-engine.internal` traffic.
+`.internal` is not sufficient for stopped private Machines because it bypasses
+the Fly Proxy and cannot auto-start the engine. `tribunal-engine` has a private
+Flycast service, no public IP, and `deployment/fly/engine.toml` sets
+`TRIBUNAL_ENGINE_BIND_HOST=0.0.0.0` so the Bun server listens for Flycast
+traffic. All engine routes that mutate state remain protected by
+`TRIBUNAL_ENGINE_CONTROL_TOKEN`.
 
 The proxy is intentionally public because Tensorlake sandboxes need a stable
 public egress target. Allocate a dedicated public IPv4 for `tribunal-proxy` and
@@ -74,6 +77,16 @@ migrations:
 
 ```sh
 DATABASE_URL="<direct-neon-url>" bun run db:migrate
+```
+
+The production Neon compute must be able to suspend after idle work drains:
+
+```sh
+curl -fsS -X PATCH \
+  -H "Authorization: Bearer $NEON_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"endpoint":{"suspend_timeout_seconds":300}}' \
+  "https://console.neon.tech/api/v2/projects/flat-credit-58562329/endpoints/ep-round-dew-ap98dps9"
 ```
 
 Required secret groups:
@@ -153,9 +166,16 @@ Verify the engine app has no public address:
 flyctl ips list -a tribunal-engine
 ```
 
+Allocate the private Flycast address for engine wake traffic:
+
+```sh
+flyctl ips allocate-v6 --private -a tribunal-engine
+flyctl ips list -a tribunal-engine
+```
+
 Completion signal: `tribunal-proxy` has a dedicated IPv4, `tribunal-engine` has
-no public IPv4, and both engine and web use `http://tribunal-engine.internal:3001`
-for engine traffic.
+one private IPv6 address and no public IPv4/IPv6, and web uses
+`http://tribunal-engine.flycast` for engine traffic.
 
 ## External Services
 
@@ -185,22 +205,19 @@ DATABASE_URL="<direct-neon-url>" bun run db:migrate
 Deploy in dependency order:
 
 ```sh
-flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
-flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
-flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
+flyctl deploy . --config deployment/fly/proxy.toml --dockerfile ../containers/proxy.Dockerfile
+flyctl scale count 1 --yes -a tribunal-proxy
+
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile ../containers/engine.Dockerfile
+flyctl scale count 1 --yes -a tribunal-engine
+
+flyctl deploy . --config deployment/fly/web.toml --dockerfile ../containers/web.Dockerfile
+flyctl scale count 1 --yes -a tribunal-web
 ```
 
-Force the engine to exactly one Machine after the first engine deploy and after
-any later scaling change:
-
-```sh
-flyctl scale count 1 -a tribunal-engine
-flyctl machines list -a tribunal-engine
-```
-
-Completion signal: exactly one `tribunal-engine` Machine exists, it is in `dfw`,
-and `flyctl machines list -a tribunal-engine` shows no extra started or stopped
-engine Machines.
+Completion signal: exactly one non-destroyed Machine exists for each Fly app,
+web/proxy have `auto_stop_machines="stop"`, and engine has a private Flycast
+service with no public IP.
 
 Failure signal: if a second engine Machine exists against the same
 `WEFT_DATABASE_URL`, stop the deployment and remove the duplicate before running
@@ -217,12 +234,15 @@ Required `production` environment secrets:
 
 - `FLY_API_TOKEN`
 - `MIGRATION_DATABASE_URL`: direct, unpooled Neon URL for migrations.
+- `NEON_API_KEY`
 - `TENSORLAKE_API_KEY`
 
 Required `production` environment variables:
 
 - `FLY_ORG`: Fly organization that owns `tribunal-web`, `tribunal-engine`, and
   `tribunal-proxy`.
+- `NEON_PROJECT_ID`: `flat-credit-58562329`.
+- `NEON_PRODUCTION_ENDPOINT_ID`: `ep-round-dew-ap98dps9`.
 - `PRODUCTION_WEB_ORIGIN`: production web origin used for `/health`.
 - `PRODUCTION_PROXY_ORIGIN`: production proxy origin used for proxy health and
   unauthorized-request checks. If unset, the workflow defaults to
@@ -239,10 +259,12 @@ The workflow performs these steps:
    Tensorlake, and stage the returned `TRIBUNAL_SANDBOX_IMAGE` on
    `tribunal-engine`.
 5. Run `bun run db:migrate` with `MIGRATION_DATABASE_URL`.
-6. Deploy proxy, engine, and web in dependency order.
-7. Run `flyctl scale count 1 --app tribunal-engine`.
-8. Run every health gate below plus explicit checks that the engine has exactly
-   one non-destroyed Machine and no public ingress IP.
+6. Deploy proxy, engine, and web in dependency order, running
+   `flyctl scale count 1 --yes --app <app>` after each deploy.
+7. Verify the Neon production endpoint reports `suspend_timeout_seconds=300`.
+8. Run every health gate below plus explicit checks that each app has exactly
+   one non-destroyed Machine, web/proxy stop on idle, and the engine has private
+   Flycast ingress only.
 
 The pre-deploy live-state check permits `TRIBUNAL_SANDBOX_IMAGE` to be missing
 because the workflow refreshes that secret in the same run, and permits zero
@@ -267,7 +289,7 @@ curl -fsS https://tribunal-proxy.fly.dev/health
 Engine private health from inside Fly private networking:
 
 ```sh
-flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
+flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
 ```
 
 The engine response must include `singleton_lock: true`.
@@ -306,16 +328,18 @@ Live review execution remains disabled until all of these are true:
   matching `/32` on engine and proxy.
 - `TRIBUNAL_SANDBOX_IMAGE` points at a reviewer image published to Tensorlake as
   an explicit release operation.
+- `tribunal-engine` has a private Flycast IPv6 address and no public ingress IP.
 - Proxy, engine, and web health gates pass.
 - Unauthorized proxy requests return `401` or `403`.
 - The fake-only load harness passes.
-- `flyctl machines list -a tribunal-engine` shows exactly one engine Machine.
+- `flyctl machines list` shows exactly one non-destroyed Machine for web,
+  engine, and proxy.
 
 Only then change `REVIEWS_ENABLED` to `true` for `tribunal-engine` and redeploy
 the engine:
 
 ```sh
-flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile ../containers/engine.Dockerfile
 ```
 
 Re-run every health gate after enabling live reviews.
@@ -330,7 +354,7 @@ flyctl releases rollback <version> -a tribunal-web
 
 flyctl releases list -a tribunal-engine
 flyctl releases rollback <version> -a tribunal-engine
-flyctl scale count 1 -a tribunal-engine
+flyctl scale count 1 --yes -a tribunal-engine
 
 flyctl releases list -a tribunal-proxy
 flyctl releases rollback <version> -a tribunal-proxy

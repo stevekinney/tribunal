@@ -22,6 +22,8 @@
  *                                                 Allow pre-deploy image refresh.
  *   bun run scripts/deploy.ts --live-status-only --allow-pending-engine-machine
  *                                                 Allow first deploy to create the engine Machine.
+ *   bun run scripts/deploy.ts --live-status-only --allow-pending-cost-optimization
+ *                                                 Allow first deploy to apply idle Machine settings.
  *   bun run scripts/deploy.ts --help              Show this help.
  */
 
@@ -71,7 +73,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-proxy',
     config: 'deployment/fly/proxy.toml',
-    dockerfile: 'deployment/containers/proxy.Dockerfile',
+    dockerfile: '../containers/proxy.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -88,7 +90,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-engine',
     config: 'deployment/fly/engine.toml',
-    dockerfile: 'deployment/containers/engine.Dockerfile',
+    dockerfile: '../containers/engine.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'WEFT_DATABASE_URL',
@@ -107,7 +109,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-web',
     config: 'deployment/fly/web.toml',
-    dockerfile: 'deployment/containers/web.Dockerfile',
+    dockerfile: '../containers/web.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -228,6 +230,25 @@ const NON_INGRESS_IP_TYPES = new Set(['private_v6', 'egress_v4', 'egress_v6']);
  */
 type ReadFailure = 'unknown';
 
+type MachineServiceConfiguration = {
+  autostop?: unknown;
+  autostart?: unknown;
+  minMachinesRunning?: number | null;
+  internalPort?: number;
+};
+
+type AppMachineSummary = {
+  id: string;
+  state: string;
+  environment: Record<string, string>;
+  services: MachineServiceConfiguration[];
+};
+
+type AppMachineState = {
+  count: number;
+  machines: AppMachineSummary[];
+};
+
 type FlyState = {
   authenticated: boolean;
   account: string | null;
@@ -248,6 +269,10 @@ type FlyState = {
   proxyDedicatedIp: string | null | ReadFailure;
   /** null = engine not created; 'unknown' = flyctl read failed. */
   engineHasPublicIp: boolean | null | ReadFailure;
+  /** null = engine not created or no Flycast address; 'unknown' = flyctl read failed. */
+  enginePrivateFlycastIp: string | null | ReadFailure;
+  /** Per-app non-destroyed Machine state, or 'unknown' when the read failed. */
+  appMachines: Map<AppName, AppMachineState | ReadFailure | null>;
   /** null = engine not created; 'unknown' = flyctl read failed. */
   engineMachineCount: number | null | ReadFailure;
 };
@@ -290,12 +315,15 @@ async function listSetSecrets(app: AppName): Promise<Set<string> | ReadFailure> 
   return names;
 }
 
-async function listPublicIps(
-  app: AppName,
-): Promise<{ dedicatedV4: string | null; public: boolean | ReadFailure }> {
+async function listPublicIps(app: AppName): Promise<{
+  dedicatedV4: string | null;
+  privateV6: string | null;
+  public: boolean | ReadFailure;
+}> {
   const ips = await flyctlJson<Array<Record<string, unknown>>>(['ips', 'list', '--app', app]);
-  if (ips === null) return { dedicatedV4: null, public: 'unknown' };
+  if (ips === null) return { dedicatedV4: null, privateV6: null, public: 'unknown' };
   let dedicatedV4: string | null = null;
+  let privateV6: string | null = null;
   let isPublic = false;
   for (const ip of ips) {
     const type = pick<string>(ip, 'Type', 'type');
@@ -304,11 +332,12 @@ async function listPublicIps(
     // Fail closed: anything that is not a known-private type counts as public.
     if (!NON_INGRESS_IP_TYPES.has(type)) isPublic = true;
     if (type === 'v4' && address) dedicatedV4 = address;
+    if (type === 'private_v6' && address) privateV6 = address;
   }
-  return { dedicatedV4, public: isPublic };
+  return { dedicatedV4, privateV6, public: isPublic };
 }
 
-async function countMachines(app: AppName): Promise<number | ReadFailure> {
+async function listMachines(app: AppName): Promise<AppMachineState | ReadFailure> {
   const machines = await flyctlJson<Array<Record<string, unknown>>>([
     'machines',
     'list',
@@ -317,7 +346,87 @@ async function countMachines(app: AppName): Promise<number | ReadFailure> {
   ]);
   if (machines === null) return 'unknown';
   // Exclude tombstoned machines so a stale destroyed record never inflates the count.
-  return machines.filter((m) => pick<string>(m, 'state', 'State') !== 'destroyed').length;
+  const liveMachines = machines
+    .filter((machine) => pick<string>(machine, 'state', 'State') !== 'destroyed')
+    .map(parseMachineSummary);
+  return { count: liveMachines.length, machines: liveMachines };
+}
+
+function parseMachineSummary(machine: Record<string, unknown>): AppMachineSummary {
+  const config = pick<Record<string, unknown>>(machine, 'config', 'Config') ?? {};
+  const rawEnvironment = pick<Record<string, unknown>>(config, 'env', 'Env') ?? {};
+  const rawServices = pick<unknown[]>(config, 'services', 'Services') ?? [];
+  const services = Array.isArray(rawServices) ? rawServices.map(parseMachineService) : [];
+  const environment = Object.fromEntries(
+    Object.entries(rawEnvironment).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
+
+  return {
+    id: pick<string>(machine, 'id', 'ID') ?? 'unknown',
+    state: pick<string>(machine, 'state', 'State') ?? 'unknown',
+    environment,
+    services,
+  };
+}
+
+function parseMachineService(service: unknown): MachineServiceConfiguration {
+  if (service === null || typeof service !== 'object') return {};
+  const record = service as Record<string, unknown>;
+  return {
+    autostop: pick(record, 'autostop', 'auto_stop_machines', 'AutoStop', 'AutoStopMachines'),
+    autostart: pick(record, 'autostart', 'auto_start_machines', 'AutoStart', 'AutoStartMachines'),
+    minMachinesRunning:
+      pick<number>(record, 'min_machines_running', 'minMachinesRunning', 'MinMachinesRunning') ??
+      null,
+    internalPort: pick<number>(record, 'internal_port', 'internalPort', 'InternalPort'),
+  };
+}
+
+function getMachineState(state: FlyState, app: AppName): AppMachineState | ReadFailure | null {
+  return state.appMachines.get(app) ?? null;
+}
+
+function getMachineCount(state: FlyState, app: AppName): number | ReadFailure | null {
+  const machineState = getMachineState(state, app);
+  if (machineState === 'unknown' || machineState === null) return machineState;
+  return machineState.count;
+}
+
+function servicesForApp(
+  state: FlyState,
+  app: AppName,
+): MachineServiceConfiguration[] | ReadFailure | null {
+  const machineState = getMachineState(state, app);
+  if (machineState === 'unknown' || machineState === null) return machineState;
+  return machineState.machines.flatMap((machine) => machine.services);
+}
+
+function environmentValueForApp(
+  state: FlyState,
+  app: AppName,
+  key: string,
+): string | ReadFailure | null {
+  const machineState = getMachineState(state, app);
+  if (machineState === 'unknown' || machineState === null) return machineState;
+  return machineState.machines[0]?.environment[key] ?? null;
+}
+
+function serviceAutoStopsWhenIdle(service: MachineServiceConfiguration): boolean {
+  return service.autostop === true || service.autostop === 'stop';
+}
+
+function serviceAutoStopDisabled(service: MachineServiceConfiguration): boolean {
+  return service.autostop === false || service.autostop === 'off';
+}
+
+function serviceAutoStarts(service: MachineServiceConfiguration): boolean {
+  return service.autostart === true;
+}
+
+function serviceKeepsZeroMachinesWarm(service: MachineServiceConfiguration): boolean {
+  return service.minMachinesRunning === 0;
 }
 
 async function gatherFlyState(): Promise<FlyState> {
@@ -332,6 +441,8 @@ async function gatherFlyState(): Promise<FlyState> {
       setSecrets: new Map(),
       proxyDedicatedIp: null,
       engineHasPublicIp: null,
+      enginePrivateFlycastIp: null,
+      appMachines: new Map(),
       engineMachineCount: null,
     };
   }
@@ -348,6 +459,8 @@ async function gatherFlyState(): Promise<FlyState> {
     setSecrets: new Map(),
     proxyDedicatedIp: 'unknown',
     engineHasPublicIp: 'unknown',
+    enginePrivateFlycastIp: 'unknown',
+    appMachines: new Map(APPS.map((app) => [app.name, 'unknown'])),
     engineMachineCount: 'unknown',
   });
 
@@ -371,11 +484,26 @@ async function gatherFlyState(): Promise<FlyState> {
 
   const proxyIps = proxyExists ? await listPublicIps('tribunal-proxy') : null;
   const engineIps = engineExists ? await listPublicIps('tribunal-engine') : null;
-  const engineMachineCount = engineExists ? await countMachines('tribunal-engine') : null;
+  const appMachines = new Map<AppName, AppMachineState | ReadFailure | null>();
+  await Promise.all(
+    APPS.map(async (app) => {
+      appMachines.set(app.name, existingApps.has(app.name) ? await listMachines(app.name) : null);
+    }),
+  );
+  const engineMachines = appMachines.get('tribunal-engine');
+  const engineMachineCount =
+    engineMachines === undefined || engineMachines === null || engineMachines === 'unknown'
+      ? (engineMachines ?? null)
+      : engineMachines.count;
 
   // A failed proxy `ips list` must read as 'unknown', not as "not allocated".
   let proxyDedicatedIp: string | null | ReadFailure = null;
   if (proxyIps) proxyDedicatedIp = proxyIps.public === 'unknown' ? 'unknown' : proxyIps.dedicatedV4;
+  const enginePrivateFlycastIp = engineIps
+    ? engineIps.public === 'unknown'
+      ? 'unknown'
+      : engineIps.privateV6
+    : null;
 
   return {
     authenticated: true,
@@ -386,6 +514,8 @@ async function gatherFlyState(): Promise<FlyState> {
     setSecrets,
     proxyDedicatedIp,
     engineHasPublicIp: engineIps ? engineIps.public : null,
+    enginePrivateFlycastIp,
+    appMachines,
     engineMachineCount,
   };
 }
@@ -593,6 +723,35 @@ function buildPlan(state: FlyState): Step[] {
   }
 
   // 5. Run migrations with the direct (unpooled) URL.
+  if (!state.existingApps.has('tribunal-engine')) {
+    steps.push({
+      title: 'Allocate private engine Flycast address',
+      state: 'todo',
+      detail: 'pending app creation',
+    });
+  } else if (state.enginePrivateFlycastIp === 'unknown') {
+    steps.push({
+      title: 'Allocate private engine Flycast address',
+      state: 'manual',
+      detail: 'could not read engine IPs from flyctl; verify before allocating',
+      commands: ['flyctl ips list --app tribunal-engine'],
+    });
+  } else if (state.enginePrivateFlycastIp) {
+    steps.push({
+      title: 'Allocate private engine Flycast address',
+      state: 'done',
+      detail: `private IPv6 ${state.enginePrivateFlycastIp}`,
+    });
+  } else {
+    steps.push({
+      title: 'Allocate private engine Flycast address',
+      state: 'todo',
+      detail: 'required for Flycast wake traffic to stopped private Machines',
+      commands: ['flyctl ips allocate-v6 --private --app tribunal-engine'],
+    });
+  }
+
+  // 6. Run migrations with the direct (unpooled) URL.
   steps.push({
     title: 'Run database migrations',
     state: 'manual',
@@ -600,7 +759,7 @@ function buildPlan(state: FlyState): Step[] {
     commands: ['DATABASE_URL="$MIGRATION_DATABASE_URL" bun run db:migrate'],
   });
 
-  // 6. Set secrets per app (proxy, engine, web).
+  // 7. Set secrets per app (proxy, engine, web).
   for (const app of APPS) {
     if (!state.existingApps.has(app.name)) {
       // The app must exist before secrets can be set; omit the command until
@@ -651,7 +810,7 @@ function buildPlan(state: FlyState): Step[] {
     });
   }
 
-  // 7-8, 10. Deploy each app in dependency order.
+  // 8-10. Deploy each app in dependency order.
   const deployOrder: AppName[] = ['tribunal-proxy', 'tribunal-engine', 'tribunal-web'];
   for (const name of deployOrder) {
     const app = APPS.find((a) => a.name === name)!;
@@ -667,41 +826,35 @@ function buildPlan(state: FlyState): Step[] {
         : { title: `Deploy ${app.name}`, state: 'todo', detail: 'pending app creation' },
     );
 
-    // 9. After the first engine deploy, force exactly one Machine.
-    if (name === 'tribunal-engine') {
-      const count = state.engineMachineCount;
-      if (count === 1) {
-        steps.push({
-          title: 'Scale engine to exactly one Machine',
-          state: 'done',
-          detail: '1 Machine running',
-        });
-      } else if (count === 'unknown') {
-        // Don't print a destructive scale on unreadable state; verify first.
-        steps.push({
-          title: 'Scale engine to exactly one Machine',
-          state: 'manual',
-          detail: 'could not read Machine count from flyctl; verify before scaling',
-          commands: ['flyctl machines list --app tribunal-engine'],
-        });
-      } else if (count === null || count === 0) {
-        // Scaling only makes sense after the first deploy creates a Machine.
-        // null = app not created (blocker is create), 0 = created but not
-        // deployed (blocker is deploy); both omit the command.
-        steps.push({
-          title: 'Scale engine to exactly one Machine',
-          state: 'todo',
-          detail:
-            count === null ? 'pending app creation' : 'engine has no Machines yet (deploy first)',
-        });
-      } else {
-        steps.push({
-          title: 'Scale engine to exactly one Machine',
-          state: 'todo',
-          detail: `${count} Machines running`,
-          commands: ['flyctl scale count 1 --app tribunal-engine'],
-        });
-      }
+    const count = getMachineCount(state, name);
+    const label = `Scale ${name} to exactly one Machine`;
+    if (count === 1) {
+      steps.push({
+        title: label,
+        state: 'done',
+        detail: '1 Machine configured',
+      });
+    } else if (count === 'unknown') {
+      steps.push({
+        title: label,
+        state: 'manual',
+        detail: 'could not read Machine count from flyctl; verify before scaling',
+        commands: [`flyctl machines list --app ${name}`],
+      });
+    } else if (count === null || count === 0) {
+      steps.push({
+        title: label,
+        state: 'todo',
+        detail:
+          count === null ? 'pending app creation' : `${name} has no Machines yet (deploy first)`,
+      });
+    } else {
+      steps.push({
+        title: label,
+        state: 'todo',
+        detail: `${count} Machines configured`,
+        commands: [`flyctl scale count 1 --yes --app ${name}`],
+      });
     }
   }
 
@@ -847,15 +1000,33 @@ function printStatus(state: FlyState): void {
     );
   }
 
-  if (state.engineMachineCount === 'unknown') {
-    console.log(status('warning', 'engine Machines: could not read from flyctl'));
-  } else if (state.engineMachineCount !== null) {
+  if (state.enginePrivateFlycastIp === 'unknown') {
+    console.log(status('warning', 'engine Flycast IP: could not read from flyctl'));
+  } else if (state.enginePrivateFlycastIp !== null) {
     console.log(
       status(
-        state.engineMachineCount === 1 ? 'success' : 'warning',
-        `engine Machines: ${state.engineMachineCount} (must be exactly 1)`,
+        state.enginePrivateFlycastIp ? 'success' : 'error',
+        state.enginePrivateFlycastIp
+          ? `engine Flycast private IPv6: ${state.enginePrivateFlycastIp}`
+          : 'engine Flycast private IPv6: not allocated',
       ),
     );
+  }
+
+  for (const app of APPS) {
+    const count = getMachineCount(state, app.name);
+    if (count === 'unknown') {
+      console.log(status('warning', `${app.name} Machines: could not read from flyctl`));
+      continue;
+    }
+    if (count !== null) {
+      console.log(
+        status(
+          count === 1 ? 'success' : 'warning',
+          `${app.name} Machines: ${count} (must be exactly 1)`,
+        ),
+      );
+    }
   }
 
   console.log('');
@@ -864,6 +1035,7 @@ function printStatus(state: FlyState): void {
 type LiveStateOptions = {
   allowMissingSandboxImage: boolean;
   allowPendingEngineMachine: boolean;
+  allowPendingCostOptimization: boolean;
 };
 
 function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): string[] {
@@ -918,11 +1090,21 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
     }
   }
 
+  if (!options.allowPendingCostOptimization) {
+    collectMachineCostFailures(state, failures);
+  }
+
   if (state.existingApps.has('tribunal-engine')) {
     if (state.engineHasPublicIp === 'unknown') {
       failures.push('could not read engine IPs');
     } else if (state.engineHasPublicIp === true) {
       failures.push('tribunal-engine has a public IP');
+    }
+
+    if (state.enginePrivateFlycastIp === 'unknown') {
+      failures.push('could not read engine Flycast IPs');
+    } else if (!state.enginePrivateFlycastIp) {
+      failures.push('tribunal-engine does not have a private Flycast IPv6 address');
     }
 
     if (state.engineMachineCount === 'unknown') {
@@ -937,6 +1119,80 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
   }
 
   return failures;
+}
+
+function collectMachineCostFailures(state: FlyState, failures: string[]): void {
+  for (const app of APPS) {
+    const count = getMachineCount(state, app.name);
+    if (count === 'unknown') {
+      failures.push(`could not read Machines for ${app.name}`);
+      continue;
+    }
+    if (count !== null && count !== 1) {
+      failures.push(`${app.name} has ${count} Machines; expected 1`);
+    }
+  }
+
+  for (const app of ['tribunal-web', 'tribunal-proxy'] as const) {
+    const services = servicesForApp(state, app);
+    if (services === 'unknown') {
+      failures.push(`could not read service configuration for ${app}`);
+      continue;
+    }
+    if (services === null) continue;
+    if (services.length === 0) {
+      failures.push(`${app} has no Fly service configuration`);
+      continue;
+    }
+    if (!services.every(serviceAutoStopsWhenIdle)) {
+      failures.push(`${app} does not stop Machines when idle`);
+    }
+    if (!services.every(serviceAutoStarts)) {
+      failures.push(`${app} does not auto-start Machines`);
+    }
+    if (!services.every(serviceKeepsZeroMachinesWarm)) {
+      failures.push(`${app} keeps warm Machines running`);
+    }
+  }
+
+  const webEngineUrl = environmentValueForApp(state, 'tribunal-web', 'TRIBUNAL_ENGINE_URL');
+  if (webEngineUrl === 'unknown') {
+    failures.push('could not read tribunal-web environment');
+  } else if (webEngineUrl !== null && webEngineUrl !== 'http://tribunal-engine.flycast') {
+    failures.push(`tribunal-web TRIBUNAL_ENGINE_URL is ${webEngineUrl}; expected Flycast URL`);
+  }
+
+  const engineBindHost = environmentValueForApp(
+    state,
+    'tribunal-engine',
+    'TRIBUNAL_ENGINE_BIND_HOST',
+  );
+  if (engineBindHost === 'unknown') {
+    failures.push('could not read tribunal-engine environment');
+  } else if (engineBindHost !== null && engineBindHost !== '0.0.0.0') {
+    failures.push(`tribunal-engine binds ${engineBindHost}; expected 0.0.0.0 for Flycast`);
+  }
+
+  const engineServices = servicesForApp(state, 'tribunal-engine');
+  if (engineServices === 'unknown') {
+    failures.push('could not read service configuration for tribunal-engine');
+  } else if (engineServices !== null) {
+    if (engineServices.length === 0) {
+      failures.push('tribunal-engine has no private Flycast service configuration');
+    } else if (
+      !engineServices.some(
+        (service) =>
+          service.internalPort === 3001 &&
+          serviceAutoStarts(service) &&
+          serviceKeepsZeroMachinesWarm(service) &&
+          serviceAutoStopDisabled(service),
+      )
+    ) {
+      failures.push(
+        'tribunal-engine Flycast service must use internal port 3001, auto-start, min 0, and autostop off',
+      );
+    }
+  }
 }
 
 const STATE_SYMBOL: Record<StepState, string> = {
@@ -956,8 +1212,9 @@ function printPlan(steps: Step[]): void {
   console.log(dim('  Commands referencing $VARS need .env loaded into your shell first:'));
   console.log(info('  $ set -a && . ./.env && set +a   # bash/zsh: source ./.env'));
   console.log('');
-  // The deploy/migration commands use repo-relative paths (`flyctl deploy .`,
-  // `--config deployment/...`), so they must run from the repository root.
+  // The deploy/migration commands assume `flyctl deploy .` and
+  // `--config deployment/...` are run from the repository root. Fly resolves
+  // `--dockerfile` relative to the selected config file.
   console.log(dim('  Run these commands from the repository root.'));
   console.log('');
 
@@ -1008,6 +1265,10 @@ function printHelp(): void {
     listItem('bun run scripts/deploy.ts --live-status-only --allow-pending-engine-machine'),
   );
   console.log(dim('    Allow first-deploy automation to create the engine Machine.'));
+  console.log(
+    listItem('bun run scripts/deploy.ts --live-status-only --allow-pending-cost-optimization'),
+  );
+  console.log(dim('    Allow first-deploy automation to apply idle Machine settings.'));
   console.log(listItem('bun run scripts/deploy.ts --help   Show this help'));
   console.log('');
   console.log(dim('  All values live in .env; multiline secrets (GITHUB_APP_PRIVATE_KEY,'));
@@ -1030,6 +1291,7 @@ async function run(): Promise<void> {
   const liveStatusOnly = process.argv.includes('--live-status-only');
   const allowMissingSandboxImage = process.argv.includes('--allow-missing-sandbox-image');
   const allowPendingEngineMachine = process.argv.includes('--allow-pending-engine-machine');
+  const allowPendingCostOptimization = process.argv.includes('--allow-pending-cost-optimization');
 
   if (!Bun.which('flyctl')) {
     console.log('');
@@ -1057,6 +1319,7 @@ async function run(): Promise<void> {
     const failures = collectLiveStateFailures(state, {
       allowMissingSandboxImage,
       allowPendingEngineMachine,
+      allowPendingCostOptimization,
     });
     if (failures.length > 0) {
       console.log(errorHeader('Live production invariant failures'));

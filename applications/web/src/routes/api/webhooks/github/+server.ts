@@ -70,6 +70,10 @@ const ROUTER_HANDLED_EVENT_TYPES = new Set([
   'push',
 ]);
 
+function isPreDatabaseIgnoredWebhook(eventType: string | null, action: string | null): boolean {
+  return (eventType === 'check_run' || eventType === 'check_suite') && action !== 'completed';
+}
+
 function createWebhookDispatcher(context: WebhookContext) {
   let handlerPromise: Promise<void> | undefined;
 
@@ -140,6 +144,10 @@ export const POST: RequestHandler = async (event) => {
   const action = typeof data.action === 'string' ? data.action : null;
 
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
+
+  if (isPreDatabaseIgnoredWebhook(eventType, action)) {
+    return json({ ok: true, ignored: true });
+  }
 
   // 3. Claim-Before-Processing Pattern
   // Claim every delivery before side effects so GitHub redeliveries cannot enqueue

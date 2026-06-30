@@ -7,6 +7,7 @@ const e2eSecret = process.env.E2E_TEST_SECRET ?? `tribunal-e2e-${randomUUID()}`;
 process.env.E2E_TEST_MODE = '1';
 process.env.E2E_TEST_SECRET = e2eSecret;
 process.env.VITE_PORT = String(port);
+process.env.VITE_PREVIEW_PORT = String(port);
 
 export default defineConfig({
   testDir: './test/end-to-end',
@@ -20,7 +21,7 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command: 'bun run dev -- --host 127.0.0.1',
+    command: 'NODE_ENV=test bun run preview -- --host 127.0.0.1',
     url: `http://127.0.0.1:${port}/login`,
     reuseExistingServer: false,
     timeout: 30_000,
@@ -34,6 +35,7 @@ export default defineConfig({
       E2E_TEST_MODE: '1',
       E2E_TEST_SECRET: e2eSecret,
       VITE_PORT: String(port),
+      VITE_PREVIEW_PORT: String(port),
     },
   },
   projects: [

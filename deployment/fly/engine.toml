@@ -2,17 +2,19 @@ app = "tribunal-engine"
 primary_region = "dfw"
 
 [build]
-  dockerfile = "deployment/containers/engine.Dockerfile"
+  dockerfile = "../containers/engine.Dockerfile"
 
 [env]
   NODE_ENV = "production"
   PORT = "3001"
-  TRIBUNAL_ENGINE_BIND_HOST = "::"
+  TRIBUNAL_ENGINE_BIND_HOST = "0.0.0.0"
   REVIEWS_ENABLED = "false"
   TRIBUNAL_DEFAULT_MODEL = "claude-sonnet-4-6"
   DEFAULT_DAILY_COST_CAP_USD = "25"
   IDLE_SUSPEND_SECONDS = "900"
   SANDBOX_REAP_INTERVAL = "300"
+  REVIEW_INTENT_POLL_INTERVAL_MS = "0"
+  ENGINE_IDLE_SHUTDOWN_SECONDS = "600"
   ENABLE_PROMPT_CACHING_1H = "false"
   WEFT_INSPECTOR = "false"
 
@@ -28,6 +30,18 @@ primary_region = "dfw"
     port = 3001
     timeout = "5s"
     type = "http"
+
+[[services]]
+  internal_port = 3001
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
 
 [[vm]]
   cpu_kind = "shared"

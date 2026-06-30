@@ -33,6 +33,7 @@ describe('parseEngineEnvironment', () => {
       TRIBUNAL_ENGINE_BIND_HOST: '::',
       IDLE_SUSPEND_SECONDS: 900,
       SANDBOX_REAP_INTERVAL: 300,
+      REVIEW_INTENT_POLL_INTERVAL_MS: 1_000,
       ENABLE_PROMPT_CACHING_1H: true,
       REVIEWS_ENABLED: false,
       WEFT_INSPECTOR: false,
@@ -88,6 +89,28 @@ describe('parseEngineEnvironment', () => {
     const { ENABLE_PROMPT_CACHING_1H: _removed, ...environment } = fullEnvironment;
 
     expect(parseEngineEnvironment(environment).ENABLE_PROMPT_CACHING_1H).toBe(false);
+  });
+
+  it('allows disabling review intent polling with zero', () => {
+    expect(
+      parseEngineEnvironment({
+        ...fullEnvironment,
+        REVIEW_INTENT_POLL_INTERVAL_MS: '0',
+        ENGINE_IDLE_SHUTDOWN_SECONDS: '600',
+      }),
+    ).toMatchObject({
+      REVIEW_INTENT_POLL_INTERVAL_MS: 0,
+      ENGINE_IDLE_SHUTDOWN_SECONDS: 600,
+    });
+  });
+
+  it('rejects negative or decimal review intent polling intervals', () => {
+    expect(() =>
+      parseEngineEnvironment({ ...fullEnvironment, REVIEW_INTENT_POLL_INTERVAL_MS: '-1' }),
+    ).toThrow();
+    expect(() =>
+      parseEngineEnvironment({ ...fullEnvironment, REVIEW_INTENT_POLL_INTERVAL_MS: '1.5' }),
+    ).toThrow();
   });
 
   it('treats an empty optional bind host as unset', () => {
