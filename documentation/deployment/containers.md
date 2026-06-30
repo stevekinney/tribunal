@@ -205,13 +205,13 @@ DATABASE_URL="<direct-neon-url>" bun run db:migrate
 Deploy in dependency order:
 
 ```sh
-flyctl deploy . --config deployment/fly/proxy.toml --dockerfile ../containers/proxy.Dockerfile
+flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
 flyctl scale count 1 --yes -a tribunal-proxy
 
-flyctl deploy . --config deployment/fly/engine.toml --dockerfile ../containers/engine.Dockerfile
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
 flyctl scale count 1 --yes -a tribunal-engine
 
-flyctl deploy . --config deployment/fly/web.toml --dockerfile ../containers/web.Dockerfile
+flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
 flyctl scale count 1 --yes -a tribunal-web
 ```
 
@@ -344,7 +344,7 @@ Only then change `REVIEWS_ENABLED` to `true` for `tribunal-engine` and redeploy
 the engine:
 
 ```sh
-flyctl deploy . --config deployment/fly/engine.toml --dockerfile ../containers/engine.Dockerfile
+flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
 ```
 
 Re-run every health gate after enabling live reviews.

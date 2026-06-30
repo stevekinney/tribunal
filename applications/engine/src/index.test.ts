@@ -186,6 +186,43 @@ describe('createEngineServerOptions', () => {
     expect(scheduler.kick).not.toHaveBeenCalled();
   });
 
+  it('returns a retryable failure when a kick reaches a released scheduler', async () => {
+    const scheduler = {
+      kick: vi.fn().mockReturnValue({ started: false, reason: 'released' }),
+      stop: vi.fn(),
+    };
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+      undefined,
+      scheduler,
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-intents/kick', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_released' });
+  });
+
   it('reports runtime health dependencies', async () => {
     const server = createEngineServerOptions(
       3001,
@@ -437,6 +474,7 @@ describe('createReviewIntentKickScheduler', () => {
 
     expect(release).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
+    expect(scheduler.kick()).toEqual({ started: false, reason: 'released' });
     vi.useRealTimers();
   });
 

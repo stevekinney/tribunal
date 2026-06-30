@@ -73,7 +73,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-proxy',
     config: 'deployment/fly/proxy.toml',
-    dockerfile: '../containers/proxy.Dockerfile',
+    dockerfile: 'deployment/containers/proxy.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -90,7 +90,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-engine',
     config: 'deployment/fly/engine.toml',
-    dockerfile: '../containers/engine.Dockerfile',
+    dockerfile: 'deployment/containers/engine.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'WEFT_DATABASE_URL',
@@ -109,7 +109,7 @@ const APPS: App[] = [
   {
     name: 'tribunal-web',
     config: 'deployment/fly/web.toml',
-    dockerfile: '../containers/web.Dockerfile',
+    dockerfile: 'deployment/containers/web.Dockerfile',
     secrets: [
       'DATABASE_URL',
       'REDIS_URL',
@@ -218,11 +218,12 @@ async function flyctlJson<T>(args: string[]): Promise<T | null> {
  * Fly address types that are NOT public ingress. The "engine must stay private"
  * gate treats every other type (`v4`, `v6`, `shared_v4`, `anycast`, and any
  * future token) as public, so an unrecognized type fails closed -- surfacing a
- * warning rather than silently passing a reachable engine. Egress addresses are
- * outbound-only (static egress IPs for allowlists), so they must not trip the
- * ingress gate.
+ * warning rather than silently passing a reachable engine. Flycast/private
+ * addresses are reported as `private` by current flyctl and `private_v6` by
+ * older output shapes. Egress addresses are outbound-only (static egress IPs for
+ * allowlists), so they must not trip the ingress gate.
  */
-const NON_INGRESS_IP_TYPES = new Set(['private_v6', 'egress_v4', 'egress_v6']);
+const NON_INGRESS_IP_TYPES = new Set(['private', 'private_v6', 'egress_v4', 'egress_v6']);
 
 /**
  * `number | 'unknown'` distinguishes a real flyctl read failure from a known
@@ -332,7 +333,7 @@ async function listPublicIps(app: AppName): Promise<{
     // Fail closed: anything that is not a known-private type counts as public.
     if (!NON_INGRESS_IP_TYPES.has(type)) isPublic = true;
     if (type === 'v4' && address) dedicatedV4 = address;
-    if (type === 'private_v6' && address) privateV6 = address;
+    if ((type === 'private' || type === 'private_v6') && address) privateV6 = address;
   }
   return { dedicatedV4, privateV6, public: isPublic };
 }
@@ -1214,7 +1215,7 @@ function printPlan(steps: Step[]): void {
   console.log('');
   // The deploy/migration commands assume `flyctl deploy .` and
   // `--config deployment/...` are run from the repository root. Fly resolves
-  // `--dockerfile` relative to the selected config file.
+  // `--dockerfile` relative to the repository-root deploy context.
   console.log(dim('  Run these commands from the repository root.'));
   console.log('');
 

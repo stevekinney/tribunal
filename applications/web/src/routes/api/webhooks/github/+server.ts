@@ -146,6 +146,7 @@ export const POST: RequestHandler = async (event) => {
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
 
   if (isPreDatabaseIgnoredWebhook(eventType, action)) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
     return json({ ok: true, ignored: true });
   }
 

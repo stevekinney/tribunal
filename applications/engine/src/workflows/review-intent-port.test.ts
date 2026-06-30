@@ -527,6 +527,20 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('reports an empty queue when reviews are globally disabled', async () => {
+    await createReviewIntentFixture();
+
+    await expect(
+      getReviewIntentQueueStatus(testDatabase.db, new Date('2026-06-17T12:00:00.000Z'), {
+        reviewsEnabled: false,
+      }),
+    ).resolves.toEqual({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
+  });
+
   it('normalizes raw queue status count shapes from database drivers', async () => {
     const now = new Date('2026-06-17T12:00:00.000Z');
     const nextAttemptAt = '2026-06-17T12:05:00.000Z';

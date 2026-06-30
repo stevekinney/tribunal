@@ -161,8 +161,11 @@ export function createEngineServerOptions(
         if (!hasValidControlToken(request, controlToken)) {
           return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
         }
-        const { started } = reviewIntentKickScheduler.kick();
-        return Response.json({ ok: true, started }, { status: 202 });
+        const result = reviewIntentKickScheduler.kick();
+        if (!result.started && result.reason === 'released') {
+          return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
+        }
+        return Response.json({ ok: true, started: result.started }, { status: 202 });
       }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
       if (stopMatch !== null && request.method === 'POST') {
@@ -195,9 +198,13 @@ export function createEngineServerOptions(
 }
 
 export type ReviewIntentKickScheduler = {
-  kick(): { started: boolean };
+  kick(): ReviewIntentKickResult;
   stop(): void;
 };
+
+export type ReviewIntentKickResult =
+  | { started: true }
+  | { started: false; reason: 'already_running' | 'released' };
 
 export type ReviewIntentKickSchedulerOptions = {
   idleShutdownSeconds?: number;
@@ -250,12 +257,12 @@ export function createReviewIntentKickScheduler(
     scheduleIdleShutdownCheck(idleShutdownMs);
   };
 
-  const startDrain = (): { started: boolean } => {
-    if (released) return { started: false };
+  const startDrain = (): ReviewIntentKickResult => {
+    if (released) return { started: false, reason: 'released' };
     clearIdleShutdownTimer();
     if (activeDrain !== undefined) {
       kickRequestedDuringDrain = true;
-      return { started: false };
+      return { started: false, reason: 'already_running' };
     }
 
     activeDrain = drainUntilIdle()

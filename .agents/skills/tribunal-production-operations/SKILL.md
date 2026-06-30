@@ -168,7 +168,7 @@ work. Do not print secret values.
 8. Run migrations with the direct Neon URL:
    `DATABASE_URL="$MIGRATION_DATABASE_URL" bun run db:migrate`.
 9. Deploy in dependency order with explicit Dockerfile paths:
-   `flyctl deploy . --config deployment/fly/<app>.toml --dockerfile ../containers/<app>.Dockerfile`.
+   `flyctl deploy . --config deployment/fly/<app>.toml --dockerfile deployment/containers/<app>.Dockerfile`.
 10. After each deploy, run `flyctl scale count 1 --yes --app <app>` and verify
     exactly one non-destroyed Machine per app.
 

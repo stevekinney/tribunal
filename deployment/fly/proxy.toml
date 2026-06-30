@@ -2,7 +2,7 @@ app = "tribunal-proxy"
 primary_region = "dfw"
 
 [build]
-  dockerfile = "../containers/proxy.Dockerfile"
+  dockerfile = "deployment/containers/proxy.Dockerfile"
 
 [env]
   NODE_ENV = "production"

@@ -138,19 +138,19 @@ jobs:
           DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
 
       - name: Deploy proxy
-        run: flyctl deploy . --config deployment/fly/proxy.toml --dockerfile ../containers/proxy.Dockerfile
+        run: flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
 
       - name: Enforce singleton proxy
         run: flyctl scale count 1 --yes --app tribunal-proxy
 
       - name: Deploy engine
-        run: flyctl deploy . --config deployment/fly/engine.toml --dockerfile ../containers/engine.Dockerfile
+        run: flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
 
       - name: Enforce singleton engine
         run: flyctl scale count 1 --yes --app tribunal-engine
 
       - name: Deploy web
-        run: flyctl deploy . --config deployment/fly/web.toml --dockerfile ../containers/web.Dockerfile
+        run: flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
 
       - name: Enforce singleton web
         run: flyctl scale count 1 --yes --app tribunal-web

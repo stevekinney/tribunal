@@ -5,6 +5,7 @@ const dispatchPullRequestStateMock = vi.fn();
 const extractEventFieldsMock = vi.fn();
 const getRepositoryIdentityMock = vi.fn();
 const handlePullRequestEventMock = vi.fn();
+const invalidateGitHubResourceCacheForEventMock = vi.fn();
 const releaseWebhookDeliveryClaimMock = vi.fn();
 const storeWebhookEventMock = vi.fn();
 const validateRequestMock = vi.fn();
@@ -24,7 +25,7 @@ vi.mock('$lib/server/github/webhooks', () => ({
   extractEventFields: extractEventFieldsMock,
   getRepositoryIdentity: getRepositoryIdentityMock,
   invalidateGitHubAccessCacheForEvent: vi.fn(),
-  invalidateGitHubResourceCacheForEvent: vi.fn(),
+  invalidateGitHubResourceCacheForEvent: invalidateGitHubResourceCacheForEventMock,
   dispatchPRStateTracking: dispatchPullRequestStateMock,
   handleRepositoryMetadataEvents: vi.fn(),
   isPullRequestWebhookEvent: vi.fn(() => true),
@@ -158,8 +159,8 @@ describe('GitHub webhook route', () => {
     );
   });
 
-  it('ignores non-completed check suite events before database work', async () => {
-    expect.assertions(6);
+  it('ignores non-completed check suite events after resource cache invalidation', async () => {
+    expect.assertions(7);
     const checkSuitePayload = {
       action: 'requested',
       installation: { id: 1001 },
@@ -192,6 +193,12 @@ describe('GitHub webhook route', () => {
       { deliveryId: 'delivery-1', eventType: 'check_suite' },
     );
     expect(claimWebhookDeliveryMock).not.toHaveBeenCalled();
+    expect(invalidateGitHubResourceCacheForEventMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      'check_suite',
+      'requested',
+      checkSuitePayload,
+    );
     expect(storeWebhookEventMock).not.toHaveBeenCalled();
     expect(handlePullRequestEventMock).not.toHaveBeenCalled();
     expect(dispatchPullRequestStateMock).not.toHaveBeenCalled();
