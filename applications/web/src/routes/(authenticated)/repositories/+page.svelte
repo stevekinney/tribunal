@@ -310,7 +310,6 @@
                               activeWatchSubmissions.delete(id);
                               queuedWatchStates.delete(id);
                               submitWatchForm(id, queuedWatched);
-                              await update();
                               return;
                             }
 
