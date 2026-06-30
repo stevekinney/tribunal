@@ -43,10 +43,13 @@ describe('review engine kick webhook helper', () => {
   });
 
   it('throws when the review engine kick is not configured', async () => {
-    kickReviewEngineMock.mockResolvedValue({ status: 'not_configured' });
+    kickReviewEngineMock.mockResolvedValue({
+      status: 'not_configured',
+      missingSettings: ['TRIBUNAL_ENGINE_URL'],
+    });
 
     await expect(kickReviewEngineAfterDurableIntentCount(1, createLogger())).rejects.toThrow(
-      'Review engine control is not configured.',
+      'Review engine control is not configured. Missing settings: TRIBUNAL_ENGINE_URL.',
     );
   });
 

@@ -24,6 +24,7 @@ describe('review engine client', () => {
 
     await expect(postReviewEngineControl('/review-intents/kick')).resolves.toEqual({
       status: 'not_configured',
+      missingSettings: ['TRIBUNAL_ENGINE_URL', 'TRIBUNAL_ENGINE_CONTROL_TOKEN'],
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });

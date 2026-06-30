@@ -26,8 +26,10 @@ export async function kickReviewEngineAfterDurableIntentCount(
 
   const result = await kickReviewEngine();
   if (result.status === 'not_configured') {
-    const error = new Error('Review engine control is not configured.');
-    logger.error({ error }, 'Review engine kick failed');
+    const error = new Error(
+      `Review engine control is not configured. Missing settings: ${result.missingSettings.join(', ')}.`,
+    );
+    logger.error({ error, missingSettings: result.missingSettings }, 'Review engine kick failed');
     throw error;
   }
   if (result.status === 'sent' && !result.ok) {

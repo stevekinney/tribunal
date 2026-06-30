@@ -522,10 +522,11 @@ function getRows<T>(result: unknown): T[] {
 }
 
 function toCount(value: number | string | bigint | null | undefined): number {
-  if (typeof value === 'number') return value;
-  if (typeof value === 'bigint') return Number(value);
-  if (typeof value === 'string') return Number(value);
-  return 0;
+  const count =
+    typeof value === 'number' || typeof value === 'bigint' || typeof value === 'string'
+      ? Number(value)
+      : 0;
+  return Number.isSafeInteger(count) && count >= 0 ? count : 0;
 }
 
 function normalizeClaimedReviewIntentRow(row: ClaimedReviewIntentRow): ClaimedReviewIntentRow {

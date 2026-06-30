@@ -573,6 +573,27 @@ describe('createDatabaseReviewIntentPort', () => {
       deferredCount: 0,
       claimedCount: 0,
     });
+
+    await expect(
+      getReviewIntentQueueStatus(
+        {
+          execute: async () => ({
+            rows: [
+              {
+                readyCount: 'not-a-count',
+                deferredCount: Number.NaN,
+                claimedCount: 'Infinity',
+              },
+            ],
+          }),
+        } as never,
+        now,
+      ),
+    ).resolves.toEqual({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
   });
 
   it('clears previous failure state when a retry is processed', async () => {
