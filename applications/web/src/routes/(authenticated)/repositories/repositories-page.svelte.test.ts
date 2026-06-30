@@ -54,4 +54,81 @@ describe('/repositories page', () => {
       .element(page.getByRole('link', { name: 'Manage repository access' }))
       .toHaveAttribute('href', '/connect/github');
   });
+
+  it('preserves saved repository settings when re-watching a repository', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        agents: [
+          {
+            id: '1',
+            userId: 1,
+            slug: 'security',
+            description: 'Security reviews',
+            body: 'Review security risks.',
+            model: 'gpt-5',
+            effort: null,
+            enabled: true,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+            updatedAt: new Date('2026-01-01T00:00:00Z'),
+          },
+          {
+            id: '2',
+            userId: 1,
+            slug: 'documentation',
+            description: 'Documentation reviews',
+            body: 'Review documentation.',
+            model: 'gpt-5',
+            effort: null,
+            enabled: true,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+            updatedAt: new Date('2026-01-01T00:00:00Z'),
+          },
+        ],
+        repositories: [
+          {
+            id: 101,
+            owner: 'test-org',
+            name: 'review-target',
+            defaultBranch: 'main',
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+            review: {
+              watched: false,
+              lastRunStatus: null,
+              estimatedCostLast30DaysUsd: 0,
+              ignoreGlobs: ['generated/**', 'vendor/**'],
+              agents: [
+                {
+                  id: '2',
+                  slug: 'documentation',
+                  enabled: true,
+                },
+              ],
+            },
+          },
+        ],
+        installations: [
+          {
+            installationId: 12345,
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+          },
+        ],
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('searchbox').fill('review-target');
+
+    await expect.element(page.getByText('test-org')).toBeInTheDocument();
+
+    const options = Array.from(document.querySelectorAll<HTMLOptionElement>('option'));
+    expect(options.find((option) => option.value === '1')?.selected).toBe(false);
+    expect(options.find((option) => option.value === '2')?.selected).toBe(true);
+    await expect
+      .element(page.getByLabelText('Ignore globs'))
+      .toHaveValue('generated/**\nvendor/**');
+  });
 });
