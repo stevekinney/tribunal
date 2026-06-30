@@ -8,7 +8,7 @@ deploy, health check, rollback, and live-review enablement gates.
 Tribunal deploys as three Fly apps:
 
 - `tribunal-web`: public SvelteKit application, API routes, and GitHub webhooks.
-- `tribunal-engine`: private singleton review engine.
+- `tribunal-engine`: private singleton review engine, woken through Flycast.
 - `tribunal-proxy`: public credential-injecting proxy for sandbox traffic.
 
 The first production deploy should keep review execution disabled. The checked-in
@@ -67,6 +67,9 @@ Create or choose the production application database.
   migrations.
 - `WEFT_DATABASE_URL`: engine-owned durable review state database connection.
   This belongs only on `tribunal-engine`.
+- Production endpoint scale-to-zero: set
+  `suspend_timeout_seconds=300` for Neon project `flat-credit-58562329`,
+  endpoint `ep-round-dew-ap98dps9`.
 
 Run migrations with the direct, unpooled URL:
 
@@ -147,13 +150,22 @@ Verify `tribunal-engine` has no public IP address:
 flyctl ips list -a tribunal-engine
 ```
 
-Production service-to-service traffic should use Fly private DNS:
+Allocate a private Flycast address for the engine:
 
 ```sh
-TRIBUNAL_ENGINE_URL=http://tribunal-engine.internal:3001
+flyctl ips allocate-v6 --private -a tribunal-engine
+flyctl ips list -a tribunal-engine
 ```
 
-Never use `localhost` for production service links.
+Production engine wake traffic must use Flycast:
+
+```sh
+TRIBUNAL_ENGINE_URL=http://tribunal-engine.flycast
+```
+
+Do not use `.internal` for stopped private Machines; `.internal` bypasses the
+Fly Proxy and cannot wake a stopped engine. Never use `localhost` for production
+service links.
 
 ## Fly Secrets
 
@@ -231,13 +243,19 @@ Create a GitHub Actions environment named `production` with these inputs:
 - Secrets:
   - `FLY_API_TOKEN`
   - `MIGRATION_DATABASE_URL`: direct, unpooled Neon URL for migrations.
+  - `NEON_API_KEY`
   - `TENSORLAKE_API_KEY`
 - Variables:
   - `FLY_ORG`: Fly organization that owns the three apps.
+  - `NEON_PROJECT_ID`: `flat-credit-58562329`.
+  - `NEON_PRODUCTION_ENDPOINT_ID`: `ep-round-dew-ap98dps9`.
   - `PRODUCTION_WEB_ORIGIN`: production web origin, for example
     `https://<web-domain>`.
-  - `PRODUCTION_PROXY_ORIGIN`: production proxy origin. Omit this only when
-    using the default `https://tribunal-proxy.fly.dev`.
+
+Optional variables:
+
+- `PRODUCTION_PROXY_ORIGIN`: production proxy origin. Omit this only when
+  using the default `https://tribunal-proxy.fly.dev`.
 
 Keep long-lived runtime application secrets in Fly. The deploy workflow does not
 copy database, Redis, GitHub App, Anthropic, encryption, proxy signing, or control
@@ -277,15 +295,13 @@ Deploy in dependency order after migrations:
 
 ```sh
 flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
+flyctl scale count 1 --yes -a tribunal-proxy
+
 flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
+flyctl scale count 1 --yes -a tribunal-engine
+
 flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
-```
-
-After the first engine deploy, force exactly one engine Machine:
-
-```sh
-flyctl scale count 1 -a tribunal-engine
-flyctl machines list -a tribunal-engine
+flyctl scale count 1 --yes -a tribunal-web
 ```
 
 ## Health Gates Before Live Reviews
@@ -294,8 +310,13 @@ Before changing `REVIEWS_ENABLED` to `true`, all of these must be true:
 
 - `tribunal-proxy` has a dedicated public IPv4.
 - `TRIBUNAL_PROXY_CIDR` is the proxy IPv4 with `/32` on engine and proxy.
-- `tribunal-engine` has exactly one Machine.
+- `tribunal-web`, `tribunal-engine`, and `tribunal-proxy` each have exactly one
+  non-destroyed Machine.
 - `tribunal-engine` has no public IP address.
+- `tribunal-engine` has a private Flycast IPv6 address and web uses
+  `http://tribunal-engine.flycast`.
+- Neon production endpoint `ep-round-dew-ap98dps9` reports
+  `suspend_timeout_seconds: 300`.
 - Proxy, engine, and web health checks pass.
 - Unauthorized proxy requests return `401` or `403`.
 - The fake review-engine load harness passes.

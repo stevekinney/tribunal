@@ -41,6 +41,13 @@ export type ReviewIntentPortOptions = {
   reviewsEnabled?: boolean;
 };
 
+export type ReviewIntentQueueStatus = {
+  readyCount: number;
+  deferredCount: number;
+  claimedCount: number;
+  nextAttemptAt?: Date;
+};
+
 export function createDatabaseReviewIntentPort(
   database: ReviewIntentDatabase,
   options: ReviewIntentPortOptions = {},
@@ -84,6 +91,78 @@ export function createDatabaseReviewIntentPort(
     markReviewIntentFailed(intentId: string, claimedAt: Date, now: Date, error: unknown) {
       return markReviewIntentFailed(database, intentId, claimedAt, now, error);
     },
+  };
+}
+
+export async function getReviewIntentQueueStatus(
+  database: ReviewIntentDatabase,
+  now: Date,
+  options: ReviewIntentPortOptions = {},
+): Promise<ReviewIntentQueueStatus> {
+  if (options.reviewsEnabled === false) {
+    return { readyCount: 0, deferredCount: 0, claimedCount: 0 };
+  }
+
+  const staleClaimCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  const result = await database.execute(sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE ${reviewIntent.nextAttemptAt} IS NULL
+          OR ${reviewIntent.nextAttemptAt} <= ${now}
+      )::int AS "readyCount",
+      COUNT(*) FILTER (
+        WHERE ${reviewIntent.nextAttemptAt} > ${now}
+      )::int AS "deferredCount",
+      MIN(${reviewIntent.nextAttemptAt}) FILTER (
+        WHERE ${reviewIntent.nextAttemptAt} > ${now}
+      ) AS "nextAttemptAt",
+      (
+        SELECT COUNT(*)::int
+        FROM ${reviewIntent}
+        WHERE ${reviewIntent.processedAt} IS NULL
+          AND ${reviewIntent.deadLetteredAt} IS NULL
+          AND ${reviewIntent.claimedAt} IS NOT NULL
+          AND ${reviewIntent.claimedAt} >= ${staleClaimCutoff}
+      ) AS "claimedCount"
+    FROM ${reviewIntent}
+    INNER JOIN ${repositoryReviewSettings}
+      ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
+      AND ${repositoryReviewSettings.userId} = ${reviewIntent.userId}
+    INNER JOIN ${repository}
+      ON ${repository.id} = ${reviewIntent.repositoryId}
+    INNER JOIN ${githubInstallationRepository}
+      ON ${githubInstallationRepository.repositoryId} = ${repository.id}
+      AND ${githubInstallationRepository.isActive} = true
+    INNER JOIN ${githubInstallation}
+      ON ${githubInstallation.installationId} = ${githubInstallationRepository.installationId}
+      AND ${githubInstallation.userId} = ${reviewIntent.userId}
+    INNER JOIN ${userReviewSettings}
+      ON ${userReviewSettings.userId} = ${reviewIntent.userId}
+    WHERE ${reviewIntent.processedAt} IS NULL
+      AND (
+        ${reviewIntent.claimedAt} IS NULL
+        OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
+      )
+      AND ${reviewIntent.deadLetteredAt} IS NULL
+      AND ${repositoryReviewSettings.watched} = true
+      AND ${userReviewSettings.reviewsEnabled} = true
+      AND ${githubInstallation.status} = 'active'
+  `);
+
+  const row = getRows<{
+    readyCount: number | string | bigint | null;
+    deferredCount: number | string | bigint | null;
+    claimedCount: number | string | bigint | null;
+    nextAttemptAt: Date | string | null;
+  }>(result)[0];
+
+  return {
+    readyCount: toCount(row?.readyCount),
+    deferredCount: toCount(row?.deferredCount),
+    claimedCount: toCount(row?.claimedCount),
+    ...(row?.nextAttemptAt === null || row?.nextAttemptAt === undefined
+      ? {}
+      : { nextAttemptAt: toDate(row.nextAttemptAt) }),
   };
 }
 
@@ -440,6 +519,14 @@ function getRows<T>(result: unknown): T[] {
     return (result as { rows: T[] }).rows;
   }
   return [];
+}
+
+function toCount(value: number | string | bigint | null | undefined): number {
+  const count =
+    typeof value === 'number' || typeof value === 'bigint' || typeof value === 'string'
+      ? Number(value)
+      : 0;
+  return Number.isSafeInteger(count) && count >= 0 ? count : 0;
 }
 
 function normalizeClaimedReviewIntentRow(row: ClaimedReviewIntentRow): ClaimedReviewIntentRow {

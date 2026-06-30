@@ -42,7 +42,7 @@ import type {
   SandboxPort,
 } from '@tribunal/review-core';
 import { isReviewPostAlreadyClaimedError, ReviewWorkflowEngine } from './review-workflow';
-import { createDatabaseReviewIntentPort } from './review-intent-port';
+import { createDatabaseReviewIntentPort, getReviewIntentQueueStatus } from './review-intent-port';
 import { createPullRequestWorkflowId, createReviewRunIdempotencyKey } from './identifiers';
 import { createReviewWorkflowDefinitions } from './review-workflow-definitions';
 import type {
@@ -113,9 +113,10 @@ export function createReviewIntentConsumer(
     25,
     'DEFAULT_DAILY_COST_CAP_USD',
   );
-  const intentPort = createDatabaseReviewIntentPort(database, {
+  const reviewIntentPortOptions = {
     reviewsEnabled: parseBooleanFlag(environment.REVIEWS_ENABLED, true),
-  });
+  };
+  const intentPort = createDatabaseReviewIntentPort(database, reviewIntentPortOptions);
   const reviewWorkflowEngine = new ReviewWorkflowEngine(
     {
       github: createEngineGitHubPort(database, githubContext),
@@ -179,6 +180,9 @@ export function createReviewIntentConsumer(
       }
 
       return processed;
+    },
+    getQueueStatus(now: Date) {
+      return getReviewIntentQueueStatus(database, now, reviewIntentPortOptions);
     },
     stopReviewRun(reviewRunId: string) {
       return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');

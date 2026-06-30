@@ -10,6 +10,7 @@ import {
   signalPullRequestEvent,
   signalPullRequestClosed,
 } from '@tribunal/github/pull-requests/state/workflow-signals';
+import { kickReviewEngineAfterDurableIntent } from './review-engine-kick.server';
 
 /**
  * Handle pull_request webhook events.
@@ -80,7 +81,9 @@ export async function handlePullRequestEvent(
         message: `PR ${action} review intent enqueued`,
         intentKind: result.intentKind,
         enqueued: result.enqueued,
+        enqueueStatus: result.enqueueStatus,
       });
+      await kickReviewEngineAfterDurableIntent(result, logger);
       break;
     }
 
@@ -118,7 +121,9 @@ export async function handlePullRequestEvent(
         message: 'PR closed review intent enqueued',
         intentKind: result.intentKind,
         enqueued: result.enqueued,
+        enqueueStatus: result.enqueueStatus,
       });
+      await kickReviewEngineAfterDurableIntent(result, logger);
       break;
     }
 

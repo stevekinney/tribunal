@@ -7,6 +7,10 @@ import type { PullRequestReviewEvent } from '@octokit/webhooks-types';
 import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
 import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/workflow-signals';
+import {
+  hasDurableReviewIntentForDrain,
+  kickReviewEngineAfterDurableIntent,
+} from './review-engine-kick.server';
 
 /**
  * Handle pull_request_review webhook events.
@@ -53,10 +57,11 @@ export async function handlePullRequestReview(
     );
   }
 
-  if (!result.enqueued) {
+  if (!hasDurableReviewIntentForDrain(result)) {
     logger.debug(`PR review ${action} did not map to a durable review intent`);
     return;
   }
 
   logger.info(`PR review ${action} review intent enqueued`);
+  await kickReviewEngineAfterDurableIntent(result, logger);
 }

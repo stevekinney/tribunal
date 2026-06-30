@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const positiveIntegerString = z.string().regex(/^[1-9]\d*$/);
+const nonNegativeIntegerString = z.string().regex(/^(?:0|[1-9]\d*)$/);
 const positiveDecimalString = z
   .string()
   .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/)
@@ -36,6 +37,8 @@ export const engineEnvironmentSchema = z
     DEFAULT_DAILY_COST_CAP_USD: positiveDecimalString.transform(Number),
     IDLE_SUSPEND_SECONDS: positiveIntegerString.transform(Number),
     SANDBOX_REAP_INTERVAL: positiveIntegerString.transform(Number),
+    REVIEW_INTENT_POLL_INTERVAL_MS: nonNegativeIntegerString.transform(Number).default(1_000),
+    ENGINE_IDLE_SHUTDOWN_SECONDS: positiveIntegerString.transform(Number).optional(),
     ENABLE_PROMPT_CACHING_1H: booleanFlag.default(false),
     ANTHROPIC_ADMIN_KEY: z.string().min(1),
     REVIEWS_ENABLED: booleanFlag.default(true),

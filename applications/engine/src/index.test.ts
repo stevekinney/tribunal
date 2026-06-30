@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEngineServerOptions,
+  createReviewIntentKickScheduler,
   createStorageConfigurationFromEnvironment,
   parsePort,
   startSandboxReaper,
 } from './index';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('parsePort', () => {
   it('uses the parsed port when PORT is valid', () => {
@@ -25,6 +30,11 @@ describe('createEngineServerOptions', () => {
         engine: {},
         healthDependencies: () => [],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -47,6 +57,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 3,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -79,6 +94,11 @@ describe('createEngineServerOptions', () => {
           drainCalled = true;
           return 3;
         },
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -98,6 +118,111 @@ describe('createEngineServerOptions', () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: 'unauthorized' });
   });
 
+  it('starts an authenticated review intent kick without awaiting the drain', async () => {
+    const drain = createDeferred<number>();
+    const drainReviewIntents = vi.fn().mockReturnValue(drain.promise);
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-intents/kick', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ ok: true, started: true });
+    expect(drainReviewIntents).toHaveBeenCalledWith(5);
+    drain.resolve(0);
+  });
+
+  it('rejects unauthenticated review intent kicks', async () => {
+    const scheduler = { kick: vi.fn(), stop: vi.fn() };
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+      undefined,
+      scheduler,
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-intents/kick', {
+        method: 'POST',
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(scheduler.kick).not.toHaveBeenCalled();
+  });
+
+  it('returns a retryable failure when a kick reaches a released scheduler', async () => {
+    const scheduler = {
+      kick: vi.fn().mockReturnValue({ started: false, reason: 'released' }),
+      stop: vi.fn(),
+    };
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+      undefined,
+      scheduler,
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-intents/kick', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_released' });
+  });
+
   it('reports runtime health dependencies', async () => {
     const server = createEngineServerOptions(
       3001,
@@ -108,6 +233,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: false, detail: 'advisory lock not held' },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -139,6 +269,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async (reviewRunId) => {
           stoppedRunIds.push(reviewRunId);
@@ -172,6 +307,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -205,6 +345,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => {
           stopCalled = true;
@@ -238,6 +383,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async (reviewRunId, agentId) => {
@@ -271,6 +421,11 @@ describe('createEngineServerOptions', () => {
           { name: 'singleton_lock', ok: true },
         ],
         drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
         reapClosedPullRequestSandboxes: async () => [],
         stopReviewRun: async () => ({ stopped: false }),
         stopReviewAgent: async () => ({ stopped: false }),
@@ -294,8 +449,247 @@ describe('createEngineServerOptions', () => {
   });
 });
 
+describe('createReviewIntentKickScheduler', () => {
+  it('releases the runtime and exits after the configured idle window', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(scheduler.kick()).toEqual({ started: false, reason: 'released' });
+    vi.useRealTimers();
+  });
+
+  it('does not release from a stale idle check after a kick starts', async () => {
+    vi.useFakeTimers();
+    const staleQueueStatus = createDeferred<{
+      readyCount: number;
+      deferredCount: number;
+      claimedCount: number;
+    }>();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const getReviewIntentQueueStatus = vi
+      .fn()
+      .mockResolvedValue({
+        readyCount: 0,
+        deferredCount: 0,
+        claimedCount: 0,
+      })
+      .mockReturnValueOnce(staleQueueStatus.promise);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents,
+        getReviewIntentQueueStatus,
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(getReviewIntentQueueStatus).toHaveBeenCalledTimes(1);
+    expect(scheduler.kick()).toEqual({ started: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    staleQueueStatus.resolve({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(release).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('retries idle shutdown when releasing the runtime fails', async () => {
+    vi.useFakeTimers();
+    const release = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('release failed'))
+      .mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      '[engine] idle shutdown check failed',
+      expect.any(Error),
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('waits for deferred retry work instead of exiting immediately', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let queueStatusCalls = 0;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockImplementation(() => {
+          queueStatusCalls += 1;
+          return Promise.resolve(
+            queueStatusCalls === 1
+              ? {
+                  readyCount: 0,
+                  deferredCount: 1,
+                  claimedCount: 0,
+                  nextAttemptAt: new Date(Date.now() + 2_000),
+                }
+              : { readyCount: 0, deferredCount: 0, claimedCount: 0 },
+          );
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('waits for active claimed review intents before exiting', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let queueStatusCalls = 0;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockImplementation(() => {
+          queueStatusCalls += 1;
+          return Promise.resolve(
+            queueStatusCalls === 1
+              ? {
+                  readyCount: 0,
+                  deferredCount: 0,
+                  claimedCount: 1,
+                }
+              : { readyCount: 0, deferredCount: 0, claimedCount: 0 },
+          );
+        }),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('waits for active background work before exiting', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let backgroundWorkActive = true;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        release,
+      },
+      {
+        idleShutdownSeconds: 1,
+        exit,
+        logger,
+        isBackgroundWorkActive: () => backgroundWorkActive,
+      },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    backgroundWorkActive = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+});
+
 describe('startSandboxReaper', () => {
-  it('schedules sandbox cleanup on the configured interval', () => {
+  it('schedules sandbox cleanup on the configured interval', async () => {
     const runtime = {
       reapClosedPullRequestSandboxes: vi.fn().mockResolvedValue([]),
     };
@@ -306,9 +700,35 @@ describe('startSandboxReaper', () => {
     });
 
     startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await Promise.resolve();
 
     expect(setIntervalFunction).toHaveBeenCalledTimes(1);
     expect(runtime.reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks sandbox cleanup activity until the async run settles', async () => {
+    const cleanup = createDeferred<unknown[]>();
+    const events: string[] = [];
+    const runtime = {
+      reapClosedPullRequestSandboxes: vi.fn().mockReturnValue(cleanup.promise),
+    };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval, {
+      onRunStart: () => events.push('start'),
+      onRunComplete: () => events.push('complete'),
+    });
+
+    expect(events).toEqual(['start']);
+    await Promise.resolve();
+
+    cleanup.resolve([]);
+    await flushPromises();
+
+    expect(events).toEqual(['start', 'complete']);
   });
 
   it('does not schedule sandbox cleanup for non-positive intervals', () => {
@@ -325,6 +745,20 @@ describe('startSandboxReaper', () => {
     expect(setIntervalFunction).not.toHaveBeenCalled();
   });
 });
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function flushPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 describe('createStorageConfigurationFromEnvironment', () => {
   it('reports configured durable storage and runtime ownership', () => {

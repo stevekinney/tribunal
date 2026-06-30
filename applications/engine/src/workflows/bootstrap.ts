@@ -22,10 +22,18 @@ export type EngineBootstrapOptions = {
   allowEphemeralStorageForTests?: boolean;
 };
 
+export type ReviewIntentQueueStatus = {
+  readyCount: number;
+  deferredCount: number;
+  claimedCount: number;
+  nextAttemptAt?: Date;
+};
+
 export type ReviewIntentConsumer = {
   workflows?: Record<string, unknown>;
   bindWorkflowEngine?(engine: ReviewIntentWorkflowEngine): void;
   drain(limit?: number): Promise<number>;
+  getQueueStatus?(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes?(): Promise<unknown>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
   stopReviewAgent?(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
@@ -51,6 +59,7 @@ export type EngineRuntime = {
   engine: unknown;
   healthDependencies(): EngineHealthDependency[];
   drainReviewIntents(limit?: number): Promise<number>;
+  getReviewIntentQueueStatus(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes(): Promise<unknown>;
   stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
   stopReviewAgent(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
@@ -96,6 +105,12 @@ export async function createEngineRuntime(
       },
       drainReviewIntents(limit?: number) {
         return drainReviewIntents(limit);
+      },
+      getReviewIntentQueueStatus(now: Date) {
+        return (
+          options.reviewIntentConsumer?.getQueueStatus?.(now) ??
+          Promise.resolve({ readyCount: 0, deferredCount: 0, claimedCount: 0 })
+        );
       },
       reapClosedPullRequestSandboxes() {
         return (
@@ -148,6 +163,7 @@ function createReviewIntentPoller(
   intervalMs: number,
 ): { stop(): void } {
   if (drainReviewIntents === undefined) return { stop() {} };
+  if (intervalMs <= 0) return { stop() {} };
 
   let running = false;
   const drain = async () => {

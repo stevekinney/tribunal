@@ -70,6 +70,10 @@ const ROUTER_HANDLED_EVENT_TYPES = new Set([
   'push',
 ]);
 
+function isPreDatabaseIgnoredWebhook(eventType: string | null, action: string | null): boolean {
+  return (eventType === 'check_run' || eventType === 'check_suite') && action !== 'completed';
+}
+
 function createWebhookDispatcher(context: WebhookContext) {
   let handlerPromise: Promise<void> | undefined;
 
@@ -163,6 +167,11 @@ export const POST: RequestHandler = async (event) => {
       console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
       return json({ ok: true, message: 'Already processed' });
     }
+  }
+
+  if (isPreDatabaseIgnoredWebhook(eventType, action)) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    return json({ ok: true, ignored: true });
   }
 
   // 4. Store event if it has a repository

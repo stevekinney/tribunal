@@ -17,8 +17,8 @@ import {
 import { toAgentDefinition } from '@tribunal/agents/definitions';
 import { agentSpecSchema, effortSchema, agentModelSchema } from '@tribunal/review-core/schemas';
 import type { AgentModel, Effort } from '@tribunal/review-core/types';
-import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
+import { postReviewEngineControl } from '$lib/server/review/engine-client';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
 const reviewModelOptions = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as const;
@@ -809,39 +809,24 @@ export async function stopAgent(userId: number, runId: string, agentId: string) 
 }
 
 async function signalEngineStop(runId: string): Promise<void> {
-  if (!env.TRIBUNAL_ENGINE_URL || !env.TRIBUNAL_ENGINE_CONTROL_TOKEN) return;
-
-  try {
-    const url = new URL(`/review-runs/${encodeURIComponent(runId)}/stop`, env.TRIBUNAL_ENGINE_URL);
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.TRIBUNAL_ENGINE_CONTROL_TOKEN}` },
-    });
-    if (!response.ok && response.status !== 404) {
-      console.warn(`Engine stop signal failed with status ${response.status}.`);
-    }
-  } catch (error) {
-    console.warn('Engine stop signal failed.', error);
+  const result = await postReviewEngineControl(`/review-runs/${encodeURIComponent(runId)}/stop`);
+  if (result.status === 'sent' && !result.ok && result.responseStatus !== 404) {
+    console.warn(`Engine stop signal failed with status ${result.responseStatus}.`);
+  }
+  if (result.status === 'failed') {
+    console.warn('Engine stop signal failed.', result.error);
   }
 }
 
 async function signalEngineStopAgent(runId: string, agentId: string): Promise<void> {
-  if (!env.TRIBUNAL_ENGINE_URL || !env.TRIBUNAL_ENGINE_CONTROL_TOKEN) return;
-
-  try {
-    const url = new URL(
-      `/review-runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}/stop`,
-      env.TRIBUNAL_ENGINE_URL,
-    );
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.TRIBUNAL_ENGINE_CONTROL_TOKEN}` },
-    });
-    if (!response.ok && response.status !== 404) {
-      console.warn(`Engine agent stop signal failed with status ${response.status}.`);
-    }
-  } catch (error) {
-    console.warn('Engine agent stop signal failed.', error);
+  const result = await postReviewEngineControl(
+    `/review-runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}/stop`,
+  );
+  if (result.status === 'sent' && !result.ok && result.responseStatus !== 404) {
+    console.warn(`Engine agent stop signal failed with status ${result.responseStatus}.`);
+  }
+  if (result.status === 'failed') {
+    console.warn('Engine agent stop signal failed.', result.error);
   }
 }
 

@@ -31,13 +31,30 @@ enablement.
 
 - Tribunal has three Fly apps: `tribunal-web`, `tribunal-engine`, and
   `tribunal-proxy`.
+- `tribunal-web` and `tribunal-proxy` stop on idle:
+  `auto_stop_machines="stop"`, `auto_start_machines=true`, and
+  `min_machines_running=0`.
 - `tribunal-engine` is private, has no public IP, and must run exactly one
   Machine.
+- `tribunal-engine` is woken through Flycast. `tribunal-web` must use
+  `TRIBUNAL_ENGINE_URL=http://tribunal-engine.flycast`; `.internal` is not
+  sufficient for stopped private Machines.
+- `tribunal-engine` binds `TRIBUNAL_ENGINE_BIND_HOST=0.0.0.0`, has
+  `REVIEW_INTENT_POLL_INTERVAL_MS=0`, and exits after idle work with
+  `ENGINE_IDLE_SHUTDOWN_SECONDS=600`.
 - `WEFT_DATABASE_URL` belongs only on `tribunal-engine`; never set it on web.
 - `TRIBUNAL_ENGINE_CONTROL_TOKEN` must match web and engine.
 - `PROXY_SIGNING_KEY` must match engine and proxy.
 - `TRIBUNAL_PROXY_CIDR` must be the dedicated proxy IPv4 with `/32`.
 - `TRIBUNAL_SANDBOX_IMAGE` must be an explicit Tensorlake release identifier.
+- Neon production scale-to-zero is project `flat-credit-58562329`, endpoint
+  `ep-round-dew-ap98dps9`, with `suspend_timeout_seconds=300`.
+- GitHub Actions environment `production` must have secrets `FLY_API_TOKEN`,
+  `MIGRATION_DATABASE_URL`, `NEON_API_KEY`, and `TENSORLAKE_API_KEY`; variables
+  `FLY_ORG=personal`, `NEON_PROJECT_ID=flat-credit-58562329`,
+  `NEON_PRODUCTION_ENDPOINT_ID=ep-round-dew-ap98dps9`,
+  and `PRODUCTION_WEB_ORIGIN`. `PRODUCTION_PROXY_ORIGIN` is optional and
+  defaults to `https://tribunal-proxy.fly.dev` when unset.
 - `ANTHROPIC_ADMIN_KEY` is an Anthropic Admin API key, not a normal model API
   key. It should have the `sk-ant-admin...` prefix and is required by engine
   cost reporting.
@@ -118,14 +135,17 @@ work. Do not print secret values.
    docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
    docker build -f deployment/containers/reviewer.Dockerfile -t tribunal-reviewer:test .
    ```
-3. Create or verify Fly apps and proxy IPv4. Confirm `tribunal-engine` has no
-   public IP.
+3. Create or verify Fly apps, proxy IPv4, and the engine private Flycast IPv6:
+   `flyctl ips allocate-v6 --private --app tribunal-engine` if missing. Confirm
+   `tribunal-engine` has no public IP.
 4. Prepare Neon:
    - Use pooled runtime URLs for Fly services.
    - Use a direct, unpooled URL for migrations.
    - Use a separate `WEFT_DATABASE_URL` database or connection for engine-owned
      durable review state.
    - Add the production web domain to the Neon Auth branch trusted-domain list.
+   - Patch the production endpoint to scale to zero:
+     `{"endpoint":{"suspend_timeout_seconds":300}}`.
 5. Publish the reviewer image to Tensorlake and record the returned image
    identifier as `TRIBUNAL_SANDBOX_IMAGE`.
 6. Set Fly secrets by app according to the tables in the deployment docs.
@@ -147,25 +167,22 @@ work. Do not print secret values.
    single-line keys needed for the workflow.
 8. Run migrations with the direct Neon URL:
    `DATABASE_URL="$MIGRATION_DATABASE_URL" bun run db:migrate`.
-9. Deploy in dependency order: proxy, engine, web.
-10. After deploying engine, run `flyctl scale count 1 --app tribunal-engine` and
-    verify exactly one Machine.
-
-If current `flyctl` resolves `build.dockerfile` relative to the Fly config file
-and produces a path like `deployment/fly/deployment/containers/...`, create an
-ignored temporary config under `.tmp/fly/` with corrected relative Dockerfile
-paths. Do not edit production TOML just to work around local CLI path behavior.
+9. Deploy in dependency order with explicit Dockerfile paths:
+   `flyctl deploy . --config deployment/fly/<app>.toml --dockerfile deployment/containers/<app>.Dockerfile`.
+10. After each deploy, run `flyctl scale count 1 --yes --app <app>` and verify
+    exactly one non-destroyed Machine per app.
 
 ## Safe-Mode Health Gates
 
 Run these before enabling live reviews and after any deploy or rollback:
 
 ```sh
-bun run deploy:status
-curl -fsS https://tribunal-proxy.fly.dev/health
+bun run deploy:status -- --live-status-only
+proxy_origin="${PRODUCTION_PROXY_ORIGIN:-https://tribunal-proxy.fly.dev}"
+curl -fsS "${proxy_origin%/}/health"
 curl -fsS https://<web-domain>/health
-flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
-status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
+flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
+status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
 test "$status" = "401" || test "$status" = "403"
 bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
 flyctl machines list --app tribunal-engine
@@ -174,6 +191,10 @@ flyctl ips list --app tribunal-engine
 
 The engine health response must include `singleton_lock: true`. Also verify the
 deployed engine still has `REVIEWS_ENABLED=false` during safe-mode validation.
+For idle-cost validation, stop validation traffic, wait at least 15 minutes, and
+verify the three Fly Machines are stopped or eligible to stop and Neon endpoint
+`ep-round-dew-ap98dps9` reports `suspend_timeout_seconds=300` and eventually
+`current_state=idle`.
 
 ## Triage Workflow
 
@@ -192,7 +213,8 @@ Start with evidence, not changes:
    - **Web health fails**: check `DATABASE_URL`, `REDIS_URL`, Neon Auth URLs,
      GitHub OAuth callback, and web logs.
    - **Engine health fails**: check `WEFT_DATABASE_URL`, exactly one Machine,
-     private DNS, `ANTHROPIC_ADMIN_KEY`, Tensorlake image, and advisory lock.
+     Flycast private ingress, `ANTHROPIC_ADMIN_KEY`, Tensorlake image, and
+     advisory lock.
    - **Proxy health fails**: check `DATABASE_URL`, `REDIS_URL`,
      `ANTHROPIC_API_KEY`, `PROXY_CA_CERT`, `PROXY_SIGNING_KEY`, and proxy logs.
    - **Unauthorized proxy returns 2xx**: treat as a security blocker; do not

@@ -16,6 +16,10 @@ import {
   type PullRequestReviewThreadResolvedEvent,
   type PullRequestReviewThreadUnresolvedEvent,
 } from '@tribunal/github/webhooks/validate-github-webhook';
+import {
+  hasDurableReviewIntentForDrain,
+  kickReviewEngineAfterDurableIntent,
+} from './review-engine-kick.server';
 
 export async function handleReviewThread(
   action: string | null,
@@ -68,10 +72,11 @@ async function signalReviewThread(
     );
   }
 
-  if (!result.enqueued) {
+  if (!hasDurableReviewIntentForDrain(result)) {
     logger.debug(`Review thread ${action} did not map to a durable review intent`);
     return;
   }
 
   logger.info(`Review thread ${action} review intent enqueued`);
+  await kickReviewEngineAfterDurableIntent(result, logger);
 }

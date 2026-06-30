@@ -6,6 +6,7 @@ import {
   createEngineRuntime,
   type EngineRuntime,
   type EngineSingletonLock,
+  type ReviewIntentQueueStatus,
 } from './workflows/bootstrap';
 import { createPostgresAdvisoryLock } from './workflows/postgres-advisory-lock';
 import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
@@ -27,35 +28,63 @@ if (import.meta.main) {
     lock: storageConfiguration.lock,
     healthDependencies: storageConfiguration.healthDependencies,
     reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
+    reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
     allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
   });
+  let activeSandboxReaperRuns = 0;
+  const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
+    idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
+    isBackgroundWorkActive: () => activeSandboxReaperRuns > 0,
+  });
 
-  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime);
-  Bun.serve(
+  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime, setInterval, {
+    onRunStart: () => {
+      activeSandboxReaperRuns += 1;
+    },
+    onRunComplete: () => {
+      activeSandboxReaperRuns = Math.max(0, activeSandboxReaperRuns - 1);
+    },
+  });
+  const server = Bun.serve(
     createEngineServerOptions(
       port,
       runtime,
       environment.TRIBUNAL_ENGINE_CONTROL_TOKEN,
       environment.TRIBUNAL_ENGINE_BIND_HOST,
+      reviewIntentKickScheduler,
     ),
   );
+  reviewIntentKickScheduler.kick();
+  console.log(`[engine] listening on ${server.hostname}:${server.port}`);
 }
 
 export function startSandboxReaper(
   intervalSeconds: number,
   runtime: Pick<EngineRuntime, 'reapClosedPullRequestSandboxes'>,
   setIntervalFunction: typeof setInterval = setInterval,
+  hooks: SandboxReaperHooks = {},
 ): ReturnType<typeof setInterval> | undefined {
   if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return undefined;
 
   const timer = setIntervalFunction(() => {
-    void runtime.reapClosedPullRequestSandboxes().catch((error) => {
-      console.error('[engine] sandbox reaper failed', error);
-    });
+    hooks.onRunStart?.();
+    void Promise.resolve()
+      .then(() => runtime.reapClosedPullRequestSandboxes())
+      .catch((error) => {
+        console.error('[engine] sandbox reaper failed', error);
+      })
+      .finally(() => {
+        hooks.onRunComplete?.();
+      });
   }, intervalSeconds * 1_000);
   timer.unref?.();
   return timer;
 }
+
+export type SandboxReaperHooks = {
+  onRunStart?: () => void;
+  onRunComplete?: () => void;
+};
 
 export function createStorageConfigurationFromEnvironment(environment: {
   NODE_ENV?: string;
@@ -111,6 +140,7 @@ export function createEngineServerOptions(
   runtime: EngineRuntime,
   controlToken: string,
   hostname?: string,
+  reviewIntentKickScheduler: ReviewIntentKickScheduler = createReviewIntentKickScheduler(runtime),
 ) {
   return {
     port,
@@ -126,6 +156,16 @@ export function createEngineServerOptions(
         }
         const processed = await runtime.drainReviewIntents();
         return Response.json({ ok: true, processed });
+      }
+      if (url.pathname === '/review-intents/kick' && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const result = reviewIntentKickScheduler.kick();
+        if (!result.started && result.reason === 'released') {
+          return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
+        }
+        return Response.json({ ok: true, started: result.started }, { status: 202 });
       }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
       if (stopMatch !== null && request.method === 'POST') {
@@ -153,6 +193,166 @@ export function createEngineServerOptions(
         return Response.json({ ok: true, stopped: true });
       }
       return new Response('Not found', { status: 404 });
+    },
+  };
+}
+
+export type ReviewIntentKickScheduler = {
+  kick(): ReviewIntentKickResult;
+  stop(): void;
+};
+
+export type ReviewIntentKickResult =
+  | { started: true }
+  | { started: false; reason: 'already_running' | 'released' };
+
+export type ReviewIntentKickSchedulerOptions = {
+  idleShutdownSeconds?: number;
+  drainLimit?: number;
+  now?: () => Date;
+  exit?: (code: number) => void;
+  logger?: Pick<typeof console, 'error' | 'log'>;
+  setTimeoutFunction?: typeof setTimeout;
+  clearTimeoutFunction?: typeof clearTimeout;
+  isBackgroundWorkActive?: () => boolean;
+};
+
+export function createReviewIntentKickScheduler(
+  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'>,
+  options: ReviewIntentKickSchedulerOptions = {},
+): ReviewIntentKickScheduler {
+  const drainLimit = options.drainLimit ?? 5;
+  const now = options.now ?? (() => new Date());
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const logger = options.logger ?? console;
+  const setTimeoutFunction = options.setTimeoutFunction ?? setTimeout;
+  const clearTimeoutFunction = options.clearTimeoutFunction ?? clearTimeout;
+  const isBackgroundWorkActive = options.isBackgroundWorkActive ?? (() => false);
+  const idleShutdownMs =
+    options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
+
+  let activeDrain: Promise<void> | undefined;
+  let drainGeneration = 0;
+  let idleShutdownTimer: ReturnType<typeof setTimeout> | undefined;
+  let kickRequestedDuringDrain = false;
+  let released = false;
+
+  const clearIdleShutdownTimer = () => {
+    if (idleShutdownTimer === undefined) return;
+    clearTimeoutFunction(idleShutdownTimer);
+    idleShutdownTimer = undefined;
+  };
+
+  const scheduleIdleShutdownCheck = (delayMs: number) => {
+    if (idleShutdownMs === undefined || released) return;
+    clearIdleShutdownTimer();
+    idleShutdownTimer = setTimeoutFunction(() => {
+      idleShutdownTimer = undefined;
+      void shutdownIfIdle();
+    }, delayMs);
+    idleShutdownTimer.unref?.();
+  };
+
+  const scheduleConfiguredIdleShutdown = () => {
+    if (idleShutdownMs === undefined) return;
+    scheduleIdleShutdownCheck(idleShutdownMs);
+  };
+
+  const startDrain = (): ReviewIntentKickResult => {
+    if (released) return { started: false, reason: 'released' };
+    clearIdleShutdownTimer();
+    if (activeDrain !== undefined) {
+      kickRequestedDuringDrain = true;
+      return { started: false, reason: 'already_running' };
+    }
+
+    drainGeneration += 1;
+    activeDrain = drainUntilIdle()
+      .catch((error) => {
+        logger.error('[engine] review intent kick drain failed', error);
+      })
+      .finally(() => {
+        activeDrain = undefined;
+        if (kickRequestedDuringDrain) {
+          kickRequestedDuringDrain = false;
+          startDrain();
+          return;
+        }
+        scheduleConfiguredIdleShutdown();
+      });
+
+    return { started: true };
+  };
+
+  const hasDeferredWork = (queueStatus: ReviewIntentQueueStatus): boolean => {
+    return queueStatus.deferredCount > 0;
+  };
+
+  const hasClaimedWork = (queueStatus: ReviewIntentQueueStatus): boolean => {
+    return queueStatus.claimedCount > 0;
+  };
+
+  const getDeferredDelay = (queueStatus: ReviewIntentQueueStatus): number => {
+    if (idleShutdownMs === undefined) return 0;
+    if (queueStatus.nextAttemptAt === undefined) return idleShutdownMs;
+    const untilNextAttemptMs = Math.max(
+      1_000,
+      queueStatus.nextAttemptAt.getTime() - now().getTime(),
+    );
+    return Math.min(idleShutdownMs, untilNextAttemptMs);
+  };
+
+  const shutdownIfIdle = async () => {
+    if (released || activeDrain !== undefined) return;
+    const observedDrainGeneration = drainGeneration;
+    const hasNewDrainActivity = () =>
+      activeDrain !== undefined || drainGeneration !== observedDrainGeneration;
+
+    try {
+      const processed = await runtime.drainReviewIntents(drainLimit);
+      if (hasNewDrainActivity()) return;
+      if (processed > 0) {
+        startDrain();
+        return;
+      }
+
+      const queueStatus = await runtime.getReviewIntentQueueStatus(now());
+      if (hasNewDrainActivity()) return;
+      if (queueStatus.readyCount > 0) {
+        startDrain();
+        return;
+      }
+      if (hasDeferredWork(queueStatus)) {
+        scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
+        return;
+      }
+      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive()) {
+        scheduleConfiguredIdleShutdown();
+        return;
+      }
+
+      released = true;
+      await runtime.release();
+      logger.log('[engine] idle shutdown complete');
+      exit(0);
+    } catch (error) {
+      released = false;
+      logger.error('[engine] idle shutdown check failed', error);
+      scheduleConfiguredIdleShutdown();
+    }
+  };
+
+  const drainUntilIdle = async () => {
+    while (!released) {
+      const processed = await runtime.drainReviewIntents(drainLimit);
+      if (processed === 0) return;
+    }
+  };
+
+  return {
+    kick: startDrain,
+    stop() {
+      clearIdleShutdownTimer();
     },
   };
 }

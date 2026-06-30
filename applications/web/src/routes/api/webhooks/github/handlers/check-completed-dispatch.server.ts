@@ -7,6 +7,10 @@
 import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
 import { signalPullRequestEvent } from '@tribunal/github/pull-requests/state/workflow-signals';
+import {
+  hasDurableReviewIntentForDrain,
+  kickReviewEngineAfterDurableIntentCount,
+} from './review-engine-kick.server';
 
 /**
  * Parameters for observing check-completed review-engine signals.
@@ -68,10 +72,14 @@ export async function dispatchCheckCompletedSignals(
   }
 
   const enqueuedCount = results.filter((result) => result.enqueued).length;
-  if (enqueuedCount === 0) {
+  const durableIntentCount = results.filter(hasDurableReviewIntentForDrain).length;
+  if (durableIntentCount === 0) {
     logger.debug(`${eventLabel} completed did not map to durable review intents`);
     return;
   }
 
-  logger.info(`${eventLabel} completed review intents enqueued for ${enqueuedCount} PR(s)`);
+  logger.info(
+    `${eventLabel} completed review intents ready for ${durableIntentCount} PR(s); ${enqueuedCount} newly enqueued`,
+  );
+  await kickReviewEngineAfterDurableIntentCount(durableIntentCount, logger);
 }

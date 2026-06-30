@@ -26,6 +26,9 @@ jobs:
       FLY_ORG: ${{ vars.FLY_ORG }}
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+      NEON_PRODUCTION_ENDPOINT_ID: ${{ vars.NEON_PRODUCTION_ENDPOINT_ID }}
       PRODUCTION_PROXY_ORIGIN: ${{ vars.PRODUCTION_PROXY_ORIGIN || 'https://tribunal-proxy.fly.dev' }}
       PRODUCTION_WEB_ORIGIN: ${{ vars.PRODUCTION_WEB_ORIGIN }}
       TENSORLAKE_API_KEY: ${{ secrets.TENSORLAKE_API_KEY }}
@@ -68,6 +71,9 @@ jobs:
             FLY_API_TOKEN \
             FLY_ORG \
             MIGRATION_DATABASE_URL \
+            NEON_API_KEY \
+            NEON_PROJECT_ID \
+            NEON_PRODUCTION_ENDPOINT_ID \
             PRODUCTION_WEB_ORIGIN \
             TENSORLAKE_API_KEY
           do
@@ -87,7 +93,7 @@ jobs:
           flyctl config validate --config deployment/fly/proxy.toml
 
       - name: Verify pre-deploy Fly state
-        run: bun run deploy:status -- --live-status-only --allow-missing-sandbox-image --allow-pending-engine-machine
+        run: bun run deploy:status -- --live-status-only --allow-missing-sandbox-image --allow-pending-engine-machine --allow-pending-cost-optimization
 
       - name: Build reviewer image
         shell: bash
@@ -134,17 +140,41 @@ jobs:
       - name: Deploy proxy
         run: flyctl deploy . --config deployment/fly/proxy.toml --dockerfile deployment/containers/proxy.Dockerfile
 
+      - name: Enforce singleton proxy
+        run: flyctl scale count 1 --yes --app tribunal-proxy
+
       - name: Deploy engine
         run: flyctl deploy . --config deployment/fly/engine.toml --dockerfile deployment/containers/engine.Dockerfile
 
       - name: Enforce singleton engine
-        run: flyctl scale count 1 --app tribunal-engine
+        run: flyctl scale count 1 --yes --app tribunal-engine
 
       - name: Deploy web
         run: flyctl deploy . --config deployment/fly/web.toml --dockerfile deployment/containers/web.Dockerfile
 
+      - name: Enforce singleton web
+        run: flyctl scale count 1 --yes --app tribunal-web
+
       - name: Verify post-deploy Fly state
         run: bun run deploy:status -- --live-status-only
+
+      - name: Verify Neon production scale-to-zero
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS \
+            -H "Authorization: Bearer ${NEON_API_KEY}" \
+            -H "Accept: application/json" \
+            "https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}/endpoints/${NEON_PRODUCTION_ENDPOINT_ID}")"
+          suspend_timeout_seconds="$(jq -r '.endpoint.suspend_timeout_seconds // empty' <<< "$response")"
+          current_state="$(jq -r '.endpoint.current_state // empty' <<< "$response")"
+          if [ "$suspend_timeout_seconds" != "300" ]; then
+            echo "::error::Expected Neon production suspend_timeout_seconds=300, got ${suspend_timeout_seconds:-missing}"
+            jq '.endpoint | {id, suspend_timeout_seconds, current_state}' <<< "$response"
+            exit 1
+          fi
+          echo "- Neon suspend timeout: \`${suspend_timeout_seconds}\` seconds" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Neon current state: \`${current_state:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify public health checks
         shell: bash
@@ -160,7 +190,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); const health = await response.json(); console.log(JSON.stringify(health)); const singleton = health.dependencies?.find((dependency) => dependency.name === \"singleton_lock\"); process.exit(response.ok && health.ok === true && singleton?.ok === true ? 0 : 1)"'
+          flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); const health = await response.json(); console.log(JSON.stringify(health)); const singleton = health.dependencies?.find((dependency) => dependency.name === \"singleton_lock\"); process.exit(response.ok && health.ok === true && singleton?.ok === true ? 0 : 1)"'
 
       - name: Verify unauthorized proxy behavior
         shell: bash
@@ -191,7 +221,7 @@ jobs:
           fi
 
           flyctl ips list --app tribunal-engine --json > "$RUNNER_TEMP/tribunal-engine-ips.json"
-          public_ip_count="$(jq '[.[] | select(((.Type // .type) != "private_v6") and ((.Type // .type) != "egress_v4") and ((.Type // .type) != "egress_v6"))] | length' "$RUNNER_TEMP/tribunal-engine-ips.json")"
+          public_ip_count="$(jq '[.[] | select(((.Type // .type) != "private") and ((.Type // .type) != "private_v6") and ((.Type // .type) != "egress_v4") and ((.Type // .type) != "egress_v6"))] | length' "$RUNNER_TEMP/tribunal-engine-ips.json")"
           if [ "$public_ip_count" != "0" ]; then
             echo "::error::tribunal-engine must not have public ingress IPs"
             cat "$RUNNER_TEMP/tribunal-engine-ips.json"
