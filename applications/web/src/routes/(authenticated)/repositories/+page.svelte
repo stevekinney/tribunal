@@ -30,8 +30,8 @@
   /**
    * Optimistic watch states keyed by repository ID. Populated on toggle click and
    * cleared after the form action's `update()` resolves, so the server state takes
-   * over again. Rolled back automatically when the action fails because `update()`
-   * does not invalidate on failure, leaving the server value unchanged.
+   * over again. On failure, clearing the local state rolls the UI back to the
+   * last server-confirmed value.
    */
   const localWatchStates = new SvelteMap<number, boolean>();
   const activeWatchSubmissions = new SvelteSet<number>();
