@@ -244,6 +244,9 @@ Required `production` environment variables:
 - `NEON_PROJECT_ID`: `flat-credit-58562329`.
 - `NEON_PRODUCTION_ENDPOINT_ID`: `ep-round-dew-ap98dps9`.
 - `PRODUCTION_WEB_ORIGIN`: production web origin used for `/health`.
+
+Optional `production` environment variables:
+
 - `PRODUCTION_PROXY_ORIGIN`: production proxy origin used for proxy health and
   unauthorized-request checks. If unset, the workflow defaults to
   `https://tribunal-proxy.fly.dev`.

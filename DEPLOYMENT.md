@@ -251,8 +251,11 @@ Create a GitHub Actions environment named `production` with these inputs:
   - `NEON_PRODUCTION_ENDPOINT_ID`: `ep-round-dew-ap98dps9`.
   - `PRODUCTION_WEB_ORIGIN`: production web origin, for example
     `https://<web-domain>`.
-  - `PRODUCTION_PROXY_ORIGIN`: production proxy origin. Omit this only when
-    using the default `https://tribunal-proxy.fly.dev`.
+
+Optional variables:
+
+- `PRODUCTION_PROXY_ORIGIN`: production proxy origin. Omit this only when
+  using the default `https://tribunal-proxy.fly.dev`.
 
 Keep long-lived runtime application secrets in Fly. The deploy workflow does not
 copy database, Redis, GitHub App, Anthropic, encryption, proxy signing, or control
