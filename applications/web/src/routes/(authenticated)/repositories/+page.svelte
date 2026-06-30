@@ -307,7 +307,14 @@
                           class="settings-select"
                         >
                           {#each agents as agent (agent.id)}
-                            <option value={agent.id} selected={agent.enabled}>
+                            <option
+                              value={agent.id}
+                              selected={repository.review.hasSavedSettings
+                                ? repository.review.agents.some(
+                                    (assigned) => assigned.id === agent.id,
+                                  )
+                                : agent.enabled}
+                            >
                               {agent.slug}{agent.enabled ? '' : ' (disabled)'}
                             </option>
                           {/each}
@@ -322,6 +329,7 @@
                         spellcheck="false"
                         class="settings-textarea"
                         placeholder="One glob per line…"
+                        value={repository.review.ignoreGlobs.join('\n')}
                       ></textarea>
                     </label>
                   {/if}
@@ -421,7 +429,7 @@
 
   .settings-hint {
     font-size: var(--text-xs);
-    color: var(--text-disabled);
+    color: var(--text-muted);
   }
 
   .settings-select,
@@ -491,5 +499,22 @@
     flex-direction: column;
     gap: var(--space-1);
     width: 16rem;
+  }
+
+  @media (max-width: 640px) {
+    .search-result-item {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .search-result-action {
+      align-items: stretch;
+      flex-shrink: 1;
+      width: 100%;
+    }
+
+    .search-result-field {
+      width: 100%;
+    }
   }
 </style>

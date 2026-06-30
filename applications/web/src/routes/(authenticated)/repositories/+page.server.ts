@@ -64,6 +64,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       accountLogin: entry.installation.accountLogin,
       accountAvatarUrl: entry.installation.accountAvatarUrl,
       review: operatorDetails.get(entry.repository.id) ?? {
+        hasSavedSettings: false,
         watched: false,
         ignoreGlobs: [],
         agents: [],
