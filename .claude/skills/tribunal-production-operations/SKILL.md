@@ -89,6 +89,19 @@ enablement.
 - Current Tensorlake limits may require publishing the reviewer image with
   `--cpus 1 --memory 1024`. Publish from a narrow temporary build context, not
   the whole repository, to avoid slow or stuck uploads.
+- A failed `Deploy Production` workflow that stops at
+  `Validate deployment configuration` with missing `FLY_API_TOKEN`, `FLY_ORG`,
+  `MIGRATION_DATABASE_URL`, `PRODUCTION_WEB_ORIGIN`, and `TENSORLAKE_API_KEY`
+  usually means the GitHub Actions `production` environment is empty. Check with
+  `gh secret list --env production` and `gh variable list --env production`
+  before debugging Fly runtime state.
+- The local `.env` may not contain every GitHub Actions environment value under
+  the exact workflow name. Set `PRODUCTION_WEB_ORIGIN` from the origin portion of
+  `GITHUB_REDIRECT_URI`, set `PRODUCTION_PROXY_ORIGIN` from
+  `TRIBUNAL_PROXY_URL` when present, and use `flyctl auth token` for
+  `FLY_API_TOKEN` if no `FLY_API_TOKEN` key exists. The installed `gh` may read
+  secret values from standard input when `--body` is omitted; do not assume
+  `gh secret set --body-file` exists.
 
 ## First Deploy Workflow
 
@@ -116,10 +129,26 @@ work. Do not print secret values.
 5. Publish the reviewer image to Tensorlake and record the returned image
    identifier as `TRIBUNAL_SANDBOX_IMAGE`.
 6. Set Fly secrets by app according to the tables in the deployment docs.
-7. Run migrations with the direct Neon URL:
+7. Set the GitHub Actions `production` environment for automatic main deploys:
+   ```sh
+   flyctl auth token | gh secret set FLY_API_TOKEN --env production
+   printf '%s' "$MIGRATION_DATABASE_URL" | gh secret set MIGRATION_DATABASE_URL --env production
+   printf '%s' "$TENSORLAKE_API_KEY" | gh secret set TENSORLAKE_API_KEY --env production
+   gh variable set FLY_ORG --env production --body "$FLY_ORG"
+   gh variable set PRODUCTION_WEB_ORIGIN --env production --body "${GITHUB_REDIRECT_URI%%/connect/github/account/callback}"
+   if [ -n "${TRIBUNAL_PROXY_URL:-}" ]; then
+     gh variable set PRODUCTION_PROXY_ORIGIN --env production --body "$TRIBUNAL_PROXY_URL"
+   fi
+   gh secret list --env production
+   gh variable list --env production
+   ```
+   Do not print secret values while extracting them from `.env`; if sourcing
+   `.env` fails because of multiline or malformed values, extract only the exact
+   single-line keys needed for the workflow.
+8. Run migrations with the direct Neon URL:
    `DATABASE_URL="$MIGRATION_DATABASE_URL" bun run db:migrate`.
-8. Deploy in dependency order: proxy, engine, web.
-9. After deploying engine, run `flyctl scale count 1 --app tribunal-engine` and
+9. Deploy in dependency order: proxy, engine, web.
+10. After deploying engine, run `flyctl scale count 1 --app tribunal-engine` and
    verify exactly one Machine.
 
 If current `flyctl` resolves `build.dockerfile` relative to the Fly config file
@@ -177,6 +206,10 @@ Start with evidence, not changes:
      reconnect by invalidating the row only after user approval.
    - **Tensorlake failures**: verify the published reviewer image identifier,
      proxy URL/CIDR, and sandbox resource limits.
+   - **Deploy workflow configuration fails before deploy**: inspect
+     `gh run view <run-id> --log-failed`, then set or repair the GitHub
+     Actions `production` environment secrets and variables before rerunning the
+     workflow.
 4. Fix the smallest failing layer and re-run all safe-mode gates.
 
 Stop and report a blocker instead of guessing when the missing information is a

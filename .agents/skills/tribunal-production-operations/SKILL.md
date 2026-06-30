@@ -95,8 +95,8 @@ enablement.
   usually means the GitHub Actions `production` environment is empty. Check with
   `gh secret list --env production` and `gh variable list --env production`
   before debugging Fly runtime state.
-- The local `.env` may not contain every GitHub Actions input under the exact
-  workflow name. Set `PRODUCTION_WEB_ORIGIN` from the origin portion of
+- The local `.env` may not contain every GitHub Actions environment value under
+  the exact workflow name. Set `PRODUCTION_WEB_ORIGIN` from the origin portion of
   `GITHUB_REDIRECT_URI`, set `PRODUCTION_PROXY_ORIGIN` from
   `TRIBUNAL_PROXY_URL` when present, and use `flyctl auth token` for
   `FLY_API_TOKEN` if no `FLY_API_TOKEN` key exists. The installed `gh` may read
@@ -136,7 +136,9 @@ work. Do not print secret values.
    printf '%s' "$TENSORLAKE_API_KEY" | gh secret set TENSORLAKE_API_KEY --env production
    gh variable set FLY_ORG --env production --body "$FLY_ORG"
    gh variable set PRODUCTION_WEB_ORIGIN --env production --body "${GITHUB_REDIRECT_URI%%/connect/github/account/callback}"
-   gh variable set PRODUCTION_PROXY_ORIGIN --env production --body "$TRIBUNAL_PROXY_URL"
+   if [ -n "${TRIBUNAL_PROXY_URL:-}" ]; then
+     gh variable set PRODUCTION_PROXY_ORIGIN --env production --body "$TRIBUNAL_PROXY_URL"
+   fi
    gh secret list --env production
    gh variable list --env production
    ```
