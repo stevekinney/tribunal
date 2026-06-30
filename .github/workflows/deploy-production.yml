@@ -112,6 +112,8 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir "tensorlake==${TENSORLAKE_CLI_VERSION}"
           registered_image_name="tribunal-reviewer-${DEPLOY_SHA}"
           tl sbx image create deployment/containers/reviewer.Dockerfile \
+            --cpus 1 \
+            --memory 1024 \
             --registered-name "$registered_image_name" \
             | tee "$RUNNER_TEMP/tensorlake-image-create.log"
           published_image="$(grep -Fo "$registered_image_name" "$RUNNER_TEMP/tensorlake-image-create.log" | tail -n 1 || true)"
