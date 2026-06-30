@@ -86,11 +86,22 @@ function createReadyMachine(
   };
 }
 
-function createFlyState(engineMachineCount: number): FlyState {
+function createFlyState(
+  engineMachineCount: number,
+  overrides: {
+    engineEnvironment?: Record<string, string>;
+    webEnvironment?: Record<string, string>;
+  } = {},
+): FlyState {
   const engineMachineState =
     engineMachineCount === 0
       ? { count: 0, machines: [] }
-      : createReadyMachine('engine-machine', { TRIBUNAL_ENGINE_BIND_HOST: '0.0.0.0' }, 3001, false);
+      : createReadyMachine(
+          'engine-machine',
+          overrides.engineEnvironment ?? { TRIBUNAL_ENGINE_BIND_HOST: '0.0.0.0' },
+          3001,
+          false,
+        );
 
   return {
     authenticated: true,
@@ -109,7 +120,7 @@ function createFlyState(engineMachineCount: number): FlyState {
         'tribunal-web',
         createReadyMachine(
           'web-machine',
-          { TRIBUNAL_ENGINE_URL: 'http://tribunal-engine.flycast' },
+          overrides.webEnvironment ?? { TRIBUNAL_ENGINE_URL: 'http://tribunal-engine.flycast' },
           3000,
           'stop',
         ),
@@ -132,6 +143,20 @@ describe('collectLiveStateFailures', () => {
   it('requires the engine Machine once pending engine rollout is not allowed', () => {
     expect(collectLiveStateFailures(createFlyState(0), strictOptions)).toContain(
       'tribunal-engine has 0 Machines; expected 1',
+    );
+  });
+
+  it('requires the web Machine to expose the Flycast engine URL', () => {
+    expect(
+      collectLiveStateFailures(createFlyState(1, { webEnvironment: {} }), strictOptions),
+    ).toContain('tribunal-web TRIBUNAL_ENGINE_URL is not set; expected Flycast URL');
+  });
+
+  it('requires the engine Machine to bind for Flycast traffic', () => {
+    expect(
+      collectLiveStateFailures(createFlyState(1, { engineEnvironment: {} }), strictOptions),
+    ).toContain(
+      'tribunal-engine TRIBUNAL_ENGINE_BIND_HOST is not set; expected 0.0.0.0 for Flycast',
     );
   });
 });

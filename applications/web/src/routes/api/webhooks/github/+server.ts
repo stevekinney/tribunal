@@ -145,11 +145,6 @@ export const POST: RequestHandler = async (event) => {
 
   console.log(`GitHub webhook received: ${eventType} - ${action ?? 'N/A'}`);
 
-  if (isPreDatabaseIgnoredWebhook(eventType, action)) {
-    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
-    return json({ ok: true, ignored: true });
-  }
-
   // 3. Claim-Before-Processing Pattern
   // Claim every delivery before side effects so GitHub redeliveries cannot enqueue
   // duplicate review work or persist duplicate event records.
@@ -172,6 +167,11 @@ export const POST: RequestHandler = async (event) => {
       console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
       return json({ ok: true, message: 'Already processed' });
     }
+  }
+
+  if (isPreDatabaseIgnoredWebhook(eventType, action)) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    return json({ ok: true, ignored: true });
   }
 
   // 4. Store event if it has a repository

@@ -1171,23 +1171,29 @@ function collectMachineCostFailures(
   const webEngineUrl = environmentValueForApp(state, 'tribunal-web', 'TRIBUNAL_ENGINE_URL');
   if (webEngineUrl === 'unknown') {
     failures.push('could not read tribunal-web environment');
-  } else if (webEngineUrl !== null && webEngineUrl !== 'http://tribunal-engine.flycast') {
+  } else if (webEngineUrl === null) {
+    failures.push('tribunal-web TRIBUNAL_ENGINE_URL is not set; expected Flycast URL');
+  } else if (webEngineUrl !== 'http://tribunal-engine.flycast') {
     failures.push(`tribunal-web TRIBUNAL_ENGINE_URL is ${webEngineUrl}; expected Flycast URL`);
-  }
-
-  const engineBindHost = environmentValueForApp(
-    state,
-    'tribunal-engine',
-    'TRIBUNAL_ENGINE_BIND_HOST',
-  );
-  if (engineBindHost === 'unknown') {
-    failures.push('could not read tribunal-engine environment');
-  } else if (engineBindHost !== null && engineBindHost !== '0.0.0.0') {
-    failures.push(`tribunal-engine binds ${engineBindHost}; expected 0.0.0.0 for Flycast`);
   }
 
   const engineMachineCount = getMachineCount(state, 'tribunal-engine');
   if (!allowsPendingEngineMachine('tribunal-engine', engineMachineCount, options)) {
+    const engineBindHost = environmentValueForApp(
+      state,
+      'tribunal-engine',
+      'TRIBUNAL_ENGINE_BIND_HOST',
+    );
+    if (engineBindHost === 'unknown') {
+      failures.push('could not read tribunal-engine environment');
+    } else if (engineBindHost === null) {
+      failures.push(
+        'tribunal-engine TRIBUNAL_ENGINE_BIND_HOST is not set; expected 0.0.0.0 for Flycast',
+      );
+    } else if (engineBindHost !== '0.0.0.0') {
+      failures.push(`tribunal-engine binds ${engineBindHost}; expected 0.0.0.0 for Flycast`);
+    }
+
     const engineServices = servicesForApp(state, 'tribunal-engine');
     if (engineServices === 'unknown') {
       failures.push('could not read service configuration for tribunal-engine');

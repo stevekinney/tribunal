@@ -221,7 +221,7 @@ jobs:
           fi
 
           flyctl ips list --app tribunal-engine --json > "$RUNNER_TEMP/tribunal-engine-ips.json"
-          public_ip_count="$(jq '[.[] | select(((.Type // .type) != "private_v6") and ((.Type // .type) != "egress_v4") and ((.Type // .type) != "egress_v6"))] | length' "$RUNNER_TEMP/tribunal-engine-ips.json")"
+          public_ip_count="$(jq '[.[] | select(((.Type // .type) != "private") and ((.Type // .type) != "private_v6") and ((.Type // .type) != "egress_v4") and ((.Type // .type) != "egress_v6"))] | length' "$RUNNER_TEMP/tribunal-engine-ips.json")"
           if [ "$public_ip_count" != "0" ]; then
             echo "::error::tribunal-engine must not have public ingress IPs"
             cat "$RUNNER_TEMP/tribunal-engine-ips.json"

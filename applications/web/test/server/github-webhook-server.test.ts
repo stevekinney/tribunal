@@ -159,8 +159,9 @@ describe('GitHub webhook route', () => {
     );
   });
 
-  it('ignores non-completed check suite events after resource cache invalidation', async () => {
-    expect.assertions(7);
+  it('claims ignored check suite events before resource cache invalidation', async () => {
+    expect.assertions(8);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     const checkSuitePayload = {
       action: 'requested',
       installation: { id: 1001 },
@@ -192,16 +193,60 @@ describe('GitHub webhook route', () => {
       'webhook-secret',
       { deliveryId: 'delivery-1', eventType: 'check_suite' },
     );
-    expect(claimWebhookDeliveryMock).not.toHaveBeenCalled();
+    expect(claimWebhookDeliveryMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      'delivery-1',
+      'check_suite',
+      1001,
+    );
     expect(invalidateGitHubResourceCacheForEventMock).toHaveBeenCalledWith(
       { db: {}, cache: {} },
       'check_suite',
       'requested',
       checkSuitePayload,
     );
+    expect(claimWebhookDeliveryMock.mock.invocationCallOrder[0]).toBeLessThan(
+      invalidateGitHubResourceCacheForEventMock.mock.invocationCallOrder[0],
+    );
     expect(storeWebhookEventMock).not.toHaveBeenCalled();
     expect(handlePullRequestEventMock).not.toHaveBeenCalled();
     expect(dispatchPullRequestStateMock).not.toHaveBeenCalled();
+  });
+
+  it('skips duplicate ignored check suite events before resource cache invalidation', async () => {
+    expect.assertions(4);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(false);
+    const checkSuitePayload = {
+      action: 'requested',
+      installation: { id: 1001 },
+      repository: {
+        id: 42,
+        name: 'tribunal',
+        owner: { login: 'lostgradient' },
+      },
+      sender: { id: 1, login: 'steve' },
+      check_suite: {
+        head_sha: 'aaa111',
+        pull_requests: [],
+      },
+    };
+    validateRequestMock.mockResolvedValueOnce({
+      payload: JSON.stringify(checkSuitePayload),
+      signature: 'sha256=signature',
+      eventType: 'check_suite',
+      deliveryId: 'delivery-1',
+    });
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    const response = await POST(createEvent() as Parameters<typeof POST>[0]);
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      message: 'Already processed',
+    });
+    expect(claimWebhookDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(invalidateGitHubResourceCacheForEventMock).not.toHaveBeenCalled();
+    expect(storeWebhookEventMock).not.toHaveBeenCalled();
   });
 
   it('releases review-engine delivery claims when dispatch fails so redelivery can retry', async () => {
