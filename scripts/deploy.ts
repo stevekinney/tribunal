@@ -20,6 +20,8 @@
  *   bun run scripts/deploy.ts --live-status-only  Check Fly production invariants only.
  *   bun run scripts/deploy.ts --live-status-only --allow-missing-sandbox-image
  *                                                 Allow pre-deploy image refresh.
+ *   bun run scripts/deploy.ts --live-status-only --allow-pending-engine-machine
+ *                                                 Allow first deploy to create the engine Machine.
  *   bun run scripts/deploy.ts --help              Show this help.
  */
 
@@ -861,6 +863,7 @@ function printStatus(state: FlyState): void {
 
 type LiveStateOptions = {
   allowMissingSandboxImage: boolean;
+  allowPendingEngineMachine: boolean;
 };
 
 function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): string[] {
@@ -923,7 +926,11 @@ function collectLiveStateFailures(state: FlyState, options: LiveStateOptions): s
 
   if (state.engineMachineCount === 'unknown') {
     failures.push('could not read engine Machines');
-  } else if (state.engineMachineCount !== null && state.engineMachineCount !== 1) {
+  } else if (
+    state.engineMachineCount !== null &&
+    state.engineMachineCount !== 1 &&
+    !(options.allowPendingEngineMachine && state.engineMachineCount === 0)
+  ) {
     failures.push(`tribunal-engine has ${state.engineMachineCount ?? 0} Machines; expected 1`);
   }
 
@@ -995,6 +1002,10 @@ function printHelp(): void {
     listItem('bun run scripts/deploy.ts --live-status-only --allow-missing-sandbox-image'),
   );
   console.log(dim('    Allow pre-deploy automation to refresh TRIBUNAL_SANDBOX_IMAGE.'));
+  console.log(
+    listItem('bun run scripts/deploy.ts --live-status-only --allow-pending-engine-machine'),
+  );
+  console.log(dim('    Allow first-deploy automation to create the engine Machine.'));
   console.log(listItem('bun run scripts/deploy.ts --help   Show this help'));
   console.log('');
   console.log(dim('  All values live in .env; multiline secrets (GITHUB_APP_PRIVATE_KEY,'));
@@ -1016,6 +1027,7 @@ async function run(): Promise<void> {
 
   const liveStatusOnly = process.argv.includes('--live-status-only');
   const allowMissingSandboxImage = process.argv.includes('--allow-missing-sandbox-image');
+  const allowPendingEngineMachine = process.argv.includes('--allow-pending-engine-machine');
 
   if (!Bun.which('flyctl')) {
     console.log('');
@@ -1040,7 +1052,10 @@ async function run(): Promise<void> {
   printStatus(state);
 
   if (liveStatusOnly) {
-    const failures = collectLiveStateFailures(state, { allowMissingSandboxImage });
+    const failures = collectLiveStateFailures(state, {
+      allowMissingSandboxImage,
+      allowPendingEngineMachine,
+    });
     if (failures.length > 0) {
       console.log(errorHeader('Live production invariant failures'));
       console.log('');
