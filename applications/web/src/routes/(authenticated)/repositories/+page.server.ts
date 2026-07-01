@@ -37,6 +37,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const result = await getRepositoriesForUser(user.id);
 
   if (!result.ok) {
+    if (result.error === 'no_github_token' && !routeError) {
+      redirect(
+        302,
+        `/connect/github/account?returnTo=${encodeURIComponent(url.pathname + url.search)}`,
+      );
+    }
+
     // No usable GitHub token, or GitHub was unreachable. Render the page with a
     // connect prompt instead of a hard error so the user has an obvious next step.
     return {
