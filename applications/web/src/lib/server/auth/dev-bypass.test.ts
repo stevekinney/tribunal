@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   env: {
     DEV_AUTH_BYPASS: undefined as string | undefined,
+    DEV_AUTH_BYPASS_USER: undefined as string | undefined,
     E2E_TEST_MODE: undefined as string | undefined,
   },
   environment: { dev: true, building: false },
@@ -22,7 +23,11 @@ vi.mock('$app/environment', () => ({
 // db/schema are imported by the module under test but never exercised here.
 vi.mock('$lib/server/database', () => ({ db: {} }));
 
-import { assertDevAuthBypassNotInProduction, isDevAuthBypassEnabled } from './dev-bypass';
+import {
+  assertDevAuthBypassNotInProduction,
+  bypassUsername,
+  isDevAuthBypassEnabled,
+} from './dev-bypass';
 
 describe('assertDevAuthBypassNotInProduction', () => {
   it('throws when the flag is armed outside a dev runtime', () => {
@@ -63,5 +68,30 @@ describe('isDevAuthBypassEnabled', () => {
     mocks.env.DEV_AUTH_BYPASS = '1';
     mocks.environment.dev = false;
     expect(isDevAuthBypassEnabled()).toBe(false);
+  });
+});
+
+describe('bypassUsername', () => {
+  beforeEach(() => {
+    mocks.env.DEV_AUTH_BYPASS_USER = undefined;
+  });
+
+  it('defaults to "dev" when unset', () => {
+    expect(bypassUsername()).toBe('dev');
+  });
+
+  it('lowercases and uses a configured username', () => {
+    mocks.env.DEV_AUTH_BYPASS_USER = 'Alice';
+    expect(bypassUsername()).toBe('alice');
+  });
+
+  it('falls back to the default for a reserved username', () => {
+    mocks.env.DEV_AUTH_BYPASS_USER = 'admin';
+    expect(bypassUsername()).toBe('dev');
+  });
+
+  it('falls back to the default for a malformed username', () => {
+    mocks.env.DEV_AUTH_BYPASS_USER = '-bad-';
+    expect(bypassUsername()).toBe('dev');
   });
 });

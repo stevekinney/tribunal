@@ -21,6 +21,7 @@ import { env } from '$env/dynamic/private';
 import { sql } from 'drizzle-orm';
 import { user as userTable } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
+import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 
 const BYPASS_FLAG = '1';
@@ -68,26 +69,38 @@ if (!building) {
   assertDevAuthBypassNotInProduction({ dev, DEV_AUTH_BYPASS: env.DEV_AUTH_BYPASS });
 }
 
-function bypassUsername(): string {
+/**
+ * Resolve the bypass username, falling back to the default (and warning) if
+ * `DEV_AUTH_BYPASS_USER` fails the same format/reserved-word rules the `user`
+ * table enforces — surfacing a clear warning beats a raw constraint violation
+ * from a bad insert.
+ */
+export function bypassUsername(): string {
   const configured = env.DEV_AUTH_BYPASS_USER?.trim().toLowerCase();
-  return configured && configured.length > 0 ? configured : DEFAULT_BYPASS_USERNAME;
+  if (!configured) return DEFAULT_BYPASS_USERNAME;
+
+  const validation = validateHandleFormat(configured);
+  if (!validation.valid) {
+    console.warn(
+      `DEV_AUTH_BYPASS_USER=${JSON.stringify(configured)} is not a valid username (${validation.error}); falling back to "${DEFAULT_BYPASS_USERNAME}".`,
+    );
+    return DEFAULT_BYPASS_USERNAME;
+  }
+
+  return configured;
 }
 
 /**
  * Resolve (creating on first use) the local user the bypass logs in as. Seeding
  * a real row means write actions like watching a repository don't fail on
  * foreign keys, matching how the E2E flow seeds a user.
+ *
+ * Uses an atomic upsert rather than select-then-insert: two concurrent
+ * first-touch requests would otherwise both miss the select and race on the
+ * unique username index, surfacing an unhandled constraint violation.
  */
 async function resolveBypassUser(username: string): Promise<AuthenticatedApplicationUser> {
-  const [existing] = await db
-    .select(userColumns)
-    .from(userTable)
-    .where(sql`lower(${userTable.username}) = ${username}`)
-    .limit(1);
-
-  if (existing) return existing;
-
-  const [created] = await db
+  await db
     .insert(userTable)
     .values({
       username,
@@ -95,9 +108,19 @@ async function resolveBypassUser(username: string): Promise<AuthenticatedApplica
       neonAuthUserId: `dev-bypass:${username}`,
       name: 'Dev User',
     })
-    .returning(userColumns);
+    .onConflictDoNothing();
 
-  return created;
+  const [user] = await db
+    .select(userColumns)
+    .from(userTable)
+    .where(sql`lower(${userTable.username}) = ${username}`)
+    .limit(1);
+
+  if (!user) {
+    throw new Error(`Dev auth bypass: failed to resolve or create user "${username}".`);
+  }
+
+  return user;
 }
 
 /**
