@@ -442,10 +442,8 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
       generationFenced: true,
     });
 
-    await engine!.start('pull-request-orchestrator', BASE_INPUT, {
-      id: WORKFLOW_ID,
-      services: TEST_SERVICES,
-    });
+    await startOrSignalEvent();
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(true));
 
     const finalState = await awaitTerminal(WORKFLOW_ID);

@@ -63,3 +63,15 @@ export interface PullRequestListResult {
   pullRequests: PullRequestListItem[];
   filters: PullRequestFilterOptions;
 }
+
+export type PullRequestCiStatus = 'passing' | 'failing' | 'pending' | 'unknown';
+export type PullRequestMergeConflictStatus = 'clean' | 'conflicting' | 'unknown';
+
+export interface PullRequestOperationalStatus {
+  ciStatus: PullRequestCiStatus;
+  checkCount: number;
+  resolvedReviewThreadCount: number;
+  unresolvedReviewThreadCount: number;
+  mergeConflictStatus: PullRequestMergeConflictStatus;
+  mergeableState: string | null;
+}

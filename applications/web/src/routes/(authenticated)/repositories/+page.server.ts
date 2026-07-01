@@ -48,6 +48,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     // connect prompt instead of a hard error so the user has an obvious next step.
     return {
       repositories: [],
+      availableRepositories: [],
       agents: [],
       installations: [],
       needsConnect: result.error === 'no_github_token',
@@ -61,24 +62,40 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     getRepositoryOperatorDetails(user.id, repositoryIds),
     listAgents(user.id),
   ]);
+  const watchedRepositoryIds = new Set<number>();
+  for (const [repositoryId, details] of operatorDetails) {
+    if (details.watched) watchedRepositoryIds.add(repositoryId);
+  }
 
   return {
-    repositories: result.repositories.map((entry) => ({
-      id: entry.repository.id,
-      owner: entry.repository.owner,
-      name: entry.repository.name,
-      defaultBranch: entry.repository.defaultBranch,
-      accountLogin: entry.installation.accountLogin,
-      accountAvatarUrl: entry.installation.accountAvatarUrl,
-      review: operatorDetails.get(entry.repository.id) ?? {
-        hasSavedSettings: false,
-        watched: false,
-        ignoreGlobs: [],
-        agents: [],
-        lastRunStatus: null,
-        estimatedCostLast30DaysUsd: 0,
-      },
-    })),
+    repositories: result.repositories
+      .filter((entry) => watchedRepositoryIds.has(entry.repository.id))
+      .map((entry) => ({
+        id: entry.repository.id,
+        owner: entry.repository.owner,
+        name: entry.repository.name,
+        defaultBranch: entry.repository.defaultBranch,
+        accountLogin: entry.installation.accountLogin,
+        accountAvatarUrl: entry.installation.accountAvatarUrl,
+        review: operatorDetails.get(entry.repository.id) ?? {
+          hasSavedSettings: false,
+          watched: false,
+          ignoreGlobs: [],
+          agents: [],
+          lastRunStatus: null,
+          estimatedCostLast30DaysUsd: 0,
+        },
+      })),
+    availableRepositories: result.repositories
+      .filter((entry) => !watchedRepositoryIds.has(entry.repository.id))
+      .map((entry) => ({
+        id: entry.repository.id,
+        owner: entry.repository.owner,
+        name: entry.repository.name,
+        defaultBranch: entry.repository.defaultBranch,
+        accountLogin: entry.installation.accountLogin,
+        accountAvatarUrl: entry.installation.accountAvatarUrl,
+      })),
     agents,
     installations: result.installations,
     needsConnect: false,

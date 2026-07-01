@@ -103,6 +103,11 @@ export default defineConfig({
     noExternal: [/^@tribunal\/.*/, '@lostgradient/cinder', 'github-webhook-schemas'],
   },
   optimizeDeps: {
+    include: [
+      'lucide-svelte/icons/pencil',
+      'lucide-svelte/icons/plus',
+      'lucide-svelte/icons/trash-2',
+    ],
     // Exclude Cinder from esbuild dependency pre-bundling: its uncompiled
     // `.svelte`/`.svelte.ts` sources use Svelte 5 rune syntax that esbuild
     // cannot parse. Excluding it lets vite-plugin-svelte compile it instead,

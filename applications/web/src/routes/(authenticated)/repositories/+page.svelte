@@ -14,18 +14,14 @@
   import { Toggle } from '@lostgradient/cinder/toggle';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
-  import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
-  import { Segment } from '@lostgradient/cinder/segment';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { FolderGit2, Plus, Settings } from 'lucide-svelte';
-  import GitBranch from 'lucide-svelte/icons/git-branch';
+  import { FolderGit2, Plus } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
 
   let { data, form }: PageProps = $props();
 
   let searchQuery = $state('');
-  let expandedSettings = $state<number | null>(null);
-  let viewFilter = $state<'all' | 'watched'>('all');
+  let repositoryToAdd = $state('');
 
   /**
    * Optimistic watch states keyed by repository ID. Populated on toggle click and
@@ -38,18 +34,18 @@
   const queuedWatchStates = new SvelteMap<number, boolean>();
 
   const repositories = $derived(data.repositories);
+  const availableRepositories = $derived(data.availableRepositories ?? []);
   const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
-  const watchedRepositories = $derived(repositories.filter((r) => r.review.watched));
 
   const subtitle = $derived(
     repositories.length > 0
-      ? `${watchedRepositories.length} watched · ${repositories.length} accessible via GitHub App`
-      : 'Repositories from your GitHub App installations',
+      ? `${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'} added`
+      : 'Add repositories to start reviewing pull requests',
   );
 
   const filteredRepositories = $derived.by(() => {
-    const base = viewFilter === 'watched' ? watchedRepositories : repositories;
+    const base = repositories;
     if (!searchQuery.trim()) return base;
     const query = searchQuery.toLowerCase();
     return base.filter(
@@ -62,18 +58,18 @@
 
   const emptyStateTitle = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub to get started';
-    if (hasInstallations) return 'No repositories selected';
+    if (hasInstallations) return 'No repositories added';
     return 'Install the GitHub App';
   });
   const emptyStateDescription = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub before installing the GitHub App.';
-    if (hasInstallations) return 'Manage repository access in GitHub, then return to Tribunal.';
-    return 'Install the GitHub App on a repository, then it will show up here.';
+    if (hasInstallations) return 'Choose a repository from the add control above.';
+    return 'Install Tribunal on a repository, then add it here.';
   });
   const emptyStateActionLabel = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub';
-    if (hasInstallations) return 'Manage repository access';
-    return 'Install GitHub App';
+    if (hasInstallations) return 'Add repository';
+    return 'Install Tribunal';
   });
 
   /** Maps a run status string to the nearest StatusDot semantic status. */
@@ -190,21 +186,28 @@
 
 <Page title="Repositories" {subtitle}>
   {#snippet actions()}
-    <Button href="/connect/github" variant="secondary" size="sm">
-      {#snippet leadingIcon()}<GitBranch size={14} aria-hidden="true" />{/snippet}
-      Manage access
-    </Button>
-    <Button
-      variant="primary"
-      size="sm"
-      onclick={() => {
-        viewFilter = 'all';
-        document.getElementById('repository-search')?.focus();
-      }}
-    >
-      {#snippet leadingIcon()}<Plus size={14} aria-hidden="true" />{/snippet}
-      Add repository
-    </Button>
+    {#if availableRepositories.length > 0}
+      <form method="POST" action="?/watch" class="add-repository-form" use:enhance>
+        <label class="add-repository-label" for="repository-to-add">Add repository</label>
+        <select
+          id="repository-to-add"
+          name="repositoryId"
+          bind:value={repositoryToAdd}
+          class="add-repository-select"
+          required
+        >
+          <option value="">Select repository</option>
+          {#each availableRepositories as repository (repository.id)}
+            <option value={repository.id}>{repository.owner}/{repository.name}</option>
+          {/each}
+        </select>
+        <input type="hidden" name="watched" value="on" />
+        <Button type="submit" variant="primary" size="sm" disabled={repositoryToAdd === ''}>
+          {#snippet leadingIcon()}<Plus size={14} aria-hidden="true" />{/snippet}
+          Add
+        </Button>
+      </form>
+    {/if}
   {/snippet}
 
   {#if data.loadError}
@@ -237,24 +240,12 @@
           oninput={(value) => (searchQuery = value)}
         />
       </div>
-      <SegmentedControl
-        id="repo-filter"
-        selectionMode="single"
-        bind:value={viewFilter}
-        label="Filter repositories"
-        density="toolbar"
-      >
-        <Segment value="all">All</Segment>
-        <Segment value="watched">Watched</Segment>
-      </SegmentedControl>
     </div>
 
     {#if filteredRepositories.length === 0}
       <p class="empty-hint">
         {#if searchQuery.trim()}
           No repositories matching "{searchQuery}".
-        {:else if viewFilter === 'watched'}
-          No repositories are being watched yet. Switch to "All" to find and watch repositories.
         {:else}
           No repositories found.
         {/if}
@@ -266,10 +257,9 @@
             <Table.Header>
               <Table.Row>
                 <Table.HeaderCell>Repository</Table.HeaderCell>
-                <Table.HeaderCell>Agents</Table.HeaderCell>
                 <Table.HeaderCell>Last run</Table.HeaderCell>
                 <Table.HeaderCell align="right">30-day est.</Table.HeaderCell>
-                <Table.HeaderCell align="center">Watching</Table.HeaderCell>
+                <Table.HeaderCell align="center">Added</Table.HeaderCell>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -293,17 +283,6 @@
                         <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
                       {/if}
                     </div>
-                  </Table.Cell>
-                  <Table.Cell>
-                    {#if repository.review.agents.length > 0}
-                      <div class="agent-badges">
-                        {#each repository.review.agents as agent (agent.id)}
-                          <Badge size="sm" variant="accent">{agent.slug}</Badge>
-                        {/each}
-                      </div>
-                    {:else}
-                      <span class="text-muted">—</span>
-                    {/if}
                   </Table.Cell>
                   <Table.Cell>
                     {#if repository.review.lastRunStatus}
@@ -335,7 +314,6 @@
                           formData.set('watched', watched ? 'on' : '');
 
                           return async ({ update }) => {
-                            if (expandedSettings === id) expandedSettings = null;
                             try {
                               await update();
                             } finally {
@@ -388,7 +366,7 @@
                         <Toggle
                           id="watching-{repository.id}"
                           checked={isWatching}
-                          label={isWatching ? 'Unwatch repository' : 'Watch repository'}
+                          label={isWatching ? 'Remove repository' : 'Add repository'}
                           hideLabel
                           onValueChange={(next) => {
                             localWatchStates.set(repository.id, next);
@@ -397,76 +375,9 @@
                           }}
                         />
                       </form>
-                      <Button
-                        iconOnly
-                        label={`Settings for ${repository.owner}/${repository.name}`}
-                        variant="ghost"
-                        size="sm"
-                        aria-expanded={expandedSettings === repository.id}
-                        aria-controls="settings-{repository.id}"
-                        onclick={() =>
-                          (expandedSettings =
-                            expandedSettings === repository.id ? null : repository.id)}
-                      >
-                        {#snippet leadingIcon()}<Settings size={14} aria-hidden="true" />{/snippet}
-                      </Button>
                     </div>
                   </Table.Cell>
                 </Table.Row>
-                {#if expandedSettings === repository.id}
-                  <Table.Row id="settings-{repository.id}">
-                    <Table.Cell colspan={5}>
-                      <form method="POST" action="?/watch" class="settings-form" use:enhance>
-                        <input type="hidden" name="repositoryId" value={repository.id} />
-                        <input type="hidden" name="watched" value="on" />
-                        {#if agents.length > 0}
-                          <label class="settings-field">
-                            <span class="settings-label">Assigned agents</span>
-                            <select
-                              name="agentIds"
-                              multiple
-                              size={Math.min(Math.max(agents.length, 2), 5)}
-                              class="settings-select"
-                            >
-                              {#each agents as agent (agent.id)}
-                                <option
-                                  value={agent.id}
-                                  selected={repository.review.agents.some(
-                                    (assigned) => assigned.id === agent.id,
-                                  )}
-                                >
-                                  {agent.slug}{agent.enabled ? '' : ' (disabled)'}
-                                </option>
-                              {/each}
-                            </select>
-                          </label>
-                        {/if}
-                        <label class="settings-field">
-                          <span class="settings-label">Ignore globs</span>
-                          <textarea
-                            name="ignoreGlobs"
-                            rows="3"
-                            spellcheck="false"
-                            class="settings-textarea"
-                            value={repository.review.ignoreGlobs.join('\n')}
-                          ></textarea>
-                          <span class="settings-hint">One glob pattern per line.</span>
-                        </label>
-                        <div class="settings-actions">
-                          <Button type="submit" variant="secondary" size="sm">Save settings</Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onclick={() => (expandedSettings = null)}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </form>
-                    </Table.Cell>
-                  </Table.Row>
-                {/if}
               {/each}
             </Table.Body>
           </Table>
@@ -486,6 +397,28 @@
     align-items: center;
     gap: var(--space-3);
     flex-wrap: wrap;
+  }
+
+  .add-repository-form {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .add-repository-label {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .add-repository-select {
+    min-width: 220px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    padding: var(--space-1-5) var(--space-2);
+    font: inherit;
+    font-size: var(--text-sm);
   }
 
   .search-wrapper {
@@ -523,13 +456,6 @@
     color: var(--text);
   }
 
-  .agent-badges {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    flex-wrap: wrap;
-  }
-
   .cost {
     font-family: var(--font-mono);
     font-size: var(--text-sm);
@@ -556,55 +482,6 @@
   .table-hint {
     font-size: var(--text-xs);
     color: var(--text-subtle);
-  }
-
-  .settings-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-4);
-    background: var(--surface-overlay);
-    border-radius: var(--radius-md);
-    margin: var(--space-2) 0;
-  }
-
-  .settings-field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .settings-label {
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-    color: var(--text-muted);
-  }
-
-  .settings-hint {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-  }
-
-  .settings-select,
-  .settings-textarea {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-    background: var(--surface);
-    color: var(--text);
-  }
-
-  .settings-textarea {
-    resize: vertical;
-    font-family: var(--font-mono);
-  }
-
-  .settings-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
   }
 
   /* Visually hides an element while keeping it in the DOM and accessibility tree.
