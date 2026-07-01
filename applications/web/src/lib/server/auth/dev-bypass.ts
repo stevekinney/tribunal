@@ -12,8 +12,10 @@
  *   - an explicit opt-in flag: `DEV_AUTH_BYPASS=1`.
  *
  * A startup guard hard-fails if the flag is ever armed outside dev, mirroring
- * `assertE2EModeNotInProduction` for the `/__e2e__/*` backdoor. It never seeds a
- * GitHub token, so GitHub-backed pages render their connect/empty states.
+ * `assertE2EModeNotInProduction` for the `/__e2e__/*` backdoor. The default
+ * local mode never seeds a GitHub token, so GitHub-backed pages render their
+ * connect/empty states; explicit GitHub mode validates a real local GitHub user
+ * and only stores the token when GitHub confirms it is app-authorized.
  */
 import type { Handle } from '@sveltejs/kit';
 import { building, dev } from '$app/environment';
@@ -21,11 +23,17 @@ import { env } from '$env/dynamic/private';
 import { sql } from 'drizzle-orm';
 import { user as userTable } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
+import {
+  resetDevGitHubBypassCacheForTests,
+  resolveDevGitHubBypassSession,
+} from './dev-github-bypass';
 import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 
 const BYPASS_FLAG = '1';
 const DEFAULT_BYPASS_USERNAME = 'dev';
+const GITHUB_BYPASS_MODE = 'github';
+const LOCAL_BYPASS_MODE = 'local';
 
 const userColumns = {
   id: userTable.id,
@@ -41,12 +49,25 @@ const userColumnsWithNeonAuthUserId = {
   neonAuthUserId: userTable.neonAuthUserId,
 } as const;
 
+type DevAuthBypassMode = typeof LOCAL_BYPASS_MODE | typeof GITHUB_BYPASS_MODE;
+
 /**
  * Whether the dev auth bypass is armed. False in any production runtime because
  * `dev` is false there, regardless of the flag.
  */
 export function isDevAuthBypassEnabled(): boolean {
   return dev && env.DEV_AUTH_BYPASS === BYPASS_FLAG;
+}
+
+export function devAuthBypassMode(): DevAuthBypassMode {
+  const configured = env.DEV_AUTH_BYPASS_MODE?.trim().toLowerCase();
+  if (!configured || configured === LOCAL_BYPASS_MODE) return LOCAL_BYPASS_MODE;
+  if (configured === GITHUB_BYPASS_MODE) return GITHUB_BYPASS_MODE;
+
+  console.warn(
+    `DEV_AUTH_BYPASS_MODE=${JSON.stringify(configured)} is not supported; falling back to "${LOCAL_BYPASS_MODE}".`,
+  );
+  return LOCAL_BYPASS_MODE;
 }
 
 /**
@@ -93,6 +114,10 @@ export function bypassUsername(): string {
   }
 
   return configured;
+}
+
+export function resetDevAuthBypassCacheForTests(): void {
+  resetDevGitHubBypassCacheForTests();
 }
 
 /**
@@ -152,6 +177,13 @@ async function resolveBypassUser(username: string): Promise<AuthenticatedApplica
  */
 export const devAuthBypassHandle: Handle = async ({ event, resolve }) => {
   if (!isDevAuthBypassEnabled() || env.E2E_TEST_MODE === '1') {
+    return resolve(event);
+  }
+
+  if (devAuthBypassMode() === GITHUB_BYPASS_MODE) {
+    const { user, neonSession } = await resolveDevGitHubBypassSession();
+    event.locals.user = user;
+    event.locals.neonSession = neonSession;
     return resolve(event);
   }
 

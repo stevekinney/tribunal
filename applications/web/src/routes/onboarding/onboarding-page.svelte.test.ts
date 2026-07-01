@@ -14,6 +14,16 @@ describe('/onboarding page', () => {
     invalidateAll.mockReset();
   });
 
+  function currentStepText(): string | null {
+    return document.querySelector('.step[aria-current="step"]')?.textContent?.trim() ?? null;
+  }
+
+  function completedStepLabels(): string[] {
+    return Array.from(document.querySelectorAll('.step:has(.step-marker-complete)')).map(
+      (element) => element.textContent?.trim() ?? '',
+    );
+  }
+
   it('prompts the user to reconnect when the GitHub token is dead', async () => {
     const data = {
       repositories: [],
@@ -29,6 +39,8 @@ describe('/onboarding page', () => {
     await expect
       .element(page.getByRole('link', { name: 'Reconnect GitHub' }))
       .toHaveAttribute('href', '/connect/github');
+    expect(currentStepText()).toBe('1 Sign in with GitHub');
+    expect(completedStepLabels()).toEqual([]);
   });
 
   it('offers a retry (not a reconnect link) on a transient GitHub outage', async () => {
@@ -48,6 +60,8 @@ describe('/onboarding page', () => {
     // existing (healthy) connection is the fix, so the CTA is a button.
     await page.getByRole('button', { name: 'Try again' }).click();
     expect(invalidateAll).toHaveBeenCalledTimes(1);
+    expect(currentStepText()).toBe('1 Sign in with GitHub');
+    expect(completedStepLabels()).toEqual([]);
   });
 
   it('prompts the user to install the app when no installation exists', async () => {
@@ -65,6 +79,8 @@ describe('/onboarding page', () => {
     await expect
       .element(page.getByRole('link', { name: 'Install GitHub App' }))
       .toHaveAttribute('href', '/connect/github');
+    expect(currentStepText()).toBe('2 Install the GitHub App');
+    expect(completedStepLabels()).toEqual(['Sign in with GitHub']);
   });
 
   it('prompts the user to grant repository access when installed but no repos exist', async () => {
@@ -82,6 +98,8 @@ describe('/onboarding page', () => {
     await expect
       .element(page.getByRole('link', { name: 'Manage repository access' }))
       .toHaveAttribute('href', '/connect/github');
+    expect(currentStepText()).toBe('3 Choose repositories to watch');
+    expect(completedStepLabels()).toEqual(['Sign in with GitHub', 'Install the GitHub App']);
   });
 
   it('renders the repository picker when the connection is healthy', async () => {

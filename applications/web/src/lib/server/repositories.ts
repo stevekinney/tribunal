@@ -37,6 +37,18 @@ function isUnauthorizedError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'status' in error && error.status === 401;
 }
 
+function isForbiddenError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'status' in error && error.status === 403;
+}
+
+function shouldUseDevGitHubBypassRepositories(): boolean {
+  return (
+    env.NODE_ENV !== 'production' &&
+    env.DEV_AUTH_BYPASS === '1' &&
+    env.DEV_AUTH_BYPASS_MODE === 'github'
+  );
+}
+
 /** A repository the user can access, paired with its resolving installation. */
 export interface UserRepository {
   repository: Repository;
@@ -79,11 +91,15 @@ export type UserRepositoriesResult =
  */
 export async function getRepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
   if (env.NODE_ENV !== 'production' && env.E2E_TEST_MODE === '1' && env.E2E_TEST_SECRET) {
-    return getE2ERepositoriesForUser(userId);
+    return getLocalRepositoriesForUser(userId);
   }
 
   const octokitResult = await getUserOctokit(userId);
   if (!octokitResult.ok) {
+    if (shouldUseDevGitHubBypassRepositories()) {
+      return getLocalRepositoriesForUser(userId);
+    }
+
     // Token problems (missing/expired/invalid) all collapse to "connect GitHub".
     return {
       ok: false,
@@ -109,6 +125,10 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
     }));
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
+    if (shouldUseDevGitHubBypassRepositories() && isForbiddenError(error)) {
+      return getLocalRepositoriesForUser(userId);
+    }
+
     if (isUnauthorizedError(error)) {
       // The stored OAuth token was revoked or expired. Persist that fact so the
       // next request returns `no_github_token` (a reconnect prompt) instead of
@@ -211,7 +231,7 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   return { ok: true, repositories, installations };
 }
 
-async function getE2ERepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
+async function getLocalRepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
   const rows = await db
     .select({
       repository,
