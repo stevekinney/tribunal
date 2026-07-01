@@ -36,6 +36,11 @@ const userColumns = {
   isPlatformAdministrator: userTable.isPlatformAdministrator,
 } as const;
 
+const userColumnsWithNeonAuthUserId = {
+  ...userColumns,
+  neonAuthUserId: userTable.neonAuthUserId,
+} as const;
+
 /**
  * Whether the dev auth bypass is armed. False in any production runtime because
  * `dev` is false there, regardless of the flag.
@@ -98,28 +103,45 @@ export function bypassUsername(): string {
  * Uses an atomic upsert rather than select-then-insert: two concurrent
  * first-touch requests would otherwise both miss the select and race on the
  * unique username index, surfacing an unhandled constraint violation.
+ *
+ * Verifies the resolved row is actually a bypass user (its `neonAuthUserId`
+ * carries the `dev-bypass:` prefix) rather than trusting the username match
+ * alone. Without this, a real Neon Auth user who happens to hold the bypass
+ * username (e.g. the default "dev") would let the bypass silently log in as
+ * their account instead of a synthetic one.
  */
 async function resolveBypassUser(username: string): Promise<AuthenticatedApplicationUser> {
+  const expectedNeonAuthUserId = `dev-bypass:${username}`;
+
   await db
     .insert(userTable)
     .values({
       username,
       // Namespaced so it can never collide with a real Neon Auth subject.
-      neonAuthUserId: `dev-bypass:${username}`,
+      neonAuthUserId: expectedNeonAuthUserId,
       name: 'Dev User',
     })
     .onConflictDoNothing();
 
-  const [user] = await db
-    .select(userColumns)
+  const [row] = await db
+    .select(userColumnsWithNeonAuthUserId)
     .from(userTable)
     .where(sql`lower(${userTable.username}) = ${username}`)
     .limit(1);
 
-  if (!user) {
+  if (!row) {
     throw new Error(`Dev auth bypass: failed to resolve or create user "${username}".`);
   }
 
+  if (row.neonAuthUserId !== expectedNeonAuthUserId) {
+    throw new Error(
+      `Dev auth bypass: username "${username}" already belongs to a real account, not a ` +
+        `bypass user. Refusing to log in as it — set DEV_AUTH_BYPASS_USER to a different, ` +
+        'unused username.',
+    );
+  }
+
+  const { neonAuthUserId: _neonAuthUserId, ...user } = row;
   return user;
 }
 
