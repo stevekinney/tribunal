@@ -92,4 +92,18 @@ describe('/repositories server load', () => {
     );
     expect.assertions(2);
   });
+
+  it('redirects missing GitHub OAuth connections into the account connection flow', async () => {
+    mockRepositoriesResult.value = {
+      ok: false,
+      error: 'no_github_token',
+      message: 'Reconnect GitHub.',
+    };
+
+    await expect(load(createEvent())).rejects.toMatchObject({
+      status: 302,
+      location: '/connect/github/account?returnTo=%2Frepositories',
+    });
+    expect.assertions(1);
+  });
 });
