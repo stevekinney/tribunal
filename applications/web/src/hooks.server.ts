@@ -6,6 +6,7 @@ import {
   neonAuthTokenCookieName,
   validateNeonSessionFromToken,
 } from '$lib/server/auth/neon-session';
+import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 
@@ -76,10 +77,15 @@ export const authHandle: Handle = async ({ event, resolve }) => {
  * - apiJsonHandle: Wraps /api/** routes so all error responses are JSON.
  *   Placed before authHandle so it catches auth-related errors too.
  * - authHandle: Validates Neon Auth bridge cookies and sets user/neonSession on locals.
+ * - devAuthBypassHandle: Dev-only. When DEV_AUTH_BYPASS=1 in a dev runtime,
+ *   overrides locals with an auto-logged-in local user so the authenticated UI
+ *   is reachable in preview sandboxes. A no-op pass-through otherwise. Runs last
+ *   so it wins over authHandle's cookie-derived session.
  */
 export const handle = sequence(
   correlationHandle,
   e2eHandle,
   respondWithJsonForApiEndpoints,
   authHandle,
+  devAuthBypassHandle,
 );

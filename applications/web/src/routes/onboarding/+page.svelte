@@ -282,7 +282,8 @@
     min-height: 100vh;
     align-items: center;
     justify-content: center;
-    background: var(--bg);
+    /* Dark backdrop so the card floats above a deep navy vignette. */
+    background: var(--auth-backdrop);
     padding: var(--space-6) var(--space-4);
   }
 
@@ -292,7 +293,7 @@
     width: 100%;
     max-width: 900px;
     height: min(80vh, 760px);
-    border: 1px solid var(--border);
+    border: 1px solid var(--auth-card-border);
     border-radius: var(--radius-lg);
     overflow: hidden;
     box-shadow: var(--shadow-lg);

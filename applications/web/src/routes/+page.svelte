@@ -5,37 +5,75 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Alert } from '@lostgradient/cinder/alert';
   import { LOGIN_ERROR_MESSAGES } from '$lib/constants/authorization-providers';
+  import { startGithubSignIn } from '$lib/auth/start-github-sign-in';
+  import { sanitizeReturnTo } from '$lib/utilities/return-to';
 
   const errorParam = $derived(page.url.searchParams.get('error'));
   const errorMessage = $derived(errorParam ? LOGIN_ERROR_MESSAGES[errorParam] : null);
   // User cancellations (*_denied) should be info, actual errors should be danger
   const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'danger');
+  const returnTo = $derived(sanitizeReturnTo(page.url.searchParams.get('returnTo')));
+
+  let loading = $state(false);
+
+  async function onSignIn() {
+    loading = true;
+    try {
+      await startGithubSignIn({ neonAuthConfigured: page.data.neonAuthConfigured, returnTo });
+    } catch {
+      // startGithubSignIn already redirected to /login with an error code and
+      // logged the cause; restore the button while that navigation settles.
+      loading = false;
+    }
+  }
 </script>
 
-<main class="landing-page">
-  {#if errorMessage}
-    <Alert variant={errorVariant} class="alert-left">
-      {errorMessage}
-    </Alert>
-  {/if}
-  <div class="logo-container">
-    <Cat class="logo-icon" />
-  </div>
-  <h1 class="title">Welcome to Tribunal</h1>
-  <div class="actions">
-    <Button href="/login" variant="secondary" size="lg">
-      Sign in with GitHub
-      {#snippet leadingIcon()}<GithubIcon aria-hidden="true" />{/snippet}
-    </Button>
+<main class="landing-page" data-theme="dark">
+  <div class="landing-content">
+    {#if errorMessage}
+      <Alert variant={errorVariant} class="alert-left">
+        {errorMessage}
+      </Alert>
+    {/if}
+    <div class="logo-container">
+      <Cat class="logo-icon" />
+    </div>
+    <h1 class="title">Welcome to Tribunal</h1>
+    <div class="actions">
+      <Button variant="primary" size="lg" onclick={onSignIn} {loading}>
+        {loading ? 'Redirecting...' : 'Sign in with GitHub'}
+        {#snippet leadingIcon()}<GithubIcon aria-hidden="true" />{/snippet}
+      </Button>
+    </div>
   </div>
 </main>
 
 <style>
+  /*
+   * light-dark() tokens resolve at :root (color-scheme: light) and do NOT
+   * re-evaluate under a data-theme="dark" subtree — same constraint the login
+   * and onboarding brand panels work around. Pin the tokens this hero consumes
+   * to their dark-arm values so the text and logo chip read correctly on the
+   * dark backdrop.
+   */
+  .landing-page[data-theme='dark'] {
+    --text: oklch(92% 0.02 245);
+    /* Dark-arm --surface-raised: a subtly raised chip that reads on the dark
+     * backdrop (the darker --surface-overlay would nearly vanish here). */
+    --surface-raised: oklch(24% 0.045 245);
+  }
+
   .landing-page {
-    max-width: 48rem;
-    margin-inline: auto;
-    padding-inline: var(--space-6);
-    padding-block: var(--space-16);
+    display: flex;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6) var(--space-4);
+    background: var(--auth-backdrop);
+  }
+
+  .landing-content {
+    max-width: 28rem;
     text-align: center;
     display: flex;
     flex-direction: column;
@@ -53,7 +91,7 @@
     width: 3.5rem;
     height: 3.5rem;
     border-radius: var(--radius-full);
-    background: var(--surface-overlay);
+    background: var(--surface-raised);
     margin-inline: auto;
   }
 

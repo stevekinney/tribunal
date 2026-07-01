@@ -120,6 +120,13 @@
     --surface-overlay: light-dark(oklch(100% 0.004 245), oklch(18% 0.038 245));
     --surface-inset: light-dark(oklch(94% 0.018 245), oklch(12% 0.03 245));
     --surface-backdrop: oklch(0% 0 0 / 50%);
+    /* Always-dark backdrop behind the signed-out auth pages (welcome, login,
+     * onboarding). Fixed regardless of scheme so their cards always float on a
+     * deep navy vignette rather than the light "sea of slate". */
+    --auth-backdrop: radial-gradient(circle at 50% 30%, oklch(27% 0.045 245), oklch(19% 0.035 245));
+    /* Card edge on that backdrop: a faint light rim rather than the bright,
+     * light-scheme --border, which reads as a glaring ring on dark. */
+    --auth-card-border: oklch(100% 0 0 / 0.12);
 
     /* Text - blue-tinted (hue 245, matching surfaces)
      * Light mode: dark text on light bg (WCAG AA requires ~45% or darker for 4.5:1)
