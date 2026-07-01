@@ -6,9 +6,18 @@ script = '''
 COMMON_GIT_DIRECTORY=$(git rev-parse --git-common-dir)
 MAIN_WORKTREE=$(cd "$COMMON_GIT_DIRECTORY/.." && pwd)
 if [ -f "$MAIN_WORKTREE/.env" ]; then
+  NORMALIZED_ENV_FILE=$(mktemp)
+  awk '
+    /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+===[[:space:]]+/ {
+      sub(/[[:space:]]+===[[:space:]]+/, "=")
+      printf "Normalizing comparison-style .env assignment on line %d during Codex setup\n", FNR > "/dev/stderr"
+    }
+    { print }
+  ' "$MAIN_WORKTREE/.env" > "$NORMALIZED_ENV_FILE"
   set -a
-  . "$MAIN_WORKTREE/.env"
+  . "$NORMALIZED_ENV_FILE"
   set +a
+  rm -f "$NORMALIZED_ENV_FILE"
 fi
 bun install
 '''
