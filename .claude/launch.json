@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dev",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "DEV_AUTH_BYPASS=1 exec bun run --cwd applications/web dev"],
+      "port": 5173
+    },
+    {
+      "name": "web-dev-signed-out",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--cwd", "applications/web", "dev"],
+      "port": 5173
+    }
+  ]
+}

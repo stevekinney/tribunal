@@ -3,50 +3,27 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Alert } from '@lostgradient/cinder/alert';
   import { LOGIN_ERROR_MESSAGES } from '$lib/constants/authorization-providers';
-  import { getNeonAuthClient } from '$lib/auth/neon-client';
+  import { startGithubSignIn } from '$lib/auth/start-github-sign-in';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
   import GithubIcon from 'lucide-svelte/icons/github';
   import Gavel from 'lucide-svelte/icons/gavel';
 
   const errorParam = $derived(page.url.searchParams.get('error'));
   const errorMessage = $derived(errorParam ? LOGIN_ERROR_MESSAGES[errorParam] : null);
+  // User cancellations (*_denied) are informational, not failures.
+  const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'danger');
   const returnTo = $derived(sanitizeReturnTo(page.url.searchParams.get('returnTo')));
 
   let loading = $state(false);
 
-  async function startGithubSignIn() {
+  async function onSignIn() {
     loading = true;
-
     try {
-      if (!page.data.neonAuthConfigured) {
-        window.location.href = `/login?error=neon_auth_not_configured&returnTo=${encodeURIComponent(returnTo)}`;
-        return;
-      }
-
-      const callbackUrl = new URL('/auth/callback', window.location.origin);
-      callbackUrl.searchParams.set('returnTo', returnTo);
-      const errorCallbackUrl = new URL('/login', window.location.origin);
-      errorCallbackUrl.searchParams.set('error', 'neon_auth_failed');
-      errorCallbackUrl.searchParams.set('returnTo', returnTo);
-
-      const authClient = getNeonAuthClient();
-      const result = await authClient.signIn.social({
-        provider: 'github',
-        callbackURL: callbackUrl.toString(),
-        newUserCallbackURL: callbackUrl.toString(),
-        errorCallbackURL: errorCallbackUrl.toString(),
-        disableRedirect: true,
-      });
-
-      if (!result.data?.url) {
-        throw new Error('Neon Auth did not return a GitHub OAuth URL');
-      }
-
-      window.location.href = result.data.url;
-    } catch (error) {
-      console.error('Neon Auth GitHub sign-in failed to start', error);
+      await startGithubSignIn({ neonAuthConfigured: page.data.neonAuthConfigured, returnTo });
+    } catch {
+      // startGithubSignIn already redirected to /login with an error code and
+      // logged the cause; restore the button while that navigation settles.
       loading = false;
-      window.location.href = `/login?error=neon_auth_failed&returnTo=${encodeURIComponent(returnTo)}`;
     }
   }
 </script>
@@ -101,18 +78,12 @@
         </div>
 
         {#if errorMessage}
-          <Alert variant="danger">
+          <Alert variant={errorVariant}>
             {errorMessage}
           </Alert>
         {/if}
 
-        <Button
-          variant="primary"
-          size="md"
-          fullWidth
-          onclick={startGithubSignIn}
-          disabled={loading}
-        >
+        <Button variant="primary" size="md" fullWidth onclick={onSignIn} {loading}>
           {loading ? 'Redirecting...' : 'Continue with GitHub'}
           {#snippet leadingIcon()}<GithubIcon width="20" height="20" aria-hidden="true" />{/snippet}
         </Button>
@@ -131,7 +102,8 @@
     min-height: 100vh;
     align-items: center;
     justify-content: center;
-    background: var(--bg);
+    /* Dark backdrop so the card floats above a deep navy vignette. */
+    background: var(--auth-backdrop);
     padding: var(--space-6) var(--space-4);
   }
 
@@ -140,7 +112,7 @@
     grid-template-columns: 320px 1fr;
     width: 100%;
     max-width: 760px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--auth-card-border);
     border-radius: var(--radius-lg);
     overflow: hidden;
     box-shadow: var(--shadow-lg);
