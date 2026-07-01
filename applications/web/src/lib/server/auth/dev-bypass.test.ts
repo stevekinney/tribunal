@@ -3,14 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   env: {
     DEV_AUTH_BYPASS: undefined as string | undefined,
+    DEV_AUTH_BYPASS_MODE: undefined as string | undefined,
     DEV_AUTH_BYPASS_USER: undefined as string | undefined,
+    DEV_AUTH_GITHUB_TOKEN: undefined as string | undefined,
+    DEV_AUTH_GITHUB_TOKEN_FROM_GITHUB_CLI: undefined as string | undefined,
     E2E_TEST_MODE: undefined as string | undefined,
   },
   environment: { dev: true, building: false },
   // Row returned by the mocked select after the mocked insert "runs". Tests
   // set this to simulate a fresh insert vs. an existing (possibly non-bypass) row.
   selectedRow: null as { username: string; neonAuthUserId: string } | null,
+  selectResultQueue: [] as unknown[][],
+  insertReturnRows: [] as unknown[],
+  updateReturnRows: [] as unknown[],
   onConflictDoNothing: vi.fn(),
+  deleteOAuthConnection: vi.fn(),
+  upsertOAuthConnection: vi.fn(),
+  fetch: vi.fn(),
 }));
 
 vi.mock('$env/dynamic/private', () => ({ env: mocks.env }));
@@ -25,26 +34,51 @@ vi.mock('$app/environment', () => ({
 }));
 
 // Chainable stub matching the query-builder shape resolveBypassUser uses:
-// db.insert(...).values(...).onConflictDoNothing() and
+// db.insert(...).values(...).onConflictDoNothing()/returning(...) and
 // db.select(...).from(...).where(...).limit(1).
 vi.mock('$lib/server/database', () => ({
   db: {
-    insert: () => ({ values: () => ({ onConflictDoNothing: mocks.onConflictDoNothing }) }),
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: mocks.onConflictDoNothing,
+        returning: () => mocks.insertReturnRows,
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => ({
+          returning: () => mocks.updateReturnRows,
+        }),
+      }),
+    }),
     select: () => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => mocks.selectResultQueue.shift() ?? [],
+          }),
+        }),
         where: () => ({
-          limit: () => (mocks.selectedRow ? [mocks.selectedRow] : []),
+          limit: () =>
+            mocks.selectResultQueue.shift() ?? (mocks.selectedRow ? [mocks.selectedRow] : []),
         }),
       }),
     }),
   },
 }));
 
+vi.mock('./authentication', () => ({
+  deleteOAuthConnection: mocks.deleteOAuthConnection,
+  upsertOAuthConnection: mocks.upsertOAuthConnection,
+}));
+
 import {
   assertDevAuthBypassNotInProduction,
+  devAuthBypassMode,
   bypassUsername,
   devAuthBypassHandle,
   isDevAuthBypassEnabled,
+  resetDevAuthBypassCacheForTests,
 } from './dev-bypass';
 
 describe('assertDevAuthBypassNotInProduction', () => {
@@ -89,6 +123,21 @@ describe('isDevAuthBypassEnabled', () => {
   });
 });
 
+describe('devAuthBypassMode', () => {
+  beforeEach(() => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = undefined;
+  });
+
+  it('defaults to local mode', () => {
+    expect(devAuthBypassMode()).toBe('local');
+  });
+
+  it('uses GitHub mode when configured', () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    expect(devAuthBypassMode()).toBe('github');
+  });
+});
+
 describe('bypassUsername', () => {
   beforeEach(() => {
     mocks.env.DEV_AUTH_BYPASS_USER = undefined;
@@ -119,10 +168,21 @@ describe('devAuthBypassHandle', () => {
 
   beforeEach(() => {
     mocks.env.DEV_AUTH_BYPASS = '1';
+    mocks.env.DEV_AUTH_BYPASS_MODE = undefined;
     mocks.env.DEV_AUTH_BYPASS_USER = undefined;
+    mocks.env.DEV_AUTH_GITHUB_TOKEN = undefined;
+    mocks.env.DEV_AUTH_GITHUB_TOKEN_FROM_GITHUB_CLI = undefined;
     mocks.env.E2E_TEST_MODE = undefined;
     mocks.environment.dev = true;
     mocks.selectedRow = null;
+    mocks.selectResultQueue.length = 0;
+    mocks.insertReturnRows.length = 0;
+    mocks.updateReturnRows.length = 0;
+    mocks.fetch.mockReset();
+    mocks.deleteOAuthConnection.mockReset();
+    mocks.upsertOAuthConnection.mockReset();
+    vi.stubGlobal('fetch', mocks.fetch);
+    resetDevAuthBypassCacheForTests();
     resolve.mockClear();
   });
 
@@ -152,5 +212,165 @@ describe('devAuthBypassHandle', () => {
     await devAuthBypassHandle({ event, resolve } as never);
 
     expect(event.locals).toEqual({});
+  });
+
+  it('logs in the GitHub bypass user and stores app-authorized tokens', async () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    mocks.env.DEV_AUTH_GITHUB_TOKEN = 'github-token';
+    mocks.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 123,
+            login: 'stevekinney',
+            name: 'Steve Kinney',
+            avatar_url: 'https://example.test/avatar.png',
+          }),
+          {
+            status: 200,
+            headers: { 'X-OAuth-Scopes': 'repo,user:email' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ installations: [] }), { status: 200 }));
+    mocks.selectResultQueue.push(
+      [], // no existing OAuth connection for this GitHub user
+      [], // no existing installation owner for this GitHub account
+      [], // no existing dev GitHub user
+      [], // username is available
+    );
+    mocks.insertReturnRows.push({
+      id: 7,
+      username: 'stevekinney',
+      name: 'Steve Kinney',
+      avatarUrl: 'https://example.test/avatar.png',
+      email: null,
+      isPlatformAdministrator: false,
+    });
+    const event = { locals: {} };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      'https://api.github.com/user',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer github-token' }),
+      }),
+    );
+    expect(mocks.upsertOAuthConnection).toHaveBeenCalledWith(
+      7,
+      'github',
+      expect.objectContaining({
+        providerUserId: '123',
+        accessToken: 'github-token',
+        refreshToken: null,
+        expiresAt: null,
+        scope: 'repo,user:email',
+      }),
+    );
+    expect(mocks.deleteOAuthConnection).not.toHaveBeenCalled();
+    expect(event.locals).toMatchObject({
+      user: { username: 'stevekinney' },
+      neonSession: { neonAuthUserId: 'dev-github:123' },
+    });
+  });
+
+  it('logs in but clears the OAuth connection when the token is not app-authorized', async () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    mocks.env.DEV_AUTH_GITHUB_TOKEN = 'github-token';
+    mocks.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 123,
+            login: 'stevekinney',
+            name: 'Steve Kinney',
+            avatar_url: 'https://example.test/avatar.png',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'not app token' }), { status: 403 }),
+      );
+    mocks.selectResultQueue.push([], [], [], []);
+    mocks.insertReturnRows.push({
+      id: 7,
+      username: 'stevekinney',
+      name: 'Steve Kinney',
+      avatarUrl: 'https://example.test/avatar.png',
+      email: null,
+      isPlatformAdministrator: false,
+    });
+    const event = { locals: {} };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(mocks.upsertOAuthConnection).not.toHaveBeenCalled();
+    expect(mocks.deleteOAuthConnection).toHaveBeenCalledWith(7, 'github');
+    expect(event.locals).toMatchObject({
+      user: { username: 'stevekinney' },
+      neonSession: { neonAuthUserId: 'dev-github:123' },
+    });
+  });
+
+  it('reuses the active installation owner for the GitHub account before creating a dev user', async () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    mocks.env.DEV_AUTH_GITHUB_TOKEN = 'github-token';
+    mocks.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 123,
+            login: 'stevekinney',
+            name: 'Steve Kinney',
+            avatar_url: 'https://example.test/avatar.png',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'not app token' }), { status: 403 }),
+      );
+    mocks.selectResultQueue.push(
+      [], // no existing OAuth connection for this GitHub user
+      [
+        {
+          id: 1,
+          username: 'steve-kinney',
+          name: 'Existing Steve',
+          avatarUrl: null,
+          email: 'hello@example.test',
+          isPlatformAdministrator: false,
+        },
+      ],
+    );
+    mocks.updateReturnRows.push({
+      id: 1,
+      username: 'steve-kinney',
+      name: 'Steve Kinney',
+      avatarUrl: 'https://example.test/avatar.png',
+      email: 'hello@example.test',
+      isPlatformAdministrator: false,
+    });
+    const event = { locals: {} };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(mocks.insertReturnRows).toEqual([]);
+    expect(mocks.deleteOAuthConnection).toHaveBeenCalledWith(1, 'github');
+    expect(event.locals).toMatchObject({
+      user: { id: 1, username: 'steve-kinney' },
+      neonSession: { neonAuthUserId: 'dev-github:123' },
+    });
+  });
+
+  it('fails loudly in GitHub mode when no token source is configured', async () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    const event = { locals: {} };
+
+    await expect(devAuthBypassHandle({ event, resolve } as never)).rejects.toThrow(
+      /DEV_AUTH_GITHUB_TOKEN/,
+    );
   });
 });

@@ -39,6 +39,35 @@
   const selectedCount = $derived(selectedIds.size);
   const canSubmit = $derived(selectedIds.size > 0);
 
+  type StepState = 'complete' | 'current' | 'pending';
+
+  const stepStates = $derived.by<{
+    signIn: StepState;
+    install: StepState;
+    choose: StepState;
+  }>(() => {
+    const reason = data.connectReason;
+    switch (reason) {
+      case 'disconnected':
+      case 'unavailable':
+        return { signIn: 'current', install: 'pending', choose: 'pending' };
+      case 'no_installation':
+        return { signIn: 'complete', install: 'current', choose: 'pending' };
+      case 'no_repositories':
+      case null:
+        return { signIn: 'complete', install: 'complete', choose: 'current' };
+      default:
+        reason satisfies never;
+        return { signIn: 'current', install: 'pending', choose: 'pending' };
+    }
+  });
+
+  const onboardingSteps = $derived([
+    { key: 'signIn', label: 'Sign in with GitHub', number: '1', state: stepStates.signIn },
+    { key: 'install', label: 'Install the GitHub App', number: '2', state: stepStates.install },
+    { key: 'choose', label: 'Choose repositories to watch', number: '3', state: stepStates.choose },
+  ]);
+
   // Display label for the connected GitHub account(s).
   const accountLabel = $derived(
     data.installations.length === 1
@@ -127,22 +156,30 @@
       </p>
 
       <ol class="steps" aria-label="Onboarding steps">
-        <li class="step">
-          <span class="step-marker step-marker-complete" aria-label="Complete">
-            <Check size={14} />
-          </span>
-          <span class="step-label">Sign in with GitHub</span>
-        </li>
-        <li class="step">
-          <span class="step-marker step-marker-complete" aria-label="Complete">
-            <Check size={14} />
-          </span>
-          <span class="step-label">Install the GitHub App</span>
-        </li>
-        <li class="step" aria-current="step">
-          <span class="step-marker step-marker-current" aria-hidden="true">3</span>
-          <span class="step-label step-label-current">Choose repositories to watch</span>
-        </li>
+        {#each onboardingSteps as step (step.key)}
+          <li class="step" aria-current={step.state === 'current' ? 'step' : undefined}>
+            {#if step.state === 'complete'}
+              <span class="step-marker step-marker-complete" aria-label="Complete">
+                <Check size={14} />
+              </span>
+            {:else}
+              <span
+                class={[
+                  'step-marker',
+                  step.state === 'current' ? 'step-marker-current' : undefined,
+                ]}
+                aria-hidden="true"
+              >
+                {step.number}
+              </span>
+            {/if}
+            <span
+              class={['step-label', step.state === 'current' ? 'step-label-current' : undefined]}
+            >
+              {step.label}
+            </span>
+          </li>
+        {/each}
       </ol>
 
       <p class="trust-line">
