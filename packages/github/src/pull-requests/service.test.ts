@@ -24,6 +24,7 @@ import {
   getSelectedPullRequestNumber,
   listPullRequests,
   getPullRequest,
+  getPullRequestOperationalStatus,
   requestReviewers,
   isRateLimitError,
   isNotFoundError,
@@ -243,7 +244,7 @@ describe('listPullRequests', () => {
   });
 
   it('transforms pull request list items', async () => {
-    expect.assertions(14);
+    expect.assertions(15);
     const mockPr = {
       number: 42,
       title: 'Add new feature',
@@ -260,7 +261,7 @@ describe('listPullRequests', () => {
       closed_at: null,
       merged_at: null,
       labels: [{ name: 'enhancement', color: '84b6eb', description: 'New feature' }],
-      head: { ref: 'feature-branch' },
+      head: { ref: 'feature-branch', sha: 'abc123sha' },
       base: { ref: 'main' },
       html_url: 'https://github.com/owner/repo/pull/42',
     };
@@ -282,6 +283,7 @@ describe('listPullRequests', () => {
     expect(pr.updatedAt).toBe('2024-01-16T12:00:00Z');
     expect(pr.labels[0].name).toBe('enhancement');
     expect(pr.headRef).toBe('feature-branch');
+    expect(pr.headSha).toBe('abc123sha');
     expect(pr.baseRef).toBe('main');
     expect(pr.htmlUrl).toBe('https://github.com/owner/repo/pull/42');
   });
@@ -300,7 +302,7 @@ describe('listPullRequests', () => {
       closed_at: null,
       merged_at: null,
       labels: [],
-      head: { ref: 'branch' },
+      head: { ref: 'branch', sha: 'abc123sha' },
       base: { ref: 'main' },
       html_url: 'https://github.com/owner/repo/pull/1',
     };
@@ -327,7 +329,7 @@ describe('listPullRequests', () => {
       closed_at: null,
       merged_at: null,
       labels: ['bug', 'priority'],
-      head: { ref: 'branch' },
+      head: { ref: 'branch', sha: 'abc123sha' },
       base: { ref: 'main' },
       html_url: 'https://github.com/owner/repo/pull/1',
     };
@@ -391,7 +393,7 @@ describe('getPullRequest', () => {
   }
 
   it('returns transformed PR detail', async () => {
-    expect.assertions(18);
+    expect.assertions(20);
     const mockPr = {
       number: 42,
       title: 'Add feature',
@@ -408,7 +410,7 @@ describe('getPullRequest', () => {
       closed_at: null,
       merged_at: null,
       labels: [],
-      head: { ref: 'feature' },
+      head: { ref: 'feature', sha: 'detail123sha' },
       base: { ref: 'main' },
       html_url: 'https://github.com/owner/repo/pull/42',
       body: 'PR description',
@@ -445,6 +447,8 @@ describe('getPullRequest', () => {
     expect(result!.reviewComments).toBe(7);
     expect(result!.commits).toBe(2);
     expect(result!.author?.login).toBe('author');
+    expect(result!.headRef).toBe('feature');
+    expect(result!.headSha).toBe('detail123sha');
     expect(result!.htmlUrl).toBe('https://github.com/owner/repo/pull/42');
   });
 
@@ -462,7 +466,7 @@ describe('getPullRequest', () => {
       closed_at: '2024-01-16T12:00:00Z',
       merged_at: '2024-01-16T12:00:00Z',
       labels: [],
-      head: { ref: 'feature' },
+      head: { ref: 'feature', sha: 'merged123sha' },
       base: { ref: 'main' },
       html_url: 'https://github.com/owner/repo/pull/1',
       body: null,
@@ -507,6 +511,203 @@ describe('getPullRequest', () => {
     await expect(getPullRequest(context, octokit, 'owner', 'repo', 42)).rejects.toThrow(
       'Server Error',
     );
+  });
+});
+
+describe('getPullRequestOperationalStatus', () => {
+  it('uses the pull request head SHA, paginates checks and review threads, and caches aggregate reads', async () => {
+    expect.assertions(11);
+    const successfulChecks = Array.from({ length: 100 }, (_, index) => ({
+      id: index,
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const listForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: successfulChecks } })
+      .mockResolvedValueOnce({
+        data: {
+          total_count: 101,
+          check_runs: [{ id: 101, status: 'completed', conclusion: 'failure' }],
+        },
+      });
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [{ isResolved: true }],
+              pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [{ isResolved: false }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      });
+    const octokit = {
+      rest: {
+        pulls: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              number: 42,
+              title: 'Add feature',
+              state: 'open',
+              draft: false,
+              locked: false,
+              user: null,
+              created_at: '2024-01-15T10:00:00Z',
+              updated_at: '2024-01-16T12:00:00Z',
+              closed_at: null,
+              merged_at: null,
+              labels: [],
+              head: { ref: 'feature', sha: 'actual-head-sha' },
+              base: { ref: 'main' },
+              html_url: 'https://github.com/owner/repo/pull/42',
+              body: null,
+              additions: 1,
+              deletions: 0,
+              changed_files: 1,
+              mergeable: false,
+              mergeable_state: 'dirty',
+              merged: false,
+              merged_by: null,
+              comments: 0,
+              review_comments: 0,
+              commits: 1,
+            },
+            headers: { etag: 'pull-request-etag' },
+          }),
+        },
+        checks: { listForRef },
+      },
+      graphql,
+    } as never;
+    const context = createMockContext();
+
+    const status = await getPullRequestOperationalStatus(
+      context,
+      octokit,
+      'owner',
+      'repo',
+      42,
+      'actual-head-sha',
+    );
+
+    expect(status.ciStatus).toBe('failing');
+    expect(status.checkCount).toBe(101);
+    expect(status.resolvedReviewThreadCount).toBe(1);
+    expect(status.unresolvedReviewThreadCount).toBe(1);
+    expect(status.mergeConflictStatus).toBe('conflicting');
+    expect(listForRef).toHaveBeenNthCalledWith(1, {
+      owner: 'owner',
+      repo: 'repo',
+      ref: 'actual-head-sha',
+      per_page: 100,
+      page: 1,
+    });
+    expect(listForRef).toHaveBeenNthCalledWith(2, {
+      owner: 'owner',
+      repo: 'repo',
+      ref: 'actual-head-sha',
+      per_page: 100,
+      page: 2,
+    });
+    expect(graphql).toHaveBeenNthCalledWith(1, expect.any(String), {
+      owner: 'owner',
+      repo: 'repo',
+      pullNumber: 42,
+      after: null,
+    });
+    expect(graphql).toHaveBeenNthCalledWith(2, expect.any(String), {
+      owner: 'owner',
+      repo: 'repo',
+      pullNumber: 42,
+      after: 'cursor-1',
+    });
+    expect(context.cache.setCache).toHaveBeenCalledWith(
+      expect.stringContaining('review-thread-counts'),
+      expect.objectContaining({
+        value: { resolvedReviewThreadCount: 1, unresolvedReviewThreadCount: 1 },
+      }),
+      30,
+    );
+    expect(context.cache.setCache).toHaveBeenCalledWith(
+      expect.stringContaining('checks:actual-head-sha'),
+      expect.objectContaining({
+        value: { ciStatus: 'failing', checkCount: 101, failingCount: 1 },
+      }),
+      30,
+    );
+  });
+
+  it('reports review thread counts as unknown when the lookup fails', async () => {
+    const octokit = {
+      rest: {
+        pulls: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              number: 42,
+              title: 'Add feature',
+              state: 'open',
+              draft: false,
+              locked: false,
+              user: null,
+              created_at: '2024-01-15T10:00:00Z',
+              updated_at: '2024-01-16T12:00:00Z',
+              closed_at: null,
+              merged_at: null,
+              labels: [],
+              head: { ref: 'feature', sha: 'actual-head-sha' },
+              base: { ref: 'main' },
+              html_url: 'https://github.com/owner/repo/pull/42',
+              body: null,
+              additions: 1,
+              deletions: 0,
+              changed_files: 1,
+              mergeable: true,
+              mergeable_state: 'clean',
+              merged: false,
+              merged_by: null,
+              comments: 0,
+              review_comments: 0,
+              commits: 1,
+            },
+            headers: { etag: 'pull-request-etag' },
+          }),
+        },
+        checks: {
+          listForRef: vi.fn().mockResolvedValue({
+            data: {
+              total_count: 1,
+              check_runs: [{ id: 1, status: 'completed', conclusion: 'success' }],
+            },
+          }),
+        },
+      },
+      graphql: vi.fn().mockRejectedValue(new Error('GraphQL unavailable')),
+    } as never;
+
+    const status = await getPullRequestOperationalStatus(
+      createMockContext(),
+      octokit,
+      'owner',
+      'repo',
+      42,
+      'actual-head-sha',
+    );
+
+    expect(status.ciStatus).toBe('passing');
+    expect(status.resolvedReviewThreadCount).toBeNull();
+    expect(status.unresolvedReviewThreadCount).toBeNull();
   });
 });
 

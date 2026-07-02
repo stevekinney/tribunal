@@ -21,6 +21,7 @@ import {
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { requirePolicy } from '../core/cache-policy.js';
+import { getFailingCheckCount } from './state/queries.js';
 
 // Re-export error helpers for external consumers
 export {
@@ -53,6 +54,7 @@ export type {
   PullRequestListItem,
   PullRequestDetail,
   PullRequestListResult,
+  PullRequestOperationalStatus,
 } from '@tribunal/github/types/pull-requests';
 
 import type {
@@ -63,6 +65,7 @@ import type {
   PullRequestListItem,
   PullRequestDetail,
   PullRequestListResult,
+  PullRequestOperationalStatus,
 } from '@tribunal/github/types/pull-requests';
 
 import type { SortDirection } from '@tribunal/github/shared';
@@ -151,6 +154,7 @@ function transformPullRequestListItem(pr: GitHubPullRequestListItem): PullReques
     mergedAt: pr.merged_at,
     labels: pr.labels.map(transformLabel),
     headRef: pr.head.ref,
+    headSha: pr.head.sha,
     baseRef: pr.base.ref,
     htmlUrl: pr.html_url,
   };
@@ -184,7 +188,41 @@ function transformPullRequestDetail(pr: GitHubPullRequestDetail): PullRequestDet
     comments: pr.comments,
     reviewComments: pr.review_comments,
     commits: pr.commits,
+    headSha: pr.head.sha,
   };
+}
+
+type PullRequestReviewThreadsGraphqlResult = {
+  repository: {
+    pullRequest: {
+      reviewThreads: {
+        nodes: Array<{ isResolved: boolean } | null>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    } | null;
+  } | null;
+};
+
+type PullRequestReviewThreadCounts = Pick<
+  PullRequestOperationalStatus,
+  'resolvedReviewThreadCount' | 'unresolvedReviewThreadCount'
+>;
+
+function normalizeCiStatus(status: string): PullRequestOperationalStatus['ciStatus'] {
+  if (status === 'passing' || status === 'failing' || status === 'pending') return status;
+  if (status === 'error') return 'failing';
+  return 'unknown';
+}
+
+function resolveMergeConflictStatus(
+  pullRequest: PullRequestDetail | null,
+): PullRequestOperationalStatus['mergeConflictStatus'] {
+  if (!pullRequest) return 'unknown';
+  if (pullRequest.mergeable === false || pullRequest.mergeableState === 'dirty') {
+    return 'conflicting';
+  }
+  if (pullRequest.mergeable === true) return 'clean';
+  return 'unknown';
 }
 
 // ============================================================================
@@ -323,6 +361,102 @@ export async function getPullRequest(
     }
     throw error;
   }
+}
+
+export async function getPullRequestOperationalStatus(
+  context: GithubServiceContext,
+  octokit: OctokitType,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  headSha: string,
+): Promise<PullRequestOperationalStatus> {
+  const [detailResult, ciResult, threadCountsResult] = await Promise.allSettled([
+    getPullRequest(context, octokit, owner, repo, pullNumber),
+    getFailingCheckCount(context, octokit, owner, repo, headSha),
+    getPullRequestReviewThreadCounts(context, octokit, owner, repo, pullNumber),
+  ]);
+
+  const pullRequest = detailResult.status === 'fulfilled' ? detailResult.value : null;
+  const ciState = ciResult.status === 'fulfilled' ? ciResult.value : null;
+  const threadCounts = threadCountsResult.status === 'fulfilled' ? threadCountsResult.value : null;
+
+  return {
+    ciStatus: ciState ? normalizeCiStatus(ciState.ciStatus) : 'unknown',
+    checkCount: ciState?.checkCount ?? 0,
+    resolvedReviewThreadCount: threadCounts?.resolvedReviewThreadCount ?? null,
+    unresolvedReviewThreadCount: threadCounts?.unresolvedReviewThreadCount ?? null,
+    mergeConflictStatus: resolveMergeConflictStatus(pullRequest),
+    mergeableState: pullRequest?.mergeableState ?? null,
+  };
+}
+
+async function getPullRequestReviewThreadCounts(
+  context: GithubServiceContext,
+  octokit: OctokitType,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<PullRequestReviewThreadCounts> {
+  const fetchThreadCounts = async (): Promise<PullRequestReviewThreadCounts> => {
+    let resolvedReviewThreadCount = 0;
+    let unresolvedReviewThreadCount = 0;
+    let after: string | null = null;
+
+    do {
+      const result: PullRequestReviewThreadsGraphqlResult =
+        await octokit.graphql<PullRequestReviewThreadsGraphqlResult>(
+          `
+            query PullRequestReviewThreads(
+              $owner: String!
+              $repo: String!
+              $pullNumber: Int!
+              $after: String
+            ) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pullNumber) {
+                  reviewThreads(first: 100, after: $after) {
+                    nodes {
+                      isResolved
+                    }
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                  }
+                }
+              }
+            }
+          `,
+          { owner, repo, pullNumber, after },
+        );
+
+      const reviewThreads = result.repository?.pullRequest?.reviewThreads;
+      if (!reviewThreads) break;
+
+      for (const thread of reviewThreads.nodes) {
+        if (!thread) continue;
+        if (thread.isResolved) {
+          resolvedReviewThreadCount += 1;
+        } else {
+          unresolvedReviewThreadCount += 1;
+        }
+      }
+
+      after = reviewThreads.pageInfo.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
+    } while (after);
+
+    return { resolvedReviewThreadCount, unresolvedReviewThreadCount };
+  };
+
+  const policy = requirePolicy('get-review-thread-counts');
+  const { value } = await cachedRead<PullRequestReviewThreadCounts>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchThreadCounts() }),
+    [owner, repo, pullNumber],
+  );
+  return value;
 }
 
 // ============================================================================

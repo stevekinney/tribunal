@@ -165,6 +165,7 @@ export async function getAggregateReviewState(
 
 interface CIState {
   ciStatus: CIStatus;
+  checkCount: number;
   failingCount: number;
 }
 
@@ -235,7 +236,7 @@ export async function getFailingCheckCount(
       ciStatus = 'unknown';
     }
 
-    return { ciStatus, failingCount };
+    return { ciStatus, checkCount: totalCount, failingCount };
   };
 
   if (!context) {

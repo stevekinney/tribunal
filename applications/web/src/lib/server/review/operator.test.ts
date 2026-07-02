@@ -19,7 +19,6 @@ import {
 import { eq } from 'drizzle-orm';
 import {
   deleteAgent,
-  estimateAgentDryRun,
   getRepositoryOperatorDetails,
   getCostOverview,
   getReviewsEnabled,
@@ -27,6 +26,7 @@ import {
   hasWatchedRepositories,
   saveAgent,
   saveRepositoryWatchSettings,
+  saveUserReviewSettings,
   setAgentEnabled,
   stopAgent,
   stopRun,
@@ -362,86 +362,18 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  it('estimates an agent dry run from the submitted prompt and sample diff', async () => {
+  it('rejects inherited default models for user review settings', async () => {
     const { owner } = await seedRepositoryOwnership();
     const formData = new FormData();
-    formData.set('body', 'Review this pull request for security issues.');
-    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
-    formData.set('model', 'sonnet');
-    formData.set('effort', 'high');
+    formData.set('dailyCostCapUsd', '25');
+    formData.set('defaultModel', 'inherit');
+    formData.set('reviewsEnabled', 'on');
 
-    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
-
-    expect('dryRunEstimate' in result).toBe(true);
-    if (!('dryRunEstimate' in result)) return;
-    expect(result).toMatchObject({
-      values: {
-        body: 'Review this pull request for security issues.',
-        sampleDiff: 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();',
-      },
-      dryRunEstimate: {
-        model: 'sonnet',
-        effort: 'high',
-      },
-    });
-    expect(result.dryRunEstimate.estimatedInputTokens).toBeGreaterThan(0);
-    expect(result.dryRunEstimate.estimatedOutputTokens).toBeGreaterThan(0);
-    expect(result.dryRunEstimate.costEstimateUsd).toBeGreaterThan(0);
-  });
-
-  it('estimates dry runs with the effective inherited model and effort fallback', async () => {
-    const { owner } = await seedRepositoryOwnership();
-    const formData = new FormData();
-    formData.set('body', 'Review this pull request for security issues.');
-    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
-    formData.set('model', 'inherit');
-    formData.set('effort', 'xhigh');
-
-    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
-
-    expect('dryRunEstimate' in result).toBe(true);
-    if (!('dryRunEstimate' in result)) return;
-    expect(result.dryRunEstimate.model).not.toBe('inherit');
-    expect(result.dryRunEstimate.model).toMatch(/^claude-[a-z0-9-]+$|^(sonnet|opus|haiku|fable)$/);
-    expect(result.dryRunEstimate.effort).toBe('high');
-  });
-
-  it('rejects dry-run inheritance when the user default model is not concrete', async () => {
-    const { owner } = await seedRepositoryOwnership();
-    await testDb.db
-      .insert(userReviewSettings)
-      .values({ userId: owner.id, defaultModel: 'inherit' });
-    const formData = new FormData();
-    formData.set('body', 'Review this pull request for security issues.');
-    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
-    formData.set('model', 'inherit');
-
-    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
+    const result = await withTestDatabase(() => saveUserReviewSettings(owner.id, formData));
 
     expect(result).toMatchObject({
       status: 400,
-      data: { error: 'User default model is not configured.' },
-    });
-  });
-
-  it('estimates explicit-model dry runs without requiring a concrete user default model', async () => {
-    const { owner } = await seedRepositoryOwnership();
-    await testDb.db
-      .insert(userReviewSettings)
-      .values({ userId: owner.id, defaultModel: 'inherit' });
-    const formData = new FormData();
-    formData.set('body', 'Review this pull request for security issues.');
-    formData.set('sampleDiff', 'diff --git a/src/auth.ts b/src/auth.ts\n+allowAllUsers();');
-    formData.set('model', 'sonnet');
-    formData.set('effort', 'high');
-
-    const result = await withTestDatabase(() => estimateAgentDryRun(owner.id, formData));
-
-    expect('dryRunEstimate' in result).toBe(true);
-    if (!('dryRunEstimate' in result)) return;
-    expect(result.dryRunEstimate).toMatchObject({
-      model: 'sonnet',
-      effort: 'high',
+      data: { error: 'Default model is invalid.' },
     });
   });
 

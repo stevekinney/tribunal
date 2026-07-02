@@ -105,6 +105,7 @@ const baseData = {
     isPlatformAdministrator: false,
   },
   repositories: [],
+  availableRepositories: [],
   agents: [],
   installations: [],
   needsConnect: false,
@@ -125,14 +126,24 @@ describe('/repositories page', () => {
       .element(page.getByRole('heading', { name: 'Install the GitHub App' }))
       .toBeInTheDocument();
     await expect
-      .element(page.getByRole('link', { name: 'Install GitHub App' }))
+      .element(page.getByRole('link', { name: 'Install Tribunal' }))
       .toHaveAttribute('href', '/connect/github');
   });
 
-  it('prompts users to manage repository access when an installation already exists', async () => {
+  it('prompts users to add a repository when an installation already exists', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
+        availableRepositories: [
+          {
+            id: 101,
+            owner: 'test-org',
+            name: 'available',
+            defaultBranch: 'main',
+            accountLogin: 'test-org',
+            accountAvatarUrl: null,
+          },
+        ],
         installations: [
           {
             installationId: 12345,
@@ -145,10 +156,8 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await expect.element(page.getByText('No repositories selected')).toBeInTheDocument();
-    await expect
-      .element(page.getByRole('link', { name: 'Manage repository access' }))
-      .toHaveAttribute('href', '/connect/github');
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Add' })).toBeDisabled();
   });
 
   it('preserves saved repository settings when re-watching a repository', async () => {
@@ -335,13 +344,13 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    const watchSwitch = page.getByRole('switch', { name: 'Watch repository' });
+    const watchSwitch = page.getByRole('switch', { name: 'Add repository' });
 
     await watchSwitch.click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
 
-    await page.getByRole('switch', { name: 'Unwatch repository' }).click();
+    await page.getByRole('switch', { name: 'Remove repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
@@ -400,15 +409,15 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    await page.getByRole('switch', { name: 'Add repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
     enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
 
-    await expect.element(page.getByRole('switch', { name: 'Watch repository' })).toBeVisible();
+    await expect.element(page.getByRole('switch', { name: 'Add repository' })).toBeVisible();
 
-    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    await page.getByRole('switch', { name: 'Add repository' }).click();
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
   });
@@ -461,12 +470,12 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Watch repository' }).click();
+    await page.getByRole('switch', { name: 'Add repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
 
-    await page.getByRole('switch', { name: 'Unwatch repository' }).click();
+    await page.getByRole('switch', { name: 'Remove repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     enhancedFormTesting.submissions[0]?.resolveUpdate();
 

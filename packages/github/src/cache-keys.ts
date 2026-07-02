@@ -63,6 +63,8 @@ export const CACHE_KEYS = {
   // GitHub review state and CI check caches (Redis)
   GITHUB_REVIEW_STATE: (owner: string, repo: string, prNumber: number) =>
     `github:response:${owner}:${repo}:pr:${prNumber}:review-state`,
+  GITHUB_REVIEW_THREAD_COUNTS: (owner: string, repo: string, prNumber: number) =>
+    `github:response:${owner}:${repo}:pr:${prNumber}:review-thread-counts`,
   GITHUB_CHECK_COUNTS: (owner: string, repo: string, headSha: string) =>
     `github:response:${owner}:${repo}:checks:${headSha}`,
   GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string) =>

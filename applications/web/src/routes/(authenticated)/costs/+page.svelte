@@ -8,21 +8,12 @@
 
   let { data }: PageProps = $props();
 
-  type DimensionKey =
-    | 'byReviewRun'
-    | 'byPullRequest'
-    | 'byRepository'
-    | 'byAgent'
-    | 'byAgentPerRepository'
-    | 'byUserPerDay';
+  type DimensionKey = 'byPullRequest' | 'byRepository' | 'byAgent';
 
   const dimensions: { key: DimensionKey; label: string }[] = [
-    { key: 'byReviewRun', label: 'By Review Run' },
-    { key: 'byPullRequest', label: 'By Pull Request' },
-    { key: 'byRepository', label: 'By Repository' },
-    { key: 'byAgent', label: 'By Agent' },
-    { key: 'byAgentPerRepository', label: 'By Agent per Repository' },
-    { key: 'byUserPerDay', label: 'By User per Day' },
+    { key: 'byRepository', label: 'Repository' },
+    { key: 'byAgent', label: 'Agent' },
+    { key: 'byPullRequest', label: 'Pull request' },
   ];
 
   function isDimensionKey(value: string): value is DimensionKey {
@@ -268,6 +259,12 @@
 
   .cache-card .amount-primary {
     font-size: var(--text-2xl);
+    font-family: inherit;
+    letter-spacing: 0;
+  }
+
+  .cache-card .stat-sub {
+    font-family: inherit;
   }
 
   .amount-cap {

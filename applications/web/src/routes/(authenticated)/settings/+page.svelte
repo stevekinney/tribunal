@@ -30,13 +30,6 @@
 </script>
 
 <Page title="Settings" subtitle="Review safety controls">
-  {#snippet actions()}
-    <Button type="submit" form="settings-form" variant="primary">
-      {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
-      Save settings
-    </Button>
-  {/snippet}
-
   {#if form?.error}
     <Alert variant="danger">{form.error}</Alert>
   {/if}
@@ -81,28 +74,33 @@
       </div>
     </Card>
 
-    <div class="kill-switch-wrapper">
-      <Card>
-        {#snippet header()}
-          <h2 class="kill-switch-title">
-            <span class="icon-danger" aria-hidden="true"><OctagonAlert size={15} /></span>
-            Kill switch
-          </h2>
-          <p class="kill-switch-desc">
-            Immediately stop dispatching new reviews everywhere. In-flight runs finish. Use this if
-            costs spike or an agent misbehaves.
-          </p>
-        {/snippet}
-        <div class="kill-switch-body">
-          <StatusDot status={reviewStatus} label={reviewLabel} showLabel />
-          <Toggle
-            id="reviews-enabled"
-            bind:checked={reviewsEnabled}
-            name="reviewsEnabled"
-            label="Reviews enabled"
-          />
-        </div>
-      </Card>
+    <Card>
+      {#snippet header()}
+        <h2 class="kill-switch-title">
+          <span aria-hidden="true"><OctagonAlert size={15} /></span>
+          Kill switch
+        </h2>
+        <p class="kill-switch-desc">
+          Immediately stop dispatching new reviews everywhere. In-flight runs finish. Use this if
+          costs spike or an agent misbehaves.
+        </p>
+      {/snippet}
+      <div class="kill-switch-body">
+        <StatusDot status={reviewStatus} label={reviewLabel} showLabel />
+        <Toggle
+          id="reviews-enabled"
+          bind:checked={reviewsEnabled}
+          name="reviewsEnabled"
+          label="Reviews enabled"
+        />
+      </div>
+    </Card>
+
+    <div class="form-actions">
+      <Button type="submit" variant="primary">
+        {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
+        Save settings
+      </Button>
     </div>
   </form>
 </Page>
@@ -129,14 +127,6 @@
     max-width: 280px;
   }
 
-  .kill-switch-wrapper :global(.cinder-card) {
-    border-color: var(--cinder-color-danger-border);
-  }
-
-  .kill-switch-wrapper :global(.cinder-card__header) {
-    border-bottom-color: var(--cinder-color-danger-border);
-  }
-
   .kill-switch-title {
     display: inline-flex;
     align-items: center;
@@ -145,13 +135,6 @@
     font-weight: var(--font-medium);
     color: var(--cinder-color-danger-fg);
     margin: 0;
-  }
-
-  .icon-danger {
-    color: var(--cinder-color-danger-fg);
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
   }
 
   .kill-switch-desc {
@@ -166,5 +149,10 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
+  }
+
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 </style>

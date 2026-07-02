@@ -39,6 +39,7 @@ describe('cache-policy', () => {
 
     it('has policies for previously uncached operations', () => {
       expect(getPolicy('get-aggregate-review-state')).toBeDefined();
+      expect(getPolicy('get-review-thread-counts')).toBeDefined();
       expect(getPolicy('get-failing-check-count')).toBeDefined();
     });
 
@@ -90,6 +91,15 @@ describe('cache-policy', () => {
       expect(key).toContain('checks');
       expect(key).toContain('abc123sha');
     });
+
+    it('get-review-thread-counts generates correct cache key', () => {
+      const policy = getPolicy('get-review-thread-counts')!;
+      const key = policy.keyFactory('owner', 'repo', 42);
+      expect(key).toContain('owner');
+      expect(key).toContain('repo');
+      expect(key).toContain('42');
+      expect(key).toContain('review-thread-counts');
+    });
   });
 
   describe('eTag support flags', () => {
@@ -111,6 +121,7 @@ describe('cache-policy', () => {
       expect(getPolicy('validate-thread-ownership')?.supportsEtag).toBe(false);
       expect(getPolicy('find-thread-for-comment')?.supportsEtag).toBe(false);
       expect(getPolicy('get-aggregate-review-state')?.supportsEtag).toBe(false);
+      expect(getPolicy('get-review-thread-counts')?.supportsEtag).toBe(false);
       expect(getPolicy('get-failing-check-count')?.supportsEtag).toBe(false);
     });
   });
