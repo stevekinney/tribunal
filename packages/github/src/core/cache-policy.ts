@@ -199,6 +199,14 @@ registerPolicy({
 });
 
 registerPolicy({
+  operationId: 'get-review-thread-counts',
+  keyFactory: (owner: string, repo: string, prNumber: number) =>
+    CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS(owner, repo, prNumber),
+  ttlSeconds: 30, // Short TTL — review threads change frequently
+  supportsEtag: false, // GraphQL — no eTag support
+});
+
+registerPolicy({
   operationId: 'get-failing-check-count',
   keyFactory: (owner: string, repo: string, headSha: string) =>
     CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha),

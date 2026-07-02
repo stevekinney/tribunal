@@ -71,6 +71,11 @@
     if (hasInstallations) return 'Add repository';
     return 'Install Tribunal';
   });
+  const emptyStateActionHref = $derived.by(() => {
+    if (data.needsConnect) return '/connect/github/account';
+    if (hasInstallations && availableRepositories.length > 0) return '#repository-to-add';
+    return '/connect/github';
+  });
 
   /** Maps a run status string to the nearest StatusDot semantic status. */
   function statusDotForRun(status: string): StatusDotStatus {
@@ -223,7 +228,7 @@
       <EmptyState title={emptyStateTitle} description={emptyStateDescription}>
         {#snippet icon()}<FolderGit2 size={48} />{/snippet}
         {#snippet action()}
-          <Button href="/connect/github" variant="primary" size="sm">
+          <Button href={emptyStateActionHref} variant="primary" size="sm">
             {emptyStateActionLabel}
             {#snippet leadingIcon()}<GithubIcon size={14} aria-hidden="true" />{/snippet}
           </Button>

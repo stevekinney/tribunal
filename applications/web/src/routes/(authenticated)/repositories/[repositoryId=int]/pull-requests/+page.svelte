@@ -45,9 +45,9 @@
     return 'neutral';
   }
 
-  function conflictLabel(status: string): string {
+  function conflictLabel(status: string, baseRef: string): string {
     if (status === 'clean') return 'No conflicts';
-    if (status === 'conflicting') return 'Conflicts with main';
+    if (status === 'conflicting') return `Conflicts with ${baseRef}`;
     return 'Conflict status unknown';
   }
 
@@ -99,6 +99,9 @@
                 disabled={!agent.enabled}
                 description={agent.enabled ? undefined : 'Disabled'}
               />
+              {#if !agent.enabled && selectedAgentIds.has(agent.id)}
+                <input type="hidden" name="agentIds" value={agent.id} />
+              {/if}
             {/each}
           </div>
         {/if}
@@ -173,7 +176,7 @@
               </Badge>
               <Badge size="sm" variant={conflictVariant(pullRequest.status.mergeConflictStatus)}>
                 <GitMerge size={13} aria-hidden="true" />
-                {conflictLabel(pullRequest.status.mergeConflictStatus)}
+                {conflictLabel(pullRequest.status.mergeConflictStatus, pullRequest.baseRef)}
               </Badge>
             </div>
           </Card>

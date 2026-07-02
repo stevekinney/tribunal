@@ -41,6 +41,7 @@ export interface PullRequestListItem {
   mergedAt: string | null;
   labels: PullRequestLabel[];
   headRef: string;
+  headSha: string;
   baseRef: string;
   htmlUrl: string;
 }

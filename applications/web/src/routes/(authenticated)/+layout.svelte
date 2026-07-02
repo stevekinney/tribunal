@@ -340,12 +340,6 @@
    * Footer: status pill + user menu
    * ============================================================ */
 
-  .footer-content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
   .reviews-status {
     display: flex;
     align-items: center;

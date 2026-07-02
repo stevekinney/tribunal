@@ -21,6 +21,7 @@ import {
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { requirePolicy } from '../core/cache-policy.js';
+import { getFailingCheckCount } from './state/queries.js';
 
 // Re-export error helpers for external consumers
 export {
@@ -153,6 +154,7 @@ function transformPullRequestListItem(pr: GitHubPullRequestListItem): PullReques
     mergedAt: pr.merged_at,
     labels: pr.labels.map(transformLabel),
     headRef: pr.head.ref,
+    headSha: pr.head.sha,
     baseRef: pr.base.ref,
     htmlUrl: pr.html_url,
   };
@@ -186,6 +188,7 @@ function transformPullRequestDetail(pr: GitHubPullRequestDetail): PullRequestDet
     comments: pr.comments,
     reviewComments: pr.review_comments,
     commits: pr.commits,
+    headSha: pr.head.sha,
   };
 }
 
@@ -194,27 +197,21 @@ type PullRequestReviewThreadsGraphqlResult = {
     pullRequest: {
       reviewThreads: {
         nodes: Array<{ isResolved: boolean } | null>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
       };
     } | null;
   } | null;
 };
 
-function resolveCiStatus(
-  checkRuns: Endpoints['GET /repos/{owner}/{repo}/commits/{ref}/check-runs']['response']['data']['check_runs'],
-): PullRequestOperationalStatus['ciStatus'] {
-  if (checkRuns.length === 0) return 'unknown';
-  if (checkRuns.some((run) => run.status !== 'completed')) return 'pending';
-  if (
-    checkRuns.some(
-      (run) =>
-        run.conclusion !== 'success' &&
-        run.conclusion !== 'neutral' &&
-        run.conclusion !== 'skipped',
-    )
-  ) {
-    return 'failing';
-  }
-  return 'passing';
+type PullRequestReviewThreadCounts = Pick<
+  PullRequestOperationalStatus,
+  'resolvedReviewThreadCount' | 'unresolvedReviewThreadCount'
+>;
+
+function normalizeCiStatus(status: string): PullRequestOperationalStatus['ciStatus'] {
+  if (status === 'passing' || status === 'failing' || status === 'pending') return status;
+  if (status === 'error') return 'failing';
+  return 'unknown';
 }
 
 function resolveMergeConflictStatus(
@@ -367,55 +364,102 @@ export async function getPullRequest(
 }
 
 export async function getPullRequestOperationalStatus(
+  context: GithubServiceContext,
   octokit: OctokitType,
   owner: string,
   repo: string,
   pullNumber: number,
-  headRef: string,
+  headSha: string,
 ): Promise<PullRequestOperationalStatus> {
-  const [detailResult, checksResult, threadsResult] = await Promise.allSettled([
-    octokit.rest.pulls.get({ owner, repo, pull_number: pullNumber }),
-    octokit.rest.checks.listForRef({ owner, repo, ref: headRef }),
-    octokit.graphql<PullRequestReviewThreadsGraphqlResult>(
-      `
-        query PullRequestReviewThreads($owner: String!, $repo: String!, $pullNumber: Int!) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $pullNumber) {
-              reviewThreads(first: 100) {
-                nodes {
-                  isResolved
-                }
-              }
-            }
-          }
-        }
-      `,
-      { owner, repo, pullNumber },
-    ),
+  const [detailResult, ciResult, threadCountsResult] = await Promise.allSettled([
+    getPullRequest(context, octokit, owner, repo, pullNumber),
+    getFailingCheckCount(context, octokit, owner, repo, headSha),
+    getPullRequestReviewThreadCounts(context, octokit, owner, repo, pullNumber),
   ]);
 
-  const pullRequest =
-    detailResult.status === 'fulfilled'
-      ? transformPullRequestDetail(detailResult.value.data)
-      : null;
-  const checkRuns = checksResult.status === 'fulfilled' ? checksResult.value.data.check_runs : [];
-  const reviewThreads =
-    threadsResult.status === 'fulfilled'
-      ? (threadsResult.value.repository?.pullRequest?.reviewThreads.nodes ?? [])
-      : [];
-  const resolvedReviewThreadCount = reviewThreads.filter((thread) => thread?.isResolved).length;
-  const unresolvedReviewThreadCount = reviewThreads.filter(
-    (thread) => thread && !thread.isResolved,
-  ).length;
+  const pullRequest = detailResult.status === 'fulfilled' ? detailResult.value : null;
+  const ciState = ciResult.status === 'fulfilled' ? ciResult.value : null;
+  const threadCounts =
+    threadCountsResult.status === 'fulfilled'
+      ? threadCountsResult.value
+      : { resolvedReviewThreadCount: 0, unresolvedReviewThreadCount: 0 };
 
   return {
-    ciStatus: checksResult.status === 'fulfilled' ? resolveCiStatus(checkRuns) : 'unknown',
-    checkCount: checkRuns.length,
-    resolvedReviewThreadCount,
-    unresolvedReviewThreadCount,
+    ciStatus: ciState ? normalizeCiStatus(ciState.ciStatus) : 'unknown',
+    checkCount: ciState?.checkCount ?? 0,
+    resolvedReviewThreadCount: threadCounts.resolvedReviewThreadCount,
+    unresolvedReviewThreadCount: threadCounts.unresolvedReviewThreadCount,
     mergeConflictStatus: resolveMergeConflictStatus(pullRequest),
     mergeableState: pullRequest?.mergeableState ?? null,
   };
+}
+
+async function getPullRequestReviewThreadCounts(
+  context: GithubServiceContext,
+  octokit: OctokitType,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<PullRequestReviewThreadCounts> {
+  const fetchThreadCounts = async (): Promise<PullRequestReviewThreadCounts> => {
+    let resolvedReviewThreadCount = 0;
+    let unresolvedReviewThreadCount = 0;
+    let after: string | null = null;
+
+    do {
+      const result: PullRequestReviewThreadsGraphqlResult =
+        await octokit.graphql<PullRequestReviewThreadsGraphqlResult>(
+          `
+            query PullRequestReviewThreads(
+              $owner: String!
+              $repo: String!
+              $pullNumber: Int!
+              $after: String
+            ) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pullNumber) {
+                  reviewThreads(first: 100, after: $after) {
+                    nodes {
+                      isResolved
+                    }
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                  }
+                }
+              }
+            }
+          `,
+          { owner, repo, pullNumber, after },
+        );
+
+      const reviewThreads = result.repository?.pullRequest?.reviewThreads;
+      if (!reviewThreads) break;
+
+      for (const thread of reviewThreads.nodes) {
+        if (!thread) continue;
+        if (thread.isResolved) {
+          resolvedReviewThreadCount += 1;
+        } else {
+          unresolvedReviewThreadCount += 1;
+        }
+      }
+
+      after = reviewThreads.pageInfo.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
+    } while (after);
+
+    return { resolvedReviewThreadCount, unresolvedReviewThreadCount };
+  };
+
+  const policy = requirePolicy('get-review-thread-counts');
+  const { value } = await cachedRead<PullRequestReviewThreadCounts>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchThreadCounts() }),
+    [owner, repo, pullNumber],
+  );
+  return value;
 }
 
 // ============================================================================

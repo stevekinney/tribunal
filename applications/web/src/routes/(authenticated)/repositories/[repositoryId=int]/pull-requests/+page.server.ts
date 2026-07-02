@@ -32,6 +32,7 @@ const OPEN_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
   page: 1,
   perPage: 50,
 };
+const STATUS_LOOKUP_CONCURRENCY = 5;
 
 function shouldUseE2EPullRequests(): boolean {
   return env.NODE_ENV !== 'production' && env.E2E_TEST_MODE === '1' && !!env.E2E_TEST_SECRET;
@@ -71,6 +72,7 @@ async function listE2EPullRequests(
       draft: false,
       htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
       headRef: run.headSha,
+      headSha: run.headSha,
       baseRef: 'main',
       updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
       author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },
@@ -144,27 +146,46 @@ async function listLivePullRequests(repositoryId: number) {
     repositoryId,
   );
 
-  return Promise.all(
-    result.pullRequests.map(async (pullRequest) => ({
+  return mapWithConcurrency(
+    result.pullRequests,
+    STATUS_LOOKUP_CONCURRENCY,
+    async (pullRequest) => ({
       number: pullRequest.number,
       title: pullRequest.title,
       draft: pullRequest.draft,
       htmlUrl: pullRequest.htmlUrl,
       headRef: pullRequest.headRef,
+      headSha: pullRequest.headSha,
       baseRef: pullRequest.baseRef,
       updatedAt: pullRequest.updatedAt,
       author: pullRequest.author
         ? { login: pullRequest.author.login, htmlUrl: pullRequest.author.htmlUrl }
         : null,
       status: await getPullRequestOperationalStatus(
+        githubContext,
         installation.octokit,
         installation.owner,
         installation.repo,
         pullRequest.number,
-        pullRequest.headRef,
+        pullRequest.headSha,
       ),
-    })),
+    }),
   );
+}
+
+async function mapWithConcurrency<T, U>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<U>,
+): Promise<U[]> {
+  const results: U[] = [];
+
+  for (let index = 0; index < items.length; index += concurrency) {
+    const chunk = items.slice(index, index + concurrency);
+    results.push(...(await Promise.all(chunk.map(mapper))));
+  }
+
+  return results;
 }
 
 export const actions: Actions = {
@@ -183,11 +204,20 @@ export const actions: Actions = {
     }
 
     const formData = await request.formData();
+    const submittedAgentIds = formData.getAll('agentIds').map(String);
+    const currentDetails = (await getRepositoryOperatorDetails(user.id, [repositoryId])).get(
+      repositoryId,
+    );
+    const preservedDisabledAgentIds =
+      currentDetails?.agents
+        .filter((agent) => !agent.enabled && submittedAgentIds.includes(agent.id) === false)
+        .map((agent) => agent.id) ?? [];
+
     return saveRepositoryWatchSettings(user.id, {
       repositoryId,
       watched: true,
       ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
-      agentIds: formData.getAll('agentIds').map(String),
+      agentIds: [...submittedAgentIds, ...preservedDisabledAgentIds],
     });
   },
 };

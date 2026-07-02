@@ -115,11 +115,29 @@ export const actions: Actions = {
       return fail(400, { error: 'Repository is invalid.' });
     }
 
+    const submittedAgentIds = formData.getAll('agentIds').map(String);
+    let ignoreGlobs = parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? ''));
+    let agentIds = submittedAgentIds;
+
+    if (!formData.has('ignoreGlobs') && submittedAgentIds.length === 0) {
+      const currentDetails = (await getRepositoryOperatorDetails(user.id, [repositoryId])).get(
+        repositoryId,
+      );
+
+      if (currentDetails?.hasSavedSettings) {
+        ignoreGlobs = currentDetails.ignoreGlobs;
+        agentIds = currentDetails.agents.map((agent) => agent.id);
+      } else {
+        const agents = await listAgents(user.id);
+        agentIds = agents.filter((agent) => agent.enabled).map((agent) => agent.id);
+      }
+    }
+
     return saveRepositoryWatchSettings(user.id, {
       repositoryId,
       watched: formData.get('watched') === 'on',
-      ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
-      agentIds: formData.getAll('agentIds').map(String),
+      ignoreGlobs,
+      agentIds,
     });
   },
 };
