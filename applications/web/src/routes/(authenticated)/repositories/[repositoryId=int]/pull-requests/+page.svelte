@@ -24,9 +24,7 @@
     { label: 'Repositories', href: '/repositories' },
     { label: repositoryName },
   ]);
-  const selectedAgentIds = $derived(
-    new Set(data.repository.review.agents.map((agent) => agent.id)),
-  );
+  let selectedAgentIds = $derived(new Set(data.repository.review.agents.map((agent) => agent.id)));
 
   function ciLabel(status: string): string {
     const labels: Record<string, string> = {
@@ -90,18 +88,31 @@
         {:else}
           <div class="agent-list">
             {#each data.agents as agent (agent.id)}
+              {@const selected = selectedAgentIds.has(agent.id)}
+              {@const canToggle = agent.enabled || selected}
               <Checkbox
                 id="repository-agent-{agent.id}"
                 name="agentIds"
                 value={agent.id}
-                checked={selectedAgentIds.has(agent.id)}
+                checked={selected}
                 label={agent.slug}
-                disabled={!agent.enabled}
-                description={agent.enabled ? undefined : 'Disabled'}
+                disabled={!canToggle}
+                description={agent.enabled
+                  ? undefined
+                  : selected
+                    ? 'Disabled; uncheck to remove'
+                    : 'Disabled'}
+                onValueChange={(next) => {
+                  const nextSelectedAgentIds = new Set(selectedAgentIds);
+                  if (next) {
+                    nextSelectedAgentIds.add(agent.id);
+                  } else {
+                    nextSelectedAgentIds.delete(agent.id);
+                  }
+                  selectedAgentIds = nextSelectedAgentIds;
+                  return next;
+                }}
               />
-              {#if !agent.enabled && selectedAgentIds.has(agent.id)}
-                <input type="hidden" name="agentIds" value={agent.id} />
-              {/if}
             {/each}
           </div>
         {/if}

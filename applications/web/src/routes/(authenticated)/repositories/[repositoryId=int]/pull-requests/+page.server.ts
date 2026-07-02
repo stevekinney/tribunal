@@ -205,19 +205,12 @@ export const actions: Actions = {
 
     const formData = await request.formData();
     const submittedAgentIds = formData.getAll('agentIds').map(String);
-    const currentDetails = (await getRepositoryOperatorDetails(user.id, [repositoryId])).get(
-      repositoryId,
-    );
-    const preservedDisabledAgentIds =
-      currentDetails?.agents
-        .filter((agent) => !agent.enabled && submittedAgentIds.includes(agent.id) === false)
-        .map((agent) => agent.id) ?? [];
 
     return saveRepositoryWatchSettings(user.id, {
       repositoryId,
       watched: true,
       ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
-      agentIds: [...submittedAgentIds, ...preservedDisabledAgentIds],
+      agentIds: submittedAgentIds,
     });
   },
 };

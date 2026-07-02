@@ -29,10 +29,10 @@ const userColumns = {
   isPlatformAdministrator: userTable.isPlatformAdministrator,
 } as const;
 
-let cachedSession: DevGitHubBypassSession | null = null;
-
 export function resetDevGitHubBypassCacheForTests(): void {
-  cachedSession = null;
+  // Kept for existing tests that reset auth bypass modules. GitHub bypass
+  // sessions are resolved fresh on each request so token and account changes
+  // are visible without restarting the dev server.
 }
 
 function readGitHubTokenFromCli(): string | null {
@@ -185,11 +185,12 @@ async function usernameIsAvailable(username: string): Promise<boolean> {
 async function updateUserFromGitHub(
   user: AuthenticatedApplicationUser,
   gitHubUser: GitHubUserResponse,
+  options: { updateNeonAuthUserId?: boolean } = {},
 ): Promise<AuthenticatedApplicationUser> {
   const [updated] = await db
     .update(userTable)
     .set({
-      neonAuthUserId: `dev-github:${gitHubUser.id}`,
+      ...(options.updateNeonAuthUserId ? { neonAuthUserId: `dev-github:${gitHubUser.id}` } : {}),
       name: gitHubUser.name,
       avatarUrl: gitHubUser.avatar_url,
     })
@@ -231,14 +232,14 @@ async function resolveApplicationUser(
   if (installationOwner) return updateUserFromGitHub(installationOwner, gitHubUser);
 
   const existingDevUser = await findUserByNeonAuthUserId(neonAuthUserId);
-  if (existingDevUser) return updateUserFromGitHub(existingDevUser, gitHubUser);
+  if (existingDevUser) {
+    return updateUserFromGitHub(existingDevUser, gitHubUser, { updateNeonAuthUserId: true });
+  }
 
   return createDevGitHubUser(gitHubUser);
 }
 
 export async function resolveDevGitHubBypassSession(): Promise<DevGitHubBypassSession> {
-  if (cachedSession) return cachedSession;
-
   const token = resolveGitHubToken();
   const { user: gitHubUser, scope } = await fetchGitHubUser(token);
   const user = await resolveApplicationUser(gitHubUser);
@@ -255,13 +256,11 @@ export async function resolveDevGitHubBypassSession(): Promise<DevGitHubBypassSe
     await deleteOAuthConnection(user.id, 'github');
   }
 
-  cachedSession = {
+  return {
     user,
     neonSession: {
       neonAuthUserId: `dev-github:${gitHubUser.id}`,
       expiresAt: new Date('2999-01-01T00:00:00.000Z'),
     },
   };
-
-  return cachedSession;
 }
