@@ -71,8 +71,8 @@ export type PullRequestMergeConflictStatus = 'clean' | 'conflicting' | 'unknown'
 export interface PullRequestOperationalStatus {
   ciStatus: PullRequestCiStatus;
   checkCount: number;
-  resolvedReviewThreadCount: number;
-  unresolvedReviewThreadCount: number;
+  resolvedReviewThreadCount: number | null;
+  unresolvedReviewThreadCount: number | null;
   mergeConflictStatus: PullRequestMergeConflictStatus;
   mergeableState: string | null;
 }

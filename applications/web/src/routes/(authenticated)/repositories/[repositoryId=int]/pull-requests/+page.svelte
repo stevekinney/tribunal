@@ -24,6 +24,7 @@
     { label: 'Repositories', href: '/repositories' },
     { label: repositoryName },
   ]);
+  let ignoreGlobs = $derived(data.repository.review.ignoreGlobs.join('\n'));
   let selectedAgentIds = $derived(new Set(data.repository.review.agents.map((agent) => agent.id)));
 
   function ciLabel(status: string): string {
@@ -77,7 +78,7 @@
         name="ignoreGlobs"
         rows="4"
         placeholder="dist/**&#10;coverage/**"
-        value={data.repository.review.ignoreGlobs.join('\n')}
+        bind:value={ignoreGlobs}
       ></textarea>
       <p class="field-description">One glob per line. Matching files are skipped during review.</p>
 
@@ -174,17 +175,28 @@
                   ({pullRequest.status.checkCount})
                 {/if}
               </Badge>
-              <Badge
-                size="sm"
-                variant={pullRequest.status.unresolvedReviewThreadCount > 0 ? 'warning' : 'success'}
-              >
-                <MessageSquareText size={13} aria-hidden="true" />
-                {pullRequest.status.unresolvedReviewThreadCount} unresolved
-              </Badge>
-              <Badge size="sm" variant="neutral">
-                <MessageSquareText size={13} aria-hidden="true" />
-                {pullRequest.status.resolvedReviewThreadCount} resolved
-              </Badge>
+              {#if pullRequest.status.unresolvedReviewThreadCount === null}
+                <Badge size="sm" variant="neutral">
+                  <MessageSquareText size={13} aria-hidden="true" />
+                  Threads unknown
+                </Badge>
+              {:else}
+                <Badge
+                  size="sm"
+                  variant={pullRequest.status.unresolvedReviewThreadCount > 0
+                    ? 'warning'
+                    : 'success'}
+                >
+                  <MessageSquareText size={13} aria-hidden="true" />
+                  {pullRequest.status.unresolvedReviewThreadCount} unresolved
+                </Badge>
+                {#if pullRequest.status.resolvedReviewThreadCount !== null}
+                  <Badge size="sm" variant="neutral">
+                    <MessageSquareText size={13} aria-hidden="true" />
+                    {pullRequest.status.resolvedReviewThreadCount} resolved
+                  </Badge>
+                {/if}
+              {/if}
               <Badge size="sm" variant={conflictVariant(pullRequest.status.mergeConflictStatus)}>
                 <GitMerge size={13} aria-hidden="true" />
                 {conflictLabel(pullRequest.status.mergeConflictStatus, pullRequest.baseRef)}

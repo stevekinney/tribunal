@@ -648,6 +648,67 @@ describe('getPullRequestOperationalStatus', () => {
       30,
     );
   });
+
+  it('reports review thread counts as unknown when the lookup fails', async () => {
+    const octokit = {
+      rest: {
+        pulls: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              number: 42,
+              title: 'Add feature',
+              state: 'open',
+              draft: false,
+              locked: false,
+              user: null,
+              created_at: '2024-01-15T10:00:00Z',
+              updated_at: '2024-01-16T12:00:00Z',
+              closed_at: null,
+              merged_at: null,
+              labels: [],
+              head: { ref: 'feature', sha: 'actual-head-sha' },
+              base: { ref: 'main' },
+              html_url: 'https://github.com/owner/repo/pull/42',
+              body: null,
+              additions: 1,
+              deletions: 0,
+              changed_files: 1,
+              mergeable: true,
+              mergeable_state: 'clean',
+              merged: false,
+              merged_by: null,
+              comments: 0,
+              review_comments: 0,
+              commits: 1,
+            },
+            headers: { etag: 'pull-request-etag' },
+          }),
+        },
+        checks: {
+          listForRef: vi.fn().mockResolvedValue({
+            data: {
+              total_count: 1,
+              check_runs: [{ id: 1, status: 'completed', conclusion: 'success' }],
+            },
+          }),
+        },
+      },
+      graphql: vi.fn().mockRejectedValue(new Error('GraphQL unavailable')),
+    } as never;
+
+    const status = await getPullRequestOperationalStatus(
+      createMockContext(),
+      octokit,
+      'owner',
+      'repo',
+      42,
+      'actual-head-sha',
+    );
+
+    expect(status.ciStatus).toBe('passing');
+    expect(status.resolvedReviewThreadCount).toBeNull();
+    expect(status.unresolvedReviewThreadCount).toBeNull();
+  });
 });
 
 describe('isRateLimitError', () => {

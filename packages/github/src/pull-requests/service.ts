@@ -379,16 +379,13 @@ export async function getPullRequestOperationalStatus(
 
   const pullRequest = detailResult.status === 'fulfilled' ? detailResult.value : null;
   const ciState = ciResult.status === 'fulfilled' ? ciResult.value : null;
-  const threadCounts =
-    threadCountsResult.status === 'fulfilled'
-      ? threadCountsResult.value
-      : { resolvedReviewThreadCount: 0, unresolvedReviewThreadCount: 0 };
+  const threadCounts = threadCountsResult.status === 'fulfilled' ? threadCountsResult.value : null;
 
   return {
     ciStatus: ciState ? normalizeCiStatus(ciState.ciStatus) : 'unknown',
     checkCount: ciState?.checkCount ?? 0,
-    resolvedReviewThreadCount: threadCounts.resolvedReviewThreadCount,
-    unresolvedReviewThreadCount: threadCounts.unresolvedReviewThreadCount,
+    resolvedReviewThreadCount: threadCounts?.resolvedReviewThreadCount ?? null,
+    unresolvedReviewThreadCount: threadCounts?.unresolvedReviewThreadCount ?? null,
     mergeConflictStatus: resolveMergeConflictStatus(pullRequest),
     mergeableState: pullRequest?.mergeableState ?? null,
   };
