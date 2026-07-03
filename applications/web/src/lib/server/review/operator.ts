@@ -14,9 +14,7 @@ import {
   reviewRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
-import { toAgentDefinition } from '@tribunal/agents/definitions';
-import { agentSpecSchema, effortSchema, agentModelSchema } from '@tribunal/review-core/schemas';
-import type { AgentModel, Effort } from '@tribunal/review-core/types';
+import { agentSpecSchema, agentModelSchema, effortSchema } from '@tribunal/review-core/schemas';
 import { db } from '$lib/server/database';
 import { postReviewEngineControl } from '$lib/server/review/engine-client';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
@@ -260,6 +258,16 @@ export async function listAgents(userId: number) {
   return db.select().from(agent).where(eq(agent.userId, userId)).orderBy(agent.slug);
 }
 
+export async function getAgent(userId: number, agentId: string) {
+  const [row] = await db
+    .select()
+    .from(agent)
+    .where(and(eq(agent.id, agentId), eq(agent.userId, userId)))
+    .limit(1);
+
+  return row ?? null;
+}
+
 export async function saveAgent(userId: number, formData: FormData) {
   const id = String(formData.get('id') ?? '').trim();
   const effortValue = String(formData.get('effort') ?? '').trim();
@@ -302,7 +310,7 @@ export async function saveAgent(userId: number, formData: FormData) {
       },
     });
 
-  return { success: true };
+  return { success: true, id: validation.data.id };
 }
 
 export async function deleteAgent(userId: number, formData: FormData) {
@@ -339,146 +347,6 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
   }
 
   return { success: true };
-}
-
-export type AgentDryRunEstimate = {
-  model: string;
-  effort: string | null;
-  estimatedInputTokens: number;
-  estimatedOutputTokens: number;
-  costEstimateUsd: number;
-};
-
-export async function estimateAgentDryRun(userId: number, formData: FormData) {
-  const id = String(formData.get('id') ?? '').trim();
-  const slug = String(formData.get('slug') ?? '').trim();
-  const description = String(formData.get('description') ?? '').trim();
-  const body = String(formData.get('body') ?? '').trim();
-  const sampleDiff = String(formData.get('sampleDiff') ?? '').trim();
-  const model = String(formData.get('model') ?? 'inherit').trim();
-  const effortValue = String(formData.get('effort') ?? '').trim();
-  const effort = effortValue === '' ? null : effortValue;
-  const values = {
-    id,
-    slug,
-    description,
-    body,
-    sampleDiff,
-    model,
-    effort: effortValue,
-    enabled: formData.get('enabled') === 'on',
-  };
-
-  if (body.length === 0) {
-    return fail(400, { error: 'System prompt is required for a dry run estimate.', values });
-  }
-
-  if (sampleDiff.length === 0) {
-    return fail(400, { error: 'Sample diff is required for a dry run estimate.', values });
-  }
-
-  const modelValidation = agentModelSchema.safeParse(model);
-  if (!modelValidation.success) {
-    return fail(400, { error: 'Model is invalid.', values });
-  }
-
-  const effortValidation = effort === null ? null : effortSchema.safeParse(effort);
-  if (effortValidation !== null && !effortValidation.success) {
-    return fail(400, { error: 'Effort is invalid.', values });
-  }
-
-  const submittedModel = modelValidation.data;
-  let defaultModel: Exclude<AgentModel, 'inherit'>;
-  if (submittedModel === 'inherit') {
-    const [settings] = await getUserReviewSettings(userId);
-    const defaultModelValidation = agentModelSchema.safeParse(settings.defaultModel);
-    if (!defaultModelValidation.success || defaultModelValidation.data === 'inherit') {
-      return fail(400, { error: 'User default model is not configured.', values });
-    }
-    defaultModel = defaultModelValidation.data;
-  } else {
-    defaultModel = submittedModel;
-  }
-
-  const definition = toAgentDefinition(
-    {
-      id: id || 'agent_dry_run',
-      userId,
-      slug: slug || 'dry-run',
-      description: description || 'Dry run estimate',
-      body,
-      model: submittedModel,
-      effort: effortValidation?.data,
-      enabled: true,
-    },
-    defaultModel,
-  );
-
-  return {
-    values,
-    dryRunEstimate: calculateAgentDryRunEstimate({
-      body,
-      sampleDiff,
-      model: definition.effectiveModel,
-      effort: definition.effectiveEffort,
-    }),
-  };
-}
-
-function calculateAgentDryRunEstimate(input: {
-  body: string;
-  sampleDiff: string;
-  model: string;
-  effort: Effort | null;
-}): AgentDryRunEstimate {
-  const estimatedInputTokens = Math.max(
-    1,
-    Math.ceil((input.body.length + input.sampleDiff.length) / 4),
-  );
-  const estimatedOutputTokens = Math.max(32, Math.ceil(input.sampleDiff.length / 8));
-  const modelRate = getEstimatedModelRate(input.model);
-  const effortMultiplier = getEstimatedEffortMultiplier(input.effort);
-  const costEstimateUsd =
-    ((estimatedInputTokens * modelRate.inputPerMillionTokens +
-      estimatedOutputTokens * modelRate.outputPerMillionTokens) /
-      1_000_000) *
-    effortMultiplier;
-
-  return {
-    model: input.model,
-    effort: input.effort,
-    estimatedInputTokens,
-    estimatedOutputTokens,
-    costEstimateUsd: Number(costEstimateUsd.toFixed(4)),
-  };
-}
-
-function getEstimatedModelRate(model: string) {
-  if (model.includes('opus')) {
-    return { inputPerMillionTokens: 15, outputPerMillionTokens: 75 };
-  }
-
-  if (model.includes('haiku')) {
-    return { inputPerMillionTokens: 1, outputPerMillionTokens: 5 };
-  }
-
-  return { inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
-}
-
-function getEstimatedEffortMultiplier(effort: Effort | null): number {
-  switch (effort) {
-    case 'low':
-      return 0.75;
-    case 'high':
-      return 1.5;
-    case 'xhigh':
-      return 2;
-    case 'max':
-      return 2.5;
-    case 'medium':
-    default:
-      return 1;
-  }
 }
 
 export async function getRunsOverview(userId: number) {
@@ -964,7 +832,8 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
     return fail(400, { error: 'Daily cost cap must be zero or greater.' });
   }
 
-  if (!agentModelSchema.safeParse(defaultModel).success) {
+  const modelValidation = agentModelSchema.safeParse(defaultModel);
+  if (!modelValidation.success || modelValidation.data === 'inherit') {
     return fail(400, { error: 'Default model is invalid.' });
   }
 

@@ -6,7 +6,6 @@
   import { SideNavigation } from '@lostgradient/cinder/side-navigation';
   import SkipLinks from '$lib/components/skip-links.svelte';
   import UserMenu from '$lib/components/user-menu.svelte';
-  import Gavel from 'lucide-svelte/icons/gavel';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Bot from 'lucide-svelte/icons/bot';
   import Activity from 'lucide-svelte/icons/activity';
@@ -21,7 +20,9 @@
   const repositoriesActive = $derived(
     page.url.pathname === '/repositories' || page.url.pathname.startsWith('/repositories/'),
   );
-  const agentsActive = $derived(page.url.pathname === '/agents');
+  const agentsActive = $derived(
+    page.url.pathname === '/agents' || page.url.pathname.startsWith('/agents/'),
+  );
   const runsActive = $derived(
     page.url.pathname === '/runs' || page.url.pathname.startsWith('/runs/'),
   );
@@ -76,16 +77,12 @@
   <Sidebar bind:collapsed label="Tribunal" data-theme="dark">
     {#snippet brand()}
       <a href="/repositories" class="brand-link">
-        <div class="brand-icon" aria-hidden="true">
-          <Gavel class="brand-logo" />
-        </div>
         <span class="brand-name">Tribunal</span>
       </a>
     {/snippet}
 
     {#snippet navigation()}
-      <div class="section-label" aria-hidden="true">Workspace</div>
-      <SideNavigation ariaLabel="Workspace navigation">
+      <SideNavigation ariaLabel="Tribunal navigation">
         <SideNavigation.Item href="/repositories" active={repositoriesActive}>
           <FolderGit2 size={16} aria-hidden="true" />
           Repositories
@@ -124,7 +121,7 @@
           >
         </div>
         {#if data.user}
-          <UserMenu id="sidebar-user-menu" user={data.user} />
+          <UserMenu id="sidebar-user-menu" user={data.user} menuPlacement="sidebar-footer" />
         {/if}
       </div>
     {/snippet}
@@ -167,6 +164,7 @@
   :global(.cinder-sidebar[data-theme='dark']:not(.cinder-sidebar--mobile)) {
     --cinder-surface: oklch(20% 0.04 245);
     --cinder-border: oklch(40% 0.05 245);
+    inline-size: 13.5rem;
   }
 
   /*
@@ -264,6 +262,55 @@
     background: oklch(92% 0.02 245 / 12%);
   }
 
+  .brand-link {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .brand-name {
+    font-size: var(--text-base);
+    font-weight: var(--font-semibold);
+    color: var(--cinder-text);
+  }
+
+  .footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .reviews-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1-5);
+    min-width: 0;
+    color: var(--text-subtle);
+    font-size: var(--text-xs);
+  }
+
+  .status-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: var(--success);
+    flex: none;
+  }
+
+  .reviews-status.paused .status-dot {
+    background: var(--text-subtle);
+  }
+
+  .status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .mobile-menu-button:focus-visible {
     outline: var(--ring-width) solid oklch(72% 0.14 270);
     outline-offset: var(--ring-offset);
@@ -285,67 +332,13 @@
    * Sidebar brand region
    * ============================================================ */
 
-  .brand-link {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    text-decoration: none;
-    transition: opacity var(--duration) var(--ease-standard);
-  }
-
   .brand-link:hover {
     opacity: 0.8;
-  }
-
-  .brand-icon {
-    width: 2rem;
-    height: 2rem;
-    border-radius: var(--radius-lg);
-    background: linear-gradient(
-      to bottom right,
-      var(--accent),
-      oklch(from var(--accent) calc(l - 0.12) c h)
-    );
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  :global(.brand-logo) {
-    width: 1.125rem;
-    height: 1.125rem;
-    color: white;
-  }
-
-  .brand-name {
-    font-size: var(--text-lg);
-    font-weight: var(--font-semibold);
-    color: var(--cinder-text);
-  }
-
-  /* ============================================================
-   * Section label (shown above the nav list)
-   * ============================================================ */
-
-  .section-label {
-    font-size: var(--text-2xs);
-    font-weight: var(--font-semibold);
-    letter-spacing: var(--tracking-wide);
-    text-transform: uppercase;
-    color: var(--cinder-text-muted);
-    padding-inline: var(--space-3);
   }
 
   /* ============================================================
    * Footer: status pill + user menu
    * ============================================================ */
-
-  .footer-content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
 
   .reviews-status {
     display: flex;

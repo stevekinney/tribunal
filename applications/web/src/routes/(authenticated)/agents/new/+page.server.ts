@@ -1,9 +1,9 @@
 import { redirect } from '@sveltejs/kit';
 import {
+  getReviewEffortOptions,
   getReviewModelOptions,
   getUserReviewSettings,
-  operatorSurfaceStates,
-  saveUserReviewSettings,
+  saveAgent,
 } from '$lib/server/review/operator';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -12,13 +12,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   if (!user) redirect(302, '/login');
 
   const [settings] = await getUserReviewSettings(user.id);
+
   return {
-    settings: {
-      ...settings,
-      defaultModel: settings.defaultModel === 'inherit' ? 'sonnet' : settings.defaultModel,
-    },
-    modelOptions: getReviewModelOptions().filter((model) => model !== 'inherit'),
-    surfaceStates: operatorSurfaceStates,
+    defaultModel: settings.defaultModel === 'inherit' ? 'sonnet' : settings.defaultModel,
+    modelOptions: getReviewModelOptions(),
+    effortOptions: getReviewEffortOptions(),
   };
 };
 
@@ -27,6 +25,9 @@ export const actions: Actions = {
     const { user } = locals;
     if (!user) redirect(302, '/login');
 
-    return saveUserReviewSettings(user.id, await request.formData());
+    const result = await saveAgent(user.id, await request.formData());
+    if ('status' in result) return result;
+
+    redirect(303, `/agents/${result.id}`);
   },
 };

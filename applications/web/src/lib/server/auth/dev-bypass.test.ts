@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   selectResultQueue: [] as unknown[][],
   insertReturnRows: [] as unknown[],
   updateReturnRows: [] as unknown[],
+  updateSetCalls: [] as unknown[],
   onConflictDoNothing: vi.fn(),
   deleteOAuthConnection: vi.fn(),
   upsertOAuthConnection: vi.fn(),
@@ -45,11 +46,14 @@ vi.mock('$lib/server/database', () => ({
       }),
     }),
     update: () => ({
-      set: () => ({
-        where: () => ({
-          returning: () => mocks.updateReturnRows,
-        }),
-      }),
+      set: (values: unknown) => {
+        mocks.updateSetCalls.push(values);
+        return {
+          where: () => ({
+            returning: () => mocks.updateReturnRows,
+          }),
+        };
+      },
     }),
     select: () => ({
       from: () => ({
@@ -178,6 +182,7 @@ describe('devAuthBypassHandle', () => {
     mocks.selectResultQueue.length = 0;
     mocks.insertReturnRows.length = 0;
     mocks.updateReturnRows.length = 0;
+    mocks.updateSetCalls.length = 0;
     mocks.fetch.mockReset();
     mocks.deleteOAuthConnection.mockReset();
     mocks.upsertOAuthConnection.mockReset();
@@ -358,10 +363,81 @@ describe('devAuthBypassHandle', () => {
     await devAuthBypassHandle({ event, resolve } as never);
 
     expect(mocks.insertReturnRows).toEqual([]);
+    expect(mocks.updateSetCalls[0]).not.toHaveProperty('neonAuthUserId');
     expect(mocks.deleteOAuthConnection).toHaveBeenCalledWith(1, 'github');
     expect(event.locals).toMatchObject({
       user: { id: 1, username: 'steve-kinney' },
       neonSession: { neonAuthUserId: 'dev-github:123' },
+    });
+  });
+
+  it('keeps GitHub bypass sessions fresh across requests', async () => {
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
+    mocks.env.DEV_AUTH_GITHUB_TOKEN = 'github-token';
+    mocks.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 123,
+            login: 'stevekinney',
+            name: 'First Name',
+            avatar_url: 'https://example.test/first.png',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'not app token' }), { status: 403 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 123,
+            login: 'stevekinney',
+            name: 'Second Name',
+            avatar_url: 'https://example.test/second.png',
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: 'not app token' }), { status: 403 }),
+      );
+    const existingDevUser = {
+      id: 7,
+      username: 'stevekinney',
+      name: 'Cached Name',
+      avatarUrl: null,
+      email: null,
+      isPlatformAdministrator: false,
+    };
+    mocks.selectResultQueue.push([], [], [existingDevUser], [], [], [existingDevUser]);
+    mocks.updateReturnRows.push({
+      id: 7,
+      username: 'stevekinney',
+      name: 'First Name',
+      avatarUrl: 'https://example.test/first.png',
+      email: null,
+      isPlatformAdministrator: false,
+    });
+    const firstEvent = { locals: {} };
+    const secondEvent = { locals: {} };
+
+    await devAuthBypassHandle({ event: firstEvent, resolve } as never);
+    mocks.updateReturnRows.length = 0;
+    mocks.updateReturnRows.push({
+      id: 7,
+      username: 'stevekinney',
+      name: 'Second Name',
+      avatarUrl: 'https://example.test/second.png',
+      email: null,
+      isPlatformAdministrator: false,
+    });
+    await devAuthBypassHandle({ event: secondEvent, resolve } as never);
+
+    expect(mocks.fetch).toHaveBeenCalledTimes(4);
+    expect(secondEvent.locals).toMatchObject({
+      user: { name: 'Second Name', avatarUrl: 'https://example.test/second.png' },
     });
   });
 

@@ -39,14 +39,17 @@ const data = {
 describe('/costs page', () => {
   afterEach(() => cleanup());
 
-  it('renders source toggle, cap meter, six rollups, and cache split', async () => {
+  it('renders source toggle, cap meter, product rollups, and cache split', async () => {
     render(CostsPage, { data, params: {}, form: null });
 
     await expect
       .element(page.getByRole('link', { name: 'Estimate' }))
       .toHaveAttribute('data-active', 'true');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
-    await expect.element(page.getByText('By Agent per Repository')).toBeInTheDocument();
+    await expect.element(page.getByText('Repository')).toBeInTheDocument();
+    await expect.element(page.getByText('Agent')).toBeInTheDocument();
+    await expect.element(page.getByText('Pull request')).toBeInTheDocument();
+    await expect.element(page.getByText('By Agent per Repository')).not.toBeInTheDocument();
     await expect.element(page.getByText('Read tokens: 25')).toBeInTheDocument();
   });
 });

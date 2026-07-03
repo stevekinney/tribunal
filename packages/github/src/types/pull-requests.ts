@@ -41,6 +41,7 @@ export interface PullRequestListItem {
   mergedAt: string | null;
   labels: PullRequestLabel[];
   headRef: string;
+  headSha: string;
   baseRef: string;
   htmlUrl: string;
 }
@@ -62,4 +63,16 @@ export interface PullRequestDetail extends PullRequestListItem {
 export interface PullRequestListResult {
   pullRequests: PullRequestListItem[];
   filters: PullRequestFilterOptions;
+}
+
+export type PullRequestCiStatus = 'passing' | 'failing' | 'pending' | 'unknown';
+export type PullRequestMergeConflictStatus = 'clean' | 'conflicting' | 'unknown';
+
+export interface PullRequestOperationalStatus {
+  ciStatus: PullRequestCiStatus;
+  checkCount: number;
+  resolvedReviewThreadCount: number | null;
+  unresolvedReviewThreadCount: number | null;
+  mergeConflictStatus: PullRequestMergeConflictStatus;
+  mergeableState: string | null;
 }

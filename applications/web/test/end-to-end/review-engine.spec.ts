@@ -123,11 +123,12 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
   await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('Cancelled');
 
   await page.goto('/costs');
-  // The breakdown defaults to "By Agent"; switch to "By Review Run" to see rows
-  // labelled by run id. Selecting a segment is hydration-dependent, so retry the
-  // click until the SvelteKit island is interactive and the rows render.
+  // The breakdown defaults to Agent. The review lifecycle should still surface
+  // cost attribution there after the internal review-run dimension was removed
+  // from the product UI.
   await expect(async () => {
-    await page.getByRole('radio', { name: 'By Review Run', exact: true }).click();
-    await expect(page.getByText(/^run-e2e-.*open-sha-opened$/)).toBeVisible({ timeout: 1000 });
+    await expect(page.getByText('security-review', { exact: true })).toBeVisible({
+      timeout: 1000,
+    });
   }).toPass({ timeout: 15_000 });
 });
