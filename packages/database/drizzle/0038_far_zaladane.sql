@@ -1,0 +1,1 @@
+ALTER TABLE "review_intent" ADD COLUMN "check_run_id" bigint;

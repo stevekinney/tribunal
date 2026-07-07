@@ -24,6 +24,12 @@ export { invalidateGitHubResourceCacheForEvent } from '@tribunal/github/webhooks
 // Pull request orchestrator event filtering — moved to package
 export { isPullRequestWebhookEvent } from '@tribunal/github/webhooks/pull-request-event-filter';
 
+// Re-run trigger detection (check_run.rerequested / requested_action, check_suite.rerequested)
+export {
+  isRerunTriggerWebhookEvent,
+  RE_REVIEW_ACTION_IDENTIFIER,
+} from '@tribunal/github/webhooks/re-run-triggers';
+
 // PR state dispatch — moved to package
 export {
   dispatchPRStateTracking,

@@ -29,6 +29,7 @@ vi.mock('$lib/server/github/webhooks', () => ({
   dispatchPRStateTracking: dispatchPullRequestStateMock,
   handleRepositoryMetadataEvents: vi.fn(),
   isPullRequestWebhookEvent: vi.fn(() => true),
+  isRerunTriggerWebhookEvent: vi.fn(() => false),
 }));
 
 vi.mock('@tribunal/github/webhooks/claim-delivery', () => ({
@@ -115,6 +116,7 @@ function createEvent() {
       },
       body: JSON.stringify(payload),
     }),
+    url: new URL('https://tribunal.test/api/webhooks/github'),
   };
 }
 

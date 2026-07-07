@@ -54,6 +54,7 @@ export async function handlePullRequestEvent(
         // delivery dedups to one signal instead of minting a fresh UUID.
         eventId: context.deliveryId,
         headSha: payload.pull_request.head.sha,
+        origin: context.origin,
       });
 
       if (!result.ok) {

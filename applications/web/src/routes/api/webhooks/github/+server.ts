@@ -17,6 +17,7 @@ import {
   dispatchPRStateTracking,
   handleRepositoryMetadataEvents,
   isPullRequestWebhookEvent,
+  isRerunTriggerWebhookEvent,
 } from '$lib/server/github/webhooks';
 import {
   claimWebhookDelivery,
@@ -70,8 +71,18 @@ const ROUTER_HANDLED_EVENT_TYPES = new Set([
   'push',
 ]);
 
-function isPreDatabaseIgnoredWebhook(eventType: string | null, action: string | null): boolean {
-  return (eventType === 'check_run' || eventType === 'check_suite') && action !== 'completed';
+function isPreDatabaseIgnoredWebhook(
+  eventType: string | null,
+  action: string | null,
+  data: WebhookPayload,
+  ownAppId: string | undefined,
+): boolean {
+  if (eventType !== 'check_run' && eventType !== 'check_suite') return false;
+  if (action === 'completed') return false;
+  // Tribunal's own re-run triggers are handled, not discarded — other apps'
+  // check_run/check_suite noise stays pre-database-ignored.
+  if (isRerunTriggerWebhookEvent(eventType, action, data, ownAppId)) return false;
+  return true;
 }
 
 function createWebhookDispatcher(context: WebhookContext) {
@@ -153,7 +164,9 @@ export const POST: RequestHandler = async (event) => {
   const installationId = installation?.id;
   const repositoryId = repository?.id;
 
-  const isReviewEngineTrigger = isPullRequestWebhookEvent(eventType, action, data);
+  const isRerunTrigger = isRerunTriggerWebhookEvent(eventType, action, data, env.GITHUB_APP_ID);
+  const isReviewEngineTrigger =
+    isPullRequestWebhookEvent(eventType, action, data) || isRerunTrigger;
 
   if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(
@@ -169,7 +182,7 @@ export const POST: RequestHandler = async (event) => {
     }
   }
 
-  if (isPreDatabaseIgnoredWebhook(eventType, action)) {
+  if (isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)) {
     await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
     return json({ ok: true, ignored: true });
   }
@@ -220,6 +233,7 @@ export const POST: RequestHandler = async (event) => {
     repositoryId: repositoryId ?? 0, // Authorization events don't have repositoryId
     hookId,
     logger,
+    origin: event.url.origin,
   };
 
   // 6. Route to typed handlers and enqueue durable review intents

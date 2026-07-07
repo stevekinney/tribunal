@@ -14,6 +14,8 @@ export interface ScopedToken {
 export interface CheckRunPatch {
   status?: 'queued' | 'in_progress' | 'completed';
   conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
+  /** Set when transitioning to `in_progress`, so the Check Run reports when work began. */
+  startedAt?: string;
   output?: {
     title: string;
     summary: string;

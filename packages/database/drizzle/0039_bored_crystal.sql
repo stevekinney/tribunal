@@ -1,0 +1,2 @@
+ALTER TABLE "review_intent" DROP CONSTRAINT "review_intent_kind_check";--> statement-breakpoint
+ALTER TABLE "review_intent" ADD CONSTRAINT "review_intent_kind_check" CHECK ("review_intent"."kind" IN ('start','commit_pushed','pr_closed','manual'));

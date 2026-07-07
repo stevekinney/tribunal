@@ -1366,6 +1366,13 @@ describe('engine GitHub port', () => {
     await expect(port.createCheckRun(repositoryContext, 'head')).resolves.toEqual({
       checkRunId: 88,
     });
+    expect(createCheckRunMock).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        name: 'Tribunal Review',
+        actions: [expect.objectContaining({ identifier: 're-review' })],
+      }),
+    );
     await port.updateCheckRun(repositoryContext, 88, {
       status: 'completed',
       conclusion: 'success',
@@ -1408,6 +1415,15 @@ describe('engine GitHub port', () => {
     expect(updateCheckRunMock).toHaveBeenCalledWith(
       context,
       expect.objectContaining({ completedAt: expect.any(String) }),
+    );
+
+    await port.updateCheckRun(repositoryContext, 88, {
+      status: 'in_progress',
+      startedAt: '2026-06-17T12:00:00.000Z',
+    });
+    expect(updateCheckRunMock).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({ startedAt: '2026-06-17T12:00:00.000Z' }),
     );
   });
 

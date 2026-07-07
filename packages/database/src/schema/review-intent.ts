@@ -27,6 +27,10 @@ export const reviewIntent = pgTable(
     prNumber: integer('pr_number').notNull(),
     headSha: text('head_sha'),
     prState: text('pr_state'),
+    // Check run created at webhook-intent time (before the engine claims the
+    // intent), so the PR shows "queued" within seconds. The engine reuses this
+    // id for all subsequent PATCHes instead of creating its own check run.
+    checkRunId: bigint('check_run_id', { mode: 'number' }),
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
     processedAt: timestamp('processed_at', { withTimezone: true }),
     failedAt: timestamp('failed_at', { withTimezone: true }),
@@ -56,7 +60,10 @@ export const reviewIntent = pgTable(
       .where(sql`${table.processedAt} IS NULL AND ${table.deadLetteredAt} IS NULL`),
     index('review_intent_repository_pr_idx').on(table.repositoryId, table.prNumber),
     check('review_intent_failure_count_check', sql`${table.failureCount} >= 0`),
-    check('review_intent_kind_check', sql`${table.kind} IN ('start','commit_pushed','pr_closed')`),
+    check(
+      'review_intent_kind_check',
+      sql`${table.kind} IN ('start','commit_pushed','pr_closed','manual')`,
+    ),
     check(
       'review_intent_pr_state_check',
       sql`${table.prState} IS NULL OR ${table.prState} IN ('merged','closed')`,

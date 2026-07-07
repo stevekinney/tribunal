@@ -23,4 +23,6 @@ export interface WebhookContext {
   repositoryId: number;
   hookId?: string;
   logger: WebhookLogger;
+  /** The app's public origin (from the incoming request), used to build `details_url` links. */
+  origin: string;
 }

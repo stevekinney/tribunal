@@ -9,6 +9,12 @@ import {
 } from './errors.js';
 
 const MAX_CHECK_RUN_ANNOTATIONS_PER_REQUEST = 50;
+// GitHub enforces 65,535 bytes on `output.summary`/`output.text`; stay under it
+// with headroom for the truncation notice appended below.
+const MAX_CHECK_RUN_OUTPUT_TEXT_BYTES = 60_000;
+// GitHub's documented best practice: space out sequential mutating requests to
+// the same resource by at least a second.
+const ANNOTATION_BATCH_SPACING_MS = 1_000;
 
 type CheckRunStatus = 'queued' | 'in_progress' | 'completed';
 type CheckRunConclusion =
@@ -38,15 +44,30 @@ export interface CheckRunOutputInput {
   annotations?: CheckRunAnnotationInput[];
 }
 
-/** Inputs for creating a Check Run, which always starts with status in_progress. */
+/**
+ * A Check Run action button. GitHub enforces label/identifier <= 20
+ * characters and description <= 40 characters, and accepts at most 3.
+ */
+export interface CheckRunActionInput {
+  label: string;
+  description: string;
+  identifier: string;
+}
+
+/** Inputs for creating a Check Run. Defaults to status `in_progress` when not specified. */
 export interface CreateCheckRunInput {
   installationId: number;
   owner: string;
   repository: string;
   name: string;
   headSha: string;
+  /** Creation-time status. Defaults to `in_progress`; use `queued` for intent-time creation. */
+  status?: Extract<CheckRunStatus, 'queued' | 'in_progress'>;
+  /** Correlates the Check Run with the Tribunal intent/run id that created it. */
+  externalId?: string;
   detailsUrl?: string;
   output?: CheckRunOutputInput;
+  actions?: CheckRunActionInput[];
 }
 
 export interface UpdateCheckRunInput {
@@ -56,8 +77,11 @@ export interface UpdateCheckRunInput {
   checkRunId: number;
   status?: CheckRunStatus;
   conclusion?: CheckRunConclusion;
+  /** Set when transitioning to `in_progress`, so the Check Run reports when work began. */
+  startedAt?: string;
   completedAt?: string;
   output?: CheckRunOutputInput;
+  actions?: CheckRunActionInput[];
 }
 
 export async function createCheckRun(
@@ -73,9 +97,11 @@ export async function createCheckRun(
       repo: input.repository,
       name: input.name,
       head_sha: input.headSha,
-      status: 'in_progress',
+      status: input.status ?? 'in_progress',
+      external_id: input.externalId,
       details_url: input.detailsUrl,
       ...(input.output ? { output: toGitHubCheckRunOutput(input.output) } : {}),
+      ...(input.actions ? { actions: input.actions.map(toGitHubCheckRunAction) } : {}),
     }),
   );
 
@@ -85,15 +111,23 @@ export async function createCheckRun(
   };
 }
 
+export interface UpdateCheckRunOptions {
+  /** Injectable delay between annotation-batch PATCHes; defaults to a real `setTimeout` sleep. */
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
 export async function updateCheckRun(
   context: GithubServiceContext,
   input: UpdateCheckRunInput,
+  options: UpdateCheckRunOptions = {},
 ): Promise<{ id: number; htmlUrl: string | null }> {
   validateUpdateCheckRunInput(input);
+  const sleep = options.sleep ?? delay;
   const octokit = await requireInstallationOctokit(context, input.installationId);
   const annotationBatches = chunkAnnotations(input.output?.annotations ?? []);
-  const outputWithoutAnnotations = input.output
-    ? toGitHubCheckRunOutput({ ...input.output, annotations: [] })
+  const truncatedOutput = input.output ? truncateCheckRunOutputText(input.output) : undefined;
+  const outputWithoutAnnotations = truncatedOutput
+    ? toGitHubCheckRunOutput({ ...truncatedOutput, annotations: [] })
     : undefined;
 
   const firstBatch = annotationBatches[0] ?? [];
@@ -104,6 +138,7 @@ export async function updateCheckRun(
       check_run_id: input.checkRunId,
       status: input.status,
       conclusion: input.conclusion,
+      started_at: input.startedAt,
       completed_at: input.completedAt,
       ...(outputWithoutAnnotations
         ? {
@@ -113,19 +148,21 @@ export async function updateCheckRun(
             },
           }
         : {}),
+      ...(input.actions ? { actions: input.actions.map(toGitHubCheckRunAction) } : {}),
     }),
   );
 
   for (const batch of annotationBatches.slice(1)) {
+    await sleep(ANNOTATION_BATCH_SPACING_MS);
     response = await withGitHubWriteErrorClassification(() =>
       octokit.rest.checks.update({
         owner: input.owner,
         repo: input.repository,
         check_run_id: input.checkRunId,
         output: {
-          title: input.output!.title,
-          summary: input.output!.summary,
-          text: input.output!.text,
+          title: truncatedOutput!.title,
+          summary: truncatedOutput!.summary,
+          text: truncatedOutput!.text,
           annotations: batch.map(toGitHubAnnotation),
         },
       }),
@@ -142,14 +179,24 @@ export function validateCreateCheckRunInput(input: CreateCheckRunInput): void {
   validateRepositoryTarget(input.owner, input.repository);
   validateNonEmptyString(input.name, 'name');
   validateNonEmptyString(input.headSha, 'headSha');
+  if (input.status !== undefined) validateCreationStatus(input.status);
+  if (input.externalId !== undefined) validateNonEmptyString(input.externalId, 'externalId');
   if (input.detailsUrl !== undefined) validateNonEmptyString(input.detailsUrl, 'detailsUrl');
   if (input.output) validateCheckRunOutput(input.output);
+  if (input.actions) validateCheckRunActions(input.actions);
+}
+
+function validateCreationStatus(status: string): void {
+  if (status !== 'queued' && status !== 'in_progress') {
+    throw new ValidationError('Check Run creation status must be queued or in_progress.');
+  }
 }
 
 export function validateUpdateCheckRunInput(input: UpdateCheckRunInput): void {
   validateRepositoryTarget(input.owner, input.repository);
   validatePositiveInteger(input.checkRunId, 'checkRunId');
   if (input.status !== undefined) validateStatus(input.status);
+  if (input.startedAt !== undefined) validateNonEmptyString(input.startedAt, 'startedAt');
   if (input.conclusion !== undefined) validateConclusion(input.conclusion);
   if (input.conclusion !== undefined && input.status === undefined) {
     throw new ValidationError('A Check Run conclusion requires status completed.');
@@ -162,6 +209,27 @@ export function validateUpdateCheckRunInput(input: UpdateCheckRunInput): void {
     throw new ValidationError('A Check Run conclusion can only be set when status is completed.');
   }
   if (input.output) validateCheckRunOutput(input.output);
+  if (input.actions) validateCheckRunActions(input.actions);
+}
+
+function validateCheckRunActions(actions: CheckRunActionInput[]): void {
+  if (actions.length > 3) {
+    throw new ValidationError('A Check Run accepts at most 3 actions.');
+  }
+  for (const action of actions) {
+    validateNonEmptyString(action.label, 'action.label');
+    if (action.label.length > 20) {
+      throw new ValidationError('action.label must be 20 characters or fewer.');
+    }
+    validateNonEmptyString(action.description, 'action.description');
+    if (action.description.length > 40) {
+      throw new ValidationError('action.description must be 40 characters or fewer.');
+    }
+    validateNonEmptyString(action.identifier, 'action.identifier');
+    if (action.identifier.length > 20) {
+      throw new ValidationError('action.identifier must be 20 characters or fewer.');
+    }
+  }
 }
 
 function validateCheckRunOutput(output: CheckRunOutputInput): void {
@@ -186,6 +254,48 @@ function validateAnnotation(annotation: CheckRunAnnotationInput): void {
   if (annotation.rawDetails !== undefined) {
     validateNonEmptyString(annotation.rawDetails, 'annotation.rawDetails');
   }
+}
+
+/**
+ * GitHub enforces `output.summary`/`output.text` at 65,535 bytes, measured in
+ * UTF-8 bytes, not JS string length (astral-plane and multi-byte characters
+ * would otherwise silently overrun the limit). Truncate at a UTF-16 code-unit
+ * boundary that never splits a surrogate pair, then append a notice.
+ */
+function truncateCheckRunOutputText(output: CheckRunOutputInput): CheckRunOutputInput {
+  return {
+    ...output,
+    summary: truncateToByteLimit(output.summary),
+    text: output.text === undefined ? undefined : truncateToByteLimit(output.text),
+  };
+}
+
+function truncateToByteLimit(text: string, maxBytes = MAX_CHECK_RUN_OUTPUT_TEXT_BYTES): string {
+  if (byteLength(text) <= maxBytes) return text;
+
+  const notice = '\n\n_...truncated (output exceeded the Check Run size limit)._';
+  const noticeBytes = byteLength(notice);
+  const budget = Math.max(0, maxBytes - noticeBytes);
+
+  let truncated = text;
+  while (byteLength(truncated) > budget) {
+    // Shrink by whole UTF-16 code units, stepping past a low surrogate so we
+    // never split a surrogate pair (which would produce invalid UTF-8).
+    let nextLength = truncated.length - 1;
+    const charCode = truncated.charCodeAt(nextLength);
+    if (charCode >= 0xdc00 && charCode <= 0xdfff) nextLength -= 1;
+    truncated = truncated.slice(0, Math.max(0, nextLength));
+  }
+
+  return `${truncated}${notice}`;
+}
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function chunkAnnotations(annotations: CheckRunAnnotationInput[]): CheckRunAnnotationInput[][] {
@@ -214,6 +324,14 @@ function toGitHubAnnotation(annotation: CheckRunAnnotationInput) {
     message: annotation.message.trim(),
     title: annotation.title,
     raw_details: annotation.rawDetails,
+  };
+}
+
+function toGitHubCheckRunAction(action: CheckRunActionInput) {
+  return {
+    label: action.label,
+    description: action.description,
+    identifier: action.identifier,
   };
 }
 

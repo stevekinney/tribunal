@@ -43,9 +43,16 @@ type ReviewLookupGitHubPort = GitHubPort & {
   ): Promise<{ comments: number } | undefined>;
 };
 
-export type ReviewIntentKind = 'start' | 'commit_pushed' | 'pr_closed';
+export type ReviewIntentKind = 'start' | 'commit_pushed' | 'pr_closed' | 'manual';
 
 export type PullRequestReviewTrigger = 'opened' | 'synchronize' | 'reopened' | 'manual';
+
+/**
+ * `advisory` (default): findings never block merges — Check Run conclusion is
+ * `success`/`neutral`. `gating`: findings at or above `error` severity produce
+ * `failure`, letting a repo admin mark the check required.
+ */
+export type CheckConclusionMode = 'advisory' | 'gating';
 
 export type PullRequestReviewInput = {
   userId: number;
@@ -57,6 +64,10 @@ export type PullRequestReviewInput = {
   trigger: PullRequestReviewTrigger;
   agents: AgentSpec[];
   ignoreGlobs: string[];
+  /** Check Run created at webhook-intent time (T-1); the engine PATCHes this instead of creating its own. */
+  checkRunId?: number;
+  /** Defaults to `advisory` when not supplied (e.g. tests, pre-T-4 intents). */
+  checkConclusionMode?: CheckConclusionMode;
 };
 
 export type ReviewIntent = {
@@ -330,6 +341,7 @@ export class ReviewWorkflowEngine {
       if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
     }
 
+    const isNewHead = supervisor.headSha !== input.headSha;
     const previousHeadSha = supervisor.reviewedHeadShas.at(-1) ?? supervisor.headSha;
     await this.stopActiveAgents(supervisor, 'superseded');
     const activeRun = supervisor.activeRunId
@@ -343,6 +355,13 @@ export class ReviewWorkflowEngine {
 
     supervisor.input = input;
     supervisor.headSha = input.headSha;
+    // Every push gets its own Check Run (T-1); adopt this head's id so
+    // subsequent PATCHes target the current run, not the superseded one. Only
+    // re-resolve on an actual head change — a retry of the same head reuses
+    // the supervisor's existing check run instead of creating a new one.
+    if (isNewHead) {
+      supervisor.checkRunId = await this.ensureInProgressCheckRun(input);
+    }
 
     return this.startReviewRun(supervisor, input.headSha, 'synchronize', previousHeadSha);
   }
@@ -473,7 +492,14 @@ export class ReviewWorkflowEngine {
   }
 
   async processClaimedReviewIntent(intent: ClaimedReviewIntent): Promise<void> {
-    if (intent.kind === 'start') {
+    if (intent.kind === 'start' || intent.kind === 'manual') {
+      // A repeat "Re-review" click on an already-reviewed sha resolves to the
+      // same review_run id (createReviewRunId keys on headSha + trigger, and
+      // 'manual' intents always map to the 'manual' trigger) — startReviewRun
+      // already deduplicates on that id via isReusableReviewRun, returning
+      // the existing posted run instead of re-running agents. No upsert or
+      // generation column needed: the run-id-level idempotency the engine
+      // already has for every trigger covers this case too.
       await this.startPullRequestReview(intent.pullRequest);
       return;
     }
@@ -519,10 +545,7 @@ export class ReviewWorkflowEngine {
       proxyUrl: this.configuration.proxyUrl,
       idleSuspendSeconds: this.configuration.idleSuspendSeconds,
     });
-    const { checkRunId } = await this.ports.github.createCheckRun(
-      repositoryExecutionContext(input),
-      input.headSha,
-    );
+    const checkRunId = await this.ensureInProgressCheckRun(input);
     const supervisor: SupervisorState = {
       workflowId,
       repositoryId: input.repositoryId,
@@ -540,6 +563,38 @@ export class ReviewWorkflowEngine {
 
     this.supervisors.set(workflowId, supervisor);
     return supervisor;
+  }
+
+  /**
+   * Bind the "in progress" Check Run to this input's head_sha, not the
+   * supervisor's cached one. The supervisor is keyed by (repository, PR) and
+   * survives across pushes, but T-1 creates a fresh Check Run per delivery
+   * (one per head_sha) — so every push must re-resolve which Check Run id is
+   * current, or later PATCHes silently target a stale, already-superseded run.
+   *
+   * PATCHes the Check Run the web webhook handler already created at intent
+   * time (T-1) when `input.checkRunId` is present. Falls back to creating one
+   * here only when the intent predates T-1 or web-side creation failed.
+   */
+  private async ensureInProgressCheckRun(input: PullRequestReviewInput): Promise<number> {
+    if (input.checkRunId !== undefined) {
+      await this.ports.github.updateCheckRun(repositoryExecutionContext(input), input.checkRunId, {
+        status: 'in_progress',
+        startedAt: this.now().toISOString(),
+      });
+      return input.checkRunId;
+    }
+
+    console.warn('[review-workflow] No intent-supplied Check Run id; falling back to creation.', {
+      repositoryId: input.repositoryId,
+      pullRequestNumber: input.pullRequestNumber,
+      headSha: input.headSha,
+    });
+    const { checkRunId } = await this.ports.github.createCheckRun(
+      repositoryExecutionContext(input),
+      input.headSha,
+    );
+    return checkRunId;
   }
 
   private async startReviewRun(
@@ -579,10 +634,12 @@ export class ReviewWorkflowEngine {
         return this.persistReviewRun(run).then(async () => {
           await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
             status: 'completed',
-            conclusion: 'neutral',
+            // Terminal engine failure (§1 conclusion table): the run never
+            // posted, so there is nothing advisory to soften — `failure`.
+            conclusion: 'failure',
             output: {
               title: 'Tribunal review failed',
-              summary: 'Review run failed during setup. See Tribunal logs for details.',
+              summary: `Review run failed during setup: ${run?.error ?? 'unknown error'}. See Tribunal logs for details.`,
             },
           });
           throw error;
@@ -839,7 +896,11 @@ export class ReviewWorkflowEngine {
     await this.updateCheckRun(
       input,
       supervisor.checkRunId,
-      buildCompletedCheckRunPatch(deduplicatedAgentResults, diffContext),
+      buildCompletedCheckRunPatch(
+        deduplicatedAgentResults,
+        diffContext,
+        input.checkConclusionMode ?? 'advisory',
+      ),
     );
     if (!this.reconciledReviewRunIds.has(reviewRun.id)) {
       await this.ports.cost.reconcile(reviewRun.id);
@@ -1278,9 +1339,13 @@ function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): s
 function buildCompletedCheckRunPatch(
   agentResults: AgentResult[],
   diffContext: DiffContext,
+  checkConclusionMode: CheckConclusionMode,
 ): CheckRunPatch {
   const failures = agentResults.filter((result) => result.error !== undefined);
   const findingsCount = agentResults.reduce((total, result) => total + result.findings.length, 0);
+  const hasErrorSeverityFinding = agentResults.some((result) =>
+    result.findings.some((finding) => finding.severity === 'error'),
+  );
   const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
   const commentableLineKeys = createCommentableLineKeys(diffContext);
   const annotations = agentResults.flatMap((result) =>
@@ -1305,7 +1370,19 @@ function buildCompletedCheckRunPatch(
 
   return {
     status: 'completed',
-    conclusion: failures.length > 0 ? 'neutral' : 'success',
+    // Advisory (default): a clean run with no findings and no agent failures
+    // is `success`; anything with findings or an agent failure is `neutral`
+    // — Tribunal never blocks merges. Gating: an error-severity finding
+    // promotes the conclusion to `failure`, so a repo that marks this check
+    // required can actually block on it; agent failures alone still stay
+    // `neutral` in gating mode — a review-pipeline hiccup, not a code issue,
+    // isn't a reason to fail the merge gate.
+    conclusion:
+      checkConclusionMode === 'gating' && hasErrorSeverityFinding
+        ? 'failure'
+        : failures.length > 0 || findingsCount > 0
+          ? 'neutral'
+          : 'success',
     output: {
       title: 'Tribunal review complete',
       summary: [

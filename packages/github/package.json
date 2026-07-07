@@ -41,6 +41,7 @@
     "./webhooks/handlers/repository": "./src/webhooks/handlers/repository.ts",
     "./webhooks/pr-state-dispatch": "./src/webhooks/pr-state-dispatch.ts",
     "./webhooks/pull-request-event-filter": "./src/webhooks/pull-request-event-filter.ts",
+    "./webhooks/re-run-triggers": "./src/webhooks/re-run-triggers.ts",
     "./webhooks/resource-invalidation": "./src/webhooks/resource-invalidation.ts",
     "./webhooks/types": "./src/webhooks/types.ts",
     "./webhooks/validate-github-webhook": "./src/webhooks/validate-github-webhook.ts",
