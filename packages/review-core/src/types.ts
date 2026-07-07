@@ -2,6 +2,9 @@ export type AgentModel = 'sonnet' | 'opus' | 'haiku' | 'fable' | 'inherit' | (st
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+/** Pipeline stage a sandbox run belongs to. Persisted on `agent_run.role`. */
+export type AgentRunRole = 'triage' | 'specialist' | 'verifier';
+
 export interface AgentSpec {
   id: string;
   userId: number;
@@ -11,6 +14,14 @@ export interface AgentSpec {
   model: AgentModel;
   effort?: Effort;
   enabled: boolean;
+  /** Per-agent circuit breaker under the daily cap; plumbed to the SDK's `maxBudgetUsd` query option. */
+  maxBudgetUsd?: number;
+  /** Defaults to `specialist` when omitted. Selects the runner's prompt and structured-output schema. */
+  role?: AgentRunRole;
+  /** Set only for `role: 'verifier'` runs: the candidate finding under adversarial review. */
+  findingToVerify?: Finding;
+  /** Set only for `role: 'triage'` runs: the specialist roster available for this review run. */
+  availableAgentSlugs?: string[];
 }
 
 export interface Finding {
@@ -22,6 +33,24 @@ export interface Finding {
   title: string;
   body: string;
   suggestion?: string;
+  /**
+   * Fingerprints of near-duplicate findings absorbed into this one by
+   * cross-agent dedup (`mergeNearDuplicateFindings`). Lets Phase 3's
+   * carried-forward dedup match a re-reported finding against either this
+   * finding's own fingerprint or any fingerprint it absorbed.
+   */
+  mergedFingerprints?: string[];
+}
+
+export interface TriageDecision {
+  skip: boolean;
+  reason: string;
+  riskFlags: string[];
+}
+
+export interface VerificationDecision {
+  verified: boolean;
+  note: string;
 }
 
 export interface AgentResult {
@@ -39,6 +68,10 @@ export interface AgentResult {
   durationMs: number;
   stopped?: 'superseded' | 'pr_closed' | 'budget' | 'timeout';
   error?: string;
+  /** Present only for `role: 'triage'` runs. */
+  triage?: TriageDecision;
+  /** Present only for `role: 'verifier'` runs. */
+  verification?: VerificationDecision;
 }
 
 export interface ChangedFile {
@@ -60,7 +93,15 @@ export interface DiffContext {
 export interface AgentEvent {
   agentRunId: string;
   seq: number;
-  kind: 'session_start' | 'tool_pre' | 'tool_post' | 'notification' | 'message' | 'stop' | 'error';
+  kind:
+    | 'session_start'
+    | 'tool_pre'
+    | 'tool_post'
+    | 'notification'
+    | 'message'
+    | 'usage'
+    | 'stop'
+    | 'error';
   tool?: string;
   detail?: Record<string, unknown>;
   at: string;

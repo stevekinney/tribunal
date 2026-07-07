@@ -16,7 +16,10 @@ export const findingSchema = z.object({
   title: z.string().min(1),
   body: z.string().min(1),
   suggestion: z.string().optional(),
+  mergedFingerprints: z.array(z.string()).optional(),
 });
+
+export const agentRunRoleSchema = z.enum(['triage', 'specialist', 'verifier']);
 
 export const agentSpecSchema = z.object({
   id: z.string().min(1),
@@ -27,6 +30,21 @@ export const agentSpecSchema = z.object({
   model: agentModelSchema,
   effort: effortSchema.optional(),
   enabled: z.boolean(),
+  maxBudgetUsd: z.number().positive().optional(),
+  role: agentRunRoleSchema.optional(),
+  findingToVerify: findingSchema.optional(),
+  availableAgentSlugs: z.array(z.string()).optional(),
+});
+
+export const triageDecisionSchema = z.object({
+  skip: z.boolean(),
+  reason: z.string(),
+  riskFlags: z.array(z.string()),
+});
+
+export const verificationDecisionSchema = z.object({
+  verified: z.boolean(),
+  note: z.string(),
 });
 
 export const agentResultSchema = z.object({
@@ -44,6 +62,8 @@ export const agentResultSchema = z.object({
   durationMs: z.number().int().nonnegative(),
   stopped: z.enum(['superseded', 'pr_closed', 'budget', 'timeout']).optional(),
   error: z.string().optional(),
+  triage: triageDecisionSchema.optional(),
+  verification: verificationDecisionSchema.optional(),
 });
 
 export const reviewIntentKindSchema = z.enum(['start', 'commit_pushed', 'pr_closed']);

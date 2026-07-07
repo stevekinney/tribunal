@@ -1,15 +1,18 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { toAgentDefinition } from '@tribunal/agents/definitions';
 import {
   anchorFindings,
+  compareFindingsForPosting,
   computeCanonicalFindingFingerprint,
   deduplicateFindings,
+  mergeNearDuplicateFindings,
 } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import type {
   AgentEvent,
   AgentResult,
+  AgentRunRole,
   AgentSpec,
   CheckRunPatch,
   CostPort,
@@ -29,6 +32,8 @@ import {
   createReviewRunId,
   createReviewRunIdempotencyKey,
   createRunCapabilityToken,
+  createTriageAgentRunId,
+  createVerifierAgentRunId,
 } from './identifiers';
 
 type RepositoryExecutionContext = RepoRef & { installationId: number };
@@ -130,6 +135,8 @@ export type ReviewRunRecord = {
   status: ReviewRunStatus;
   sandboxId: string;
   checkRunId?: number;
+  /** Hash of the reviewed diff's content, for "diff unchanged since last review" skip detection. */
+  patchId?: string;
   commentsPosted: number;
   reviewPostClaimedAt?: Date;
   costEstimateUsd: number;
@@ -147,7 +154,9 @@ export type AgentRunRecord = {
   idempotencyKey: string;
   reviewRunId: string;
   userId: number;
-  agentId: string;
+  /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
+  agentId: string | null;
+  role: AgentRunRole;
   status: AgentRunStatus;
   findingsCount: number;
   costEstimateUsd: number;
@@ -159,6 +168,8 @@ export type AgentRunRecord = {
   error?: string;
 };
 
+export type FindingVerificationStatus = 'pending' | 'verified' | 'rejected';
+
 export type FindingRecord = Finding & {
   id: string;
   userId: number;
@@ -166,6 +177,9 @@ export type FindingRecord = Finding & {
   anchored: boolean;
   githubCommentId?: number;
   fingerprint: string;
+  verificationStatus: FindingVerificationStatus;
+  verificationNote?: string;
+  verifierAgentRunId?: string;
 };
 
 export type PullRequestSupervisorSnapshot = {
@@ -748,7 +762,26 @@ export class ReviewWorkflowEngine {
       headSha,
       previousHeadSha,
     );
-    if (shouldSkipIgnoredDiff(diffContext, input.ignoreGlobs)) {
+    const patchId = computePatchId(diffContext);
+    reviewRun.patchId = patchId;
+    if (
+      this.findLastPostedPatchId(input.repositoryId, input.pullRequestNumber, runId) === patchId
+    ) {
+      reviewRun.status = 'posted';
+      reviewRun.finishedAt = this.now();
+      supervisor.reviewedHeadShas.push(headSha);
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review skipped',
+          summary: 'Diff unchanged since the last review.',
+        },
+      });
+      return reviewRun;
+    }
+    if (shouldSkipIgnoredDiff(diffContext, [...DEFAULT_IGNORE_GLOBS, ...input.ignoreGlobs])) {
       reviewRun.status = 'posted';
       reviewRun.finishedAt = this.now();
       supervisor.reviewedHeadShas.push(headSha);
@@ -764,6 +797,29 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
+    const triageResult = await this.runTriageAgent(
+      supervisor,
+      reviewRun,
+      enabledAgents.map((agent) => agent.slug),
+      runToken,
+      diffContext,
+    );
+    reviewRun.costEstimateUsd += triageResult.costEstimateUsd;
+    if (triageResult.triage?.skip === true) {
+      reviewRun.status = 'posted';
+      reviewRun.finishedAt = this.now();
+      supervisor.reviewedHeadShas.push(headSha);
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review skipped',
+          summary: `Triage found nothing reviewable: ${triageResult.triage.reason || '(no reason given)'}`,
+        },
+      });
+      return reviewRun;
+    }
     const { results: agentResults, quotaBlocked } = await this.runAgents(
       supervisor,
       reviewRun,
@@ -774,10 +830,9 @@ export class ReviewWorkflowEngine {
 
     if (isStoppedReviewRun(reviewRun)) return reviewRun;
     if (quotaBlocked) {
-      reviewRun.costEstimateUsd = agentResults.reduce(
-        (total, result) => total + result.costEstimateUsd,
-        0,
-      );
+      reviewRun.costEstimateUsd =
+        triageResult.costEstimateUsd +
+        agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
       await this.persistReviewRun(reviewRun);
@@ -793,7 +848,33 @@ export class ReviewWorkflowEngine {
     }
 
     const deduplicatedAgentResults = deduplicateAgentResultFindings(agentResults);
-    const findings = deduplicatedAgentResults.flatMap((result) => result.findings);
+    const agentRunIdBySlug = new Map(
+      enabledAgents.map((agent) => [agent.slug, createAgentRunId(reviewRun.id, agent)]),
+    );
+    const verificationCandidates = deduplicatedAgentResults.flatMap((result) => {
+      const agentRunId = agentRunIdBySlug.get(result.agentSlug);
+      if (agentRunId === undefined) return [];
+      return result.findings.map((finding) => ({ agentRunId, finding }));
+    });
+    const { verifiedFindings, costEstimateUsd: verificationCostEstimateUsd } =
+      await this.runVerificationStage(
+        supervisor,
+        reviewRun,
+        diffContext,
+        runToken,
+        verificationCandidates,
+      );
+    reviewRun.costEstimateUsd += verificationCostEstimateUsd;
+    // A supersede/abort can arrive while verifiers are still in flight; an
+    // in-flight verifier can resolve just after the signal (it isn't wired to
+    // the AbortController the way specialist processes are). Re-check here so
+    // a superseded run never reaches the single posting join — otherwise the
+    // stale run and its successor could both post a review for the same PR.
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
+    const findings = [...mergeNearDuplicateFindings(verifiedFindings)].sort(
+      compareFindingsForPosting,
+    );
+    await this.persistMergedFingerprints(reviewRun, findings, verificationCandidates);
     const reviewPayload = buildReviewPayload(headSha, diffContext, findings);
     if (reviewPayload.comments.length > 0 && !this.postedReviewRunIds.has(reviewRun.id)) {
       const claimResult = await this.claimReviewPost(reviewRun);
@@ -908,20 +989,29 @@ export class ReviewWorkflowEngine {
       await this.persistReviewRun(reviewRun);
       return reviewRun;
     }
-    reviewRun.costEstimateUsd = agentResults.reduce(
-      (total, result) => total + result.costEstimateUsd,
-      0,
-    );
+    reviewRun.costEstimateUsd =
+      triageResult.costEstimateUsd +
+      verificationCostEstimateUsd +
+      agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
     reviewRun.status = 'posted';
     reviewRun.finishedAt = this.now();
     supervisor.reviewedHeadShas.push(headSha);
     await this.persistReviewRun(reviewRun);
 
+    const verifiedFingerprints = new Set(
+      findings.map((finding) => computeCanonicalFindingFingerprint(finding)),
+    );
+    const verifiedAgentResults = deduplicatedAgentResults.map((result) => ({
+      ...result,
+      findings: result.findings.filter((finding) =>
+        verifiedFingerprints.has(computeCanonicalFindingFingerprint(finding)),
+      ),
+    }));
     await this.updateCheckRun(
       input,
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(
-        deduplicatedAgentResults,
+        verifiedAgentResults,
         diffContext,
         input.checkConclusionMode ?? 'advisory',
       ),
@@ -972,15 +1062,236 @@ export class ReviewWorkflowEngine {
       model: mappedAgent.effectiveModel,
       effort: mappedAgent.effectiveEffort ?? undefined,
     };
+    return this.executeSandboxAgent({
+      supervisor,
+      reviewRun,
+      agentRunId,
+      idempotencyKey: createAgentReviewIdempotencyKey(reviewRun.id, agent),
+      role: 'specialist',
+      agentIdForPersistence: agent.id,
+      agentSpec: effectiveAgent,
+      runToken,
+      diffContext,
+      sanitizeResult: (result) => sanitizeAgentResultFindings(result, diffContext),
+    });
+  }
+
+  /**
+   * Haiku triage stage: classifies the pull request, decides whether it is
+   * worth reviewing at all, and flags risk surfaces. Persisted as an
+   * `agent_run` with `role: 'triage'` and no `agentId` — triage has no
+   * user-configured `agent` row.
+   */
+  private async runTriageAgent(
+    supervisor: SupervisorState,
+    reviewRun: ReviewRunRecord,
+    availableAgentSlugs: string[],
+    runToken: string,
+    diffContext: DiffContext,
+  ): Promise<AgentResult> {
+    const agentRunId = createTriageAgentRunId(reviewRun.id);
+    const agentSpec: AgentSpec = {
+      id: 'triage',
+      userId: reviewRun.userId,
+      slug: 'triage',
+      description: 'Tribunal triage agent',
+      body: 'Classify the pull request and decide whether it needs specialist review.',
+      model: 'haiku',
+      effort: 'low',
+      enabled: true,
+      role: 'triage',
+      availableAgentSlugs,
+    };
+    return this.executeSandboxAgent({
+      supervisor,
+      reviewRun,
+      agentRunId,
+      idempotencyKey: `triage:${reviewRun.id}`,
+      role: 'triage',
+      agentIdForPersistence: null,
+      agentSpec,
+      runToken,
+      diffContext,
+      sanitizeResult: (result) => result,
+    });
+  }
+
+  /**
+   * Haiku verification stage: one process per candidate finding, adversarial
+   * "try to refute this" pass. Persisted as an `agent_run` with `role:
+   * 'verifier'` and no `agentId`.
+   */
+  private async runVerifierAgent(
+    supervisor: SupervisorState,
+    reviewRun: ReviewRunRecord,
+    finding: Finding,
+    fingerprint: string,
+    runToken: string,
+    diffContext: DiffContext,
+  ): Promise<AgentResult> {
+    const agentRunId = createVerifierAgentRunId(reviewRun.id, fingerprint);
+    const agentSpec: AgentSpec = {
+      id: `verify:${fingerprint}`,
+      userId: reviewRun.userId,
+      slug: 'verifier',
+      description: 'Tribunal verification agent',
+      body: 'Try to refute this candidate finding. It survives only with a concrete file:line citation in actual source.',
+      model: 'haiku',
+      effort: 'low',
+      enabled: true,
+      role: 'verifier',
+      findingToVerify: finding,
+    };
+    return this.executeSandboxAgent({
+      supervisor,
+      reviewRun,
+      agentRunId,
+      idempotencyKey: `verify:${reviewRun.id}:${fingerprint}`,
+      role: 'verifier',
+      agentIdForPersistence: null,
+      agentSpec,
+      runToken,
+      diffContext,
+      sanitizeResult: (result) => result,
+    });
+  }
+
+  /**
+   * Spawns one Haiku verifier per candidate finding, bounded to ~4 concurrent
+   * sandbox processes (pipelined — no barrier on the slowest specialist beyond
+   * this bound). Persists each finding's verification outcome; only findings
+   * the verifier could not refute are returned for posting.
+   */
+  private async runVerificationStage(
+    supervisor: SupervisorState,
+    reviewRun: ReviewRunRecord,
+    diffContext: DiffContext,
+    runToken: string,
+    candidates: Array<{ agentRunId: string; finding: Finding }>,
+  ): Promise<{ verifiedFindings: Finding[]; costEstimateUsd: number }> {
+    const verifiedFindings: Finding[] = [];
+    let costEstimateUsd = 0;
+    let cursor = 0;
+    const concurrency = Math.min(4, candidates.length);
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= candidates.length) return;
+        const candidate = candidates[index]!;
+        const fingerprint = computeCanonicalFindingFingerprint(candidate.finding);
+        const verifierResult = await this.runVerifierAgent(
+          supervisor,
+          reviewRun,
+          candidate.finding,
+          fingerprint,
+          runToken,
+          diffContext,
+        );
+        costEstimateUsd += verifierResult.costEstimateUsd;
+        const verified = verifierResult.verification?.verified === true;
+        await this.persistFinding({
+          ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
+          verificationStatus: verified ? 'verified' : 'rejected',
+          verificationNote: verifierResult.verification?.note,
+          verifierAgentRunId: createVerifierAgentRunId(reviewRun.id, fingerprint),
+        });
+        if (verified) verifiedFindings.push(candidate.finding);
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    return { verifiedFindings, costEstimateUsd };
+  }
+
+  /**
+   * Patches the already-persisted `finding` rows for cross-agent dedup
+   * survivors (T-11) with the fingerprints of the near-duplicates they
+   * absorbed, so Phase 3's carried-forward dedup can match a re-reported
+   * finding against either the surviving fingerprint or any merged-away one.
+   * A no-op when `mergeNearDuplicateFindings` didn't merge anything.
+   */
+  private async persistMergedFingerprints(
+    reviewRun: ReviewRunRecord,
+    findings: readonly Finding[],
+    verificationCandidates: ReadonlyArray<{ agentRunId: string; finding: Finding }>,
+  ): Promise<void> {
+    const survivors = findings.filter(
+      (finding) =>
+        finding.mergedFingerprints !== undefined && finding.mergedFingerprints.length > 0,
+    );
+    if (survivors.length === 0) return;
+
+    await Promise.all(
+      survivors.map((finding) => {
+        const ownFingerprint = computeCanonicalFindingFingerprint(finding);
+        const candidate = verificationCandidates.find(
+          (entry) => computeCanonicalFindingFingerprint(entry.finding) === ownFingerprint,
+        );
+        if (candidate === undefined) return Promise.resolve();
+
+        return this.persistFinding({
+          ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
+          verificationStatus: 'verified',
+          mergedFingerprints: finding.mergedFingerprints,
+        });
+      }),
+    );
+  }
+
+  private findLastPostedPatchId(
+    repositoryId: number,
+    pullRequestNumber: number,
+    excludeRunId: string,
+  ): string | undefined {
+    const postedRuns = [...this.reviewRuns.values()].filter(
+      (run) =>
+        run.id !== excludeRunId &&
+        run.repositoryId === repositoryId &&
+        run.pullRequestNumber === pullRequestNumber &&
+        run.status === 'posted' &&
+        run.patchId !== undefined,
+    );
+    if (postedRuns.length === 0) return undefined;
+
+    return postedRuns.sort(compareReviewRunsChronologically).at(-1)?.patchId;
+  }
+
+  private async executeSandboxAgent(input: {
+    supervisor: SupervisorState;
+    reviewRun: ReviewRunRecord;
+    agentRunId: string;
+    idempotencyKey: string;
+    role: AgentRunRole;
+    agentIdForPersistence: string | null;
+    agentSpec: AgentSpec;
+    runToken: string;
+    diffContext: DiffContext;
+    sanitizeResult: (result: AgentResult) => AgentResult;
+  }): Promise<AgentResult> {
+    const {
+      supervisor,
+      reviewRun,
+      agentRunId,
+      idempotencyKey,
+      role,
+      agentIdForPersistence,
+      agentSpec,
+      runToken,
+      diffContext,
+      sanitizeResult,
+    } = input;
     const controller = new AbortController();
     const execution: AgentExecution = { agentRunId, controller, stopReason: 'superseded' };
     supervisor.activeAgents.set(agentRunId, execution);
     const agentRun: AgentRunRecord = {
       id: agentRunId,
-      idempotencyKey: createAgentReviewIdempotencyKey(reviewRun.id, agent),
+      idempotencyKey,
       reviewRunId: reviewRun.id,
       userId: reviewRun.userId,
-      agentId: agent.id,
+      agentId: agentIdForPersistence,
+      role,
       status: 'running',
       findingsCount: 0,
       costEstimateUsd: 0,
@@ -989,7 +1300,7 @@ export class ReviewWorkflowEngine {
     await this.persistAgentRun(agentRun);
 
     try {
-      const executionAgent: AgentExecutionSpec = { ...effectiveAgent, agentRunId };
+      const executionAgent: AgentExecutionSpec = { ...agentSpec, agentRunId };
       const result = await this.ports.sandbox.runAgent(
         supervisor.sandboxId,
         executionAgent,
@@ -1000,19 +1311,31 @@ export class ReviewWorkflowEngine {
       );
       const normalizedResult = controller.signal.aborted
         ? { ...result, stopped: execution.stopReason, findings: [] }
-        : sanitizeAgentResultFindings(result, diffContext);
+        : sanitizeResult(result);
       await this.flushAgentEventWrites();
-      await this.finishAgentRun(agentRunId, reviewRun, agent, normalizedResult);
+      await this.finishAgentRun(
+        agentRunId,
+        reviewRun,
+        agentIdForPersistence,
+        role,
+        normalizedResult,
+      );
       return normalizedResult;
     } catch (error) {
       await this.flushAgentEventWrites();
       if (controller.signal.aborted) {
-        const stoppedResult = createStoppedAgentResult(effectiveAgent, execution.stopReason, error);
-        await this.finishAgentRun(agentRunId, reviewRun, agent, stoppedResult);
+        const stoppedResult = createStoppedAgentResult(agentSpec, execution.stopReason, error);
+        await this.finishAgentRun(
+          agentRunId,
+          reviewRun,
+          agentIdForPersistence,
+          role,
+          stoppedResult,
+        );
         return stoppedResult;
       }
-      const failedResult = createFailedAgentResult(effectiveAgent, error);
-      await this.finishAgentRun(agentRunId, reviewRun, agent, failedResult);
+      const failedResult = createFailedAgentResult(agentSpec, error);
+      await this.finishAgentRun(agentRunId, reviewRun, agentIdForPersistence, role, failedResult);
       return failedResult;
     } finally {
       supervisor.activeAgents.delete(agentRunId);
@@ -1022,7 +1345,8 @@ export class ReviewWorkflowEngine {
   private async finishAgentRun(
     agentRunId: string,
     reviewRun: ReviewRunRecord,
-    agent: AgentSpec,
+    agentIdForPersistence: string | null,
+    role: AgentRunRole,
     result: AgentResult,
   ): Promise<void> {
     const agentRun = this.agentRuns.get(agentRunId);
@@ -1039,18 +1363,20 @@ export class ReviewWorkflowEngine {
     agentRun.error = result.error;
     await this.persistAgentRun(agentRun);
 
-    await Promise.all(
-      result.findings.map((finding) =>
-        this.persistFinding(createFindingRecord(reviewRun.userId, agentRunId, finding)),
-      ),
-    );
+    if (role === 'specialist') {
+      await Promise.all(
+        result.findings.map((finding) =>
+          this.persistFinding(createFindingRecord(reviewRun.userId, agentRunId, finding)),
+        ),
+      );
+    }
 
     await this.ports.cost.recordLlmEstimate({
       userId: reviewRun.userId,
       repositoryId: reviewRun.repositoryId,
       reviewRunId: reviewRun.id,
       agentRunId,
-      agentId: agent.id,
+      agentId: agentIdForPersistence,
       amountUsd: result.costEstimateUsd,
       idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
     });
@@ -1259,6 +1585,7 @@ function createFindingRecord(userId: number, agentRunId: string, finding: Findin
     agentRunId,
     anchored: finding.startLine !== null || finding.endLine !== null,
     fingerprint,
+    verificationStatus: 'pending',
   };
 }
 
@@ -1483,6 +1810,37 @@ function countSeverities(findings: Finding[]): Record<Finding['severity'], numbe
 
 function formatSeverityCounts(counts: Record<Finding['severity'], number>): string {
   return `info ${counts.info}, warning ${counts.warning}, error ${counts.error}`;
+}
+
+/**
+ * Sensible defaults for the pre-LLM path-filter skip: lockfiles, generated
+ * code, and vendored dependencies rarely benefit from review. Always unioned
+ * with the repo's configured `ignoreGlobs` — never a replacement for them.
+ */
+export const DEFAULT_IGNORE_GLOBS: readonly string[] = [
+  'bun.lock',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  '*.generated.*',
+  '**/*.generated.*',
+  'vendor/**',
+  '**/vendor/**',
+];
+
+/**
+ * Hashes the reviewed diff's content (path + patch per changed file),
+ * independent of commit sha. Used to detect "diff unchanged since last
+ * review" — a rebase or force-push that doesn't change the actual patch.
+ */
+export function computePatchId(diffContext: DiffContext): string {
+  const sortedFiles = [...diffContext.changedFiles].sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
+  const payload = JSON.stringify(
+    sortedFiles.map((file) => ({ path: file.path, status: file.status, patch: file.patch ?? '' })),
+  );
+  return createHash('sha256').update(payload).digest('hex');
 }
 
 function shouldSkipIgnoredDiff(diffContext: DiffContext, ignoreGlobs: string[]): boolean {

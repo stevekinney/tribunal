@@ -142,6 +142,16 @@ export function createSandboxPort(
               diffContext.changedFiles.map((file) => file.path),
             ),
             ...(agent.effort ? { TRIBUNAL_AGENT_EFFORT: agent.effort } : {}),
+            ...(agent.maxBudgetUsd !== undefined
+              ? { TRIBUNAL_AGENT_MAX_BUDGET_USD: String(agent.maxBudgetUsd) }
+              : {}),
+            ...(agent.role ? { TRIBUNAL_AGENT_ROLE: agent.role } : {}),
+            ...(agent.findingToVerify !== undefined
+              ? { TRIBUNAL_FINDING_TO_VERIFY: JSON.stringify(agent.findingToVerify) }
+              : {}),
+            ...(agent.availableAgentSlugs !== undefined
+              ? { TRIBUNAL_AVAILABLE_AGENT_SLUGS: JSON.stringify(agent.availableAgentSlugs) }
+              : {}),
             ...(configuration.enablePromptCaching1h ? { ENABLE_PROMPT_CACHING_1H: 'true' } : {}),
           },
           async (processId) => {

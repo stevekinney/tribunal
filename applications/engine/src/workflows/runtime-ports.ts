@@ -572,6 +572,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           prNumber: run.pullRequestNumber,
           headSha: run.headSha,
           prevHeadSha: run.previousHeadSha,
+          patchId: run.patchId,
           trigger: run.trigger,
           status: run.status,
           workflowId: run.workflowId,
@@ -587,6 +588,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
         .onConflictDoUpdate({
           target: reviewRun.id,
           set: {
+            patchId: run.patchId,
             status: sql`CASE
               WHEN ${run.status} IN ('cancelled', 'superseded')
               THEN ${run.status}
@@ -721,6 +723,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           userId: run.userId,
           reviewRunId: run.reviewRunId,
           agentId: run.agentId,
+          role: run.role,
           modelUsed: run.modelUsed,
           effortUsed: run.effortUsed,
           status: run.status,
@@ -791,6 +794,10 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           anchored: findingRecord.anchored,
           githubCommentId: findingRecord.githubCommentId,
           fingerprint: findingRecord.fingerprint,
+          verificationStatus: findingRecord.verificationStatus,
+          verificationNote: findingRecord.verificationNote,
+          verifierAgentRunId: findingRecord.verifierAgentRunId,
+          mergedFingerprints: findingRecord.mergedFingerprints ?? [],
         })
         .onConflictDoUpdate({
           target: [finding.agentRunId, finding.fingerprint],
@@ -805,6 +812,10 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
             suggestion: findingRecord.suggestion,
             anchored: findingRecord.anchored,
             githubCommentId: findingRecord.githubCommentId,
+            verificationStatus: findingRecord.verificationStatus,
+            verificationNote: findingRecord.verificationNote,
+            verifierAgentRunId: findingRecord.verifierAgentRunId,
+            mergedFingerprints: findingRecord.mergedFingerprints ?? [],
           },
         });
     },
@@ -831,6 +842,7 @@ function toReviewRunRecord(row: typeof reviewRun.$inferSelect): ReviewRunRecord 
     pullRequestNumber: row.prNumber,
     headSha: row.headSha,
     previousHeadSha: row.prevHeadSha ?? undefined,
+    patchId: row.patchId ?? undefined,
     trigger: row.trigger as ReviewRunRecord['trigger'],
     status: row.status as ReviewRunRecord['status'],
     sandboxId: row.sandboxId ?? '',
@@ -847,10 +859,11 @@ function toReviewRunRecord(row: typeof reviewRun.$inferSelect): ReviewRunRecord 
 function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
   return {
     id: row.id,
-    idempotencyKey: `agent:${row.reviewRunId}:${row.agentId}`,
+    idempotencyKey: `agent:${row.reviewRunId}:${row.agentId ?? row.id}`,
     reviewRunId: row.reviewRunId,
     userId: row.userId,
     agentId: row.agentId,
+    role: row.role as AgentRunRecord['role'],
     status: row.status as AgentRunRecord['status'],
     findingsCount: row.findingsCount,
     costEstimateUsd: Number(row.costEstimateUsd),

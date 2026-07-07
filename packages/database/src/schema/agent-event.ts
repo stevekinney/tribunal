@@ -30,7 +30,7 @@ export const agentEvent = pgTable(
     index('agent_event_agent_run_idx').on(table.agentRunId, table.seq),
     check(
       'agent_event_kind_check',
-      sql`${table.kind} IN ('session_start','tool_pre','tool_post','notification','message','stop','error')`,
+      sql`${table.kind} IN ('session_start','tool_pre','tool_post','notification','message','usage','stop','error')`,
     ),
     check('agent_event_seq_check', sql`${table.seq} >= 0`),
   ],

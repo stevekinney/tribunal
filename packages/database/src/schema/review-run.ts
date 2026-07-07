@@ -26,6 +26,10 @@ export const reviewRun = pgTable(
     prNumber: integer('pr_number').notNull(),
     headSha: text('head_sha').notNull(),
     prevHeadSha: text('prev_head_sha'),
+    // Hash of the reviewed diff's content (path + patch), independent of commit
+    // sha. Lets a later run detect "diff unchanged since last review" (e.g. a
+    // rebase that doesn't change the patch) and skip re-running agents.
+    patchId: text('patch_id'),
     trigger: text('trigger').notNull(),
     status: text('status').notNull().default('queued'),
     workflowId: text('workflow_id'),
