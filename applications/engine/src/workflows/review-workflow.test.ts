@@ -216,6 +216,43 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toHaveLength(1);
   });
 
+  it('flips a stale completed Check Run back to in_progress for a genuine re-review after completion', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+    });
+    const checkRunId = ports.github.checkRunPatches.at(-1)?.checkRunId;
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed' },
+    });
+
+    // A "Re-review" action arrives for the same (already-completed) head sha,
+    // reusing the Check Run id the original review created — the same
+    // pattern the check-run/check-suite re-run webhook handlers use.
+    const manualInput: PullRequestReviewInput = { ...baseInput, trigger: 'manual', checkRunId };
+    await expect(engine.startPullRequestReview(manualInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:manual',
+      status: 'posted',
+    });
+
+    const patchesForCheckRun = ports.github.checkRunPatches.filter(
+      (call) => call.checkRunId === checkRunId,
+    );
+    // The stale `completed` conclusion from the first run is flipped back to
+    // `in_progress` before the manual re-review's agents run, and only then
+    // back to `completed` once the new run finishes — it must never sit on
+    // GitHub's Checks tab (or a required-check gate) showing the prior run's
+    // stale conclusion while the re-review is in flight.
+    expect(patchesForCheckRun.map((call) => call.patch.status)).toEqual([
+      'completed',
+      'in_progress',
+      'completed',
+    ]);
+  });
+
   it('persists review and agent run state as the review progresses', async () => {
     const ports = createFakePorts({ endLineOnlyFinding: true });
     const engine = createEngine(ports);
@@ -1533,6 +1570,16 @@ describe('ReviewWorkflowEngine', () => {
     });
 
     const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    // Capture references before the `toMatchObject` assertion below: bun:test
+    // (1.3.13) mutates the received object in place when it contains a
+    // nested `expect.arrayContaining`/`expect.stringContaining` matcher,
+    // replacing that field with the matcher instance itself. Asserting
+    // against these captured values instead of re-reading through
+    // `completedCheckRunPatch` afterward keeps this test correct regardless
+    // of that bug. See https://github.com/oven-sh/bun/issues (bun:test
+    // toMatchObject nested asymmetric-matcher mutation) for the upstream fix.
+    const annotations = completedCheckRunPatch?.patch.output?.annotations;
+    const outputText = completedCheckRunPatch?.patch.output?.text;
 
     expect(completedCheckRunPatch).toMatchObject({
       patch: {
@@ -1561,11 +1608,11 @@ describe('ReviewWorkflowEngine', () => {
         },
       },
     });
-    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(3);
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Right side');
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Earlier right side');
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Second file');
-    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+    expect(annotations).toHaveLength(3);
+    expect(outputText).not.toContain('Right side');
+    expect(outputText).not.toContain('Earlier right side');
+    expect(outputText).not.toContain('Second file');
+    expect(annotations).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           startLine: 2,

@@ -322,6 +322,30 @@ export class ReviewWorkflowEngine {
       throw new Error('Cannot start a review for a closed pull request supervisor.');
     }
 
+    // A manual re-review targets a head sha the supervisor already reviewed,
+    // so its Check Run may still be sitting in a prior `completed` state
+    // (conclusion and all). PATCH it back to `in_progress` before a genuinely
+    // new run starts so GitHub's Checks tab — and required-check gating —
+    // reflects the in-flight re-review instead of a stale conclusion. Skip
+    // when this exact run id will be deduplicated/reused (repeat click,
+    // already in flight) so we never disturb an unrelated run's check state.
+    if (input.trigger === 'manual' && supervisor.checkRunId !== undefined) {
+      const runId = createReviewRunId({
+        repositoryId: input.repositoryId,
+        pullRequestNumber: input.pullRequestNumber,
+        headSha: input.headSha,
+        trigger: input.trigger,
+      });
+      const isAlreadyInFlight = supervisor.runPromises.has(runId);
+      const existingRun = this.reviewRuns.get(runId);
+      if (!isAlreadyInFlight && existingRun === undefined) {
+        await this.updateCheckRun(input, supervisor.checkRunId, {
+          status: 'in_progress',
+          startedAt: this.now().toISOString(),
+        });
+      }
+    }
+
     return this.startReviewRun(supervisor, input.headSha, input.trigger);
   }
 
