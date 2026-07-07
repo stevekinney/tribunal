@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   githubInstallation,
   githubInstallationRepository,
@@ -9,8 +9,20 @@ import {
 } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../../context.js';
 import { ValidationError } from '../../error-taxonomy.js';
+import { createCheckRun, type CheckRunActionInput } from '../../reviews/check-runs.js';
+import { RE_REVIEW_ACTION_IDENTIFIER } from '../../webhooks/re-run-triggers.js';
 
-type ReviewIntentKind = 'start' | 'commit_pushed' | 'pr_closed';
+/** Check Run name shown on the pull request — stable and unique for required-status-check matching. */
+const CHECK_RUN_NAME = 'Tribunal Review';
+
+/** The "Re-review" action button attached to every Tribunal Check Run. */
+const RE_REVIEW_CHECK_RUN_ACTION: CheckRunActionInput = {
+  label: 'Re-review',
+  description: 'Run Tribunal review again',
+  identifier: RE_REVIEW_ACTION_IDENTIFIER,
+};
+
+type ReviewIntentKind = 'start' | 'commit_pushed' | 'pr_closed' | 'manual';
 type PullRequestEventType =
   | 'pr_opened'
   | 'pr_reopened'
@@ -45,6 +57,8 @@ export interface SignalPullRequestEventInput {
   actorLogin?: string;
   eventId?: string;
   headSha?: string | null;
+  /** The app's public origin, used to build the Check Run's `details_url`. */
+  origin?: string;
 }
 
 export interface SignalPullRequestClosedInput {
@@ -54,6 +68,21 @@ export interface SignalPullRequestClosedInput {
   actorLogin?: string;
   eventId?: string;
   headSha?: string | null;
+}
+
+export interface SignalManualReviewInput {
+  repositoryId: number;
+  prNumber: number;
+  headSha: string;
+  actorLogin?: string;
+  eventId?: string;
+  /**
+   * The Check Run this manual trigger resolves against (`check_run.rerequested`
+   * / `requested_action` carry their own check run id) — reused instead of
+   * creating a fresh one. Omit for triggers with no single associated check
+   * run (e.g. `check_suite.rerequested`, `@tribunal review`).
+   */
+  checkRunId?: number;
 }
 
 export interface SignalPullRequestResult {
@@ -104,8 +133,10 @@ async function enqueueReviewIntent(
     prNumber: number;
     headSha?: string | null;
     prState?: 'merged' | 'closed' | null;
+    /** Pre-existing Check Run to reuse (e.g. the "Re-review" action's own check run). */
+    checkRunId?: number | null;
   },
-): Promise<{ status: ReviewIntentEnqueueStatus; intent?: ReviewIntent }> {
+): Promise<{ status: ReviewIntentEnqueueStatus; intent?: ReviewIntent; intents?: ReviewIntent[] }> {
   if (!input.deliveryId) {
     throw new ValidationError('Cannot enqueue review intent without a GitHub delivery id.');
   }
@@ -161,6 +192,7 @@ async function enqueueReviewIntent(
         prNumber: input.prNumber,
         headSha: input.headSha ?? null,
         prState: input.prState ?? null,
+        checkRunId: input.checkRunId ?? null,
       })),
     )
     .onConflictDoNothing({
@@ -175,7 +207,62 @@ async function enqueueReviewIntent(
     .returning();
 
   if (intents.length === 0) return { status: 'duplicate' };
-  return { status: 'enqueued', intent: intents[0] };
+  return { status: 'enqueued', intent: intents[0], intents };
+}
+
+/**
+ * Create the "Tribunal Review" Check Run for a fresh review intent and stamp
+ * its id onto every intent row this delivery enqueued (one check run per
+ * delivery/head_sha, shared across all watching users — not one per user).
+ *
+ * This is a write, so it is not routed through `cachedRead`
+ * (see `.claude/rules/github-api.md`). Failure here must not fail intent
+ * enqueue: the intent already exists durably, and the engine still creates a
+ * fallback Check Run at claim time if this one is missing (T-2).
+ */
+async function createCheckRunForEnqueuedIntents(
+  context: GithubServiceContext,
+  intents: ReviewIntent[],
+  input: {
+    installationId: number;
+    owner: string;
+    repo: string;
+    headSha?: string | null;
+    origin?: string;
+  },
+): Promise<void> {
+  if (intents.length === 0 || !input.headSha) return;
+
+  const intentId = intents[0].id;
+  try {
+    const checkRun = await createCheckRun(context, {
+      installationId: input.installationId,
+      owner: input.owner,
+      repository: input.repo,
+      name: CHECK_RUN_NAME,
+      headSha: input.headSha,
+      status: 'queued',
+      externalId: intentId,
+      detailsUrl: input.origin ? `${input.origin}/runs/${intentId}` : undefined,
+      actions: [RE_REVIEW_CHECK_RUN_ACTION],
+    });
+
+    await context.db
+      .update(reviewIntent)
+      .set({ checkRunId: checkRun.id })
+      .where(
+        inArray(
+          reviewIntent.id,
+          intents.map((intent) => intent.id),
+        ),
+      );
+  } catch (error) {
+    console.error('[review-intent] Failed to create Check Run at intent time:', {
+      owner: input.owner,
+      repo: input.repo,
+      error,
+    });
+  }
 }
 
 export async function signalPullRequestEvent(
@@ -190,13 +277,23 @@ export async function signalPullRequestEvent(
   }
 
   try {
-    const { status, intent } = await enqueueReviewIntent(context, {
+    const { status, intent, intents } = await enqueueReviewIntent(context, {
       deliveryId: input.eventId,
       kind: intentKind,
       repositoryId: input.repositoryId,
       prNumber: input.prNumber,
       headSha: input.headSha,
     });
+
+    if (status === 'enqueued' && intents !== undefined) {
+      await createCheckRunForEnqueuedIntents(context, intents, {
+        installationId: input.installationId,
+        owner: input.owner,
+        repo: input.repo,
+        headSha: input.headSha,
+        origin: input.origin,
+      });
+    }
 
     return {
       ok: true,
@@ -208,6 +305,49 @@ export async function signalPullRequestEvent(
     };
   } catch (error) {
     return { ok: false, workflowId, intentKind, enqueued: false, error: formatError(error) };
+  }
+}
+
+/**
+ * Enqueue a `manual`-trigger review intent — the re-run path for
+ * `check_run.rerequested`, `check_run.requested_action` (identifier
+ * `re-review`), and `check_suite.rerequested`. Reuses `enqueueReviewIntent`'s
+ * fan-out (one intent per watched user) and idempotency (unique on
+ * deliveryId+kind+user+repository+PR), so a redelivered webhook cannot
+ * duplicate the manual intent.
+ */
+export async function signalManualReview(
+  context: GithubServiceContext,
+  input: SignalManualReviewInput,
+): Promise<SignalPullRequestResult> {
+  const workflowId = buildPullRequestOrchestratorWorkflowId(input.repositoryId, input.prNumber);
+
+  try {
+    const { status, intent } = await enqueueReviewIntent(context, {
+      deliveryId: input.eventId,
+      kind: 'manual',
+      repositoryId: input.repositoryId,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
+      checkRunId: input.checkRunId,
+    });
+
+    return {
+      ok: true,
+      workflowId,
+      intentId: intent?.id,
+      intentKind: 'manual',
+      enqueued: status === 'enqueued',
+      enqueueStatus: status,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      workflowId,
+      intentKind: 'manual',
+      enqueued: false,
+      error: formatError(error),
+    };
   }
 }
 

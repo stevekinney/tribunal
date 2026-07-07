@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   pgTable,
@@ -26,6 +27,10 @@ export const repositoryReviewSettings = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    // Advisory (default): findings never block merges — Check Run conclusion
+    // is `success`/`neutral`. Gating: findings at or above `error` severity
+    // produce `failure`, so repos that mark the check required can block on it.
+    checkConclusionMode: text('check_conclusion_mode').notNull().default('advisory'),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()
@@ -34,6 +39,10 @@ export const repositoryReviewSettings = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.repositoryId] }),
     index('repository_review_settings_repository_idx').on(table.repositoryId),
+    check(
+      'repository_review_settings_check_conclusion_mode_check',
+      sql`${table.checkConclusionMode} IN ('advisory','gating')`,
+    ),
   ],
 );
 

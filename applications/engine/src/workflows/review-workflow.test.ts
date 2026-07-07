@@ -130,6 +130,53 @@ describe('ReviewWorkflowEngine', () => {
     );
   });
 
+  it('PATCHes the intent-supplied Check Run for the pushed head, not the stale one from the opened event', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    // opened at head A has no intent-supplied checkRunId, so the engine falls
+    // back to creating its own Check Run (id 9001, per FakeGitHubPort).
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      headSha: 'aaa111',
+    });
+    const checkRunIdForHeadA = ports.github.checkRunPatches.at(-1)?.checkRunId;
+    expect(checkRunIdForHeadA).toBeDefined();
+
+    // synchronize at head B arrives with its own intent-supplied checkRunId
+    // (T-1 already created it at webhook-intent time) — this must be the id
+    // every subsequent PATCH targets, not head A's.
+    const updatedInput: PullRequestReviewInput = {
+      ...baseInput,
+      headSha: 'bbb222',
+      trigger: 'synchronize',
+      checkRunId: 424242,
+    };
+    await expect(engine.signalCommitPushed(updatedInput)).resolves.toMatchObject({
+      status: 'posted',
+      headSha: 'bbb222',
+    });
+
+    const patchesForHeadB = ports.github.checkRunPatches.filter(
+      (call) => call.checkRunId === 424242,
+    );
+    expect(patchesForHeadB.length).toBeGreaterThan(0);
+    // The fake sandbox's default agent result includes a finding, so the
+    // completed conclusion is advisory `neutral`, not `success`.
+    expect(patchesForHeadB.at(-1)).toMatchObject({
+      checkRunId: 424242,
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+    // No PATCH for head B's run should have leaked onto head A's stale check run.
+    expect(
+      ports.github.checkRunPatches.every(
+        (call) => call.checkRunId === checkRunIdForHeadA || call.checkRunId === 424242,
+      ),
+    ).toBe(true);
+    // The fallback create path only ever ran once, for head A.
+    expect(ports.github.createdCheckRuns).toEqual(['aaa111']);
+  });
+
   it('deduplicates concurrent first review starts for the same pull request', async () => {
     const ports = createFakePorts({ holdAgentRuns: true });
     const engine = createEngine(ports);
@@ -145,6 +192,65 @@ describe('ReviewWorkflowEngine', () => {
     ]);
     expect(ports.sandbox.ensureCalls).toHaveLength(1);
     expect(ports.github.createdCheckRuns).toEqual(['aaa111']);
+  });
+
+  it('reuses the posted review run for a repeat manual re-review on the same sha', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    const manualInput: PullRequestReviewInput = { ...baseInput, trigger: 'manual' };
+
+    await expect(engine.startPullRequestReview(manualInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:manual',
+      status: 'posted',
+    });
+    const runsAfterFirstClick = ports.sandbox.runAgentCalls.length;
+
+    // A second "Re-review" click on the same head_sha resolves to the same
+    // review_run id and reuses the already-posted run instead of re-running agents.
+    await expect(engine.startPullRequestReview(manualInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:manual',
+      status: 'posted',
+    });
+
+    expect(ports.sandbox.runAgentCalls).toHaveLength(runsAfterFirstClick);
+    expect(ports.github.reviews).toHaveLength(1);
+  });
+
+  it('flips a stale completed Check Run back to in_progress for a genuine re-review after completion', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+    });
+    const checkRunId = ports.github.checkRunPatches.at(-1)?.checkRunId;
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed' },
+    });
+
+    // A "Re-review" action arrives for the same (already-completed) head sha,
+    // reusing the Check Run id the original review created — the same
+    // pattern the check-run/check-suite re-run webhook handlers use.
+    const manualInput: PullRequestReviewInput = { ...baseInput, trigger: 'manual', checkRunId };
+    await expect(engine.startPullRequestReview(manualInput)).resolves.toMatchObject({
+      id: 'run:42:7:aaa111:manual',
+      status: 'posted',
+    });
+
+    const patchesForCheckRun = ports.github.checkRunPatches.filter(
+      (call) => call.checkRunId === checkRunId,
+    );
+    // The stale `completed` conclusion from the first run is flipped back to
+    // `in_progress` before the manual re-review's agents run, and only then
+    // back to `completed` once the new run finishes — it must never sit on
+    // GitHub's Checks tab (or a required-check gate) showing the prior run's
+    // stale conclusion while the re-review is in flight.
+    expect(patchesForCheckRun.map((call) => call.patch.status)).toEqual([
+      'completed',
+      'in_progress',
+      'completed',
+    ]);
   });
 
   it('persists review and agent run state as the review progresses', async () => {
@@ -831,15 +937,18 @@ describe('ReviewWorkflowEngine', () => {
 
     ports.sandbox.failNextUpdate();
     await expect(engine.signalCommitPushed(updatedInput)).rejects.toThrow('sandbox update failed');
+    // The push to bbb222 gets its own Check Run (T-1/T-2: one per head_sha),
+    // distinct from aaa111's — not a reuse of the original supervisor check run.
+    // A terminal engine failure (the run never posted) maps to `failure`.
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
-      checkRunId: 9001,
+      checkRunId: 9002,
       installationId: 1001,
       patch: {
         status: 'completed',
-        conclusion: 'neutral',
+        conclusion: 'failure',
         output: {
           title: 'Tribunal review failed',
-          summary: 'Review run failed during setup. See Tribunal logs for details.',
+          summary: expect.stringContaining('sandbox update failed'),
         },
       },
     });
@@ -914,6 +1023,21 @@ describe('ReviewWorkflowEngine', () => {
     await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
       'Cannot start a review for a closed pull request supervisor.',
     );
+  });
+
+  it('completes the check run with conclusion success (not cancelled) when the pull request merges', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await engine.signalPullRequestClosed(baseInput, 'merged');
+    ports.sandbox.resolveHeldAgents();
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'success' },
+    });
   });
 
   it('ignores close and stop signals when no matching active work exists', async () => {
@@ -1375,7 +1499,9 @@ describe('ReviewWorkflowEngine', () => {
     expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
-        conclusion: 'success',
+        // Advisory mode: a finding present (even an unanchorable one) makes
+        // the conclusion `neutral`, not `success`.
+        conclusion: 'neutral',
         output: {
           title: 'Tribunal review complete',
           summary: expect.stringContaining('security-review: completed; model sonnet'),
@@ -1444,11 +1570,21 @@ describe('ReviewWorkflowEngine', () => {
     });
 
     const completedCheckRunPatch = ports.github.checkRunPatches.at(-1);
+    // Capture references before the `toMatchObject` assertion below: bun:test
+    // (1.3.13) mutates the received object in place when it contains a
+    // nested `expect.arrayContaining`/`expect.stringContaining` matcher,
+    // replacing that field with the matcher instance itself. Asserting
+    // against these captured values instead of re-reading through
+    // `completedCheckRunPatch` afterward keeps this test correct regardless
+    // of that bug.
+    const annotations = completedCheckRunPatch?.patch.output?.annotations;
+    const outputText = completedCheckRunPatch?.patch.output?.text;
 
     expect(completedCheckRunPatch).toMatchObject({
       patch: {
         status: 'completed',
-        conclusion: 'success',
+        // Advisory mode: findings present makes the conclusion `neutral`.
+        conclusion: 'neutral',
         output: {
           title: 'Tribunal review complete',
           summary: expect.stringContaining(
@@ -1471,11 +1607,11 @@ describe('ReviewWorkflowEngine', () => {
         },
       },
     });
-    expect(completedCheckRunPatch?.patch.output?.annotations).toHaveLength(3);
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Right side');
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Earlier right side');
-    expect(completedCheckRunPatch?.patch.output?.text).not.toContain('Second file');
-    expect(completedCheckRunPatch?.patch.output?.annotations).not.toEqual(
+    expect(annotations).toHaveLength(3);
+    expect(outputText).not.toContain('Right side');
+    expect(outputText).not.toContain('Earlier right side');
+    expect(outputText).not.toContain('Second file');
+    expect(annotations).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           startLine: 2,
@@ -1483,6 +1619,75 @@ describe('ReviewWorkflowEngine', () => {
         }),
       ]),
     );
+  });
+
+  it('completes with conclusion success when the run posts clean with no findings', async () => {
+    const ports = createFakePorts({ noFindings: true });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+    });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'success' },
+    });
+  });
+
+  it('defaults to advisory mode (neutral) for an error-severity finding when checkConclusionMode is unset', async () => {
+    const ports = createFakePorts({ multipleFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('stays neutral in gating mode for warning/info findings (no error severity present)', async () => {
+    const ports = createFakePorts({ endLineOnlyFinding: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({ ...baseInput, checkConclusionMode: 'gating' });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('completes with conclusion failure in gating mode when an error-severity finding is present', async () => {
+    const ports = createFakePorts({ multipleFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({ ...baseInput, checkConclusionMode: 'gating' });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'failure' },
+    });
+  });
+
+  it('stays success in gating mode for a clean run with no findings', async () => {
+    const ports = createFakePorts({ noFindings: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({ ...baseInput, checkConclusionMode: 'gating' });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'success' },
+    });
+  });
+
+  it('stays neutral in gating mode when an agent fails but no error-severity finding is present', async () => {
+    const ports = createFakePorts({ failAgentRuns: true });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({ ...baseInput, checkConclusionMode: 'gating' });
+
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
   });
 
   it('sanitizes agent findings before persistence and GitHub posting', async () => {
@@ -1795,6 +2000,7 @@ type FakePortOptions = {
   mixedAnchoredAndOffDiffFindings?: boolean;
   endLineOnlyFinding?: boolean;
   unsafeFindings?: boolean;
+  noFindings?: boolean;
   sensitiveAgentEvent?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
@@ -2276,7 +2482,7 @@ class FakeSandboxPort implements SandboxPort {
 
     return createAgentResult(
       agent,
-      signal.aborted,
+      signal.aborted || this.options.noFindings === true,
       this.options.multipleFindings,
       this.options.multiLineFinding,
       this.options.fileLevelFinding,

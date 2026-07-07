@@ -1,0 +1,2 @@
+ALTER TABLE "repository_review_settings" ADD COLUMN "check_conclusion_mode" text DEFAULT 'advisory' NOT NULL;--> statement-breakpoint
+ALTER TABLE "repository_review_settings" ADD CONSTRAINT "repository_review_settings_check_conclusion_mode_check" CHECK ("repository_review_settings"."check_conclusion_mode" IN ('advisory','gating'));

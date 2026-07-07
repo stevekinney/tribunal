@@ -460,8 +460,18 @@ export function createEngineGitHubPort(
         installationId,
         owner: repository.owner,
         repository: repository.name,
-        name: 'Tribunal',
+        // Stable, unique name matching the intent-time creation (T-1) — a
+        // check name only becomes selectable in branch protection after it
+        // has run on the branch under this exact name.
+        name: 'Tribunal Review',
         headSha,
+        actions: [
+          {
+            label: 'Re-review',
+            description: 'Run Tribunal review again',
+            identifier: 're-review',
+          },
+        ],
       });
       return { checkRunId: checkRun.id };
     },

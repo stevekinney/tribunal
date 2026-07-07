@@ -84,6 +84,98 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent?.processedAt).toEqual(new Date('2026-06-17T12:01:00.000Z'));
   });
 
+  it('carries the intent-supplied Check Run id onto the claimed review workflow input', async () => {
+    const { user, repository } = await createReviewIntentFixture({ checkRunId: 5551234 });
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest.checkRunId).toBe(5551234);
+  });
+
+  it('omits checkRunId from the claimed review workflow input when the intent predates it', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest.checkRunId).toBeUndefined();
+  });
+
+  it('defaults checkConclusionMode to advisory on the claimed review workflow input', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest.checkConclusionMode).toBe('advisory');
+  });
+
+  it('carries a gating checkConclusionMode onto the claimed review workflow input', async () => {
+    const { user, repository } = await createReviewIntentFixture({ checkConclusionMode: 'gating' });
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest.checkConclusionMode).toBe('gating');
+  });
+
   it('leaves unwatched review intents unclaimed', async () => {
     await createReviewIntentFixture({ watched: false });
     const port = createDatabaseReviewIntentPort(testDatabase.db);
@@ -993,6 +1085,8 @@ async function createReviewIntentFixture(
     watched?: boolean;
     kind?: 'start' | 'commit_pushed' | 'pr_closed';
     createPullRequestState?: boolean;
+    checkRunId?: number;
+    checkConclusionMode?: 'advisory' | 'gating';
   } = {},
 ) {
   const factories = createFactories(testDatabase.db);
@@ -1022,6 +1116,7 @@ async function createReviewIntentFixture(
     repositoryId: repository.id,
     watched: options.watched ?? true,
     ignoreGlobs: ['docs/**'],
+    checkConclusionMode: options.checkConclusionMode ?? 'advisory',
   });
   if (options.createPullRequestState !== false) {
     await testDatabase.db.insert(pullRequestState).values({
@@ -1039,6 +1134,7 @@ async function createReviewIntentFixture(
     userId: user.id,
     prNumber: 7,
     headSha: null,
+    checkRunId: options.checkRunId ?? null,
   });
 
   return { user, installation, repository };

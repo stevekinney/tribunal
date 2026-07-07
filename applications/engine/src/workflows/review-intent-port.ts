@@ -30,6 +30,8 @@ type ClaimedReviewIntentRow = {
   prState: 'merged' | 'closed' | null;
   createdAt: Date;
   claimedAt: Date;
+  /** Check Run created at webhook-intent time (T-1); null for intents that predate it. */
+  checkRunId: number | null;
 };
 
 type PullRequestReviewInputBuildResult =
@@ -219,7 +221,8 @@ async function claimNextIntentRow(
       ${reviewIntent.headSha} AS "headSha",
       ${reviewIntent.prState} AS "prState",
       ${reviewIntent.createdAt} AS "createdAt",
-      ${reviewIntent.claimedAt} AS "claimedAt"
+      ${reviewIntent.claimedAt} AS "claimedAt",
+      ${reviewIntent.checkRunId} AS "checkRunId"
   `);
 
   return getRows<ClaimedReviewIntentRow>(result)[0] ?? null;
@@ -238,6 +241,7 @@ async function buildPullRequestReviewInput(
       headSha: reviewIntent.headSha,
       currentHeadSha: pullRequestState.headSha,
       ignoreGlobs: repositoryReviewSettings.ignoreGlobs,
+      checkConclusionMode: repositoryReviewSettings.checkConclusionMode,
     })
     .from(reviewIntent)
     .innerJoin(repository, eq(repository.id, reviewIntent.repositoryId))
@@ -341,8 +345,14 @@ async function buildPullRequestReviewInput(
       trigger: toReviewTrigger(intent.kind),
       agents: agents.map(toAgentSpec),
       ignoreGlobs: target.ignoreGlobs,
+      checkConclusionMode: toCheckConclusionMode(target.checkConclusionMode),
+      ...(intent.checkRunId === null ? {} : { checkRunId: intent.checkRunId }),
     },
   };
+}
+
+function toCheckConclusionMode(value: string): PullRequestReviewInput['checkConclusionMode'] {
+  return value === 'gating' ? 'gating' : 'advisory';
 }
 
 function markReviewIntentProcessed(
@@ -488,6 +498,10 @@ function serializeReviewIntentError(error: unknown): string {
 function toReviewTrigger(kind: ReviewIntentKind): PullRequestReviewInput['trigger'] {
   if (kind === 'commit_pushed') return 'synchronize';
   if (kind === 'start') return 'opened';
+  if (kind === 'manual') return 'manual';
+  // pr_closed intents never reach startReviewRun (routed to
+  // signalPullRequestClosed instead), so this trigger value is unused for
+  // them; 'manual' is a harmless placeholder matching the review_run enum.
   return 'manual';
 }
 
