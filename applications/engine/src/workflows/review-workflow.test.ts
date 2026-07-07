@@ -1576,8 +1576,7 @@ describe('ReviewWorkflowEngine', () => {
     // replacing that field with the matcher instance itself. Asserting
     // against these captured values instead of re-reading through
     // `completedCheckRunPatch` afterward keeps this test correct regardless
-    // of that bug. See https://github.com/oven-sh/bun/issues (bun:test
-    // toMatchObject nested asymmetric-matcher mutation) for the upstream fix.
+    // of that bug.
     const annotations = completedCheckRunPatch?.patch.output?.annotations;
     const outputText = completedCheckRunPatch?.patch.output?.text;
 
