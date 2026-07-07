@@ -6,6 +6,10 @@ import {
   isAgentSlug,
   isMainModule,
   main,
+  parseAgentRole,
+  parseAvailableAgentSlugs,
+  parseFindingToVerify,
+  parseMaxBudgetUsd,
   redactRuntimeValueForEvent,
   runClaudeReview,
   writeResult,
@@ -256,6 +260,205 @@ describe('runner agent wiring', () => {
         { token: 'ghs_abcdefghijklmnopqrstuvwxyz' },
       ]),
     ).toEqual(['[REDACTED]', { token: '[REDACTED]' }]);
+  });
+
+  it('sets permissionMode to dontAsk with explicit allow/deny tool lists, top-level and per-agent', async () => {
+    const captured = createFakeSdk();
+    let queryOptions;
+
+    await runClaudeReview({
+      agentSlug: 'security-review',
+      repositoryPath: '/workspace/repository',
+      model: 'sonnet',
+      effort: null,
+      agentDescription: 'Find security defects.',
+      agentBody: 'Only report confirmed findings.',
+      guidelines: 'Prefer concrete evidence.',
+      diffContext,
+      createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      queryClient: async function* ({ options }) {
+        queryOptions = options;
+        yield { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 };
+      },
+    });
+
+    expect(queryOptions.permissionMode).toBe('dontAsk');
+    expect(queryOptions.agents['security-review'].permissionMode).toBe('dontAsk');
+    expect(queryOptions.disallowedTools).toEqual(
+      expect.arrayContaining([
+        'Bash',
+        'Write',
+        'Edit',
+        'MultiEdit',
+        'NotebookEdit',
+        'WebFetch',
+        'WebSearch',
+      ]),
+    );
+    expect(queryOptions.strictMcpConfig).toBe(true);
+  });
+
+  it('plumbs maxBudgetUsd to the query options when provided', async () => {
+    const captured = createFakeSdk();
+    let queryOptions;
+
+    await runClaudeReview({
+      agentSlug: 'security-review',
+      repositoryPath: '/workspace/repository',
+      model: 'sonnet',
+      effort: null,
+      maxBudgetUsd: 2.5,
+      agentDescription: 'Find security defects.',
+      agentBody: 'Only report confirmed findings.',
+      guidelines: 'Prefer concrete evidence.',
+      diffContext,
+      createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      queryClient: async function* ({ options }) {
+        queryOptions = options;
+        yield { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 };
+      },
+    });
+
+    expect(queryOptions.maxBudgetUsd).toBe(2.5);
+  });
+
+  it('omits maxBudgetUsd from query options when not provided', async () => {
+    const captured = createFakeSdk();
+    let queryOptions;
+
+    await runClaudeReview({
+      agentSlug: 'security-review',
+      repositoryPath: '/workspace/repository',
+      model: 'sonnet',
+      effort: null,
+      agentDescription: 'Find security defects.',
+      agentBody: 'Only report confirmed findings.',
+      guidelines: 'Prefer concrete evidence.',
+      diffContext,
+      createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      queryClient: async function* ({ options }) {
+        queryOptions = options;
+        yield { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 };
+      },
+    });
+
+    expect(queryOptions.maxBudgetUsd).toBeUndefined();
+  });
+
+  it('parses maxBudgetUsd from environment strings, rejecting non-positive values', () => {
+    expect(parseMaxBudgetUsd('2.5')).toBe(2.5);
+    expect(parseMaxBudgetUsd('0')).toBeUndefined();
+    expect(parseMaxBudgetUsd('-1')).toBeUndefined();
+    expect(parseMaxBudgetUsd('not-a-number')).toBeUndefined();
+    expect(parseMaxBudgetUsd(undefined)).toBeUndefined();
+    expect(parseMaxBudgetUsd('')).toBeUndefined();
+  });
+
+  it('disables filesystem settings sources and auto-memory for multi-tenant isolation', async () => {
+    let queryOptions;
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: baseEnvironment,
+      stdout: createWritable(),
+      stderr: createWritable(),
+      exit: vi.fn(),
+      queryClient: (arguments_) => {
+        queryOptions = arguments_.options;
+        return streamMessages([
+          { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 },
+        ]);
+      },
+    });
+
+    expect(queryOptions.settingSources).toEqual([]);
+    expect(queryOptions.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+  });
+
+  it('runs the triage role with its own prompt and structured output schema', async () => {
+    const captured = createFakeSdk();
+    let queryOptions;
+
+    const result = await runClaudeReview({
+      agentSlug: 'triage',
+      repositoryPath: '/workspace/repository',
+      model: 'haiku',
+      effort: 'low',
+      role: 'triage',
+      availableAgentSlugs: ['correctness-review', 'security-review'],
+      diffContext,
+      guidelines: 'Prefer concrete evidence.',
+      agentDescription: 'Triage',
+      agentBody: 'Classify the pull request.',
+      createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      queryClient: async function* ({ prompt, options }) {
+        queryOptions = options;
+        expect(prompt).toContain('correctness-review, security-review');
+        yield {
+          type: 'result',
+          usage: {},
+          total_cost_usd: 0.001,
+          structured_output: { skip: false, reason: 'Touches auth logic.', riskFlags: ['auth'] },
+        };
+      },
+    });
+
+    expect(queryOptions.outputFormat.schema.required).toEqual(['skip', 'reason', 'riskFlags']);
+    expect(result).toMatchObject({
+      findings: [],
+      triage: { skip: false, reason: 'Touches auth logic.', riskFlags: ['auth'] },
+    });
+  });
+
+  it('runs the verifier role against a specific candidate finding', async () => {
+    const captured = createFakeSdk();
+    let queryOptions;
+
+    const result = await runClaudeReview({
+      agentSlug: 'verifier',
+      repositoryPath: '/workspace/repository',
+      model: 'haiku',
+      effort: 'low',
+      role: 'verifier',
+      findingToVerify: validFinding,
+      diffContext,
+      guidelines: 'Prefer concrete evidence.',
+      agentDescription: 'Verifier',
+      agentBody: 'Try to refute this finding.',
+      createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+      queryClient: async function* ({ prompt, options }) {
+        queryOptions = options;
+        expect(prompt).toContain(`Path: ${validFinding.path}`);
+        yield {
+          type: 'result',
+          usage: {},
+          total_cost_usd: 0.0005,
+          structured_output: { verified: true, note: 'Confirmed at the cited line.' },
+        };
+      },
+    });
+
+    expect(queryOptions.outputFormat.schema.required).toEqual(['verified', 'note']);
+    expect(result).toMatchObject({
+      findings: [],
+      verification: { verified: true, note: 'Confirmed at the cited line.' },
+    });
+  });
+
+  it('parses role, available agent slugs, and finding-to-verify environment values', () => {
+    expect(parseAgentRole('triage')).toBe('triage');
+    expect(parseAgentRole('verifier')).toBe('verifier');
+    expect(parseAgentRole('specialist')).toBe('specialist');
+    expect(parseAgentRole('bogus')).toBe('specialist');
+    expect(parseAgentRole(undefined)).toBe('specialist');
+
+    expect(parseAvailableAgentSlugs('["a","b"]')).toEqual(['a', 'b']);
+    expect(parseAvailableAgentSlugs(undefined)).toEqual([]);
+    expect(parseAvailableAgentSlugs('not-json')).toEqual([]);
+
+    expect(parseFindingToVerify(JSON.stringify(validFinding))).toEqual(validFinding);
+    expect(parseFindingToVerify(undefined)).toBeUndefined();
+    expect(parseFindingToVerify('not-json')).toBeUndefined();
   });
 
   it('detects relative script paths as the main module', () => {

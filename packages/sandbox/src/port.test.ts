@@ -285,6 +285,89 @@ describe('sandbox port', () => {
     });
   });
 
+  it('forwards maxBudgetUsd as an environment variable when the agent spec sets it', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+
+    await port.runAgent(
+      'sandbox_1',
+      {
+        id: 'agent_1',
+        agentRunId: 'agent_run_1',
+        userId: 1,
+        slug: 'security-reviewer',
+        description: 'Find security issues',
+        body: 'Review.',
+        model: 'sonnet',
+        effort: 'high',
+        enabled: true,
+        maxBudgetUsd: 1.5,
+      },
+      diffContext,
+      'token',
+      () => {},
+      new AbortController().signal,
+    );
+
+    expect(calls[0]).toMatchObject({
+      input: { environment: { TRIBUNAL_AGENT_MAX_BUDGET_USD: '1.5' } },
+    });
+  });
+
+  it('forwards role, finding-to-verify, and available agent slugs for system-role runs', async () => {
+    const { adapter, calls } = createFakeAdapter();
+    const port = createSandboxPort(adapter, {
+      image: 'tribunal-reviewer:latest',
+      proxyUrl: 'https://proxy.tribunal.local',
+      proxyCidr: '10.0.0.8/32',
+    });
+    const candidateFinding = {
+      path: 'src/auth.ts',
+      startLine: 11,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'error',
+      title: 'Missing auth check',
+      body: 'Never verifies the caller.',
+    };
+
+    await port.runAgent(
+      'sandbox_1',
+      {
+        id: 'agent_1',
+        agentRunId: 'agent_run_1',
+        userId: 1,
+        slug: 'verifier',
+        description: 'Verify findings',
+        body: 'Refute this finding.',
+        model: 'haiku',
+        effort: 'low',
+        enabled: true,
+        role: 'verifier',
+        findingToVerify: candidateFinding,
+        availableAgentSlugs: ['correctness-review'],
+      },
+      diffContext,
+      'token',
+      () => {},
+      new AbortController().signal,
+    );
+
+    expect(calls[0]).toMatchObject({
+      input: {
+        environment: {
+          TRIBUNAL_AGENT_ROLE: 'verifier',
+          TRIBUNAL_FINDING_TO_VERIFY: JSON.stringify(candidateFinding),
+          TRIBUNAL_AVAILABLE_AGENT_SLUGS: JSON.stringify(['correctness-review']),
+        },
+      },
+    });
+  });
+
   it('parses JSONL agent runner output and forwards event records', async () => {
     const { adapter } = createFakeAdapter();
     const event = {

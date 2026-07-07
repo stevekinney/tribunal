@@ -166,6 +166,8 @@ async function createRunnerFixture(temporaryDirectory: string): Promise<string> 
     [
       'export const ALLOWED_AGENT_TOOLS = [];',
       'export function buildReviewPrompt() { return "Review."; }',
+      'export function buildTriagePrompt() { return "Triage."; }',
+      'export function buildVerificationPrompt() { return "Verify."; }',
       'export function createTribunalReviewTools() {',
       '  return {',
       '    get_changed_files: { description: "Return changed files.", execute: () => ({ changedFiles: [] }) },',

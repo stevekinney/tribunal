@@ -127,7 +127,7 @@ describe('agent security verification', () => {
     });
   });
 
-  it('builds review prompts with authored instructions, changed-since digest, and diff last', () => {
+  it('builds review prompts with the changed-since digest before the diff and agent instructions last', () => {
     const prompt = buildReviewPrompt({
       agentDescription: 'Find security defects.',
       agentBody: 'Only report confirmed findings.',
@@ -148,11 +148,13 @@ describe('agent security verification', () => {
     expect(prompt).toContain('Only report confirmed findings.');
     expect(prompt).toContain('Changed since the previous review');
     expect(prompt).toContain('src/review-target.ts');
-    expect(prompt.indexOf('Only report confirmed findings.')).toBeLessThan(
-      prompt.indexOf('Pull request diff'),
-    );
     expect(prompt.indexOf('Changed since the previous review')).toBeLessThan(
       prompt.indexOf('Pull request diff'),
+    );
+    // Agent-specific instructions must be the last section so every agent in a
+    // run shares a byte-identical prefix up to this point (prompt-cache reuse).
+    expect(prompt.indexOf('Pull request diff')).toBeLessThan(
+      prompt.indexOf('Only report confirmed findings.'),
     );
   });
 

@@ -288,6 +288,20 @@
       "when": 1783405140350,
       "tag": "0040_remarkable_hairball",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1783440498299,
+      "tag": "0041_warm_pestilence",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1783441650737,
+      "tag": "0042_empty_ironclad",
+      "breakpoints": true
     }
   ]
 }

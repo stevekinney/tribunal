@@ -7,6 +7,8 @@ import { z } from 'zod/v4';
 import {
   ALLOWED_AGENT_TOOLS,
   buildReviewPrompt,
+  buildTriagePrompt,
+  buildVerificationPrompt,
   createTribunalReviewTools,
   deduplicateFindings,
   enforceReadOnlyToolUse,
@@ -47,10 +49,17 @@ export async function main({
   const repositoryPath = environment.TRIBUNAL_REPOSITORY_PATH ?? '/workspace/repository';
   const model = environment.TRIBUNAL_AGENT_MODEL ?? 'sonnet';
   const effort = environment.TRIBUNAL_AGENT_EFFORT || null;
+  const maxBudgetUsd = parseMaxBudgetUsd(environment.TRIBUNAL_AGENT_MAX_BUDGET_USD);
+  const role = parseAgentRole(environment.TRIBUNAL_AGENT_ROLE);
+  const availableAgentSlugs = parseAvailableAgentSlugs(environment.TRIBUNAL_AVAILABLE_AGENT_SLUGS);
+  const findingToVerify = parseFindingToVerify(environment.TRIBUNAL_FINDING_TO_VERIFY);
   // Keep SDK-required env, but replace any API key so traffic uses the scoped proxy token.
+  // settingSources is set to [] and auto-memory is disabled below so no filesystem
+  // settings or memory bleed across multi-tenant review sessions.
   const sdkEnvironment = {
     ...environment,
     ANTHROPIC_API_KEY: environment.TRIBUNAL_RUN_TOKEN,
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
   };
   const agentDescription =
     environment.TRIBUNAL_AGENT_DESCRIPTION ?? `Tribunal review agent ${agentSlug}`;
@@ -99,6 +108,10 @@ export async function main({
       repositoryPath,
       model,
       effort,
+      maxBudgetUsd,
+      role,
+      availableAgentSlugs,
+      findingToVerify,
       agentDescription,
       agentBody,
       guidelines,
@@ -145,6 +158,10 @@ export async function runClaudeReview({
   repositoryPath,
   model,
   effort,
+  maxBudgetUsd,
+  role = 'specialist',
+  availableAgentSlugs = [],
+  findingToVerify,
   agentDescription,
   agentBody,
   guidelines,
@@ -159,11 +176,14 @@ export async function runClaudeReview({
   createMcpServer = createTribunalMcpServer,
   readGitObject = readGitObjectAtRevision,
 }) {
-  const prompt = buildReviewPrompt({
+  const prompt = buildRolePrompt({
+    role,
     agentDescription,
     agentBody,
     diffContext,
     guidelines,
+    availableAgentSlugs,
+    findingToVerify,
   });
   const reviewTools = createTribunalReviewTools({
     diffContext,
@@ -192,6 +212,7 @@ export async function runClaudeReview({
       model,
       env: sdkEnvironment,
       ...(effort ? { effort } : {}),
+      ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
       settingSources: [],
       strictMcpConfig: true,
       mcpServers: { tribunal: tribunalMcpServer },
@@ -235,34 +256,7 @@ export async function runClaudeReview({
               toolUseID: options.toolUseID,
             };
       },
-      outputFormat: {
-        type: 'json_schema',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['findings'],
-          properties: {
-            findings: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['path', 'startLine', 'endLine', 'side', 'severity', 'title', 'body'],
-                properties: {
-                  path: { type: 'string' },
-                  startLine: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
-                  endLine: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
-                  side: { enum: ['LEFT', 'RIGHT'] },
-                  severity: { enum: ['info', 'warning', 'error'] },
-                  title: { type: 'string' },
-                  body: { type: 'string' },
-                  suggestion: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
-      },
+      outputFormat: { type: 'json_schema', schema: outputSchemaForRole(role) },
     },
   });
 
@@ -281,6 +275,22 @@ export async function runClaudeReview({
     throw error;
   }
 
+  const baseResult = {
+    agentSlug,
+    modelUsed: model,
+    effortUsed: effort,
+    usage: normalizeUsage(sdkResult?.usage),
+    costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
+    durationMs: elapsedMilliseconds(startedAt, performanceNow),
+  };
+
+  if (role === 'triage') {
+    return { ...baseResult, findings: [], triage: normalizeTriageDecision(sdkResult) };
+  }
+  if (role === 'verifier') {
+    return { ...baseResult, findings: [], verification: normalizeVerificationDecision(sdkResult) };
+  }
+
   const findings = Array.isArray(sdkResult?.structured_output?.findings)
     ? anchorFindings(sdkResult.structured_output.findings, diffContext).map(
         (finding) => finding.finding,
@@ -288,14 +298,94 @@ export async function runClaudeReview({
     : [];
   const collectedFindings = reviewTools.record_finding.collectedFindings;
 
+  return { ...baseResult, findings: deduplicateFindings([...collectedFindings, ...findings]) };
+}
+
+function buildRolePrompt({
+  role,
+  agentDescription,
+  agentBody,
+  diffContext,
+  guidelines,
+  availableAgentSlugs,
+  findingToVerify,
+}) {
+  if (role === 'triage') {
+    return buildTriagePrompt({ diffContext, guidelines, availableAgentSlugs });
+  }
+  if (role === 'verifier') {
+    return buildVerificationPrompt({ diffContext, finding: findingToVerify });
+  }
+  return buildReviewPrompt({ agentDescription, agentBody, diffContext, guidelines });
+}
+
+function outputSchemaForRole(role) {
+  if (role === 'triage') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['skip', 'reason', 'riskFlags'],
+      properties: {
+        skip: { type: 'boolean' },
+        reason: { type: 'string' },
+        riskFlags: { type: 'array', items: { type: 'string' } },
+      },
+    };
+  }
+  if (role === 'verifier') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['verified', 'note'],
+      properties: {
+        verified: { type: 'boolean' },
+        note: { type: 'string' },
+      },
+    };
+  }
   return {
-    agentSlug,
-    findings: deduplicateFindings([...collectedFindings, ...findings]),
-    modelUsed: model,
-    effortUsed: effort,
-    usage: normalizeUsage(sdkResult?.usage),
-    costEstimateUsd: Number(sdkResult?.total_cost_usd ?? 0),
-    durationMs: elapsedMilliseconds(startedAt, performanceNow),
+    type: 'object',
+    additionalProperties: false,
+    required: ['findings'],
+    properties: {
+      findings: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['path', 'startLine', 'endLine', 'side', 'severity', 'title', 'body'],
+          properties: {
+            path: { type: 'string' },
+            startLine: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+            endLine: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+            side: { enum: ['LEFT', 'RIGHT'] },
+            severity: { enum: ['info', 'warning', 'error'] },
+            title: { type: 'string' },
+            body: { type: 'string' },
+            suggestion: { type: 'string' },
+          },
+        },
+      },
+    },
+  };
+}
+
+function normalizeTriageDecision(sdkResult) {
+  const structured = sdkResult?.structured_output;
+  return {
+    skip: structured?.skip === true,
+    reason: typeof structured?.reason === 'string' ? structured.reason : '',
+    riskFlags: Array.isArray(structured?.riskFlags)
+      ? structured.riskFlags.filter((flag) => typeof flag === 'string')
+      : [],
+  };
+}
+
+function normalizeVerificationDecision(sdkResult) {
+  const structured = sdkResult?.structured_output;
+  return {
+    verified: structured?.verified === true,
+    note: typeof structured?.note === 'string' ? structured.note : '',
   };
 }
 
@@ -588,6 +678,41 @@ function parseChangedFiles(environment) {
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function parseMaxBudgetUsd(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+// Inline string comparisons rather than a module-level `const` lookup Set:
+// `main()` self-invokes from the very first statement in this file
+// (`if (isMainModule()) await main();`), so keep this function's own logic
+// self-contained rather than reaching for a shared module-level constant.
+export function parseAgentRole(value) {
+  return value === 'triage' || value === 'specialist' || value === 'verifier'
+    ? value
+    : 'specialist';
+}
+
+export function parseAvailableAgentSlugs(value) {
+  try {
+    const parsed = JSON.parse(value ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((slug) => typeof slug === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function parseFindingToVerify(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function isAgentSlug(value) {

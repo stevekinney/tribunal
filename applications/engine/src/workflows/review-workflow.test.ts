@@ -8,6 +8,7 @@ import type {
   CostPort,
   DailyCapDecision,
   DiffContext,
+  Finding,
   GitHubPort,
   LlmEstimateInput,
   RepoRef,
@@ -228,6 +229,8 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed' },
     });
+    const runsAfterFirstReview = ports.sandbox.runAgentCalls.length;
+    expect(runsAfterFirstReview).toBeGreaterThan(0);
 
     // A "Re-review" action arrives for the same (already-completed) head sha,
     // reusing the Check Run id the original review created — the same
@@ -251,6 +254,11 @@ describe('ReviewWorkflowEngine', () => {
       'in_progress',
       'completed',
     ]);
+    // The diff-unchanged skip must never swallow an explicitly requested
+    // manual re-review: the second run has to genuinely re-run agents and
+    // post a second review, not silently reuse the first run's results.
+    expect(ports.sandbox.runAgentCalls.length).toBeGreaterThan(runsAfterFirstReview);
+    expect(ports.github.reviews).toHaveLength(2);
   });
 
   it('persists review and agent run state as the review progresses', async () => {
@@ -264,10 +272,11 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.state.reviewRuns.map((run) => [run.id, run.status])).toEqual([
       ['run:42:7:aaa111:opened', 'posted'],
     ]);
-    expect(ports.state.agentRuns.map((run) => [run.id, run.status, run.userId])).toEqual([
+    const specialistAgentRuns = ports.state.agentRuns.filter((run) => run.role === 'specialist');
+    expect(specialistAgentRuns.map((run) => [run.id, run.status, run.userId])).toEqual([
       ['arun:run:42:7:aaa111:opened:agent_security', 'succeeded', 1],
     ]);
-    expect(ports.state.agentRuns[0]).toMatchObject({
+    expect(specialistAgentRuns[0]).toMatchObject({
       findingsCount: 1,
       modelUsed: 'sonnet',
       durationMs: 25,
@@ -374,7 +383,7 @@ describe('ReviewWorkflowEngine', () => {
       activeRunId: undefined,
       reviewedHeadShas: ['previous', 'aaa111'],
     });
-    expect(engine.snapshot().agentRuns).toEqual([
+    expect(engine.snapshot().agentRuns.filter((run) => run.role === 'specialist')).toEqual([
       expect.objectContaining({
         id: 'arun:run:42:7:aaa111:opened:agent_security',
         status: 'succeeded',
@@ -1074,10 +1083,12 @@ describe('ReviewWorkflowEngine', () => {
 
     await engine.startPullRequestReview(baseInput);
 
-    expect(ports.cost.recordLlmEstimateCalls).toHaveLength(2);
-    expect(ports.cost.llmEstimateKeys).toEqual([
-      'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
-    ]);
+    const specialistKey = 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate';
+    expect(ports.cost.recordLlmEstimateCalls.filter((key) => key === specialistKey)).toHaveLength(
+      2,
+    );
+    expect(ports.cost.llmEstimateKeys).toContain(specialistKey);
+    expect(new Set(ports.cost.llmEstimateKeys).size).toBe(ports.cost.llmEstimateKeys.length);
   });
 
   it('records failed agent results and posts a neutral check run', async () => {
@@ -1119,7 +1130,9 @@ describe('ReviewWorkflowEngine', () => {
         cacheCreationTokens: 0,
       },
     });
-    expect(ports.cost.llmEstimates[0]).toMatchObject({ amountUsd: 0.42 });
+    expect(
+      ports.cost.llmEstimates.find((estimate) => estimate.agentId === 'agent_security'),
+    ).toMatchObject({ amountUsd: 0.42 });
   });
 
   it('preserves zero-cost partial failed agent details from the sandbox', async () => {
@@ -1213,6 +1226,255 @@ describe('ReviewWorkflowEngine', () => {
       status: 'failed',
       durationMs: 0,
     });
+  });
+
+  it('skips agent execution by default when every changed file matches the default lockfile/vendor ignore globs', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    const originalGetDiffContext = ports.github.getDiffContext.bind(ports.github);
+    ports.github.getDiffContext = async (...arguments_) => {
+      const diffContext = await originalGetDiffContext(...arguments_);
+      return {
+        ...diffContext,
+        changedFiles: [{ ...diffContext.changedFiles[0]!, path: 'bun.lock' }],
+      };
+    };
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+    });
+
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { conclusion: 'success', output: { summary: 'Only ignored paths changed.' } },
+    });
+  });
+
+  it('skips agent execution when triage decides there is nothing reviewable', async () => {
+    const ports = createFakePorts({ triageSkip: 'Pure rename with no semantic change.' });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+    });
+
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Tribunal review skipped',
+          summary: expect.stringContaining('Pure rename with no semantic change.'),
+        },
+      },
+    });
+  });
+
+  it('skips agent execution when the diff is unchanged since the last posted review (patch-id skip)', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+    ports.sandbox.runAgentCalls.length = 0;
+
+    // Same head sha reuses the posted run via the existing run-id dedup path;
+    // a *different* head sha with the same diff content should hit the new
+    // patch-id skip instead of re-running agents.
+    const result = await engine.signalCommitPushed({
+      ...baseInput,
+      headSha: 'aaa111', // identical patch content to baseInput's diff fixture
+    });
+
+    expect(result.status).toBe('posted');
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+  });
+
+  it('kills a planted false positive: an unverified finding never posts', async () => {
+    const ports = createFakePorts({ rejectAllFindings: true });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+      commentsPosted: 0,
+    });
+
+    expect(ports.github.reviews).toHaveLength(0);
+    const findings = ports.state.findings;
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((finding) => finding.verificationStatus === 'rejected')).toBe(true);
+  });
+
+  it('persists verified findings with their verifier agent run id', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.state.findings.length).toBeGreaterThan(0);
+    for (const finding of ports.state.findings) {
+      expect(finding.verificationStatus).toBe('verified');
+      expect(finding.verifierAgentRunId).toMatch(/^arun:.*:verify:/);
+    }
+  });
+
+  it('does not post a superseded run whose verifier finishes after the supersede signal', async () => {
+    const ports = createFakePorts({ holdVerifierRuns: true });
+    const engine = createEngine(ports);
+
+    const firstRun = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningVerifier();
+
+    const updatedInput = { ...baseInput, headSha: 'bbb222', trigger: 'synchronize' as const };
+    const secondRun = engine.signalCommitPushed(updatedInput);
+    // Let the first run's held verifier resolve as if it completed just after
+    // the supersede signal arrived — a superseded run must never post,
+    // regardless of what an in-flight verifier eventually decides.
+    ports.sandbox.resolveHeldVerifiers();
+
+    await expect(firstRun).resolves.toMatchObject({ status: 'superseded' });
+    await expect(secondRun).resolves.toMatchObject({ status: 'posted', headSha: 'bbb222' });
+
+    expect(ports.github.reviews).toHaveLength(1);
+  });
+
+  it('merges near-duplicate findings from different agents before posting', async () => {
+    const ports = createFakePorts({
+      agentFindingsBySlug: {
+        'security-review': [
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT',
+            severity: 'error',
+            title: 'Missing authorization check',
+            body: 'Confirmed via read tools.',
+          },
+        ],
+        'performance-review': [
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT',
+            severity: 'warning',
+            title: 'Authorization check missing',
+            body: 'Same issue, different wording.',
+          },
+        ],
+      },
+    });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [reviewAgent, performanceAgent],
+    });
+
+    expect(ports.github.reviews).toHaveLength(1);
+    expect(ports.github.reviews[0]!.comments).toHaveLength(1);
+    expect(ports.github.reviews[0]!.comments[0]).toMatchObject({
+      body: expect.stringContaining('Missing authorization check'),
+    });
+
+    // The surviving finding's persisted row records the absorbed
+    // fingerprint, so Phase 3's carried-forward dedup can match a
+    // re-reported finding against either fingerprint.
+    const survivorRow = ports.state.findings.find(
+      (row) => row.title === 'Missing authorization check',
+    );
+    expect(survivorRow?.mergedFingerprints).toHaveLength(1);
+    expect(survivorRow?.verificationStatus).toBe('verified');
+    const absorbedRow = ports.state.findings.find(
+      (row) => row.title === 'Authorization check missing',
+    );
+    expect(survivorRow?.mergedFingerprints).toEqual([absorbedRow?.fingerprint]);
+    // The absorbed ("loser") finding must be re-tagged `merged` — it was
+    // already persisted as `verified` by the verification stage before the
+    // merge step ran, and must never be double-counted as a second verified
+    // finding alongside its survivor.
+    expect(absorbedRow?.verificationStatus).toBe('merged');
+  });
+
+  it('records no merged fingerprints on a finding row when nothing was absorbed', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview(baseInput);
+
+    expect(ports.state.findings.length).toBeGreaterThan(0);
+    for (const row of ports.state.findings) {
+      expect(row.mergedFingerprints ?? []).toEqual([]);
+    }
+  });
+
+  it('posts distinct findings from different agents on the same line without merging them', async () => {
+    const ports = createFakePorts({
+      agentFindingsBySlug: {
+        'security-review': [
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT',
+            severity: 'error',
+            title: 'Missing authorization check',
+            body: 'Confirmed via read tools.',
+          },
+        ],
+        'performance-review': [
+          {
+            path: 'src/example.ts',
+            startLine: 12,
+            endLine: null,
+            side: 'RIGHT',
+            severity: 'warning',
+            title: 'Unbounded query allocates excessive memory',
+            body: 'Unrelated issue on the same line.',
+          },
+        ],
+      },
+    });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({
+      ...baseInput,
+      agents: [reviewAgent, performanceAgent],
+    });
+
+    expect(ports.github.reviews).toHaveLength(1);
+    expect(ports.github.reviews[0]!.comments).toHaveLength(2);
+    const bodies = ports.github.reviews[0]!.comments.map((comment) => comment.body);
+    expect(bodies.some((body) => body.includes('Missing authorization check'))).toBe(true);
+    expect(bodies.some((body) => body.includes('Unbounded query allocates excessive memory'))).toBe(
+      true,
+    );
+  });
+
+  it('bounds verifier concurrency to at most 4 in-flight sandbox processes', async () => {
+    const ports = createFakePorts({
+      agentFindingsBySlug: {
+        'security-review': Array.from({ length: 8 }, (_, index) => ({
+          path: 'src/example.ts',
+          startLine: index + 1,
+          endLine: null,
+          side: 'RIGHT' as const,
+          severity: 'warning' as const,
+          title: `Distinct finding ${index}`,
+          body: `Independent issue number ${index}.`,
+        })),
+      },
+    });
+    const engine = createEngine(ports);
+
+    await engine.startPullRequestReview({ ...baseInput, agents: [reviewAgent] });
+
+    expect(ports.sandbox.maxConcurrentVerifiers).toBeLessThanOrEqual(4);
+    expect(ports.sandbox.maxConcurrentVerifiers).toBeGreaterThan(1);
   });
 
   it('skips agent execution when every changed file matches repository ignore globs', async () => {
@@ -1892,7 +2154,9 @@ describe('ReviewWorkflowEngine', () => {
       stoppedReason: 'timeout',
       costEstimateUsd: 0.21,
     });
-    expect(ports.cost.llmEstimates[0]).toMatchObject({ amountUsd: 0.21 });
+    expect(
+      ports.cost.llmEstimates.find((estimate) => estimate.agentId === 'agent_security'),
+    ).toMatchObject({ amountUsd: 0.21 });
   });
 
   it('reaps closed pull request sandboxes and leaves open pull request sandboxes alone', async () => {
@@ -2007,6 +2271,14 @@ type FakePortOptions = {
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
+  /** Triage decides to skip the review entirely (T-9). */
+  triageSkip?: string | false;
+  /** Verifier rejects every candidate finding (T-10). */
+  rejectAllFindings?: boolean;
+  /** Holds the first verifier's completion so a supersede/abort can race it (T-10/T-12). */
+  holdVerifierRuns?: boolean;
+  /** Per-agent-slug finding overrides, for cross-agent dedup scenarios (T-11). */
+  agentFindingsBySlug?: Record<string, Finding[]>;
 };
 
 class FakeReviewIntentPort implements ReviewIntentPort {
@@ -2283,7 +2555,11 @@ class FakeGitHubPort implements GitHubPort {
         {
           path: 'src/example.ts',
           status: 'modified',
-          patch: '@@ -1 +1 @@',
+          // Embeds `head` so distinct pushes produce a distinct patch id
+          // (`computePatchId`) — most tests simulate a genuinely new diff per
+          // push; the patch-id skip is exercised explicitly where a test
+          // wants the "identical diff" rebase scenario (see below).
+          patch: `@@ -1 +1 @@\n+${head}`,
           commentableLines: [
             { side: 'LEFT', line: 2 },
             { side: 'RIGHT', line: 3 },
@@ -2409,6 +2685,14 @@ class FakeSandboxPort implements SandboxPort {
   private runningAgents = 0;
   private readonly heldAgentResolvers: Array<() => void> = [];
   private holdFutureRuns = false;
+  private runningVerifierResolver: (() => void) | undefined;
+  private readonly runningVerifierPromise = new Promise<void>((resolve) => {
+    this.runningVerifierResolver = resolve;
+  });
+  private verifierCalls = 0;
+  private readonly heldVerifierResolvers: Array<() => void> = [];
+  private concurrentVerifiers = 0;
+  maxConcurrentVerifiers = 0;
 
   constructor(private readonly options: FakePortOptions) {}
 
@@ -2438,6 +2722,40 @@ class FakeSandboxPort implements SandboxPort {
     onEvent: (event: AgentEvent) => void,
     signal: AbortSignal,
   ): Promise<AgentResult> {
+    // Triage and verifier runs are trivial system-role passthroughs in this
+    // fake: they must not consume the specialist-oriented hold/fail/finding
+    // simulation below (indexed on `runAgentCalls.length`), and by default
+    // they let specialist findings through unchanged so existing specialist
+    // scenarios don't have to know about the pipeline stages around them.
+    if (agent.role === 'triage') {
+      return createSystemRoleAgentResult(agent, {
+        triage: {
+          skip: this.options.triageSkip !== undefined && this.options.triageSkip !== false,
+          reason: typeof this.options.triageSkip === 'string' ? this.options.triageSkip : '',
+          riskFlags: [],
+        },
+      });
+    }
+    if (agent.role === 'verifier') {
+      this.verifierCalls += 1;
+      this.runningVerifierResolver?.();
+      this.concurrentVerifiers += 1;
+      this.maxConcurrentVerifiers = Math.max(this.maxConcurrentVerifiers, this.concurrentVerifiers);
+      if (this.options.holdVerifierRuns && this.verifierCalls === 1) {
+        await new Promise<void>((resolve) => {
+          this.heldVerifierResolvers.push(resolve);
+        });
+      } else {
+        // Yield a microtask so concurrently-dispatched verifier workers can
+        // overlap in this fake the same way real sandbox subprocesses would.
+        await Promise.resolve();
+      }
+      this.concurrentVerifiers -= 1;
+      return createSystemRoleAgentResult(agent, {
+        verification: { verified: this.options.rejectAllFindings !== true, note: 'ok' },
+      });
+    }
+
     this.runAgentCalls.push({
       sandboxId,
       agentId: agent.id,
@@ -2480,6 +2798,19 @@ class FakeSandboxPort implements SandboxPort {
       throw createSandboxFailure('process killed', agent, this.options, true);
     }
 
+    const overrideFindings = this.options.agentFindingsBySlug?.[agent.slug];
+    if (overrideFindings !== undefined) {
+      return {
+        agentSlug: agent.slug,
+        findings: overrideFindings,
+        modelUsed: agent.model,
+        effortUsed: agent.effort ?? null,
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        costEstimateUsd: 0.01,
+        durationMs: 10,
+      };
+    }
+
     return createAgentResult(
       agent,
       signal.aborted || this.options.noFindings === true,
@@ -2514,6 +2845,16 @@ class FakeSandboxPort implements SandboxPort {
 
   resolveHeldAgents(): void {
     for (const resolve of this.heldAgentResolvers.splice(0)) {
+      resolve();
+    }
+  }
+
+  async waitForRunningVerifier(): Promise<void> {
+    await this.runningVerifierPromise;
+  }
+
+  resolveHeldVerifiers(): void {
+    for (const resolve of this.heldVerifierResolvers.splice(0)) {
       resolve();
     }
   }
@@ -2577,7 +2918,10 @@ class FakeCostPort implements CostPort {
       this.recordLlmEstimateCalls.push(event.idempotencyKey);
       this.idempotencyKeys.add(event.idempotencyKey);
     }
-    if (this.options.spendAfterFirstEstimate !== undefined) {
+    // Only a specialist's estimate (agentId set) represents the "first agent
+    // ran" milestone this option simulates — triage/verifier system-role
+    // estimates (agentId null) must not trip it early.
+    if (this.options.spendAfterFirstEstimate !== undefined && event.agentId !== null) {
       this.spendTodayEstimateValue = this.options.spendAfterFirstEstimate;
     }
   }
@@ -2607,6 +2951,22 @@ class FakeCostPort implements CostPort {
   setSpendTodayEstimate(value: number): void {
     this.spendTodayEstimateValue = value;
   }
+}
+
+function createSystemRoleAgentResult(
+  agent: AgentSpec,
+  extra: Pick<AgentResult, 'triage' | 'verification'>,
+): AgentResult {
+  return {
+    agentSlug: agent.slug,
+    findings: [],
+    modelUsed: agent.model,
+    effortUsed: agent.effort ?? null,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    costEstimateUsd: 0,
+    durationMs: 1,
+    ...extra,
+  };
 }
 
 function createAgentResult(

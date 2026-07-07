@@ -23,9 +23,15 @@ export const agentRun = pgTable(
     reviewRunId: text('review_run_id')
       .notNull()
       .references(() => reviewRun.id, { onDelete: 'cascade' }),
-    agentId: text('agent_id')
-      .notNull()
-      .references(() => agent.id, { onDelete: 'cascade' }),
+    // Nullable: triage and verifier runs are system roles with no user-configured
+    // `agent` row. Specialist runs always reference a real agent.
+    agentId: text('agent_id').references(() => agent.id, { onDelete: 'cascade' }),
+    // Discriminates the pipeline stage this run belongs to. Verifiers run one
+    // per candidate finding (not one per review run), so their `id` and this
+    // `(reviewRunId, agentId)` pair rely on `agentId` being NULL — Postgres
+    // treats NULLs as distinct in the unique index below, so many verifier
+    // rows can share a review run without colliding.
+    role: text('role').notNull().default('specialist'),
     modelUsed: text('model_used'),
     effortUsed: text('effort_used'),
     status: text('status').notNull().default('queued'),
@@ -48,6 +54,7 @@ export const agentRun = pgTable(
       'agent_run_status_check',
       sql`${table.status} IN ('queued','running','succeeded','failed','cancelled')`,
     ),
+    check('agent_run_role_check', sql`${table.role} IN ('triage','specialist','verifier')`),
     check(
       'agent_run_effort_used_check',
       sql`${table.effortUsed} IS NULL OR ${table.effortUsed} IN ('low','medium','high','xhigh','max')`,

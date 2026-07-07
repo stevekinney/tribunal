@@ -34,6 +34,25 @@ export const finding = pgTable(
     anchored: boolean('anchored').notNull().default(false),
     githubCommentId: bigint('github_comment_id', { mode: 'number' }),
     fingerprint: text('fingerprint').notNull(),
+    // Adversarial verification (T-10): only `verified` findings are eligible to
+    // post. `verifierAgentRunId` points at the verifier's own `agent_run` row
+    // (role `verifier`), which carries the model/cost/usage for that check.
+    // `merged` (T-11): this finding was verified but absorbed as a
+    // near-duplicate into another finding's `mergedFingerprints` — it is
+    // never posted and must not be double-counted alongside its survivor.
+    verificationStatus: text('verification_status').notNull().default('pending'),
+    verificationNote: text('verification_note'),
+    verifierAgentRunId: text('verifier_agent_run_id').references(() => agentRun.id, {
+      onDelete: 'set null',
+    }),
+    // Cross-agent dedup (T-11): fingerprints of near-duplicate findings this
+    // row absorbed via `mergeNearDuplicateFindings`. Phase 3's carried-forward
+    // dedup matches a re-reported finding against this row's own fingerprint
+    // OR any fingerprint here.
+    mergedFingerprints: text('merged_fingerprints')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -44,6 +63,10 @@ export const finding = pgTable(
     check('finding_severity_check', sql`${table.severity} IN ('info','warning','error')`),
     check('finding_start_line_check', sql`${table.startLine} IS NULL OR ${table.startLine} > 0`),
     check('finding_end_line_check', sql`${table.endLine} IS NULL OR ${table.endLine} > 0`),
+    check(
+      'finding_verification_status_check',
+      sql`${table.verificationStatus} IN ('pending','verified','rejected','merged')`,
+    ),
   ],
 );
 

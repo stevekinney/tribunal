@@ -35,6 +35,20 @@ export function createAgentReviewIdempotencyKey(reviewRunId: string, agent: Agen
   return `agent:${reviewRunId}:${agent.id}`;
 }
 
+/** One triage run per review run. */
+export function createTriageAgentRunId(reviewRunId: string): string {
+  return `arun:${reviewRunId}:triage`;
+}
+
+/**
+ * One verifier run per candidate finding. Keyed on the finding's canonical
+ * fingerprint (not the agent id — verifiers have no user-configured `agent`
+ * row) so N verifiers in the same review run never collide on this id.
+ */
+export function createVerifierAgentRunId(reviewRunId: string, findingFingerprint: string): string {
+  return `arun:${reviewRunId}:verify:${findingFingerprint}`;
+}
+
 export function createLlmEstimateIdempotencyKey(agentRunId: string): string {
   return `llm:${agentRunId}:estimate`;
 }

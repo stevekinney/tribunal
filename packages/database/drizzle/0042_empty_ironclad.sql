@@ -1,0 +1,2 @@
+ALTER TABLE "finding" DROP CONSTRAINT "finding_verification_status_check";--> statement-breakpoint
+ALTER TABLE "finding" ADD CONSTRAINT "finding_verification_status_check" CHECK ("finding"."verification_status" IN ('pending','verified','rejected','merged'));

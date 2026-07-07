@@ -125,6 +125,10 @@ export const agentRunRelations = relations(agentRun, ({ one, many }) => ({
 export const findingRelations = relations(finding, ({ one }) => ({
   user: one(user, { fields: [finding.userId], references: [user.id] }),
   agentRun: one(agentRun, { fields: [finding.agentRunId], references: [agentRun.id] }),
+  verifierAgentRun: one(agentRun, {
+    fields: [finding.verifierAgentRunId],
+    references: [agentRun.id],
+  }),
 }));
 
 export const agentEventRelations = relations(agentEvent, ({ one }) => ({

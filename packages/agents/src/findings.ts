@@ -137,6 +137,114 @@ export function computeCanonicalFindingFingerprint(finding: Finding): string {
   return createHash('sha256').update(payload).digest('hex');
 }
 
+/**
+ * Merges near-duplicate findings reported by different agents: same path,
+ * overlapping line range, and similar normalized title (word-overlap
+ * similarity >= 0.5). Keeps the highest-severity, most-specific finding from
+ * each group — exact-fingerprint dedup (`deduplicateFindings`) already
+ * handles identical findings; this handles the fuzzier cross-agent case
+ * where two specialists describe the same issue differently.
+ *
+ * The surviving finding in each group carries `mergedFingerprints`: the
+ * canonical fingerprints of every finding absorbed into it (including ones
+ * absorbed transitively across more than two merges). Phase 3's
+ * carried-forward dedup needs this to match a re-reported finding against
+ * either the surviving fingerprint or any fingerprint it absorbed.
+ */
+export function mergeNearDuplicateFindings(findings: readonly Finding[]): Finding[] {
+  const merged: Array<{ finding: Finding; mergedFingerprints: string[] }> = [];
+
+  for (const finding of findings) {
+    const duplicateIndex = merged.findIndex((candidate) =>
+      isNearDuplicateFinding(candidate.finding, finding),
+    );
+    if (duplicateIndex === -1) {
+      merged.push({ finding, mergedFingerprints: [] });
+      continue;
+    }
+
+    const entry = merged[duplicateIndex]!;
+    const winner = pickMoreSpecificFinding(entry.finding, finding);
+    const absorbedFingerprint = computeCanonicalFindingFingerprint(
+      winner === entry.finding ? finding : entry.finding,
+    );
+    merged[duplicateIndex] = {
+      finding: winner,
+      mergedFingerprints: [...entry.mergedFingerprints, absorbedFingerprint],
+    };
+  }
+
+  return merged.map(({ finding, mergedFingerprints }) =>
+    mergedFingerprints.length === 0 ? finding : { ...finding, mergedFingerprints },
+  );
+}
+
+/** Orders findings for posting: highest severity first, then path, then line. */
+export function compareFindingsForPosting(left: Finding, right: Finding): number {
+  const severityDifference = severityRank(right.severity) - severityRank(left.severity);
+  if (severityDifference !== 0) return severityDifference;
+  if (left.path !== right.path) return left.path < right.path ? -1 : 1;
+  return normalizedFindingLine(left) - normalizedFindingLine(right);
+}
+
+function isNearDuplicateFinding(left: Finding, right: Finding): boolean {
+  if (left.path !== right.path) return false;
+  if (!findingLineRangesOverlap(left, right)) return false;
+  return findingTitleSimilarity(left.title, right.title) >= 0.5;
+}
+
+function findingLineRangesOverlap(left: Finding, right: Finding): boolean {
+  const leftRange = normalizedFindingLineRange(left);
+  const rightRange = normalizedFindingLineRange(right);
+  if (leftRange === null || rightRange === null) return leftRange === rightRange;
+  return leftRange[0] <= rightRange[1] && rightRange[0] <= leftRange[1];
+}
+
+function normalizedFindingLineRange(finding: Finding): [number, number] | null {
+  if (finding.startLine === null && finding.endLine === null) return null;
+  const start = finding.startLine ?? finding.endLine ?? 0;
+  const end = finding.endLine ?? finding.startLine ?? 0;
+  return [Math.min(start, end), Math.max(start, end)];
+}
+
+function normalizedFindingLine(finding: Finding): number {
+  return finding.endLine ?? finding.startLine ?? 0;
+}
+
+function findingTitleSimilarity(left: string, right: string): number {
+  const leftWords = new Set(normalizeToWords(left));
+  const rightWords = new Set(normalizeToWords(right));
+  if (leftWords.size === 0 || rightWords.size === 0) return 0;
+
+  const intersectionSize = [...leftWords].filter((word) => rightWords.has(word)).length;
+  const unionSize = new Set([...leftWords, ...rightWords]).size;
+  return intersectionSize / unionSize;
+}
+
+function normalizeToWords(value: string): string[] {
+  return stripControlCharacters(value)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((word) => word.length > 0);
+}
+
+function pickMoreSpecificFinding(left: Finding, right: Finding): Finding {
+  const severityDifference = severityRank(right.severity) - severityRank(left.severity);
+  if (severityDifference !== 0) return severityDifference > 0 ? right : left;
+
+  const leftHasSuggestion = left.suggestion !== undefined;
+  const rightHasSuggestion = right.suggestion !== undefined;
+  if (leftHasSuggestion !== rightHasSuggestion) return rightHasSuggestion ? right : left;
+
+  return left.title <= right.title ? left : right;
+}
+
+function severityRank(severity: Finding['severity']): number {
+  if (severity === 'error') return 2;
+  if (severity === 'warning') return 1;
+  return 0;
+}
+
 export function deduplicateFindings(findings: Finding[]): Finding[] {
   const seenFingerprints = new Set<string>();
   const deduplicatedFindings: Finding[] = [];
