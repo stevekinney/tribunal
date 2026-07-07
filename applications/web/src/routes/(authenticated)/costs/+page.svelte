@@ -5,6 +5,7 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
   import { Segment } from '@lostgradient/cinder/segment';
+  import { Progress } from '@lostgradient/cinder/progress';
 
   let { data }: PageProps = $props();
 
@@ -80,16 +81,13 @@
           <span class="amount-primary">${data.costs.todayTotalUsd.toFixed(2)}</span>
           <span class="amount-cap">of ${data.costs.dailyCostCapUsd.toFixed(2)}</span>
         </div>
-        <div
-          class="progress-track"
-          role="progressbar"
-          aria-valuenow={Math.round(meterValue)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="Today's spend vs daily cap"
-        >
-          <div class="progress-fill" style:width="{meterValue}%"></div>
-        </div>
+        <Progress
+          value={meterValue}
+          max={100}
+          size="sm"
+          label={`${meterValue.toFixed(0)}% of daily cap`}
+          ariaLabel="Today's spend vs daily cap"
+        />
       </div>
     </Card>
 
@@ -271,21 +269,6 @@
     font-size: var(--text-base);
     color: var(--text-subtle);
     font-family: var(--font-mono);
-  }
-
-  /* Progress bar */
-  .progress-track {
-    height: 10px;
-    border-radius: 999px;
-    background: var(--cinder-surface-inset);
-    overflow: hidden;
-  }
-
-  .progress-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 999px;
-    transition: width 0.3s ease;
   }
 
   /* Breakdown card header */

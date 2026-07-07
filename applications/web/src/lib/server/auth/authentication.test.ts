@@ -47,6 +47,16 @@ vi.mock('$lib/server/encryption', () => ({
   decrypt: mockDecrypt,
 }));
 
+const {
+  consumeOAuthStateCookie,
+  createOAuthState,
+  getOAuthConnection,
+  readAccessTokenExpiresAt,
+  sanitizeReturnTo,
+  setOAuthStateCookie,
+  upsertOAuthConnection,
+} = await import('./authentication');
+
 describe('authentication GitHub connection helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -56,8 +66,6 @@ describe('authentication GitHub connection helpers', () => {
   });
 
   it('returns null when an OAuth connection does not exist', async () => {
-    const { getOAuthConnection } = await import('./authentication');
-
     await expect(getOAuthConnection(1, 'github')).resolves.toBeNull();
     expect.assertions(1);
   });
@@ -77,8 +85,6 @@ describe('authentication GitHub connection helpers', () => {
       },
     ]);
 
-    const { getOAuthConnection } = await import('./authentication');
-
     const connection = await getOAuthConnection(1, 'github');
 
     expect(connection?.accessToken).toBe('access-token');
@@ -88,8 +94,6 @@ describe('authentication GitHub connection helpers', () => {
   });
 
   it('rejects invalid and undecryptable OAuth connections', async () => {
-    const { getOAuthConnection } = await import('./authentication');
-
     mockWhere.mockResolvedValueOnce([
       {
         id: 1,
@@ -119,8 +123,6 @@ describe('authentication GitHub connection helpers', () => {
   });
 
   it('encrypts and upserts GitHub OAuth connection tokens', async () => {
-    const { upsertOAuthConnection } = await import('./authentication');
-
     await upsertOAuthConnection(1, 'github', {
       providerUserId: 'github-user-1',
       accessToken: 'access-token',
@@ -147,8 +149,6 @@ describe('authentication GitHub connection helpers', () => {
   });
 
   it('reads the access token expiry, tolerating non-expiring tokens', async () => {
-    const { readAccessTokenExpiresAt } = await import('./authentication');
-
     // GitHub App user-to-server tokens carry an expiry.
     const expires = new Date('2026-06-30T20:00:00.000Z');
     const expiringToken = { accessTokenExpiresAt: () => expires } as unknown as OAuth2Tokens;
@@ -175,8 +175,6 @@ describe('authentication GitHub connection helpers', () => {
   });
 
   it('sanitizes unsafe return paths', async () => {
-    const { sanitizeReturnTo } = await import('./authentication');
-
     expect(sanitizeReturnTo('/repositories?filter=open#top')).toBe('/repositories?filter=open#top');
     expect(sanitizeReturnTo('/connect/github/account/callback?code=oauth-code&state=state')).toBe(
       '/connect/github',
@@ -197,9 +195,6 @@ describe('authentication GitHub connection helpers', () => {
       set: (name: string, value: string) => cookieJar.set(name, value),
       delete: (name: string) => cookieJar.delete(name),
     } as unknown as import('@sveltejs/kit').Cookies;
-
-    const { consumeOAuthStateCookie, createOAuthState, setOAuthStateCookie } =
-      await import('./authentication');
 
     const state = createOAuthState();
     setOAuthStateCookie(cookies, state, 'github', '/connect/github', 42);

@@ -9,6 +9,7 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { SearchField } from '@lostgradient/cinder/search-field';
+  import { Select } from '@lostgradient/cinder/select';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
@@ -35,6 +36,13 @@
 
   const repositories = $derived(data.repositories);
   const availableRepositories = $derived(data.availableRepositories ?? []);
+  const availableRepositoryOptions = $derived([
+    { value: '', label: 'Select repository', disabled: true },
+    ...availableRepositories.map((repository) => ({
+      value: String(repository.id),
+      label: `${repository.owner}/${repository.name}`,
+    })),
+  ]);
   const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
 
@@ -193,19 +201,14 @@
   {#snippet actions()}
     {#if availableRepositories.length > 0}
       <form method="POST" action="?/watch" class="add-repository-form" use:enhance>
-        <label class="add-repository-label" for="repository-to-add">Add repository</label>
-        <select
+        <Select
           id="repository-to-add"
           name="repositoryId"
           bind:value={repositoryToAdd}
-          class="add-repository-select"
+          options={availableRepositoryOptions}
+          label="Add repository"
           required
-        >
-          <option value="">Select repository</option>
-          {#each availableRepositories as repository (repository.id)}
-            <option value={repository.id}>{repository.owner}/{repository.name}</option>
-          {/each}
-        </select>
+        />
         <input type="hidden" name="watched" value="on" />
         <Button type="submit" variant="primary" size="sm" disabled={repositoryToAdd === ''}>
           {#snippet leadingIcon()}<Plus size={14} aria-hidden="true" />{/snippet}
@@ -335,7 +338,7 @@
                       >
                         <input type="hidden" name="repositoryId" value={repository.id} />
                         <!--
-                          These labeled controls are visually hidden (sr-only) so they are present
+                          These labeled controls are visually hidden so they are present
                           in the DOM and queryable by label without requiring the gear panel to open.
                           They replace the old hidden inputs, preserving saved settings on toggle.
                         -->
@@ -408,22 +411,6 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-  }
-
-  .add-repository-label {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .add-repository-select {
-    min-width: 220px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    padding: var(--space-1-5) var(--space-2);
-    font: inherit;
-    font-size: var(--text-sm);
   }
 
   .search-wrapper {

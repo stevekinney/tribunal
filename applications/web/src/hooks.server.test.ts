@@ -10,7 +10,7 @@ vi.mock('$env/dynamic/private', () => ({
   },
 }));
 
-vi.mock('$testing/end-to-end/handle', () => ({
+vi.mock(import('$testing/end-to-end/handle'), () => ({
   e2eHandle: async ({
     event,
     resolve,
@@ -20,8 +20,18 @@ vi.mock('$testing/end-to-end/handle', () => ({
   }) => resolve(event as never),
 }));
 
-vi.mock('$lib/server/auth/neon-session', () => ({
-  neonAuthTokenCookieName: 'tribunal-neon-auth-token',
+vi.mock(import('$lib/server/auth/dev-bypass'), () => ({
+  devAuthBypassHandle: async ({
+    event,
+    resolve,
+  }: {
+    event: unknown;
+    resolve: (event: never) => Response | Promise<Response>;
+  }) => resolve(event as never),
+}));
+
+vi.mock(import('$lib/server/auth/neon-session'), () => ({
+  neonAuthTokenCookieName: 'tribunal-neon-auth-token' as const,
   validateNeonSessionFromToken: mockValidateNeonSessionFromToken,
   deleteNeonAuthTokenCookie: mockDeleteNeonAuthTokenCookie,
 }));

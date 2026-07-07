@@ -19,9 +19,11 @@
   };
 
   let { id, user, menuPlacement = 'default', class: className, children }: Props = $props();
+
+  const dropdownPlacement = $derived(menuPlacement === 'sidebar-footer' ? 'top-end' : 'bottom-end');
 </script>
 
-<Dropdown {id} class={className} data-menu-placement={menuPlacement}>
+<Dropdown {id} class={className} placement={dropdownPlacement}>
   <Dropdown.Trigger aria-label="User menu" showCaret={false}>
     <Avatar src={user.avatarUrl ?? undefined} alt={user.username} name={user.username} size="sm" />
   </Dropdown.Trigger>
@@ -43,7 +45,7 @@
           form?.requestSubmit();
         }}
       >
-        <LogOut class="icon-sm" aria-hidden="true" />
+        <LogOut class="cinder-icon-sm" aria-hidden="true" />
         Sign out
       </Dropdown.Item>
     </form>
@@ -58,11 +60,5 @@
 
   .user-menu-form {
     display: contents;
-  }
-
-  :global(.cinder-dropdown[data-menu-placement='sidebar-footer'] .cinder-dropdown-menu) {
-    inset-block-start: auto;
-    inset-block-end: calc(100% + var(--space-1));
-    inset-inline-end: 0;
   }
 </style>

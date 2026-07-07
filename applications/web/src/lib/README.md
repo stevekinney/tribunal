@@ -7,19 +7,18 @@ repositories you can access.
 
 ## Directory Overview
 
-| Directory     | Purpose                                                                            | Import Pattern                                                                |
-| ------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `components/` | App-specific Svelte components (the design system lives in `@tribunal/components`) | `import CodeEditor from '$lib/components/CodeEditor.svelte'`                  |
-| `constants/`  | Shared constants (authorization providers, API scopes)                             | `import { AUTH_PROVIDER_LIST } from '$lib/constants/authorization-providers'` |
-| `server/`     | Server-only domain logic (database, auth, GitHub integration, rate limiting)       | Only from `.server.ts` / `+page.server.ts` / `+server.ts`                     |
-| `test-utils/` | Test helpers (e.g. request-event builders)                                         | `import { ... } from '$lib/test-utils/request-event'`                         |
-| `utilities/`  | General utilities, form validation, and Svelte rune helpers                        | `import { slugify } from '$lib/utilities'`                                    |
+| Directory     | Purpose                                                                      | Import Pattern                                                                |
+| ------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `components/` | App-specific Svelte components composed with Cinder primitives               | `import CodeEditor from '$lib/components/CodeEditor.svelte'`                  |
+| `constants/`  | Shared constants (authorization providers, API scopes)                       | `import { AUTH_PROVIDER_LIST } from '$lib/constants/authorization-providers'` |
+| `server/`     | Server-only domain logic (database, auth, GitHub integration, rate limiting) | Only from `.server.ts` / `+page.server.ts` / `+server.ts`                     |
+| `test-utils/` | Test helpers (e.g. request-event builders)                                   | `import { ... } from '$lib/test-utils/request-event'`                         |
+| `utilities/`  | General utilities, form validation, and Svelte rune helpers                  | `import { slugify } from '$lib/utilities'`                                    |
 
 ## Import Boundaries
 
 - `server/` is server-only. Only import it from server modules and routes.
-- `utilities/` is exported through its barrel at `src/lib/utilities/index.ts`;
-  some entries re-export from `@tribunal/components`.
+- `utilities/` is exported through its barrel at `src/lib/utilities/index.ts`.
 
 ## Key Files
 
@@ -31,7 +30,7 @@ Code shared beyond the web app lives in the workspace packages, not here:
 
 - `@tribunal/database` (`packages/database/`) - Drizzle schema, queries, and Zod validation schemas (`src/validation/`).
 - `@tribunal/test` (`packages/test/`) - test database and fixtures.
-- `@tribunal/components` (`packages/components/`) - the design system.
+- `@lostgradient/cinder` - the design system dependency used directly by the web app.
 
 ## Related Rules
 

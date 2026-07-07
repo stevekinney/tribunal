@@ -5,6 +5,7 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { Textarea } from '@lostgradient/cinder/textarea';
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
@@ -72,15 +73,15 @@
     headingLevel={2}
   >
     <form method="POST" action="?/saveSettings" class="settings-form" use:enhance>
-      <label class="field-label" for="ignore-globs">Ignore globs</label>
-      <textarea
+      <Textarea
         id="ignore-globs"
         name="ignoreGlobs"
-        rows="4"
+        rows={4}
+        label="Ignore globs"
+        description="One glob per line. Matching files are skipped during review."
         placeholder="dist/**&#10;coverage/**"
         bind:value={ignoreGlobs}
-      ></textarea>
-      <p class="field-description">One glob per line. Matching files are skipped during review.</p>
+      />
 
       <div class="agent-assignment">
         <span class="field-label">Review agents</span>
@@ -275,18 +276,6 @@
     color: var(--text-subtle);
     font-size: var(--text-sm);
     margin: 0;
-  }
-
-  textarea {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    min-height: 7rem;
-    padding: var(--space-2);
-    resize: vertical;
   }
 
   .agent-assignment,
