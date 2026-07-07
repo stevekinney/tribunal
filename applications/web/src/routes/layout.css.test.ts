@@ -44,9 +44,9 @@ describe('layout.css @layer ordering', () => {
     expect(css).not.toMatch(/@import\s+['"][^'"]*foundation\.css/);
   });
 
-  it('imports Cinder styles after the @layer declaration', () => {
+  it('imports Cinder component styles after the @layer declaration', () => {
     const layerIndex = css.indexOf('@layer cinder.tokens');
-    const cinderImportIndex = css.indexOf("@import '@lostgradient/cinder/styles'");
+    const cinderImportIndex = css.indexOf("@import '@lostgradient/cinder/styles/all'");
     expect(cinderImportIndex).toBeGreaterThan(layerIndex);
   });
 });

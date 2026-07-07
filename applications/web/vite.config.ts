@@ -1,8 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Plugin } from 'vite';
 import { config as loadDotenv } from 'dotenv';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
@@ -29,55 +27,6 @@ loadDotenv({ path: resolve(repositoryRoot, '.env'), override: preferRootEnvironm
 
 const enableCoverageSourcemaps = process.env.COVERAGE === '1' || process.env.COVERAGE === 'true';
 
-/**
- * Resolve `@lostgradient/cinder` to its `svelte` (source) export condition during
- * DEV server-side rendering.
- *
- * Cinder's `node` export condition points at a production-precompiled
- * `dist/server` bundle (the fix for cinder#533). That bundle omits the dev-only
- * Svelte scaffolding (`ssr_context.function`), so when a Cinder component renders
- * an app-provided snippet — e.g. the authenticated layout's `brand` snippet
- * inside `<Sidebar>` — the snippet, compiled in dev mode, calls `push_element`
- * and reads that absent scaffolding, throwing
- * `Cannot read properties of undefined (reading 'Symbol(filename)')` and
- * SSR-crashing every authenticated route under `bun run dev`.
- *
- * Routing Cinder to its source in dev lets vite-plugin-svelte compile it in the
- * same dev mode as the app, so the scaffolding matches. Production `vite build`
- * is left untouched: the precompiled `node` bundle works there (prod emits no
- * `push_element`), and `ssr.noExternal` already bundles Cinder. Tracked upstream:
- * Cinder's per-component exports list `node` before `svelte`, the opposite of the
- * root `.` export, which is why SSR picks the precompiled bundle.
- */
-function cinderDevSsrSource(): Plugin {
-  const requireFromHere = createRequire(import.meta.url);
-  const cinderPackagePath = requireFromHere.resolve('@lostgradient/cinder/package.json');
-  const cinderDirectory = dirname(cinderPackagePath);
-  const cinderExports: Record<string, Record<string, string>> = JSON.parse(
-    readFileSync(cinderPackagePath, 'utf8'),
-  ).exports;
-  let isDevServer = false;
-
-  return {
-    name: 'cinder-dev-ssr-source',
-    enforce: 'pre',
-    configResolved(resolved) {
-      isDevServer = resolved.command === 'serve';
-    },
-    resolveId(source, _importer, options) {
-      if (!isDevServer || !options?.ssr) return null;
-      if (source !== '@lostgradient/cinder' && !source.startsWith('@lostgradient/cinder/')) {
-        return null;
-      }
-      const subpath =
-        source === '@lostgradient/cinder' ? '.' : `.${source.slice('@lostgradient/cinder'.length)}`;
-      const sourceTarget = cinderExports[subpath]?.svelte;
-      if (!sourceTarget) return null;
-      return resolve(cinderDirectory, sourceTarget);
-    },
-  };
-}
-
 // Port configuration: env var overrides, falling back to base ports.
 const devPort = getPortWithEnvOverride('VITE_PORT', BASE_PORTS.viteDev);
 const previewPort = getPortWithEnvOverride('VITE_PREVIEW_PORT', BASE_PORTS.vitePreview);
@@ -85,7 +34,7 @@ const vitestBrowserPort = getPortWithEnvOverride('VITEST_BROWSER_PORT', BASE_POR
 
 export default defineConfig({
   envDir: repositoryRoot,
-  plugins: [cinderDevSsrSource(), sveltekit(), devtoolsJson()],
+  plugins: [sveltekit(), devtoolsJson()],
   server: {
     port: devPort,
   },
@@ -97,10 +46,7 @@ export default defineConfig({
     },
   },
   ssr: {
-    // @lostgradient/cinder ships uncompiled Svelte via its `svelte` export
-    // condition, so it must be bundled-and-compiled for SSR rather than treated
-    // as an external dependency (same reason as the @tribunal/* packages).
-    noExternal: [/^@tribunal\/.*/, '@lostgradient/cinder', 'github-webhook-schemas'],
+    noExternal: [/^@tribunal\/.*/, 'github-webhook-schemas'],
   },
   optimizeDeps: {
     include: [
@@ -108,11 +54,6 @@ export default defineConfig({
       'lucide-svelte/icons/plus',
       'lucide-svelte/icons/trash-2',
     ],
-    // Exclude Cinder from esbuild dependency pre-bundling: its uncompiled
-    // `.svelte`/`.svelte.ts` sources use Svelte 5 rune syntax that esbuild
-    // cannot parse. Excluding it lets vite-plugin-svelte compile it instead,
-    // which is what fixes the dev-server `js_parse_error` during optimization.
-    exclude: ['@lostgradient/cinder'],
   },
   build: {
     sourcemap: enableCoverageSourcemaps,

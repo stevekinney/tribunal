@@ -7,24 +7,15 @@ This guide explains how tests are organized in Tribunal and which runner to use.
 ```bash
 bun run test                                       # All unit tests across the monorepo (via Turbo)
 bun run --cwd applications/web test:e2e            # Playwright E2E (SvelteKit build + preview)
-bun run --cwd packages/components test:storybook   # Storybook interaction tests
-```
-
-Additional targets:
-
-```bash
-bun run --cwd applications/web test:accessibility  # Playwright accessibility project (Storybook)
 ```
 
 ## Test Types Overview
 
-| What to Test           | Project / Runner       | Naming / Location                                 | Command                                             |
-| ---------------------- | ---------------------- | ------------------------------------------------- | --------------------------------------------------- |
-| Component rendering    | Vitest `client`        | `*.svelte.test.ts`                                | `bun run --cwd applications/web test:unit:client`   |
-| Server logic           | Vitest `server` (node) | `*.test.ts`                                       | `bun run --cwd applications/web test:unit:server`   |
-| User flows             | Playwright E2E         | `applications/web/test/end-to-end/`               | `bun run --cwd applications/web test:e2e`           |
-| Accessibility          | Playwright + Storybook | `applications/web/test/end-to-end/accessibility/` | `bun run --cwd applications/web test:accessibility` |
-| Storybook interactions | Storybook + Vitest     | `packages/components/src/**/*.stories.ts`         | `bun run --cwd packages/components test:storybook`  |
+| What to Test        | Project / Runner       | Naming / Location                   | Command                                           |
+| ------------------- | ---------------------- | ----------------------------------- | ------------------------------------------------- |
+| Component rendering | Vitest `client`        | `*.svelte.test.ts`                  | `bun run --cwd applications/web test:unit:client` |
+| Server logic        | Vitest `server` (node) | `*.test.ts`                         | `bun run --cwd applications/web test:unit:server` |
+| User flows          | Playwright E2E         | `applications/web/test/end-to-end/` | `bun run --cwd applications/web test:e2e`         |
 
 `bun run test` from the repository root runs the Vitest unit suites for every workspace through Turbo. In
 `applications/web`, that target expands to `test:unit:server && test:unit:client`.
@@ -99,16 +90,16 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
 - E2E fixtures: `applications/web/test/end-to-end/fixtures/` (`auth.ts`, `e2e-auth.ts`, `multi-user.ts`).
 - Shared test utilities live in `applications/web/test/` and are imported via the `$testing` alias
   (configured in `applications/web/svelte.config.js`).
-- Cross-package test helpers (database, factories, accessibility) live in `packages/test`.
+- Cross-package test helpers (database, factories, port allocation) live in `packages/test`.
 
 ## Notes
 
 - E2E runs a production build and preview server. The Playwright config
   (`applications/web/playwright.config.ts`) sets `CI=true` and `E2E_TEST_MODE=1` to enable test-only auth
   bypass routes.
-- Both E2E and accessibility runs go through `applications/web/scripts/run-playwright.ts`, which allocates a
-  consistent port for all Playwright workers.
-- Storybook interaction tests are wired in `packages/components/.storybook/vitest.config.ts`.
+- E2E runs go through `applications/web/playwright.config.ts`, which allocates a consistent port for
+  Playwright workers.
+- This checkout has no `packages/components` Storybook suite. Cover UI behavior with web browser component tests and Playwright end-to-end tests.
 
 ## API Key Test Coverage
 

@@ -7,7 +7,6 @@
  *
  * Used by:
  * - MarkdownPreview: Static HTML rendered from markdown
- * - MarkdownEditor: Rich text editor (ProseMirror) content
  *
  * The tight heading scale (1.5rem -> 1rem) is optimized for reviewing
  * LLM-generated plans, avoiding dramatic visual jumps while maintaining
@@ -209,19 +208,15 @@
   /* ========================================
    * GFM TASK LISTS
    *
-   * Handles both:
-   * - CSS :has() for MarkdownPreview (rehype output)
-   * - data-task-list-item attribute for MarkdownEditor (ProseMirror)
+   * Handles MarkdownPreview task-list output.
    * ======================================== */
-  :where(.prose) li:has(> input[type='checkbox']),
-  :where(.prose) li[data-task-list-item] {
+  :where(.prose) li:has(> input[type='checkbox']) {
     list-style: none;
     margin-left: calc(-1 * var(--space-6));
     padding-left: var(--space-6);
   }
 
-  :where(.prose) li > input[type='checkbox'],
-  :where(.prose) li[data-task-list-item] > input {
+  :where(.prose) li > input[type='checkbox'] {
     margin-right: var(--space-2);
   }
 

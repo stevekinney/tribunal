@@ -22,7 +22,7 @@ Tribunal is a SvelteKit web app (`applications/web`) plus shared packages (`pack
 - Avoid adding legacy compatibility layers or migration shims. Prefer updating call sites and removing duplication.
 - Keep pull request title and body aligned with the real diff scope.
 - Follow existing conventions in `.claude/rules/**` and `.claude/skills/**` before introducing new patterns.
-- No Tailwind. Use design tokens from `@tribunal/components/styles` (defined in `packages/components/src/styles/tokens.css`) and scoped styles.
+- No Tailwind. Use Cinder primitives from `@lostgradient/cinder`, Cinder styles from `@lostgradient/cinder/styles/all`, and scoped app styles layered after Cinder where needed.
 - For Svelte component work, validate with Svelte MCP autofixer before finalizing changes.
 
 ## Execution workflow

@@ -15,13 +15,17 @@ describe('/onboarding page', () => {
   });
 
   function currentStepText(): string | null {
-    return document.querySelector('.step[aria-current="step"]')?.textContent?.trim() ?? null;
+    const currentStep = document.querySelector('.cinder-steps__item[aria-current="step"]');
+    const index = currentStep?.querySelector('.cinder-steps__index')?.textContent?.trim();
+    const label = currentStep?.querySelector('.cinder-steps__label')?.textContent?.trim();
+
+    return index && label ? `${index} ${label}` : null;
   }
 
   function completedStepLabels(): string[] {
-    return Array.from(document.querySelectorAll('.step:has(.step-marker-complete)')).map(
-      (element) => element.textContent?.trim() ?? '',
-    );
+    return Array.from(
+      document.querySelectorAll('.cinder-steps__item[data-cinder-state="complete"]'),
+    ).map((element) => element.querySelector('.cinder-steps__label')?.textContent?.trim() ?? '');
   }
 
   it('prompts the user to reconnect when the GitHub token is dead', async () => {

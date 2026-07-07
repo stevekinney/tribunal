@@ -85,6 +85,6 @@ bun run check    # type checking and svelte-check
 bun run lint     # oxlint + eslint
 ```
 
-The web app splits its suites (`test:unit:server`, `test:unit:client`, `test:e2e`,
-`test:accessibility`). See [TESTING.md](TESTING.md) for the environment decision tree,
-fixtures, and where each kind of test lives.
+The web app splits its suites (`test:unit:server`, `test:unit:client`, `test:e2e`). See
+[TESTING.md](TESTING.md) for the environment decision tree, fixtures, and where each kind of test
+lives.

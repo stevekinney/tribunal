@@ -49,6 +49,8 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
 
   await page.goto('/settings');
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await expect(page.getByLabel('Daily cost cap')).toHaveValue('25');
+  await expect(page.getByRole('spinbutton', { name: 'Daily cost cap in US dollars' })).toHaveValue(
+    '25',
+  );
   await expect(page.getByLabel('Reviews enabled')).toBeChecked();
 });

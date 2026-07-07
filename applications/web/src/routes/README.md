@@ -56,7 +56,7 @@ src/routes/
   layout enforces auth and redirects to `/login`).
 - `+server.ts`: API endpoints and OAuth/webhook handlers.
 - `+error.svelte`: Error UI scoped to the route group.
-- `layout.css`: Global layout CSS; imports `@tribunal/components/styles`.
+- `layout.css`: Global layout CSS; imports Cinder styles and app-owned style layers.
 
 ## Parameter Matchers
 
@@ -72,7 +72,7 @@ Match URL params using the shared matchers in `src/params`:
   example `depends('user:api-keys')`), then `invalidate()` the same key after a form
   action mutates that data.
 - Keep authenticated routes inside `(authenticated)` and public content in `(public)`.
-- UI components come from the `@tribunal/components` package.
+- Reusable UI primitives come from `@lostgradient/cinder`; route-specific layout and composition styles stay local to the web app.
 
 ## GitHub webhooks
 

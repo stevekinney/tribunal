@@ -50,7 +50,8 @@
             min={0}
             step={0.01}
             required
-            aria-label="Daily cost cap in US dollars"
+            label="Daily cost cap in US dollars"
+            hideLabel
           >
             {#snippet leading()}<span aria-hidden="true">$</span>{/snippet}
           </Input>

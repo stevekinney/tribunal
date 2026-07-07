@@ -9,7 +9,7 @@
   import { Checkbox } from '@lostgradient/cinder/checkbox';
   import { SearchField } from '@lostgradient/cinder/search-field';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import Check from 'lucide-svelte/icons/check';
+  import { Steps } from '@lostgradient/cinder/steps';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Gavel from 'lucide-svelte/icons/gavel';
   import GitBranch from 'lucide-svelte/icons/git-branch';
@@ -39,34 +39,28 @@
   const selectedCount = $derived(selectedIds.size);
   const canSubmit = $derived(selectedIds.size > 0);
 
-  type StepState = 'complete' | 'current' | 'pending';
-
-  const stepStates = $derived.by<{
-    signIn: StepState;
-    install: StepState;
-    choose: StepState;
-  }>(() => {
+  const currentStep = $derived.by(() => {
     const reason = data.connectReason;
     switch (reason) {
       case 'disconnected':
       case 'unavailable':
-        return { signIn: 'current', install: 'pending', choose: 'pending' };
+        return 0;
       case 'no_installation':
-        return { signIn: 'complete', install: 'current', choose: 'pending' };
+        return 1;
       case 'no_repositories':
       case null:
-        return { signIn: 'complete', install: 'complete', choose: 'current' };
+        return 2;
       default:
         reason satisfies never;
-        return { signIn: 'current', install: 'pending', choose: 'pending' };
+        return 0;
     }
   });
 
-  const onboardingSteps = $derived([
-    { key: 'signIn', label: 'Sign in with GitHub', number: '1', state: stepStates.signIn },
-    { key: 'install', label: 'Install the GitHub App', number: '2', state: stepStates.install },
-    { key: 'choose', label: 'Choose repositories to watch', number: '3', state: stepStates.choose },
-  ]);
+  const onboardingSteps = [
+    { id: 'sign-in', label: 'Sign in with GitHub' },
+    { id: 'install', label: 'Install the GitHub App' },
+    { id: 'choose', label: 'Choose repositories to watch' },
+  ];
 
   // Display label for the connected GitHub account(s).
   const accountLabel = $derived(
@@ -155,32 +149,12 @@
         you stay in your workflow.
       </p>
 
-      <ol class="steps" aria-label="Onboarding steps">
-        {#each onboardingSteps as step (step.key)}
-          <li class="step" aria-current={step.state === 'current' ? 'step' : undefined}>
-            {#if step.state === 'complete'}
-              <span class="step-marker step-marker-complete" aria-label="Complete">
-                <Check size={14} />
-              </span>
-            {:else}
-              <span
-                class={[
-                  'step-marker',
-                  step.state === 'current' ? 'step-marker-current' : undefined,
-                ]}
-                aria-hidden="true"
-              >
-                {step.number}
-              </span>
-            {/if}
-            <span
-              class={['step-label', step.state === 'current' ? 'step-label-current' : undefined]}
-            >
-              {step.label}
-            </span>
-          </li>
-        {/each}
-      </ol>
+      <Steps
+        steps={onboardingSteps}
+        {currentStep}
+        orientation="vertical"
+        label="Onboarding steps"
+      />
 
       <p class="trust-line">
         Tribunal requests read access to code and write access to pull request comments only.
@@ -253,6 +227,7 @@
                 <Checkbox
                   id="repo-{repo.id}"
                   checked={selectedIds.has(repo.id)}
+                  fieldClass="repo-row-checkbox"
                   onValueChange={(next) => {
                     if (next) {
                       selectedIds.add(repo.id);
@@ -338,26 +313,12 @@
 
   /* ── Brand panel ───────────────────────────────────────────────── */
 
-  /*
-   * light-dark() tokens resolve at :root (color-scheme: light) and do NOT
-   * re-evaluate under a data-theme="dark" subtree — verified app-wide (same
-   * workaround as the authenticated sidebar and the login brand panel).
-   * Pin the consumed tokens to their dark-arm values so the panel renders dark.
-   */
-  .brand-panel[data-theme='dark'] {
-    --surface: oklch(20% 0.04 245);
-    --text: oklch(92% 0.02 245);
-    --text-muted: oklch(82% 0.02 245);
-    --text-subtle: oklch(72% 0.02 245);
-    --border-muted: oklch(30% 0.04 245);
-  }
-
   .brand-panel {
     display: flex;
     flex-direction: column;
     padding: var(--space-8) var(--space-6);
-    background: var(--surface);
-    border-inline-end: 1px solid var(--border-muted);
+    background: var(--cinder-surface);
+    border-inline-end: 1px solid var(--cinder-border);
     overflow-y: auto;
   }
 
@@ -383,7 +344,7 @@
   .wordmark-name {
     font-size: var(--text-base);
     font-weight: var(--font-semibold);
-    color: var(--text);
+    color: var(--cinder-text);
   }
 
   .brand-headline {
@@ -391,78 +352,22 @@
     font-weight: var(--font-semibold);
     line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);
-    color: var(--text);
+    color: var(--cinder-text);
     margin: 0 0 var(--space-3);
     text-wrap: balance;
   }
 
   .brand-description {
     font-size: var(--text-sm);
-    color: var(--text-muted);
+    color: var(--cinder-text-muted);
     line-height: var(--leading-normal);
     margin: 0 0 var(--space-8);
-  }
-
-  /* ── Steps ─────────────────────────────────────────────────────── */
-
-  .steps {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .step {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .step-marker {
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: var(--radius-full);
-    border: 1px solid var(--border-muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    font-size: var(--text-xs);
-    font-weight: var(--font-semibold);
-    color: var(--text-subtle);
-    background: transparent;
-  }
-
-  /* Steps 1 & 2: already done — green with a check mark. */
-  .step-marker-complete {
-    background: var(--cinder-success);
-    color: var(--cinder-success-contrast);
-    border-color: transparent;
-  }
-
-  /* Step 3: current — accent-coloured with the step number. */
-  .step-marker-current {
-    background: var(--accent);
-    color: var(--accent-contrast);
-    border-color: transparent;
-  }
-
-  .step-label {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .step-label-current {
-    color: var(--text);
-    font-weight: var(--font-medium);
   }
 
   .trust-line {
     margin-top: auto;
     font-size: var(--text-xs);
-    color: var(--text-subtle);
+    color: var(--cinder-text-muted);
     line-height: var(--leading-normal);
   }
 
@@ -570,7 +475,7 @@
   }
 
   /* Let the Checkbox component sit flush in the flex row. */
-  .repo-row :global(.cinder-checkbox-field) {
+  .repo-row :global(.repo-row-checkbox) {
     flex-shrink: 0;
     align-self: center;
   }

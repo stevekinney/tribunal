@@ -4,6 +4,7 @@
   import { MediaQuery } from 'svelte/reactivity';
   import { Sidebar } from '@lostgradient/cinder/sidebar';
   import { SideNavigation } from '@lostgradient/cinder/side-navigation';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
   import SkipLinks from '$lib/components/skip-links.svelte';
   import UserMenu from '$lib/components/user-menu.svelte';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
@@ -74,7 +75,7 @@
     (breakpoint handled inside the Cinder Sidebar component via MediaQuery).
     data-theme="dark" is forwarded via rest props to the underlying element.
   -->
-  <Sidebar bind:collapsed label="Tribunal" data-theme="dark">
+  <Sidebar bind:collapsed label="Tribunal" class="app-sidebar" data-theme="dark">
     {#snippet brand()}
       <a href="/repositories" class="brand-link">
         <span class="brand-name">Tribunal</span>
@@ -115,7 +116,12 @@
     {#snippet footer()}
       <div class="footer-content">
         <div class={['reviews-status', { paused: !data.reviewsEnabled }]}>
-          <span class="status-dot" aria-hidden="true"></span>
+          <StatusDot
+            status={data.reviewsEnabled ? 'success' : 'neutral'}
+            label={data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}
+            showLabel={false}
+            size="sm"
+          />
           <span class="status-text"
             >{data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}</span
           >
@@ -133,49 +139,8 @@
 </div>
 
 <style>
-  /*
-   * Cinder tokens use light-dark() and inherit their computed value from :root
-   * (color-scheme: light), ignoring color-scheme: dark on this subtree.
-   * Verified in DevTools: removing these overrides produces dark-on-dark text.
-   *
-   * The surface and border tokens are also overridden explicitly so the dark
-   * background is reliable regardless of browser light-dark() re-evaluation
-   * behaviour on the dark subtree.
-   *
-   * Desktop: the <aside> receives data-theme="dark" directly.
-   * Mobile: the <Drawer dialog> receives data-theme="dark" via rest props; the
-   * inner .cinder-sidebar--mobile is a descendant, so [data-theme='dark'] .cinder-sidebar
-   * catches it.
-   */
-  :global(.cinder-sidebar[data-theme='dark']),
-  :global([data-theme='dark'] .cinder-sidebar) {
-    --cinder-text: oklch(92% 0.02 245);
-    --cinder-text-muted: oklch(82% 0.02 245);
-    /* App tokens consumed by the footer .reviews-status pill/dot. Same
-     * light-dark() non-re-resolution applies, so pin their dark arms here or the
-     * status dot resolves to a mid-lightness light arm and falls below 3:1 on
-     * the dark surface (WCAG 1.4.11). Values match tokens.css dark arms. */
-    --success: oklch(78% 0.14 145);
-    --text-subtle: oklch(72% 0.02 245);
-  }
-
-  /* Only the desktop aside needs explicit surface/border overrides. The mobile
-   * .cinder-sidebar--mobile is background: transparent (Drawer owns the surface). */
-  :global(.cinder-sidebar[data-theme='dark']:not(.cinder-sidebar--mobile)) {
-    --cinder-surface: oklch(20% 0.04 245);
-    --cinder-border: oklch(40% 0.05 245);
+  :global(.app-sidebar:not(.cinder-sidebar--mobile)) {
     inline-size: 13.5rem;
-  }
-
-  /*
-   * Mobile drawer panel background. The Drawer renders:
-   *   <dialog data-theme="dark" class="cinder-drawer">
-   *     <div class="cinder-drawer__panel">  ← uses --cinder-surface-raised
-   * Setting the token on the dialog propagates via inheritance.
-   */
-  :global(.cinder-drawer[data-theme='dark']) {
-    --cinder-surface-raised: oklch(26% 0.045 245);
-    --cinder-border: oklch(40% 0.05 245);
   }
 
   /* ============================================================
@@ -226,7 +191,7 @@
       gap: var(--space-3);
       padding-block: var(--space-3);
       padding-inline: var(--space-4);
-      /* Explicit dark surface — same reasoning as .cinder-sidebar overrides above */
+      /* Explicit dark surface that matches the app navigation. */
       background: oklch(20% 0.04 245);
       border-bottom: 1px solid oklch(40% 0.05 245);
       flex-shrink: 0;
@@ -289,20 +254,8 @@
     align-items: center;
     gap: var(--space-1-5);
     min-width: 0;
-    color: var(--text-subtle);
+    color: var(--cinder-text-muted);
     font-size: var(--text-xs);
-  }
-
-  .status-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 999px;
-    background: var(--success);
-    flex: none;
-  }
-
-  .reviews-status.paused .status-dot {
-    background: var(--text-subtle);
   }
 
   .status-text {
@@ -334,35 +287,6 @@
 
   .brand-link:hover {
     opacity: 0.8;
-  }
-
-  /* ============================================================
-   * Footer: status pill + user menu
-   * ============================================================ */
-
-  .reviews-status {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-1-5) var(--space-3);
-    border-radius: var(--radius-md);
-    background: color-mix(in oklch, var(--success), transparent 85%);
-  }
-
-  .reviews-status.paused {
-    background: color-mix(in oklch, var(--text-subtle), transparent 88%);
-  }
-
-  .status-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-full);
-    background: var(--success);
-    flex-shrink: 0;
-  }
-
-  .reviews-status.paused .status-dot {
-    background: var(--text-subtle);
   }
 
   .status-text {

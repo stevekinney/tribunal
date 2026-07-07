@@ -228,7 +228,7 @@ describe('/repositories page', () => {
 
     await page.getByRole('searchbox').fill('review-target');
 
-    // exact:true disambiguates the owner span from the icon button's sr-only
+    // exact:true disambiguates the owner span from the icon button's hidden label
     // "Settings for test-org/…" label (Playwright getByText defaults to substring).
     await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 
@@ -288,7 +288,7 @@ describe('/repositories page', () => {
     });
 
     await page.getByRole('searchbox').fill('review-target');
-    // exact:true disambiguates the owner span from the icon button's sr-only
+    // exact:true disambiguates the owner span from the icon button's hidden label
     // "Settings for test-org/…" label (Playwright getByText defaults to substring).
     await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 

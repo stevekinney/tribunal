@@ -54,7 +54,7 @@
       {#if isGitHubError}
         <Button href="/connect/github" variant="primary" size="sm">
           Connect GitHub
-          {#snippet leadingIcon()}<GithubIcon class="icon-sm" aria-hidden="true" />{/snippet}
+          {#snippet leadingIcon()}<GithubIcon class="cinder-icon-sm" aria-hidden="true" />{/snippet}
         </Button>
         <Button href="/repositories" variant="ghost" size="sm" label="Go to repositories" />
       {:else}

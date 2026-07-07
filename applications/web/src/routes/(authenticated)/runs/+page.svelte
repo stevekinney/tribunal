@@ -8,7 +8,6 @@
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import { Table } from '@lostgradient/cinder/table';
   import { formatDuration } from '$lib/utilities/format-duration';
-  import { goto } from '$app/navigation';
 
   let { data }: PageProps = $props();
 
@@ -52,9 +51,9 @@
           <Table.Body>
             {#each data.runs as run (run.id)}
               {@const statusConfig = getStatusConfig(run.status)}
-              <Table.Row class="run-row" onclick={() => goto(`/runs/${run.id}`)}>
+              <Table.Row>
                 <Table.Cell as="th">
-                  <a href={`/runs/${run.id}`} class="pr-link" onclick={(e) => e.stopPropagation()}>
+                  <a href={`/runs/${run.id}`} class="pr-link">
                     <div class="pr-cell">
                       <span class="pr-title">{run.repositoryOwner}/{run.repositoryName}</span>
                       <span class="pr-ref">#{run.prNumber}</span>
@@ -97,14 +96,6 @@
 
   .table-scroll {
     overflow-x: auto;
-  }
-
-  :global(.run-row) {
-    cursor: pointer;
-  }
-
-  :global(.run-row:hover) {
-    background: var(--cinder-surface-inset);
   }
 
   .pr-link {

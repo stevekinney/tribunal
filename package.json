@@ -44,7 +44,7 @@
     "oxlint": "^1.48.0",
     "prettier": "^3.7.4",
     "prettier-plugin-svelte": "^3.4.1",
-    "svelte": "^5.56.3",
+    "svelte": "5.56.4",
     "turbo": "^2.5.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.50.0",

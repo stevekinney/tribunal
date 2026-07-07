@@ -10,6 +10,7 @@
   import { Link } from '@lostgradient/cinder/link';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
+  import { VisuallyHidden } from '@lostgradient/cinder/visually-hidden';
   import { invalidateAll } from '$app/navigation';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import { Square } from 'lucide-svelte';
@@ -253,7 +254,7 @@
     {#if canStopRun}
       <StatusDot connectionState={eventStreamConnectionState} size="sm" />
     {/if}
-    <span aria-label="Run event stream state" class="sr-only">{connectionLabel}</span>
+    <VisuallyHidden aria-label="Run event stream state">{connectionLabel}</VisuallyHidden>
     {#if run.status === 'superseded'}
       {#if replacementRunHref}
         <Link href={replacementRunHref}>Superseded by a newer run</Link>

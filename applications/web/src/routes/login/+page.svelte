@@ -2,6 +2,7 @@
   import { page } from '$app/state';
   import { Button } from '@lostgradient/cinder/button';
   import { Alert } from '@lostgradient/cinder/alert';
+  import { Steps } from '@lostgradient/cinder/steps';
   import { LOGIN_ERROR_MESSAGES } from '$lib/constants/authorization-providers';
   import { startGithubSignIn } from '$lib/auth/start-github-sign-in';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
@@ -13,6 +14,11 @@
   // User cancellations (*_denied) are informational, not failures.
   const errorVariant = $derived(errorParam?.endsWith('_denied') ? 'info' : 'danger');
   const returnTo = $derived(sanitizeReturnTo(page.url.searchParams.get('returnTo')));
+  const loginSteps = [
+    { id: 'sign-in', label: 'Sign in with GitHub' },
+    { id: 'install', label: 'Install the GitHub App' },
+    { id: 'choose', label: 'Choose repositories to watch' },
+  ];
 
   let loading = $state(false);
 
@@ -49,20 +55,7 @@
         you stay in your workflow.
       </p>
 
-      <ol class="steps" aria-label="Onboarding steps">
-        <li class="step step-current" aria-current="step">
-          <span class="step-marker step-marker-current" aria-hidden="true">1</span>
-          <span class="step-label step-label-current">Sign in with GitHub</span>
-        </li>
-        <li class="step">
-          <span class="step-marker" aria-hidden="true">2</span>
-          <span class="step-label">Install the GitHub App</span>
-        </li>
-        <li class="step">
-          <span class="step-marker" aria-hidden="true">3</span>
-          <span class="step-label">Choose repositories to watch</span>
-        </li>
-      </ol>
+      <Steps steps={loginSteps} currentStep={0} orientation="vertical" label="Onboarding steps" />
 
       <p class="trust-line">
         Tribunal requests read access to code and write access to pull request comments only.
@@ -120,26 +113,12 @@
 
   /* ---- Brand panel ---- */
 
-  /*
-   * light-dark() tokens are resolved at :root (color-scheme: light) and do NOT
-   * re-evaluate under a data-theme="dark" subtree — verified app-wide (the
-   * authenticated sidebar applies the same workaround). Without these explicit
-   * dark-arm overrides the panel renders light. Pin the tokens it consumes.
-   */
-  .brand-panel[data-theme='dark'] {
-    --surface: oklch(20% 0.04 245);
-    --text: oklch(92% 0.02 245);
-    --text-muted: oklch(82% 0.02 245);
-    --text-subtle: oklch(72% 0.02 245);
-    --border-muted: oklch(30% 0.04 245);
-  }
-
   .brand-panel {
     display: flex;
     flex-direction: column;
     padding: var(--space-8) var(--space-6);
-    background: var(--surface);
-    border-inline-end: 1px solid var(--border-muted);
+    background: var(--cinder-surface);
+    border-inline-end: 1px solid var(--cinder-border);
   }
 
   .wordmark {
@@ -164,7 +143,7 @@
   .wordmark-name {
     font-size: var(--text-base);
     font-weight: var(--font-semibold);
-    color: var(--text);
+    color: var(--cinder-text);
   }
 
   .brand-headline {
@@ -172,70 +151,22 @@
     font-weight: var(--font-semibold);
     line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);
-    color: var(--text);
+    color: var(--cinder-text);
     margin: 0 0 var(--space-3);
     text-wrap: balance;
   }
 
   .brand-description {
     font-size: var(--text-sm);
-    color: var(--text-muted);
+    color: var(--cinder-text-muted);
     line-height: var(--leading-normal);
     margin: 0 0 var(--space-8);
-  }
-
-  /* ---- Onboarding steps ---- */
-
-  .steps {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .step {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .step-marker {
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: var(--radius-full);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    font-size: var(--text-xs);
-    font-weight: var(--font-semibold);
-    border: 1px solid var(--border-muted);
-    color: var(--text-subtle);
-    background: transparent;
-  }
-
-  .step-marker-current {
-    background: var(--accent);
-    color: var(--accent-contrast);
-    border-color: transparent;
-  }
-
-  .step-label {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .step-label-current {
-    color: var(--text);
-    font-weight: var(--font-medium);
   }
 
   .trust-line {
     margin-top: auto;
     font-size: var(--text-xs);
-    color: var(--text-subtle);
+    color: var(--cinder-text-muted);
     line-height: var(--leading-normal);
   }
 

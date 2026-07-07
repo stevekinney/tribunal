@@ -26,15 +26,16 @@
 @layer cinder.tokens, cinder.foundation, cinder.components, cinder.utilities,
   utilities, components, tokens;
 
-/* Cinder design system base (populates the cinder.* layers above). */
-@import '@lostgradient/cinder/styles';
+/* Cinder design system bundle (base plus component styles). */
+@import '@lostgradient/cinder/styles/all';
 
 /*
  * Relocated Tribunal design system styles. The app's route markup and wrappers
  * depend on these — Cinder defines none of them:
  *   - tokens: the `--surface`, `--space-*`, `--text-*` ... custom props read by
  *     every route <style> block.
- *   - utilities: `.icon-sm/.icon-md/.icon-lg`, `.sr-only`, `.truncate`.
+ *   - utilities: app-owned text helpers and `.truncate`; Cinder owns
+ *     `.cinder-sr-only` and `.cinder-icon-*`.
  *   - markdown: `.prose` typography (and its scoped element styling) for the
  *     public policy pages and rendered plans.
  */

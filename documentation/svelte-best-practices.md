@@ -504,9 +504,8 @@ Current default (`applications/web/src/app.html`): `<html lang="en">`.
 ### Tooling and tests
 
 - Svelte compiler warnings flag common a11y issues at build time.
-- The accessibility Playwright project runs against Storybook for isolated
-  component testing. Run it from `applications/web`:
-  `bun run scripts/run-playwright.ts --project=accessibility`
+- Browser component tests and Playwright E2E cover interactive UI behavior in the
+  web app. This checkout does not include Storybook.
 
 ## Performance
 
