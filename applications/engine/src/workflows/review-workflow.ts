@@ -168,7 +168,7 @@ export type AgentRunRecord = {
   error?: string;
 };
 
-export type FindingVerificationStatus = 'pending' | 'verified' | 'rejected';
+export type FindingVerificationStatus = 'pending' | 'verified' | 'rejected' | 'merged';
 
 export type FindingRecord = Finding & {
   id: string;
@@ -765,6 +765,7 @@ export class ReviewWorkflowEngine {
     const patchId = computePatchId(diffContext);
     reviewRun.patchId = patchId;
     if (
+      trigger !== 'manual' &&
       this.findLastPostedPatchId(input.repositoryId, input.pullRequestNumber, runId) === patchId
     ) {
       reviewRun.status = 'posted';
@@ -871,7 +872,13 @@ export class ReviewWorkflowEngine {
     // a superseded run never reaches the single posting join — otherwise the
     // stale run and its successor could both post a review for the same PR.
     if (isStoppedReviewRun(reviewRun)) return reviewRun;
-    const findings = [...mergeNearDuplicateFindings(verifiedFindings)].sort(
+    // Verifiers run ~4-way concurrent, so `verifiedFindings` arrives in
+    // completion order, not candidate order — that order is not
+    // reproducible run-to-run. `mergeNearDuplicateFindings`'s greedy,
+    // order-dependent clustering must operate over a deterministic input
+    // order so identical diffs always produce identical merge groupings.
+    const orderedVerifiedFindings = [...verifiedFindings].sort(compareFindingsForPosting);
+    const findings = [...mergeNearDuplicateFindings(orderedVerifiedFindings)].sort(
       compareFindingsForPosting,
     );
     await this.persistMergedFingerprints(reviewRun, findings, verificationCandidates);
@@ -1206,10 +1213,14 @@ export class ReviewWorkflowEngine {
   }
 
   /**
-   * Patches the already-persisted `finding` rows for cross-agent dedup
-   * survivors (T-11) with the fingerprints of the near-duplicates they
-   * absorbed, so Phase 3's carried-forward dedup can match a re-reported
-   * finding against either the surviving fingerprint or any merged-away one.
+   * Patches the already-persisted `finding` rows for cross-agent dedup (T-11):
+   * the surviving finding in each merge group is patched with the
+   * fingerprints of the near-duplicates it absorbed, so Phase 3's
+   * carried-forward dedup can match a re-reported finding against either the
+   * surviving fingerprint or any merged-away one. Every absorbed ("loser")
+   * finding — already persisted as `verified` by `runVerificationStage`
+   * before the merge step ran — is re-persisted as `merged` so it is never
+   * double-counted alongside its survivor as a separate verified finding.
    * A no-op when `mergeNearDuplicateFindings` didn't merge anything.
    */
   private async persistMergedFingerprints(
@@ -1223,19 +1234,41 @@ export class ReviewWorkflowEngine {
     );
     if (survivors.length === 0) return;
 
-    await Promise.all(
-      survivors.map((finding) => {
-        const ownFingerprint = computeCanonicalFindingFingerprint(finding);
-        const candidate = verificationCandidates.find(
-          (entry) => computeCanonicalFindingFingerprint(entry.finding) === ownFingerprint,
-        );
-        if (candidate === undefined) return Promise.resolve();
+    const findCandidateByFingerprint = (fingerprint: string) =>
+      verificationCandidates.find(
+        (entry) => computeCanonicalFindingFingerprint(entry.finding) === fingerprint,
+      );
 
-        return this.persistFinding({
-          ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
-          verificationStatus: 'verified',
-          mergedFingerprints: finding.mergedFingerprints,
-        });
+    await Promise.all(
+      survivors.flatMap((finding) => {
+        const ownFingerprint = computeCanonicalFindingFingerprint(finding);
+        const candidate = findCandidateByFingerprint(ownFingerprint);
+        const writes: Array<Promise<void>> = [];
+        if (candidate !== undefined) {
+          writes.push(
+            this.persistFinding({
+              ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
+              verificationStatus: 'verified',
+              mergedFingerprints: finding.mergedFingerprints,
+            }),
+          );
+        }
+        for (const absorbedFingerprint of finding.mergedFingerprints ?? []) {
+          const absorbedCandidate = findCandidateByFingerprint(absorbedFingerprint);
+          if (absorbedCandidate === undefined) continue;
+          writes.push(
+            this.persistFinding({
+              ...createFindingRecord(
+                reviewRun.userId,
+                absorbedCandidate.agentRunId,
+                absorbedCandidate.finding,
+              ),
+              verificationStatus: 'merged',
+              verificationNote: `Merged into fingerprint ${ownFingerprint}`,
+            }),
+          );
+        }
+        return writes;
       }),
     );
   }

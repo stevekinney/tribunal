@@ -686,11 +686,10 @@ export function parseMaxBudgetUsd(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-// A plain array, not a module-level `const` Set: `main()` is invoked from the
-// very first statement in this file (`if (isMainModule()) await main();`),
-// before any later `const` bindings in this module have left the temporal
-// dead zone. Keep this self-contained so `parseAgentRole` never depends on
-// module-evaluation order.
+// Inline string comparisons rather than a module-level `const` lookup Set:
+// `main()` self-invokes from the very first statement in this file
+// (`if (isMainModule()) await main();`), so keep this function's own logic
+// self-contained rather than reaching for a shared module-level constant.
 export function parseAgentRole(value) {
   return value === 'triage' || value === 'specialist' || value === 'verifier'
     ? value

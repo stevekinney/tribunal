@@ -37,6 +37,9 @@ export const finding = pgTable(
     // Adversarial verification (T-10): only `verified` findings are eligible to
     // post. `verifierAgentRunId` points at the verifier's own `agent_run` row
     // (role `verifier`), which carries the model/cost/usage for that check.
+    // `merged` (T-11): this finding was verified but absorbed as a
+    // near-duplicate into another finding's `mergedFingerprints` — it is
+    // never posted and must not be double-counted alongside its survivor.
     verificationStatus: text('verification_status').notNull().default('pending'),
     verificationNote: text('verification_note'),
     verifierAgentRunId: text('verifier_agent_run_id').references(() => agentRun.id, {
@@ -62,7 +65,7 @@ export const finding = pgTable(
     check('finding_end_line_check', sql`${table.endLine} IS NULL OR ${table.endLine} > 0`),
     check(
       'finding_verification_status_check',
-      sql`${table.verificationStatus} IN ('pending','verified','rejected')`,
+      sql`${table.verificationStatus} IN ('pending','verified','rejected','merged')`,
     ),
   ],
 );

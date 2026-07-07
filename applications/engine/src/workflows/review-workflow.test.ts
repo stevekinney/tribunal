@@ -229,6 +229,8 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed' },
     });
+    const runsAfterFirstReview = ports.sandbox.runAgentCalls.length;
+    expect(runsAfterFirstReview).toBeGreaterThan(0);
 
     // A "Re-review" action arrives for the same (already-completed) head sha,
     // reusing the Check Run id the original review created — the same
@@ -252,6 +254,11 @@ describe('ReviewWorkflowEngine', () => {
       'in_progress',
       'completed',
     ]);
+    // The diff-unchanged skip must never swallow an explicitly requested
+    // manual re-review: the second run has to genuinely re-run agents and
+    // post a second review, not silently reuse the first run's results.
+    expect(ports.sandbox.runAgentCalls.length).toBeGreaterThan(runsAfterFirstReview);
+    expect(ports.github.reviews).toHaveLength(2);
   });
 
   it('persists review and agent run state as the review progresses', async () => {
@@ -1381,10 +1388,16 @@ describe('ReviewWorkflowEngine', () => {
       (row) => row.title === 'Missing authorization check',
     );
     expect(survivorRow?.mergedFingerprints).toHaveLength(1);
+    expect(survivorRow?.verificationStatus).toBe('verified');
     const absorbedRow = ports.state.findings.find(
       (row) => row.title === 'Authorization check missing',
     );
     expect(survivorRow?.mergedFingerprints).toEqual([absorbedRow?.fingerprint]);
+    // The absorbed ("loser") finding must be re-tagged `merged` — it was
+    // already persisted as `verified` by the verification stage before the
+    // merge step ran, and must never be double-counted as a second verified
+    // finding alongside its survivor.
+    expect(absorbedRow?.verificationStatus).toBe('merged');
   });
 
   it('records no merged fingerprints on a finding row when nothing was absorbed', async () => {
