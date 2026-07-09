@@ -7,6 +7,8 @@ const {
   mockListPullRequests,
   mockParsePullRequestFilters,
   mockGetPullRequestOperationalStatus,
+  mockGetRepositoryOperatorDetails,
+  mockListAgents,
   mockDbSelect,
   mockEnv,
 } = vi.hoisted(() => ({
@@ -16,6 +18,8 @@ const {
   mockListPullRequests: vi.fn(),
   mockParsePullRequestFilters: vi.fn(),
   mockGetPullRequestOperationalStatus: vi.fn(),
+  mockGetRepositoryOperatorDetails: vi.fn(),
+  mockListAgents: vi.fn(),
   mockDbSelect: vi.fn(),
   mockEnv: {
     NODE_ENV: 'test' as string,
@@ -50,6 +54,11 @@ vi.mock('$lib/server/github-context', () => ({
 
 vi.mock('$lib/server/repositories', () => ({
   userCanAccessRepository: mockUserCanAccessRepository,
+}));
+
+vi.mock('$lib/server/review/operator', () => ({
+  getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
+  listAgents: mockListAgents,
 }));
 
 vi.mock('$lib/server/database', () => ({
@@ -95,6 +104,8 @@ describe('repository pull requests page load', () => {
       mergeConflictStatus: 'unknown',
       mergeableState: null,
     });
+    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
+    mockListAgents.mockResolvedValue([]);
   });
 
   it('redirects to /login when the user is not authenticated', async () => {

@@ -18,7 +18,11 @@ import type {
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
-import { submitRepositorySettingsForm } from '$lib/server/review/operator';
+import {
+  getRepositoryOperatorDetails,
+  listAgents,
+  submitRepositorySettingsForm,
+} from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
 import type { Actions } from './$types';
 
@@ -147,16 +151,35 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
 
   const filters = parsePullRequestFilters(url);
 
-  const { pullRequests, hasNextPage } = shouldUseE2EPullRequests()
-    ? await listE2EPullRequests(user.id, repository, filters)
-    : await listLivePullRequests(repositoryId, filters);
+  // Legacy data shape: a tab still running the pre-move bundle (whose
+  // component reads `data.repository.review` and `data.agents`) can trigger
+  // an invalidateAll() after a successful legacy `?/saveSettings` submit (see
+  // the `saveSettings` action below). That reruns this load with the OLD
+  // component still mounted, so keep returning the fields it expects until
+  // stale tabs from before the settings-page move are no longer a concern.
+  const [operatorDetails, agents, { pullRequests, hasNextPage }] = await Promise.all([
+    getRepositoryOperatorDetails(user.id, [repositoryId]),
+    listAgents(user.id),
+    shouldUseE2EPullRequests()
+      ? listE2EPullRequests(user.id, repository, filters)
+      : listLivePullRequests(repositoryId, filters),
+  ]);
 
   return {
     repository: {
       id: repository.id,
       owner: repository.owner,
       name: repository.name,
+      review: operatorDetails.get(repository.id) ?? {
+        hasSavedSettings: false,
+        watched: false,
+        ignoreGlobs: [],
+        agents: [],
+        lastRunStatus: null,
+        estimatedCostLast30DaysUsd: 0,
+      },
     },
+    agents,
     pullRequests,
     filters,
     hasNextPage,

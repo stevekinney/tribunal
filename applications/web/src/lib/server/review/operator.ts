@@ -76,7 +76,14 @@ export async function submitRepositorySettingsForm(
   // database result and fail with a false "unavailable" error even though
   // every submitted id is valid.
   const submittedAgentIds = [...new Set(formData.getAll('agentIds').map(String))];
-  const submittedIgnoreGlobs = normalizeIgnoreGlobs(formData.getAll('ignoreGlobs').map(String));
+  // The current settings page submits one already-split ignoreGlobs value per
+  // committed tag, but the restored legacy pull-requests action can still
+  // receive a single newline/comma-delimited value from a stale pre-move
+  // textarea. Split every submitted value with parseIgnoreGlobs before
+  // deduping so both shapes save the same set of individual globs.
+  const submittedIgnoreGlobs = normalizeIgnoreGlobs(
+    formData.getAll('ignoreGlobs').flatMap((value) => parseIgnoreGlobs(String(value))),
+  );
 
   return saveRepositoryWatchSettings(userId, {
     repositoryId,

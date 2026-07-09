@@ -126,7 +126,7 @@
                 checked={selected}
                 label={selected ? `Remove ${agent.slug}` : `Add ${agent.slug}`}
                 hideLabel
-                disabled={!canToggle}
+                disabled={!canToggle || saving}
                 onValueChange={(next) => {
                   const nextSelectedAgentIds = new Set(selectedAgentIds);
                   if (next) {
