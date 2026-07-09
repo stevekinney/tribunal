@@ -20,10 +20,11 @@ import {
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestReviewRun,
   repository as repositoryTable,
   repositoryAgent,
   repositoryReviewSettings,
-  reviewRun,
+  tribunalRun,
   user,
   userReviewSettings,
 } from '@tribunal/database/schema';
@@ -274,22 +275,32 @@ export async function seedOperatorData(
     });
 
   await db
-    .insert(reviewRun)
+    .insert(tribunalRun)
     .values({
       id: reviewRunId,
+      userId: options.userId,
+      repositoryId: options.repositoryId,
+      runKind: 'pull_request_review',
+      status: 'posted',
+      workflowId: `review:pr:${options.repositoryId}:17`,
+      sandboxId: `sandbox-${options.repositoryId}-17`,
+      costEstimateUsd: '0.42',
+      startedAt: now,
+      finishedAt,
+    })
+    .onConflictDoNothing();
+
+  await db
+    .insert(pullRequestReviewRun)
+    .values({
+      runId: reviewRunId,
       userId: options.userId,
       repositoryId: options.repositoryId,
       prNumber: 17,
       headSha: 'e2e-open-sha',
       trigger: 'opened',
-      status: 'posted',
-      workflowId: `review:pr:${options.repositoryId}:17`,
-      sandboxId: `sandbox-${options.repositoryId}-17`,
       checkRunId: 700_017,
       commentsPosted: 1,
-      costEstimateUsd: '0.42',
-      startedAt: now,
-      finishedAt,
     })
     .onConflictDoNothing();
 
@@ -298,7 +309,7 @@ export async function seedOperatorData(
     .values({
       id: agentRunId,
       userId: options.userId,
-      reviewRunId,
+      runId: reviewRunId,
       agentId,
       modelUsed: 'sonnet',
       effortUsed: 'medium',
@@ -381,16 +392,21 @@ export async function applyFakeReviewLifecycleEvent(
   const now = new Date();
   const finishedAt = new Date(now.getTime() + 60_000);
   const existingRunRows = await db
-    .select({ id: reviewRun.id, headSha: reviewRun.headSha, status: reviewRun.status })
-    .from(reviewRun)
+    .select({
+      id: tribunalRun.id,
+      headSha: pullRequestReviewRun.headSha,
+      status: tribunalRun.status,
+    })
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
     .where(
       and(
-        eq(reviewRun.userId, input.userId),
-        eq(reviewRun.repositoryId, input.repositoryId),
-        eq(reviewRun.prNumber, pullRequestNumber),
+        eq(tribunalRun.userId, input.userId),
+        eq(pullRequestReviewRun.repositoryId, input.repositoryId),
+        eq(pullRequestReviewRun.prNumber, pullRequestNumber),
       ),
     )
-    .orderBy(desc(reviewRun.startedAt));
+    .orderBy(desc(tribunalRun.startedAt));
   const existingRunIds = existingRunRows.map((row) => row.id);
   const previousHeadSha = kind === 'synchronize' ? (existingRunRows[0]?.headSha ?? null) : null;
   const responseRunId = kind === 'closed' ? (existingRunRows[0]?.id ?? runId) : runId;
@@ -398,56 +414,66 @@ export async function applyFakeReviewLifecycleEvent(
   if (kind === 'closed') {
     if (existingRunIds.length > 0) {
       await db
-        .update(reviewRun)
+        .update(tribunalRun)
         .set({
           status: 'cancelled',
           finishedAt: now,
           error: 'Pull request closed in fake E2E lifecycle.',
         })
-        .where(inArray(reviewRun.id, existingRunIds));
+        .where(inArray(tribunalRun.id, existingRunIds));
 
       await db
         .update(agentRun)
         .set({ status: 'cancelled', stoppedReason: 'pr_closed' })
-        .where(inArray(agentRun.reviewRunId, existingRunIds));
+        .where(inArray(agentRun.runId, existingRunIds));
     }
   } else {
     if (kind === 'synchronize' && existingRunIds.length > 0) {
       await db
-        .update(reviewRun)
+        .update(tribunalRun)
         .set({ status: 'superseded', finishedAt: now })
-        .where(inArray(reviewRun.id, existingRunIds));
+        .where(inArray(tribunalRun.id, existingRunIds));
     }
 
     const insertedRuns = await db
-      .insert(reviewRun)
+      .insert(tribunalRun)
       .values({
         id: runId,
         userId: input.userId,
         repositoryId: input.repositoryId,
-        prNumber: pullRequestNumber,
-        headSha,
-        prevHeadSha: previousHeadSha,
-        trigger,
+        runKind: 'pull_request_review',
         status: 'posted',
         workflowId: `review:pr:${input.repositoryId}:${pullRequestNumber}`,
         sandboxId: `sandbox-${input.repositoryId}-${pullRequestNumber}`,
-        checkRunId: 710_000 + pullRequestNumber,
-        commentsPosted: 1,
         costEstimateUsd: '0.31',
         startedAt: now,
         finishedAt,
       })
       .onConflictDoNothing()
-      .returning({ id: reviewRun.id });
+      .returning({ id: tribunalRun.id });
 
     if (insertedRuns.length > 0) {
+      await db
+        .insert(pullRequestReviewRun)
+        .values({
+          runId,
+          userId: input.userId,
+          repositoryId: input.repositoryId,
+          prNumber: pullRequestNumber,
+          headSha,
+          prevHeadSha: previousHeadSha,
+          trigger,
+          checkRunId: 710_000 + pullRequestNumber,
+          commentsPosted: 1,
+        })
+        .onConflictDoNothing();
+
       await db
         .insert(agentRun)
         .values({
           id: agentRunId,
           userId: input.userId,
-          reviewRunId: runId,
+          runId,
           agentId,
           modelUsed: 'sonnet',
           effortUsed: 'medium',
@@ -479,19 +505,23 @@ export async function applyFakeReviewLifecycleEvent(
         .onConflictDoNothing();
     } else if (existingRunRows.some((row) => row.id === runId && row.status === 'cancelled')) {
       await db
-        .update(reviewRun)
+        .update(tribunalRun)
         .set({
           status: 'posted',
           error: null,
           finishedAt,
-          commentsPosted: 1,
         })
-        .where(eq(reviewRun.id, runId));
+        .where(eq(tribunalRun.id, runId));
+
+      await db
+        .update(pullRequestReviewRun)
+        .set({ commentsPosted: 1 })
+        .where(eq(pullRequestReviewRun.runId, runId));
 
       await db
         .update(agentRun)
         .set({ status: 'succeeded', stoppedReason: null })
-        .where(eq(agentRun.reviewRunId, runId));
+        .where(eq(agentRun.runId, runId));
     }
   }
 
@@ -506,8 +536,8 @@ export async function applyFakeReviewLifecycleEvent(
 
   const [currentRun] = await db
     .select()
-    .from(reviewRun)
-    .where(eq(reviewRun.id, responseRunId))
+    .from(tribunalRun)
+    .where(eq(tribunalRun.id, responseRunId))
     .limit(1);
 
   return {

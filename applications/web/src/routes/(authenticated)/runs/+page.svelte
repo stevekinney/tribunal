@@ -28,20 +28,30 @@
   function getStatusConfig(status: string): StatusConfig {
     return STATUS_CONFIG[status] ?? DEFAULT_STATUS;
   }
+
+  const SOURCE_LABELS: Record<string, string> = {
+    pull_request_review: 'Pull request review',
+    webhook_event_handler: 'Webhook event',
+  };
+
+  function getSourceLabel(runKind: string): string {
+    return SOURCE_LABELS[runKind] ?? runKind;
+  }
 </script>
 
-<Page title="Runs" subtitle="Recent review runs">
+<Page title="Runs" subtitle="Recent runs">
   {#if data.runs.length === 0}
     <Card>
-      <p class="muted">No review runs have started yet.</p>
+      <p class="muted">No runs have started yet.</p>
     </Card>
   {:else}
     <Card padding="none">
       <div class="table-scroll">
-        <Table aria-label="Review runs" density="comfortable">
+        <Table aria-label="Recent runs" density="comfortable">
           <Table.Header>
             <Table.Row>
               <Table.HeaderCell>Pull request</Table.HeaderCell>
+              <Table.HeaderCell>Source</Table.HeaderCell>
               <Table.HeaderCell>Status</Table.HeaderCell>
               <Table.HeaderCell align="right">Findings</Table.HeaderCell>
               <Table.HeaderCell align="right">Cost</Table.HeaderCell>
@@ -59,6 +69,12 @@
                       <span class="pr-ref">#{run.prNumber}</span>
                     </div>
                   </a>
+                </Table.Cell>
+                <Table.Cell>
+                  <span class="source-cell">
+                    <span>{getSourceLabel(run.runKind)}</span>
+                    <span class="pr-ref">{run.trigger}</span>
+                  </span>
                 </Table.Cell>
                 <Table.Cell>
                   <Badge variant={statusConfig.badge} size="sm">
@@ -113,6 +129,12 @@
   .pr-title {
     font-weight: var(--font-medium);
     color: var(--text);
+  }
+
+  .source-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .pr-ref {
