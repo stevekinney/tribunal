@@ -306,6 +306,24 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
+  it('disables agent toggles while a save is in flight so pending edits cannot race the request', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const toggle = page.getByRole('switch', { name: 'Remove security' });
+    await expect.element(toggle).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    await expect.element(toggle).toBeDisabled();
+
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'success', status: 200, data: { success: true } },
+      update: vi.fn(),
+    });
+
+    await expect.element(toggle).not.toBeDisabled();
+  });
+
   it('calls update({ reset: false }) when the enhanced result succeeds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 

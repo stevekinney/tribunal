@@ -1,8 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockUserCanAccessRepository, mockSubmitRepositorySettingsForm } = vi.hoisted(() => ({
+const {
+  mockUserCanAccessRepository,
+  mockSubmitRepositorySettingsForm,
+  mockGetRepositoryById,
+  mockGetRepositoryOperatorDetails,
+  mockListAgents,
+  mockListPullRequests,
+} = vi.hoisted(() => ({
   mockUserCanAccessRepository: vi.fn(),
   mockSubmitRepositorySettingsForm: vi.fn(() => Promise.resolve({ success: true })),
+  mockGetRepositoryById: vi.fn(),
+  mockGetRepositoryOperatorDetails: vi.fn(() => Promise.resolve(new Map())),
+  mockListAgents: vi.fn<() => Promise<Array<{ id: string; slug: string; enabled: boolean }>>>(() =>
+    Promise.resolve([]),
+  ),
+  mockListPullRequests: vi.fn(() => Promise.resolve({ pullRequests: [] })),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -22,13 +35,15 @@ vi.mock('$lib/server/database', () => ({ db: {} }));
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
 vi.mock('@tribunal/github/repositories/service', () => ({
-  getRepositoryById: vi.fn(),
-  getInstallationForRepository: vi.fn(),
+  getRepositoryById: mockGetRepositoryById,
+  getInstallationForRepository: vi.fn(() =>
+    Promise.resolve({ ok: true, octokit: {}, owner: 'test-org', repo: 'review-target' }),
+  ),
 }));
 
 vi.mock('@tribunal/github/pull-requests/service', () => ({
   getPullRequestOperationalStatus: vi.fn(),
-  listPullRequests: vi.fn(),
+  listPullRequests: mockListPullRequests,
 }));
 
 vi.mock('$lib/server/repositories', () => ({
@@ -36,10 +51,12 @@ vi.mock('$lib/server/repositories', () => ({
 }));
 
 vi.mock('$lib/server/review/operator', () => ({
+  getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
+  listAgents: mockListAgents,
   submitRepositorySettingsForm: mockSubmitRepositorySettingsForm,
 }));
 
-import { actions } from './+page.server';
+import { actions, load } from './+page.server';
 
 describe('/repositories/[repositoryId]/pull-requests legacy saveSettings action', () => {
   beforeEach(() => {
@@ -86,5 +103,78 @@ describe('/repositories/[repositoryId]/pull-requests legacy saveSettings action'
     const result = await actions.saveSettings(event);
 
     expect(result).toMatchObject({ status: 400, data: { error: 'Repository is invalid.' } });
+  });
+});
+
+describe('/repositories/[repositoryId]/pull-requests legacy load data shape', () => {
+  const repository = { id: 101, owner: 'test-org', name: 'review-target' };
+
+  beforeEach(() => {
+    mockUserCanAccessRepository.mockReset();
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockGetRepositoryById.mockReset();
+    mockGetRepositoryById.mockResolvedValue(repository);
+    mockGetRepositoryOperatorDetails.mockReset();
+    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
+    mockListAgents.mockReset();
+    mockListAgents.mockResolvedValue([]);
+    mockListPullRequests.mockReset();
+    mockListPullRequests.mockResolvedValue({ pullRequests: [] });
+  });
+
+  function createLoadEvent() {
+    return {
+      params: { repositoryId: '101' },
+      locals: { user: { id: 1, username: 'test-user' } },
+    } as Parameters<typeof load>[0];
+  }
+
+  it('still returns repository.review and agents for a stale pre-move client', async () => {
+    mockGetRepositoryOperatorDetails.mockResolvedValue(
+      new Map([
+        [
+          101,
+          {
+            hasSavedSettings: true,
+            watched: true,
+            ignoreGlobs: ['dist/**'],
+            agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
+            lastRunStatus: null,
+            estimatedCostLast30DaysUsd: 0,
+          },
+        ],
+      ]),
+    );
+    mockListAgents.mockResolvedValue([{ id: 'agent_1', slug: 'security', enabled: true }]);
+
+    const result = await load(createLoadEvent());
+
+    expect(result).toMatchObject({
+      repository: {
+        id: 101,
+        owner: 'test-org',
+        name: 'review-target',
+        review: {
+          ignoreGlobs: ['dist/**'],
+          agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
+        },
+      },
+      agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
+    });
+  });
+
+  it('defaults review settings when the repository has never been saved', async () => {
+    const result = await load(createLoadEvent());
+
+    expect(result).toMatchObject({
+      repository: {
+        review: {
+          hasSavedSettings: false,
+          watched: false,
+          ignoreGlobs: [],
+          agents: [],
+        },
+      },
+    });
   });
 });
