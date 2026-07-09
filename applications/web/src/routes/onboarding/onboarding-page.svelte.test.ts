@@ -14,18 +14,30 @@ describe('/onboarding page', () => {
     invalidateAll.mockReset();
   });
 
-  function currentStepText(): string | null {
-    const currentStep = document.querySelector('.cinder-steps__item[aria-current="step"]');
-    const index = currentStep?.querySelector('.cinder-steps__index')?.textContent?.trim();
-    const label = currentStep?.querySelector('.cinder-steps__label')?.textContent?.trim();
+  function onboardingStepItems(): HTMLElement[] {
+    const navigation = document.querySelector('nav[aria-label="Onboarding steps"]');
+    expect(navigation).toBeInstanceOf(HTMLElement);
 
-    return index && label ? `${index} ${label}` : null;
+    return Array.from(navigation?.querySelectorAll('li') ?? []);
+  }
+
+  function normalizedStepText(element: Element): string {
+    return element.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+  }
+
+  function currentStepText(): string | null {
+    const currentStep = onboardingStepItems().find(
+      (element) => element.getAttribute('aria-current') === 'step',
+    );
+
+    return currentStep ? normalizedStepText(currentStep) : null;
   }
 
   function completedStepLabels(): string[] {
-    return Array.from(
-      document.querySelectorAll('.cinder-steps__item[data-cinder-state="complete"]'),
-    ).map((element) => element.querySelector('.cinder-steps__label')?.textContent?.trim() ?? '');
+    return onboardingStepItems()
+      .map(normalizedStepText)
+      .filter((text) => text.startsWith('Completed '))
+      .map((text) => text.replace(/^Completed /, ''));
   }
 
   it('prompts the user to reconnect when the GitHub token is dead', async () => {
