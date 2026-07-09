@@ -21,16 +21,36 @@ export interface StoreWebhookEventData {
 }
 
 /**
+ * The subset of a persisted `webhook_event` row that callers -- notably
+ * event listener matching -- actually need. Deliberately excludes `payload`:
+ * that column can be large, and returning it on every webhook insert forces
+ * Postgres to send it back over the wire even though nothing downstream of
+ * `storeWebhookEvent` reads it.
+ */
+export type StoredWebhookEvent = Pick<
+  WebhookEvent,
+  | 'id'
+  | 'repositoryId'
+  | 'eventType'
+  | 'action'
+  | 'ref'
+  | 'prNumber'
+  | 'issueNumber'
+  | 'senderLogin'
+>;
+
+/**
  * Store a webhook event.
  * Automatically creates/updates the repository record if needed.
  *
- * Returns the persisted row (with its generated `id`) so callers -- notably
- * event listener matching -- can reference it without a second read.
+ * Returns the persisted row's identifying/matching fields (not the full row
+ * -- see {@link StoredWebhookEvent}) so callers can reference it without a
+ * second read.
  */
 export async function storeWebhookEvent(
   context: GithubServiceContext,
   data: StoreWebhookEventData,
-): Promise<WebhookEvent> {
+): Promise<StoredWebhookEvent> {
   // Ensure repository exists (creates if not, updates metadata if changed)
   await getOrCreateRepository(
     context,
@@ -59,7 +79,16 @@ export async function storeWebhookEvent(
       receivedAt: new Date(),
       createdAt: new Date(),
     })
-    .returning();
+    .returning({
+      id: webhookEvent.id,
+      repositoryId: webhookEvent.repositoryId,
+      eventType: webhookEvent.eventType,
+      action: webhookEvent.action,
+      ref: webhookEvent.ref,
+      prNumber: webhookEvent.prNumber,
+      issueNumber: webhookEvent.issueNumber,
+      senderLogin: webhookEvent.senderLogin,
+    });
 
   return row;
 }

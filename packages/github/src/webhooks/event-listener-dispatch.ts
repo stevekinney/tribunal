@@ -40,8 +40,18 @@ import { getRepositoryById } from '../repositories/service.js';
 import type { GithubServiceContext } from '../context.js';
 import { buildEventListenerPrompt } from './event-listener-prompt.js';
 
-/** Bounds how many deliveries a single drain call will attempt. */
+/** Bounds how many deliveries a single drain round will attempt. */
 export const DEFAULT_EVENT_LISTENER_DRAIN_LIMIT = 10;
+
+/**
+ * Bounds how many `DEFAULT_EVENT_LISTENER_DRAIN_LIMIT`-sized rounds a single
+ * `drainEventListenerDeliveries` call will run. A backlog larger than one
+ * round (a burst of webhooks, or rows stranded by an earlier interrupted
+ * drain) is drained within the same call instead of silently capping at the
+ * first batch and waiting for another webhook that may never arrive for
+ * this repository.
+ */
+export const DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS = 5;
 
 export interface DrainEventListenerDeliveriesResult {
   attempted: number;
@@ -62,9 +72,8 @@ export async function drainEventListenerDeliveries(
   context: GithubServiceContext,
   repositoryId: number,
   limit: number = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT,
+  maxRounds: number = DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS,
 ): Promise<DrainEventListenerDeliveriesResult> {
-  const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit);
-
   const result: DrainEventListenerDeliveriesResult = {
     attempted: 0,
     dispatched: 0,
@@ -72,28 +81,38 @@ export async function drainEventListenerDeliveries(
     failed: 0,
   };
 
-  for (const candidate of candidates) {
-    const claimed = await claimEventListenerDelivery(context.db, candidate.delivery.id);
-    if (!claimed) continue; // Lost the race to another concurrent claimer, or already terminal.
+  for (let round = 0; round < maxRounds; round += 1) {
+    const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit);
+    if (candidates.length === 0) break;
 
-    result.attempted += 1;
+    for (const candidate of candidates) {
+      const claimed = await claimEventListenerDelivery(context.db, candidate.delivery.id);
+      if (!claimed) continue; // Lost the race to another concurrent claimer, or already terminal.
 
-    try {
-      // dispatchClaimedDelivery re-reads listener/agent state itself rather
-      // than trusting `candidate`, which was read before this claim and may
-      // be stale by the time we get here.
-      const runId = await dispatchClaimedDelivery(context, claimed.id, candidate.listenerId);
-      await markEventListenerDeliverySucceeded(context.db, claimed.id, runId);
-      result.dispatched += 1;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await markEventListenerDeliveryFailed(context.db, claimed.id, message);
-      if (error instanceof EventListenerDisabledError) {
-        result.skippedDisabled += 1;
-      } else {
-        result.failed += 1;
+      result.attempted += 1;
+
+      try {
+        // dispatchClaimedDelivery re-reads listener/agent state itself rather
+        // than trusting `candidate`, which was read before this claim and may
+        // be stale by the time we get here.
+        const runId = await dispatchClaimedDelivery(context, claimed.id, candidate.listenerId);
+        await markEventListenerDeliverySucceeded(context.db, claimed.id, runId);
+        result.dispatched += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await markEventListenerDeliveryFailed(context.db, claimed.id, message);
+        if (error instanceof EventListenerDisabledError) {
+          result.skippedDisabled += 1;
+        } else {
+          result.failed += 1;
+        }
       }
     }
+
+    // A short round (fewer candidates than `limit`) means the repository is
+    // drained for now -- stop instead of spending another round-trip that
+    // would just find zero rows.
+    if (candidates.length < limit) break;
   }
 
   return result;

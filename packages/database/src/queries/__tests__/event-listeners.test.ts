@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
 import { eq } from '../../operators';
-import { agent, repository as repositoryTable, repositoryEventListener } from '../../schema';
+import {
+  agent,
+  githubInstallationRepository,
+  repository as repositoryTable,
+  repositoryEventListener,
+} from '../../schema';
 import {
   createEventListener,
   deleteEventListener,
@@ -48,6 +53,29 @@ async function insertAgent(input: {
   return row;
 }
 
+/**
+ * Link a user's active GitHub installation to a repository so
+ * `listEnabledListenersForRepositoryEventType`'s active-ownership join
+ * matches. Without this, a listener's owning user has no installation
+ * access to the repository and the query correctly excludes it.
+ */
+async function grantActiveInstallationAccess(
+  userId: number,
+  repositoryId: number,
+  options: { installationStatus?: 'active' | 'suspended'; linkActive?: boolean } = {},
+) {
+  const factories = createFactories(testDatabase.db);
+  const installation = await factories.githubInstallation.createForUser(userId, {
+    status: options.installationStatus ?? 'active',
+  });
+  await testDatabase.db.insert(githubInstallationRepository).values({
+    installationId: installation.installationId,
+    repositoryId,
+    isActive: options.linkActive ?? true,
+  });
+  return installation;
+}
+
 async function createFixture() {
   const factories = createFactories(testDatabase.db);
   const user = await factories.user.create();
@@ -55,6 +83,8 @@ async function createFixture() {
   const repository = await factories.repository.create({ id: 5001 });
   const otherRepository = await factories.repository.create({ id: 5002 });
   const testAgent = await insertAgent({ id: 'agent_1', userId: user.id });
+  await grantActiveInstallationAccess(user.id, repository.id);
+  await grantActiveInstallationAccess(user.id, otherRepository.id);
   return { user, otherUser, repository, otherRepository, testAgent };
 }
 
@@ -356,6 +386,81 @@ describe('listEnabledListenersForRepositoryEventType', () => {
 
     expect(matched.map((row) => row.id)).toEqual([matching.id]);
     expect(matched.map((row) => row.id)).not.toContain(disabled.id);
+  });
+
+  it('does not match a listener whose owner has no active installation access to the repository', async () => {
+    const { user, repository, testAgent } = await createFixture();
+
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Stale owner',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+
+    // Simulate the installation being removed (e.g. uninstalled, or the
+    // repository transferred/reinstalled under a different account): the
+    // repository row survives, but the user's installation link is gone.
+    await testDatabase.db
+      .delete(githubInstallationRepository)
+      .where(eq(githubInstallationRepository.repositoryId, repository.id));
+
+    const matched = await listEnabledListenersForRepositoryEventType(
+      testDatabase.db,
+      repository.id,
+      'issues',
+    );
+
+    expect(matched.map((row) => row.id)).not.toContain(listener.id);
+  });
+
+  it('does not match a listener whose installation link is inactive', async () => {
+    const { user, testAgent } = await createFixture();
+    const factories = createFactories(testDatabase.db);
+    const repository = await factories.repository.create({ id: 5003 });
+    await grantActiveInstallationAccess(user.id, repository.id, { linkActive: false });
+
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Removed from installation',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+
+    const matched = await listEnabledListenersForRepositoryEventType(
+      testDatabase.db,
+      repository.id,
+      'issues',
+    );
+
+    expect(matched.map((row) => row.id)).not.toContain(listener.id);
+  });
+
+  it('does not match a listener whose installation is suspended', async () => {
+    const { user, testAgent } = await createFixture();
+    const factories = createFactories(testDatabase.db);
+    const repository = await factories.repository.create({ id: 5004 });
+    await grantActiveInstallationAccess(user.id, repository.id, {
+      installationStatus: 'suspended',
+    });
+
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Suspended installation',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+
+    const matched = await listEnabledListenersForRepositoryEventType(
+      testDatabase.db,
+      repository.id,
+      'issues',
+    );
+
+    expect(matched.map((row) => row.id)).not.toContain(listener.id);
   });
 });
 

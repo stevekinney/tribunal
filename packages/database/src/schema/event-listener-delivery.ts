@@ -49,6 +49,7 @@ export const eventListenerDelivery = pgTable(
     index('event_listener_delivery_run_idx').on(table.runId),
     index('event_listener_delivery_status_idx').on(table.status),
     index('event_listener_delivery_listener_status_idx').on(table.listenerId, table.status),
+    index('event_listener_delivery_webhook_event_idx').on(table.webhookEventId),
     check(
       'event_listener_delivery_status_check',
       sql`${table.status} IN ('pending','running','succeeded','failed','retryable','abandoned')`,

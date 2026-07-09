@@ -20,6 +20,7 @@ export {
 } from './event-listener-filters';
 export {
   MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
+  STALE_RUNNING_DELIVERY_TIMEOUT_MS,
   claimEventListenerDelivery,
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,

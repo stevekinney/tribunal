@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from '../operators';
 import type { Database } from '../connection';
 import { agent } from '../schema/agent';
+import { githubInstallation } from '../schema/github-installation';
+import { githubInstallationRepository } from '../schema/github-installation-repository';
 import {
   repositoryEventListener,
   type NewRepositoryEventListener,
@@ -200,6 +202,18 @@ export async function listEventListenersForRepository(
  * webhook dispatch runs without a request-scoped user, so matching considers
  * every enabled listener the repository's owners have configured.
  *
+ * Scoped to listeners whose owning user still has *active* installation
+ * access to the repository (an active `github_installation` row joined
+ * through an active `github_installation_repository` link, both owned by
+ * the listener's `userId`). Installation deletion only removes the
+ * `github_installation`/link rows -- the `repository` row (and any listener
+ * referencing it) survives, since other installations may still reference
+ * the same GitHub repository. Without this check, a listener created by a
+ * user who has since lost access (or whose installation was removed and the
+ * repository later reinstalled by a different Tribunal user) would still
+ * match and dispatch that other user's agent against a repository the
+ * original listener owner no longer has access to.
+ *
  * Also excludes listeners whose agent is currently disabled. This is a
  * match-time optimization only, not the authoritative check -- the agent
  * (or the listener) can still be disabled between matching and the dispatch
@@ -215,11 +229,24 @@ export async function listEnabledListenersForRepositoryEventType(
     .select({ listener: repositoryEventListener })
     .from(repositoryEventListener)
     .innerJoin(agent, eq(repositoryEventListener.agentId, agent.id))
+    .innerJoin(
+      githubInstallationRepository,
+      eq(githubInstallationRepository.repositoryId, repositoryEventListener.repositoryId),
+    )
+    .innerJoin(
+      githubInstallation,
+      and(
+        eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.userId, repositoryEventListener.userId),
+      ),
+    )
     .where(
       and(
         eq(repositoryEventListener.repositoryId, repositoryId),
         eq(repositoryEventListener.eventType, eventType),
         eq(repositoryEventListener.enabled, true),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.isActive, true),
         eq(agent.enabled, true),
       ),
     );

@@ -85,16 +85,34 @@ export function parseEventListenerFilters(filtersJson: string): EventListenerFil
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return null;
     }
+
+    const parsedRecord = parsed as Record<string, unknown>;
+
+    // Any key outside the supported set (or a value of the wrong shape for
+    // a supported key) means this row is corrupt or was written by code
+    // this parser doesn't understand -- fail closed by returning null
+    // rather than silently dropping the unknown key and returning `{}`,
+    // which the matcher treats as "no filters" (matches everything).
+    for (const [key, value] of Object.entries(parsedRecord)) {
+      if (value === undefined || value === null) continue;
+      if (!SUPPORTED_FILTER_KEYS.has(key as keyof EventListenerFilters)) {
+        return null;
+      }
+      if (key === 'prNumber' || key === 'issueNumber') {
+        if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+      } else if (typeof value !== 'string' || value.length === 0) {
+        return null;
+      }
+    }
+
     const result: EventListenerFilters = {};
     for (const key of SUPPORTED_FILTER_KEYS) {
-      const value = (parsed as Record<string, unknown>)[key];
+      const value = parsedRecord[key];
       if (value === undefined || value === null) continue;
       if (key === 'prNumber' || key === 'issueNumber') {
-        if (typeof value === 'number' && Number.isInteger(value)) {
-          result[key] = value;
-        }
-      } else if (typeof value === 'string' && value.length > 0) {
-        result[key] = value;
+        result[key] = value as number;
+      } else {
+        result[key] = value as string;
       }
     }
     return result;
