@@ -91,7 +91,7 @@ async function listE2EPullRequests(
         draft: false,
         mergedAt: null,
         htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
-        headRef: run.headSha,
+        headRef: `e2e/pr-${run.prNumber}`,
         headSha: run.headSha,
         baseRef: 'main',
         updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),

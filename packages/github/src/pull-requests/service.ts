@@ -283,11 +283,7 @@ export async function listPullRequests(
     return {
       pullRequests: response.data.map(transformPullRequestListItem),
       filters,
-      hasNextPage: resolveHasNextPage(
-        response.headers?.link,
-        response.data.length,
-        filters.perPage,
-      ),
+      hasNextPage: resolveHasNextPage(response.headers?.link),
     };
   };
 

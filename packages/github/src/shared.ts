@@ -80,18 +80,19 @@ export function encodeFilterValue(value: string): string {
 /**
  * Determine whether another page of REST list results exists.
  *
- * Prefers GitHub's `Link` response header (`rel="next"`), which is exact.
- * Falls back to a full-page row-count heuristic when the header is missing
- * (some environments/mocks strip response headers), which can be wrong only
- * when the final page happens to contain exactly `perPage` rows.
+ * Relies entirely on GitHub's `Link` response header (`rel="next"`). Per
+ * GitHub's pagination docs, the header is included whenever another page
+ * exists and omitted otherwise — including when the current page happens to
+ * contain exactly `perPage` rows but is the last page. A row-count fallback
+ * (`rowCount >= perPage`) would misreport `hasNextPage: true` in that exact
+ * case, so no such fallback is used: a missing header means there is no next
+ * page.
+ *
+ * @see https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api#using-link-headers
  */
-export function resolveHasNextPage(
-  linkHeader: string | undefined,
-  rowCount: number,
-  perPage: number,
-): boolean {
-  if (linkHeader) {
-    return /<[^>]+>;\s*rel="next"/.test(linkHeader);
+export function resolveHasNextPage(linkHeader: string | undefined): boolean {
+  if (!linkHeader) {
+    return false;
   }
-  return rowCount >= perPage;
+  return /<[^>]+>;\s*rel="next"/.test(linkHeader);
 }

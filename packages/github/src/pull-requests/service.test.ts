@@ -433,8 +433,12 @@ describe('listPullRequests', () => {
     expect(result.hasNextPage).toBe(false);
   });
 
-  it('falls back to a full-page row-count heuristic when the Link header is missing', async () => {
+  it('reports hasNextPage false for a full page when the Link header is missing', async () => {
     expect.assertions(2);
+    // GitHub omits the Link header entirely when the current page is the
+    // last page, even if it happens to contain exactly `perPage` rows. A
+    // row-count fallback would misreport hasNextPage: true in this case, so
+    // the absence of a Link header must mean there is no next page.
     const fullPage = Array.from({ length: defaultFilters.perPage }, (_, index) => ({
       number: index + 1,
       title: `PR ${index + 1}`,
@@ -457,7 +461,7 @@ describe('listPullRequests', () => {
     const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
 
     expect(result.pullRequests).toHaveLength(defaultFilters.perPage);
-    expect(result.hasNextPage).toBe(true);
+    expect(result.hasNextPage).toBe(false);
   });
 
   it('caches results keyed by repository id and filters, and reuses the cached hasNextPage', async () => {

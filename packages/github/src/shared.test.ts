@@ -5,18 +5,20 @@ describe('resolveHasNextPage', () => {
   it('returns true when the Link header has a next relation', () => {
     expect.assertions(1);
     const linkHeader = '<https://api.github.com/resource?page=2>; rel="next"';
-    expect(resolveHasNextPage(linkHeader, 0, 30)).toBe(true);
+    expect(resolveHasNextPage(linkHeader)).toBe(true);
   });
 
   it('returns false when the Link header has only a prev relation', () => {
     expect.assertions(1);
     const linkHeader = '<https://api.github.com/resource?page=1>; rel="prev"';
-    expect(resolveHasNextPage(linkHeader, 10, 30)).toBe(false);
+    expect(resolveHasNextPage(linkHeader)).toBe(false);
   });
 
-  it('falls back to a full-page row-count heuristic when the Link header is missing', () => {
-    expect.assertions(2);
-    expect(resolveHasNextPage(undefined, 30, 30)).toBe(true);
-    expect(resolveHasNextPage(undefined, 29, 30)).toBe(false);
+  it('returns false when the Link header is missing, even on a full page', () => {
+    expect.assertions(1);
+    // GitHub omits the Link header entirely when the current page is the
+    // last one, including when it happens to contain exactly `perPage` rows.
+    // A row-count fallback would misreport `hasNextPage: true` here.
+    expect(resolveHasNextPage(undefined)).toBe(false);
   });
 });

@@ -272,7 +272,7 @@ describe('repository pull requests page load (E2E test mode)', () => {
   });
 
   it('synthesizes pull requests from review_run rows when E2E test mode is enabled', async () => {
-    expect.assertions(3);
+    expect.assertions(5);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockDbSelect.mockReturnValue({
@@ -293,13 +293,17 @@ describe('repository pull requests page load (E2E test mode)', () => {
     });
 
     const result = (await runLoad()) as {
-      pullRequests: Array<{ number: number }>;
+      pullRequests: Array<{ number: number; headRef: string; headSha: string }>;
       hasNextPage: boolean;
     };
 
     expect(result.pullRequests).toHaveLength(1);
     expect(result.pullRequests[0].number).toBe(7);
     expect(result.hasNextPage).toBe(false);
+    // headRef must be a branch-like placeholder distinct from headSha, so
+    // the UI doesn't show a commit SHA where it expects a branch name.
+    expect(result.pullRequests[0].headRef).not.toBe(result.pullRequests[0].headSha);
+    expect(result.pullRequests[0].headSha).toBe('abc123');
   });
 
   it('does not call GitHub when E2E test mode is enabled', async () => {

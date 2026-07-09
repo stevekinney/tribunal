@@ -165,6 +165,29 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
     await expect.element(browserPage.getByRole('navigation', { name: 'Pagination' })).toBeVisible();
   });
 
+  it('navigates to the next page and preserves other filters when Next is clicked', async () => {
+    mocks.svelteKitPage.url = new URL('http://localhost/repositories/1/pull-requests?pr_base=main');
+    render(PullRequestsPage, {
+      data: {
+        ...baseData,
+        pullRequests: [samplePullRequest],
+        filters: { ...baseData.filters, base: 'main' },
+        hasNextPage: true,
+      },
+    });
+
+    await browserPage.getByRole('button', { name: 'Go to next page' }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('pr_page=2'),
+      expect.objectContaining({ invalidateAll: true }),
+    );
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('pr_base=main'),
+      expect.anything(),
+    );
+  });
+
   it('does not show label, assignee, creator, mentioned, or free-text filter controls', async () => {
     render(PullRequestsPage, { data: { ...baseData, pullRequests: [samplePullRequest] } });
 
