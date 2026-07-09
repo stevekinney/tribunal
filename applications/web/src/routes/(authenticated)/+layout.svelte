@@ -196,16 +196,6 @@
       border-bottom: 1px solid oklch(40% 0.05 245);
       flex-shrink: 0;
     }
-
-    /*
-     * SSR flash guard: on the first server-rendered paint the Sidebar component
-     * renders as a desktop <aside> because its MediaQuery fallback is false.
-     * Hide the aside on narrow viewports so it does not appear briefly as a
-     * 256px block above main before hydration switches it to a Drawer.
-     */
-    :global(.cinder-sidebar:not(.cinder-sidebar--mobile)) {
-      display: none;
-    }
   }
 
   .mobile-menu-button {
