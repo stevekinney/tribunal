@@ -357,6 +357,35 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         expect.stringContaining('action-item-counts'),
       );
     });
+
+    it('invalidates the branch CI cache using check_run.check_suite.head_branch', async () => {
+      const data = makePayload({
+        action: 'completed',
+        check_run: {
+          head_sha: 'abc123sha',
+          check_suite: { head_branch: 'main' },
+        },
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      );
+    });
+
+    it('does not attempt branch CI invalidation when head_branch is missing', async () => {
+      const data = makePayload({
+        action: 'completed',
+        check_run: { head_sha: 'def456sha' },
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
+
+      expect(context.cache.deleteCache).not.toHaveBeenCalledWith(
+        expect.stringContaining('branch:'),
+      );
+    });
   });
 
   describe('check_suite events', () => {
@@ -373,6 +402,22 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       expect(context.cache.deleteCache).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'suite789sha'),
+      );
+    });
+
+    it('invalidates the branch CI cache using check_suite.head_branch', async () => {
+      const data = makePayload({
+        action: 'completed',
+        check_suite: {
+          head_sha: 'suite789sha',
+          head_branch: 'feature/phase-two',
+        },
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'check_suite', 'completed', data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/phase-two'),
       );
     });
   });

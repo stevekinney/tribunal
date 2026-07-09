@@ -217,10 +217,15 @@ async function invalidatePullRequestReviewRelatedCache(
 }
 
 /**
- * Invalidate failing-check count caches when check runs/suites complete.
+ * Invalidate failing-check count and branch-CI caches when check runs/suites
+ * complete.
  *
  * Note: check_run and check_suite events include a head_sha that keys the
- * cached failing-check counts.
+ * cached failing-check counts, and a head_branch that keys the cached
+ * branch CI rollup (`getDefaultBranchCiStatus`) — without this, a check
+ * that completes on a branch's current commit (moving pending ->
+ * failing/passing) would otherwise keep serving the previous rollup until
+ * the 30s TTL expires.
  */
 async function invalidateCheckRelatedCache(
   context: GithubServiceContext,
@@ -228,25 +233,49 @@ async function invalidateCheckRelatedCache(
   repo: string,
   data: WebhookPayload,
 ): Promise<void> {
-  // completed events expose a typed head_sha; narrow with guards. Other check
-  // actions have no listed guard, so fall back to structural access.
-  // check_run events have head_sha at data.check_run.head_sha
-  // check_suite events have head_sha at data.check_suite.head_sha
+  // completed events expose a typed head_sha/head_branch; narrow with
+  // guards. Other check actions have no listed guard, so fall back to
+  // structural access.
+  // check_run events have head_sha/check_suite.head_branch at data.check_run
+  // check_suite events have head_sha/head_branch at data.check_suite
   let headSha: string | undefined;
+  let headBranch: string | null | undefined;
   if (isCheckRunCompletedEvent(data)) {
     headSha = data.check_run.head_sha;
+    headBranch = data.check_run.check_suite.head_branch;
   } else if (isCheckSuiteCompletedEvent(data)) {
     headSha = data.check_suite.head_sha;
+    headBranch = data.check_suite.head_branch;
   } else {
-    const checkRun = data.check_run as { head_sha?: string } | undefined;
-    const checkSuite = data.check_suite as { head_sha?: string } | undefined;
+    const checkRun = data.check_run as
+      | { head_sha?: string; check_suite?: { head_branch?: string | null } }
+      | undefined;
+    const checkSuite = data.check_suite as
+      | { head_sha?: string; head_branch?: string | null }
+      | undefined;
     headSha = checkRun?.head_sha ?? checkSuite?.head_sha;
+    headBranch = checkRun?.check_suite?.head_branch ?? checkSuite?.head_branch;
   }
+
+  const invalidations: Promise<unknown>[] = [];
 
   // Invalidate cached failing check counts for this commit SHA
   if (headSha) {
-    await context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha));
+    invalidations.push(
+      context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha)),
+    );
   }
+
+  // Invalidate the cached branch CI rollup for whatever branch these checks
+  // ran on. Correct regardless of whether it's the repository's default
+  // branch, since the cache key is keyed by branch name, not "is default".
+  if (headBranch) {
+    invalidations.push(
+      context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, headBranch)),
+    );
+  }
+
+  await Promise.all(invalidations);
 }
 
 async function invalidateInstallationRepositoriesCache(

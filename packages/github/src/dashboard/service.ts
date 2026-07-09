@@ -206,17 +206,17 @@ async function readDefaultBranchStatus(
     return 'unknown';
   }
 
-  if (!budget.canSpend(1)) {
-    return 'unknown';
-  }
-
   try {
-    // Budget accounting happens per-page inside `getDefaultBranchCiStatus`
-    // (via the shared check-run paginator), not as a flat one-unit charge
-    // here — a repository with a large CI matrix can otherwise consume many
-    // live GitHub requests while this budget records only one, defeating
-    // the fan-out cap. On a cache hit no live call is made and no budget is
-    // spent at all.
+    // No budget pre-check here: a cached, fresh envelope for this branch
+    // costs nothing to serve even when the budget is otherwise exhausted,
+    // and denying the cache lookup up front would degrade an
+    // already-available answer to `unknown` for no reason. Budget
+    // accounting happens per-page inside `getDefaultBranchCiStatus` (via the
+    // shared check-run paginator) — on a cache miss, its own
+    // `budget.canSpend(1)` guard still stops the first live fetch and
+    // reports `unknown` rather than spending anything. A repository with a
+    // large CI matrix otherwise consumes many live GitHub requests while
+    // this budget records only one, defeating the fan-out cap.
     const ciState = await getDefaultBranchCiStatus(
       context,
       octokit,

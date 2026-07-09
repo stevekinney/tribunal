@@ -643,7 +643,7 @@ describe('getPullRequestOperationalStatus', () => {
     expect(context.cache.setCache).toHaveBeenCalledWith(
       expect.stringContaining('checks:actual-head-sha'),
       expect.objectContaining({
-        value: { ciStatus: 'failing', checkCount: 101, failingCount: 1 },
+        value: { ciStatus: 'failing', checkCount: 101, failingCount: 1, truncated: false },
       }),
       30,
     );

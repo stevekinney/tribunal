@@ -21,12 +21,19 @@ function createMockContext(overrides?: Partial<GithubServiceContext>): GithubSer
 
 function createMockOctokit(
   pages: Array<{ total_count: number; check_runs: Array<Record<string, unknown>> }>,
+  combinedStatus: { total_count: number; state: 'success' | 'failure' | 'error' | 'pending' } = {
+    total_count: 0,
+    state: 'pending',
+  },
 ) {
   const listForRef = vi.fn();
   for (const page of pages) {
     listForRef.mockResolvedValueOnce({ data: page });
   }
-  return { rest: { checks: { listForRef } } } as never;
+  const getCombinedStatusForRef = vi.fn().mockResolvedValue({ data: combinedStatus });
+  return {
+    rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+  } as never;
 }
 
 describe('mapMergeableState', () => {
@@ -90,7 +97,12 @@ describe('getDefaultBranchCiStatus', () => {
     const listForRef = vi.fn().mockResolvedValue({
       data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
     });
-    const octokit = { rest: { checks: { listForRef } } } as never;
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
 
     const result = await getDefaultBranchCiStatus(
       undefined,
@@ -155,7 +167,12 @@ describe('getDefaultBranchCiStatus', () => {
     const listForRef = vi.fn().mockResolvedValue({
       data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'failure' }] },
     });
-    const octokit = { rest: { checks: { listForRef } } } as never;
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
 
     // The default branch advanced to 'new-sha' since the cached entry (for
     // 'old-sha') was stored — the stale commit's rollup must not be reused.
@@ -172,7 +189,7 @@ describe('getDefaultBranchCiStatus', () => {
     expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'new-sha' }));
   });
 
-  it('spends one budget unit per check-run page fetched, not one per call', async () => {
+  it('spends one budget unit per check-run page fetched, plus one for the combined status read', async () => {
     expect.assertions(3);
     const page1 = Array.from({ length: 100 }, () => ({
       status: 'completed',
@@ -196,8 +213,9 @@ describe('getDefaultBranchCiStatus', () => {
     );
 
     expect(result.ciStatus).toBe('passing');
-    expect(budget.spend).toHaveBeenCalledTimes(2);
-    expect(budget.canSpend).toHaveBeenCalledTimes(2);
+    // 2 check-run pages + 1 combined-status read.
+    expect(budget.spend).toHaveBeenCalledTimes(3);
+    expect(budget.canSpend).toHaveBeenCalledTimes(3);
   });
 
   it('reports unknown instead of a guessed passing status when the budget runs out mid-pagination', async () => {
@@ -228,5 +246,118 @@ describe('getDefaultBranchCiStatus', () => {
 
     expect(result.ciStatus).toBe('unknown');
     expect(budget.spend).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report pending when there are zero commit-status contexts', async () => {
+    // getCombinedStatusForRef reports an aggregate state of "pending" even
+    // when total_count is 0 (no legacy commit statuses at all) — a
+    // check-run-only repository must not be dragged down to "pending" by
+    // that empty-set artifact.
+    expect.assertions(1);
+    const octokit = createMockOctokit(
+      [{ total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] }],
+      { total_count: 0, state: 'pending' },
+    );
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+
+    expect(result.ciStatus).toBe('passing');
+  });
+
+  it('reports failing when a commit-status context is failing even if all check runs pass', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit(
+      [{ total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] }],
+      { total_count: 1, state: 'failure' },
+    );
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+
+    expect(result.ciStatus).toBe('failing');
+  });
+
+  it('reports passing from commit-status contexts alone when there are no check runs', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([{ total_count: 0, check_runs: [] }], {
+      total_count: 2,
+      state: 'success',
+    });
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+
+    expect(result.ciStatus).toBe('passing');
+  });
+
+  it('does not read commit-status contexts for the PR-head CI path', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+
+    await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+
+    const { getCombinedStatusForRef } = (
+      octokit as unknown as {
+        rest: { repos: { getCombinedStatusForRef: ReturnType<typeof vi.fn> } };
+      }
+    ).rest.repos;
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
+  });
+
+  it('deletes the cached branch-CI envelope when a freshly-fetched rollup is truncated', async () => {
+    expect.assertions(1);
+    const context = createMockContext();
+    const page1 = Array.from({ length: 100 }, () => ({
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const octokit = createMockOctokit([{ total_count: 150, check_runs: page1 }]);
+    let calls = 0;
+    const budget = {
+      canSpend: vi.fn().mockImplementation(() => {
+        calls += 1;
+        return calls <= 1;
+      }),
+      spend: vi.fn(),
+    };
+
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha', budget);
+
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:response:acme:widgets:branch:main:ci-status',
+    );
+  });
+
+  it('does not delete the cache when a fresh (non-truncated) hit is served', async () => {
+    expect.assertions(1);
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc');
+
+    expect(context.cache.deleteCache).not.toHaveBeenCalled();
   });
 });

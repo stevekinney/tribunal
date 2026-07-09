@@ -69,10 +69,17 @@ function makeOctokit(options: {
     ? vi.fn().mockRejectedValue(options.checksError)
     : vi.fn().mockResolvedValue({ data: options.checkRuns ?? { total_count: 0, check_runs: [] } });
 
+  // Gated on total_count > 0 in paginateCheckRunsRollup, so this default
+  // (empty) combined-status response never changes existing expectations.
+  const getCombinedStatusForRef = vi
+    .fn()
+    .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+
   return {
     rest: {
       pulls: { list },
       checks: { listForRef },
+      repos: { getCombinedStatusForRef },
     },
   } as never;
 }
