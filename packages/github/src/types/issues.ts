@@ -63,6 +63,10 @@ export interface IssueListItem {
 export interface IssueListResult {
   issues: IssueListItem[];
   filters: IssueFilterOptions;
-  /** Whether a next page is available, inferred from row count vs. per-page size. */
+  /**
+   * Whether a next page is available. Derived from GitHub's `Link` response
+   * header (`rel="next"`) when present, falling back to a full-page
+   * row-count heuristic only when the header is missing.
+   */
   hasNextPage: boolean;
 }
