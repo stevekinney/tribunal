@@ -31,6 +31,7 @@ import {
   stopAgent,
   stopRun,
   streamRunAgentEvents,
+  submitRepositorySettingsForm,
   userOwnsRepository,
 } from './operator';
 
@@ -327,6 +328,28 @@ describe('review operator server helpers', () => {
 
     expect(settings).toEqual([]);
     expect(assignments).toEqual([]);
+  });
+
+  it('trims, rejects empty, and dedupes submitted ignore globs and agentIds', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.append('ignoreGlobs', '  dist/** ');
+    formData.append('ignoreGlobs', 'dist/**');
+    formData.append('ignoreGlobs', '   ');
+    formData.append('ignoreGlobs', 'coverage/**');
+    formData.append('agentIds', reviewAgent.id);
+    formData.append('agentIds', reviewAgent.id);
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+    const assignments = await testDb.db.select().from(repositoryAgent);
+
+    expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
+    expect(assignments).toHaveLength(1);
   });
 
   it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {

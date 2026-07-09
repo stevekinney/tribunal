@@ -5,29 +5,10 @@ import { userCanAccessRepository } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
   listAgents,
-  saveRepositoryWatchSettings,
+  submitRepositorySettingsForm,
 } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
 import type { Actions } from './$types';
-
-/**
- * Normalizes submitted ignore globs: trims whitespace, drops empty values, and
- * removes duplicates while preserving the first occurrence's order.
- */
-function normalizeIgnoreGlobs(values: string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) continue;
-    if (seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
-}
 
 /**
  * Loads the repository settings form: ignore globs, agent assignments, and the
@@ -91,19 +72,6 @@ export const actions: Actions = {
     }
 
     const formData = await request.formData();
-    // Dedupe: saveRepositoryWatchSettings compares the count of allowed
-    // agents it finds in the database to input.agentIds.length. A submission
-    // with a duplicate id would deflate that comparison against the deduped
-    // database result and fail with a false "unavailable" error even though
-    // every submitted id is valid.
-    const submittedAgentIds = [...new Set(formData.getAll('agentIds').map(String))];
-    const submittedIgnoreGlobs = normalizeIgnoreGlobs(formData.getAll('ignoreGlobs').map(String));
-
-    return saveRepositoryWatchSettings(user.id, {
-      repositoryId,
-      watched: true,
-      ignoreGlobs: submittedIgnoreGlobs,
-      agentIds: submittedAgentIds,
-    });
+    return submitRepositorySettingsForm(user.id, repositoryId, formData);
   },
 };

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
   import { enhance } from '$app/forms';
+  import { untrack } from 'svelte';
   import { Alert } from '@lostgradient/cinder/alert';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
@@ -21,7 +22,9 @@
     { label: 'Settings' },
   ]);
 
-  let selectedAgentIds = $derived(new Set(data.repository.review.agents.map((agent) => agent.id)));
+  let selectedAgentIds = $state.raw(
+    untrack(() => new Set(data.repository.review.agents.map((agent) => agent.id))),
+  );
   let saving = $state(false);
 </script>
 
@@ -53,8 +56,12 @@
       }
 
       saving = true;
-      return async ({ update }) => {
+      return async ({ result, update }) => {
         try {
+          // Don't call update() on an error result: SvelteKit would navigate
+          // to the nearest +error.svelte instead of keeping the settings form
+          // in place with the error alert rendered from `form?.error`.
+          if (result.type === 'error') return;
           // Never reset the form: TagInput's committed tags and each agent's
           // Toggle checked state are local component state that must reflect
           // exactly what was just submitted, not the values captured at mount.
