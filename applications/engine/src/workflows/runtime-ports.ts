@@ -1,15 +1,16 @@
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
-import { and, desc, eq, inArray, isNull, ne, sql } from '@tribunal/database/operators';
+import { and, desc, eq, inArray, isNull, sql } from '@tribunal/database/operators';
 import {
   agentRun,
   agentEvent,
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestReviewRun,
   pullRequestState,
   repository as repositoryTable,
-  reviewRun,
+  tribunalRun,
 } from '@tribunal/database/schema';
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
@@ -536,129 +537,159 @@ function isEnabledFlag(value: boolean | string | undefined): boolean {
 export function createDatabaseReviewWorkflowStatePort(database: Database): ReviewWorkflowStatePort {
   return {
     async loadPullRequestState(input: PullRequestReviewInput) {
-      const reviewRunRows = await database
-        .select()
-        .from(reviewRun)
+      const rows = await database
+        .select({ run: tribunalRun, review: pullRequestReviewRun })
+        .from(pullRequestReviewRun)
+        .innerJoin(tribunalRun, eq(tribunalRun.id, pullRequestReviewRun.runId))
         .where(
           and(
-            eq(reviewRun.repositoryId, input.repositoryId),
-            eq(reviewRun.prNumber, input.pullRequestNumber),
+            eq(pullRequestReviewRun.repositoryId, input.repositoryId),
+            eq(pullRequestReviewRun.prNumber, input.pullRequestNumber),
           ),
         )
-        .orderBy(desc(reviewRun.startedAt));
+        .orderBy(desc(tribunalRun.startedAt));
 
-      if (reviewRunRows.length === 0) {
+      if (rows.length === 0) {
         return { reviewRuns: [], agentRuns: [] };
       }
 
-      const reviewRunIds = reviewRunRows.map((row) => row.id);
+      const reviewRunIds = rows.map((row) => row.run.id);
       const agentRunRows = await database
         .select()
         .from(agentRun)
-        .where(inArray(agentRun.reviewRunId, reviewRunIds));
+        .where(inArray(agentRun.runId, reviewRunIds));
 
       return {
-        reviewRuns: reviewRunRows.map(toReviewRunRecord),
+        reviewRuns: rows.map((row) => toReviewRunRecord(row.run, row.review)),
         agentRuns: agentRunRows.map(toAgentRunRecord),
       };
     },
+    // Runs a single multi-CTE statement so the parent (`tribunal_run`) and
+    // child (`pull_request_review_run`) upserts stay atomic without an
+    // explicit transaction (the neon-http driver used in production cannot
+    // run interactive transactions). All CTEs see the pre-statement snapshot,
+    // so `old_state` reads the row as it existed before this upsert even
+    // though the two writes below use it as an input. This assumes a single
+    // writer per run id (true today: one Weft workflow instance owns writes
+    // for a given review run), so a stale read under concurrent writers to
+    // the same run id is a known, accepted limitation rather than a bug.
     async upsertReviewRun(run: ReviewRunRecord) {
-      await database
-        .insert(reviewRun)
-        .values({
-          id: run.id,
-          userId: run.userId,
-          repositoryId: run.repositoryId,
-          prNumber: run.pullRequestNumber,
-          headSha: run.headSha,
-          prevHeadSha: run.previousHeadSha,
-          patchId: run.patchId,
-          trigger: run.trigger,
-          status: run.status,
-          workflowId: run.workflowId,
-          sandboxId: run.sandboxId,
-          checkRunId: run.checkRunId,
-          commentsPosted: run.commentsPosted,
-          reviewPostClaimedAt: run.reviewPostClaimedAt ?? null,
-          costEstimateUsd: String(run.costEstimateUsd),
-          startedAt: run.startedAt,
-          finishedAt: run.finishedAt,
-          error: run.error,
-        })
-        .onConflictDoUpdate({
-          target: reviewRun.id,
-          set: {
-            patchId: run.patchId,
-            status: sql`CASE
+      const reviewPostClaimedAt = run.reviewPostClaimedAt ?? null;
+      const finishedAt = run.finishedAt ?? null;
+      const error = run.error ?? null;
+      const costEstimateUsd = String(run.costEstimateUsd);
+
+      await database.execute(sql`
+        WITH old_state AS (
+          SELECT
+            ${tribunalRun.status} AS old_status,
+            ${tribunalRun.finishedAt} AS old_finished_at,
+            ${pullRequestReviewRun.commentsPosted} AS old_comments_posted,
+            ${pullRequestReviewRun.reviewPostClaimedAt} AS old_review_post_claimed_at
+          FROM ${tribunalRun}
+          LEFT JOIN ${pullRequestReviewRun} ON ${pullRequestReviewRun.runId} = ${tribunalRun.id}
+          WHERE ${tribunalRun.id} = ${run.id}
+        ),
+        parent_upsert AS (
+          INSERT INTO ${tribunalRun} (
+            "id", "user_id", "repository_id", "run_kind", "status", "workflow_id",
+            "sandbox_id", "cost_estimate_usd", "started_at", "finished_at", "error"
+          )
+          VALUES (
+            ${run.id}, ${run.userId}, ${run.repositoryId}, 'pull_request_review', ${run.status},
+            ${run.workflowId}, ${run.sandboxId}, ${costEstimateUsd}, ${run.startedAt}, ${finishedAt}, ${error}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            status = CASE
               WHEN ${run.status} IN ('cancelled', 'superseded')
               THEN ${run.status}
-              WHEN ${reviewRun.status} = 'posted'
+              WHEN (SELECT old_status FROM old_state) = 'posted'
                 OR ${run.status} = 'posted'
-                OR ${reviewRun.commentsPosted} > 0
+                OR (SELECT old_comments_posted FROM old_state) > 0
                 OR ${run.commentsPosted} > 0
               THEN 'posted'
               ELSE ${run.status}
-            END`,
-            sandboxId: run.sandboxId,
-            checkRunId: run.checkRunId,
-            commentsPosted: sql`GREATEST(${reviewRun.commentsPosted}, ${run.commentsPosted})`,
-            reviewPostClaimedAt: sql`CASE
-              WHEN ${reviewRun.status} = 'posted'
+            END,
+            sandbox_id = ${run.sandboxId},
+            cost_estimate_usd = ${costEstimateUsd},
+            finished_at = CASE
+              WHEN ${run.status} IN ('cancelled', 'superseded')
+              THEN ${finishedAt}
+              WHEN (SELECT old_status FROM old_state) = 'posted' AND (SELECT old_finished_at FROM old_state) IS NOT NULL
+              THEN (SELECT old_finished_at FROM old_state)
+              WHEN (SELECT old_comments_posted FROM old_state) > 0 AND (SELECT old_finished_at FROM old_state) IS NOT NULL
+              THEN (SELECT old_finished_at FROM old_state)
+              ELSE ${finishedAt}
+            END,
+            error = CASE
+              WHEN ${run.status} IN ('cancelled', 'superseded')
+              THEN ${error}
+              WHEN (SELECT old_status FROM old_state) = 'posted'
                 OR ${run.status} = 'posted'
-                OR ${reviewRun.commentsPosted} > 0
+                OR (SELECT old_comments_posted FROM old_state) > 0
                 OR ${run.commentsPosted} > 0
               THEN NULL
-              WHEN ${run.reviewPostClaimedAt ?? null}::timestamp with time zone IS NOT NULL
-                AND ${reviewRun.reviewPostClaimedAt} IS NULL
-              THEN ${run.reviewPostClaimedAt ?? null}
-              ELSE ${reviewRun.reviewPostClaimedAt}
-            END`,
-            costEstimateUsd: String(run.costEstimateUsd),
-            finishedAt: sql`CASE
-              WHEN ${run.status} IN ('cancelled', 'superseded')
-              THEN ${run.finishedAt ?? null}
-              WHEN ${reviewRun.status} = 'posted' AND ${reviewRun.finishedAt} IS NOT NULL
-              THEN ${reviewRun.finishedAt}
-              WHEN ${reviewRun.commentsPosted} > 0 AND ${reviewRun.finishedAt} IS NOT NULL
-              THEN ${reviewRun.finishedAt}
-              ELSE ${run.finishedAt ?? null}
-            END`,
-            error: sql`CASE
-              WHEN ${run.status} IN ('cancelled', 'superseded')
-              THEN ${run.error ?? null}
-              WHEN ${reviewRun.status} = 'posted'
+              ELSE ${error}
+            END
+          RETURNING "id"
+        ),
+        child_upsert AS (
+          INSERT INTO ${pullRequestReviewRun} (
+            "run_id", "user_id", "repository_id", "pr_number", "head_sha", "prev_head_sha",
+            "patch_id", "trigger", "check_run_id", "comments_posted", "review_post_claimed_at"
+          )
+          VALUES (
+            ${run.id}, ${run.userId}, ${run.repositoryId}, ${run.pullRequestNumber}, ${run.headSha},
+            ${run.previousHeadSha ?? null}, ${run.patchId ?? null}, ${run.trigger}, ${run.checkRunId ?? null},
+            ${run.commentsPosted}, ${reviewPostClaimedAt}
+          )
+          ON CONFLICT (run_id) DO UPDATE SET
+            patch_id = ${run.patchId ?? null},
+            check_run_id = ${run.checkRunId ?? null},
+            comments_posted = GREATEST(${pullRequestReviewRun.commentsPosted}, ${run.commentsPosted}),
+            review_post_claimed_at = CASE
+              WHEN (SELECT old_status FROM old_state) = 'posted'
                 OR ${run.status} = 'posted'
-                OR ${reviewRun.commentsPosted} > 0
+                OR (SELECT old_comments_posted FROM old_state) > 0
                 OR ${run.commentsPosted} > 0
               THEN NULL
-              ELSE ${run.error ?? null}
-            END`,
-          },
-        });
+              WHEN ${reviewPostClaimedAt}::timestamp with time zone IS NOT NULL
+                AND (SELECT old_review_post_claimed_at FROM old_state) IS NULL
+              THEN ${reviewPostClaimedAt}
+              ELSE (SELECT old_review_post_claimed_at FROM old_state)
+            END
+          RETURNING "run_id"
+        )
+        SELECT 1 FROM parent_upsert, child_upsert
+      `);
     },
     async claimReviewPost(reviewRunId: string, now: Date): Promise<ReviewPostClaimResult> {
       const claimedRows = await database
-        .update(reviewRun)
+        .update(pullRequestReviewRun)
         .set({ reviewPostClaimedAt: now })
         .where(
           and(
-            eq(reviewRun.id, reviewRunId),
-            eq(reviewRun.commentsPosted, 0),
-            ne(reviewRun.status, 'posted'),
-            isNull(reviewRun.reviewPostClaimedAt),
+            eq(pullRequestReviewRun.runId, reviewRunId),
+            eq(pullRequestReviewRun.commentsPosted, 0),
+            isNull(pullRequestReviewRun.reviewPostClaimedAt),
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${tribunalRun}
+              WHERE ${tribunalRun.id} = ${pullRequestReviewRun.runId} AND ${tribunalRun.status} = 'posted'
+            )`,
           ),
         )
-        .returning({ id: reviewRun.id });
+        .returning({ id: pullRequestReviewRun.runId });
       if (claimedRows.length > 0) return { status: 'claimed', claimedAt: now };
 
       const [existingRun] = await database
         .select({
-          status: reviewRun.status,
-          commentsPosted: reviewRun.commentsPosted,
-          reviewPostClaimedAt: reviewRun.reviewPostClaimedAt,
+          status: tribunalRun.status,
+          commentsPosted: pullRequestReviewRun.commentsPosted,
+          reviewPostClaimedAt: pullRequestReviewRun.reviewPostClaimedAt,
         })
-        .from(reviewRun)
-        .where(eq(reviewRun.id, reviewRunId))
+        .from(pullRequestReviewRun)
+        .innerJoin(tribunalRun, eq(tribunalRun.id, pullRequestReviewRun.runId))
+        .where(eq(pullRequestReviewRun.runId, reviewRunId))
         .limit(1);
 
       if (
@@ -675,41 +706,41 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
     },
     async refreshReviewPostClaim(reviewRunId: string, claimedAt: Date, now: Date) {
       const rows = await database
-        .update(reviewRun)
+        .update(pullRequestReviewRun)
         .set({ reviewPostClaimedAt: now })
         .where(
           and(
-            eq(reviewRun.id, reviewRunId),
-            eq(reviewRun.commentsPosted, 0),
-            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+            eq(pullRequestReviewRun.runId, reviewRunId),
+            eq(pullRequestReviewRun.commentsPosted, 0),
+            eq(pullRequestReviewRun.reviewPostClaimedAt, claimedAt),
           ),
         )
-        .returning({ reviewPostClaimedAt: reviewRun.reviewPostClaimedAt });
+        .returning({ reviewPostClaimedAt: pullRequestReviewRun.reviewPostClaimedAt });
       return rows[0]?.reviewPostClaimedAt ?? undefined;
     },
     async clearReviewPostClaim(reviewRunId: string, claimedAt: Date) {
       const rows = await database
-        .update(reviewRun)
+        .update(pullRequestReviewRun)
         .set({ reviewPostClaimedAt: null })
         .where(
           and(
-            eq(reviewRun.id, reviewRunId),
-            eq(reviewRun.commentsPosted, 0),
-            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+            eq(pullRequestReviewRun.runId, reviewRunId),
+            eq(pullRequestReviewRun.commentsPosted, 0),
+            eq(pullRequestReviewRun.reviewPostClaimedAt, claimedAt),
           ),
         )
-        .returning({ id: reviewRun.id });
+        .returning({ id: pullRequestReviewRun.runId });
       return rows.length > 0;
     },
     async ownsReviewPostClaim(reviewRunId: string, claimedAt: Date) {
       const [existingRun] = await database
-        .select({ id: reviewRun.id })
-        .from(reviewRun)
+        .select({ id: pullRequestReviewRun.runId })
+        .from(pullRequestReviewRun)
         .where(
           and(
-            eq(reviewRun.id, reviewRunId),
-            eq(reviewRun.commentsPosted, 0),
-            eq(reviewRun.reviewPostClaimedAt, claimedAt),
+            eq(pullRequestReviewRun.runId, reviewRunId),
+            eq(pullRequestReviewRun.commentsPosted, 0),
+            eq(pullRequestReviewRun.reviewPostClaimedAt, claimedAt),
           ),
         )
         .limit(1);
@@ -721,7 +752,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
         .values({
           id: run.id,
           userId: run.userId,
-          reviewRunId: run.reviewRunId,
+          runId: run.reviewRunId,
           agentId: run.agentId,
           role: run.role,
           modelUsed: run.modelUsed,
@@ -822,45 +853,48 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
   };
 }
 
-function toReviewRunRecord(row: typeof reviewRun.$inferSelect): ReviewRunRecord {
+function toReviewRunRecord(
+  run: typeof tribunalRun.$inferSelect,
+  review: typeof pullRequestReviewRun.$inferSelect,
+): ReviewRunRecord {
   return {
-    id: row.id,
+    id: run.id,
     idempotencyKey: createReviewRunIdempotencyKey({
-      repositoryId: row.repositoryId,
-      pullRequestNumber: row.prNumber,
-      headSha: row.headSha,
-      trigger: row.trigger,
+      repositoryId: review.repositoryId,
+      pullRequestNumber: review.prNumber,
+      headSha: review.headSha,
+      trigger: review.trigger,
     }),
     workflowId:
-      row.workflowId ??
+      run.workflowId ??
       createPullRequestWorkflowId({
-        repositoryId: row.repositoryId,
-        pullRequestNumber: row.prNumber,
+        repositoryId: review.repositoryId,
+        pullRequestNumber: review.prNumber,
       }),
-    userId: row.userId,
-    repositoryId: row.repositoryId,
-    pullRequestNumber: row.prNumber,
-    headSha: row.headSha,
-    previousHeadSha: row.prevHeadSha ?? undefined,
-    patchId: row.patchId ?? undefined,
-    trigger: row.trigger as ReviewRunRecord['trigger'],
-    status: row.status as ReviewRunRecord['status'],
-    sandboxId: row.sandboxId ?? '',
-    checkRunId: row.checkRunId ?? undefined,
-    commentsPosted: row.commentsPosted,
-    reviewPostClaimedAt: row.reviewPostClaimedAt ?? undefined,
-    costEstimateUsd: Number(row.costEstimateUsd),
-    startedAt: row.startedAt ?? new Date(0),
-    finishedAt: row.finishedAt ?? undefined,
-    error: row.error ?? undefined,
+    userId: run.userId,
+    repositoryId: review.repositoryId,
+    pullRequestNumber: review.prNumber,
+    headSha: review.headSha,
+    previousHeadSha: review.prevHeadSha ?? undefined,
+    patchId: review.patchId ?? undefined,
+    trigger: review.trigger as ReviewRunRecord['trigger'],
+    status: run.status as ReviewRunRecord['status'],
+    sandboxId: run.sandboxId ?? '',
+    checkRunId: review.checkRunId ?? undefined,
+    commentsPosted: review.commentsPosted,
+    reviewPostClaimedAt: review.reviewPostClaimedAt ?? undefined,
+    costEstimateUsd: Number(run.costEstimateUsd),
+    startedAt: run.startedAt ?? new Date(0),
+    finishedAt: run.finishedAt ?? undefined,
+    error: run.error ?? undefined,
   };
 }
 
 function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
   return {
     id: row.id,
-    idempotencyKey: `agent:${row.reviewRunId}:${row.agentId ?? row.id}`,
-    reviewRunId: row.reviewRunId,
+    idempotencyKey: `agent:${row.runId}:${row.agentId ?? row.id}`,
+    reviewRunId: row.runId,
     userId: row.userId,
     agentId: row.agentId,
     role: row.role as AgentRunRecord['role'],
