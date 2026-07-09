@@ -34,9 +34,32 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   if (!user) redirect(302, '/login');
 
   const repositoriesResult = await getRepositoriesForUser(user.id);
-  const authorizedRepositories = repositoriesResult.ok
-    ? repositoriesResult.repositories.map((entry) => entry.repository)
-    : [];
+
+  if (!repositoriesResult.ok) {
+    if (repositoriesResult.error === 'no_github_token') {
+      redirect(
+        302,
+        `/connect/github/account?returnTo=${encodeURIComponent(url.pathname + url.search)}`,
+      );
+    }
+
+    // GitHub was unreachable. Surface a load error rather than presenting a
+    // misleading "no repositories added" empty state.
+    return {
+      hasRepositories: false,
+      repositories: [],
+      events: [],
+      page: 1,
+      perPage: 50,
+      totalCount: 0,
+      filters: parseWebhookEventFilters(url),
+      filterOptions: { eventTypes: [], actions: [] },
+      subscribedEventTypes: [],
+      loadError: repositoriesResult.message,
+    };
+  }
+
+  const authorizedRepositories = repositoriesResult.repositories.map((entry) => entry.repository);
   const authorizedRepositoryIds = authorizedRepositories.map((repo) => repo.id);
 
   const filters = parseWebhookEventFilters(url);
@@ -64,5 +87,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     filters,
     filterOptions,
     subscribedEventTypes,
+    loadError: null as string | null,
   };
 };

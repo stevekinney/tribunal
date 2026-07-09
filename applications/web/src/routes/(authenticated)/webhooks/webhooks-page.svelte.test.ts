@@ -58,6 +58,7 @@ function createData(overrides: Partial<PageData> = {}): PageData {
     },
     filterOptions: { eventTypes: ['pull_request'], actions: ['opened'] },
     subscribedEventTypes: ['pull_request', 'push'],
+    loadError: null,
     ...overrides,
   } as PageData;
 }
@@ -92,6 +93,24 @@ describe('/webhooks page', () => {
     });
 
     await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+  });
+
+  it('shows a load error distinct from the "no repositories" empty state when GitHub is unreachable', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        loadError: 'Could not reach GitHub to list your installations. Please try again.',
+      }),
+    });
+
+    await expect
+      .element(
+        page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
+      )
+      .toBeInTheDocument();
   });
 
   it('shows a filtered-empty state when repositories exist but no events match', async () => {

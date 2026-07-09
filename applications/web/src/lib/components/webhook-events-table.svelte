@@ -66,7 +66,7 @@
         <Table.Header>
           <Table.Row>
             <Table.HeaderCell scope="col">
-              <span class="sr-only">Expand row</span>
+              <span class="cinder-sr-only">Expand row</span>
             </Table.HeaderCell>
             {#if showRepositoryColumn}
               <Table.HeaderCell scope="col">Repository</Table.HeaderCell>
@@ -97,7 +97,7 @@
                       <ChevronRight size={14} aria-hidden="true" />
                     {/if}
                   {/snippet}
-                  <span class="sr-only">
+                  <span class="cinder-sr-only">
                     {expanded ? 'Hide details' : 'Show details'} for delivery {event.deliveryId ??
                       event.id}
                   </span>
@@ -226,17 +226,5 @@
   .detail-summary dd {
     margin: 0;
     font-weight: var(--font-medium);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 </style>

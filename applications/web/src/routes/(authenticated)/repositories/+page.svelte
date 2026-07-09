@@ -300,7 +300,7 @@
                             size={14}
                             aria-hidden="true"
                           />{/snippet}
-                        <span class="sr-only">Webhook events</span>
+                        <span class="cinder-sr-only">Webhook events</span>
                       </Button>
                     </div>
                   </Table.Cell>
@@ -461,17 +461,5 @@
   .table-hint {
     font-size: var(--text-xs);
     color: var(--text-subtle);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 </style>

@@ -3,6 +3,7 @@
   import { page as pageState } from '$app/state';
   import Page from '$lib/components/page.svelte';
   import WebhookEventsTable from '$lib/components/webhook-events-table.svelte';
+  import { Alert } from '@lostgradient/cinder/alert';
   import { Card } from '@lostgradient/cinder/card';
   import { Select } from '@lostgradient/cinder/select';
   import { SearchField } from '@lostgradient/cinder/search-field';
@@ -64,6 +65,10 @@
 </script>
 
 <Page title="Webhook events" {subtitle}>
+  {#if data.loadError}
+    <Alert variant="danger">{data.loadError}</Alert>
+  {/if}
+
   {#if !data.hasRepositories}
     <Card padding="none">
       <EmptyState

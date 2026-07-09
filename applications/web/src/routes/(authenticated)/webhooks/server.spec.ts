@@ -63,6 +63,7 @@ import { load } from './+page.server';
 type WebhooksLoadResult = {
   hasRepositories: boolean;
   subscribedEventTypes: string[];
+  loadError: string | null;
 };
 
 describe('/webhooks server load', () => {
@@ -136,5 +137,35 @@ describe('/webhooks server load', () => {
       [1],
       expect.objectContaining({ eventType: 'pull_request', page: 2 }),
     );
+  });
+
+  it('redirects to the GitHub connect flow when the user has no GitHub token, instead of showing an empty repositories state', async () => {
+    mockRepositoriesResult.value = {
+      ok: false,
+      error: 'no_github_token',
+      message: 'No GitHub token.',
+    };
+
+    await expect(load(createEvent())).rejects.toMatchObject({
+      status: 302,
+      location: expect.stringContaining('/connect/github/account'),
+    });
+    expect(mockListWebhookEvents).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a load error distinct from "no repositories" when GitHub is unreachable', async () => {
+    mockRepositoriesResult.value = {
+      ok: false,
+      error: 'github_unavailable',
+      message: 'Could not reach GitHub to list your installations. Please try again.',
+    };
+
+    const result = (await load(createEvent())) as WebhooksLoadResult;
+
+    expect(result.hasRepositories).toBe(false);
+    expect(result.loadError).toBe(
+      'Could not reach GitHub to list your installations. Please try again.',
+    );
+    expect(mockListWebhookEvents).not.toHaveBeenCalled();
   });
 });
