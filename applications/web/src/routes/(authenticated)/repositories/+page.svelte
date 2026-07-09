@@ -314,7 +314,12 @@
     {#if summary}
       <StatGroup label="Dashboard summary">
         <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
-        <StatGroup.Stat label="Failing default branch" value={summary.failingDefaultBranchCount} />
+        <StatGroup.Stat
+          label="Failing default branch"
+          value={summary.hasUnavailableRepositories
+            ? `${summary.failingDefaultBranchCount}+`
+            : summary.failingDefaultBranchCount}
+        />
         <StatGroup.Stat
           label="Open pull requests"
           value={summary.openPullRequestCountExact
@@ -335,7 +340,14 @@
         <h2 class="section-heading">Needs attention</h2>
         <DataList items={attentionPullRequests} key={(pr) => `${pr.repositoryId}:${pr.number}`}>
           {#snippet empty()}
-            <p>No open pull requests need attention right now.</p>
+            <p>
+              {#if summary && !summary.attentionPullRequestCountExact}
+                Attention data is incomplete: some repositories could not be checked this build, so
+                this list may be missing pull requests.
+              {:else}
+                No open pull requests need attention right now.
+              {/if}
+            </p>
           {/snippet}
           {#snippet children(pullRequest)}
             <StackedListItem href={pullRequest.htmlUrl} target="_blank">

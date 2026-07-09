@@ -26,7 +26,21 @@
     { label: repositoryName },
   ]);
   let ignoreGlobs = $derived(data.repository.review.ignoreGlobs.join('\n'));
-  let selectedAgentIds = $derived(new Set(data.repository.review.agents.map((agent) => agent.id)));
+  /**
+   * First-time setup (not watched, no saved settings) defaults the agent
+   * checklist to every enabled agent, mirroring the Add/toggle default on the
+   * repositories dashboard (`agentIdsForWatch`). Otherwise it reflects the
+   * repository's saved agent assignment. Without this, saving settings on a
+   * never-configured repository would submit an empty `agentIds` list and
+   * silently add the repository with no reviewers.
+   */
+  let selectedAgentIds = $derived(
+    new Set(
+      !data.repository.review.watched && !data.repository.review.hasSavedSettings
+        ? data.agents.filter((agent) => agent.enabled).map((agent) => agent.id)
+        : data.repository.review.agents.map((agent) => agent.id),
+    ),
+  );
 
   function ciLabel(status: string): string {
     const labels: Record<string, string> = {

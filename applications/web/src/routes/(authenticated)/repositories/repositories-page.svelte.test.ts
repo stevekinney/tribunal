@@ -330,6 +330,91 @@ describe('/repositories page', () => {
     await expect.element(unknownCells.first()).toBeInTheDocument();
   });
 
+  it('flags the "needs attention" empty state as partial when data is unavailable', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [
+          makeRepository({
+            dashboard: makeDashboardRow({
+              dataStatus: 'unavailable',
+              unavailableReason: 'rate-limited',
+              defaultBranchStatus: 'unknown',
+              openPullRequestCount: null,
+              attentionPullRequestCount: null,
+              unresolvedThreadCount: null,
+            }),
+          }),
+        ],
+        attentionPullRequests: [],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          openPullRequestCount: 0,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: true,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: an empty attentionPullRequests list can mean "nothing needs
+    // attention" or "some repositories were never inspected" (rate limit,
+    // budget exhaustion, no installation, GitHub error). These must not read
+    // the same to the user.
+    await expect.element(page.getByText(/Attention data is incomplete/)).toBeInTheDocument();
+    await expect
+      .element(page.getByText('No open pull requests need attention right now.'))
+      .not.toBeInTheDocument();
+  });
+
+  it('marks the failing default branch stat as partial when data is unavailable', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [
+          makeRepository({
+            dashboard: makeDashboardRow({
+              dataStatus: 'unavailable',
+              unavailableReason: 'rate-limited',
+              defaultBranchStatus: 'unknown',
+              openPullRequestCount: null,
+              attentionPullRequestCount: null,
+              unresolvedThreadCount: null,
+            }),
+          }),
+        ],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          openPullRequestCount: 0,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: true,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: a repository that was never checked contributes 0 to
+    // failingDefaultBranchCount, so an exact "0" is indistinguishable from
+    // "we confirmed zero repositories are failing." Mark it partial instead.
+    await expect
+      .element(page.getByLabelText('Failing default branch').getByText('0+', { exact: true }))
+      .toBeInTheDocument();
+  });
+
   it('caps the open pull request count display at the 100-item page cap', async () => {
     render(RepositoriesPage, {
       data: {
