@@ -187,6 +187,31 @@ describe('repository issues page load', () => {
     await expect(runLoad()).rejects.toBe(rateLimited);
   });
 
+  it('returns 410 with a helpful message when the repository has Issues disabled', async () => {
+    expect.assertions(1);
+    // https://docs.github.com/en/rest/issues/issues#list-repository-issues —
+    // "List repository issues" returns 410 Gone when a repository has
+    // disabled the Issues feature entirely.
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockGetInstallationForRepository.mockResolvedValue({
+      ok: true,
+      octokit: {},
+      owner: 'acme',
+      repo: 'widgets',
+    });
+    const gone = Object.assign(new Error('Issues are disabled for this repo'), {
+      status: 410,
+      response: { data: { message: 'Issues are disabled for this repo' }, headers: {} },
+    });
+    mockListIssues.mockRejectedValue(gone);
+
+    await expect(runLoad()).rejects.toMatchObject({
+      status: 410,
+      body: { message: expect.stringContaining('disabled') },
+    });
+  });
+
   it('forwards installation owner, repo, filters, and repository id to listIssues', async () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });

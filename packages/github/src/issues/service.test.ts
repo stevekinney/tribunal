@@ -103,6 +103,26 @@ describe('parseIssueFilters', () => {
     expect(filters.type).toBe('bug');
   });
 
+  it('accepts a milestone number, "*", or "none" but drops any other value', () => {
+    expect.assertions(4);
+    // GitHub's `GET /repos/{owner}/{repo}/issues` only accepts a milestone
+    // number, "*" (any milestone), or "none" (no milestone) — anything else,
+    // such as a bookmarked URL with a milestone title, must be dropped rather
+    // than forwarded, or GitHub rejects the request with a validation error.
+    // https://docs.github.com/en/rest/issues/issues#list-repository-issues
+    const numberUrl = new URL('https://example.com/repo?issue_milestone=7');
+    expect(parseIssueFilters(numberUrl).milestone).toBe('7');
+
+    const anyUrl = new URL('https://example.com/repo?issue_milestone=*');
+    expect(parseIssueFilters(anyUrl).milestone).toBe('*');
+
+    const noneUrl = new URL('https://example.com/repo?issue_milestone=none');
+    expect(parseIssueFilters(noneUrl).milestone).toBe('none');
+
+    const titleUrl = new URL('https://example.com/repo?issue_milestone=v1.0');
+    expect(parseIssueFilters(titleUrl).milestone).toBeUndefined();
+  });
+
   it('treats empty assignee, creator, mentioned, and labels as undefined', () => {
     expect.assertions(4);
     const url = new URL(

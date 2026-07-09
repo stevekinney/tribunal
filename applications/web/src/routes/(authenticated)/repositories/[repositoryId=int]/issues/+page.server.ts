@@ -57,6 +57,12 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
         'This GitHub App installation needs the "Issues" permission to show repository issues. Ask an installation owner to accept the updated permissions request on GitHub, then reload this page.',
       );
     }
+    // GitHub returns 410 Gone for "List repository issues" when the
+    // repository has the Issues feature disabled entirely.
+    // https://docs.github.com/en/rest/issues/issues#list-repository-issues
+    if (isOctokitRequestError(cause) && cause.status === 410) {
+      error(410, 'Issues are disabled for this repository.');
+    }
     throw cause;
   });
 

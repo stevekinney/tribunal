@@ -238,12 +238,16 @@
           ? 'No issues match these filters'
           : data.hasNextPage
             ? 'No issues on this page'
-            : 'No open issues'}
+            : data.filters.page > 1
+              ? 'This page is empty'
+              : 'No open issues'}
         description={isFiltered
           ? 'Try widening the state, assignee, or label filters.'
           : data.hasNextPage
             ? 'This page was filled entirely by pull requests. Continue to the next page to see more issues.'
-            : 'When this repository has open issues, they will appear here.'}
+            : data.filters.page > 1
+              ? 'Issues may have been closed or the page number is out of range. Go back to the first page to see current issues.'
+              : 'When this repository has open issues, they will appear here.'}
       >
         {#snippet icon()}<CircleDot size={48} />{/snippet}
       </EmptyState>

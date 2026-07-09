@@ -56,6 +56,21 @@ const VALID_SORTS: IssueSort[] = ['created', 'updated', 'comments'];
 const VALID_DIRECTIONS: SortDirection[] = ['asc', 'desc'];
 
 /**
+ * GitHub's `milestone` filter on `GET /repos/{owner}/{repo}/issues` only
+ * accepts a milestone number, the literal `*` (any milestone), or the literal
+ * `none` (no milestone). Anything else — e.g. a bookmarked URL carrying a
+ * milestone title like `v1.0` — is rejected by GitHub with a validation
+ * error, so invalid values are dropped here instead of being forwarded.
+ * @see https://docs.github.com/en/rest/issues/issues#list-repository-issues
+ */
+const VALID_MILESTONE_PATTERN = /^(\d+|\*|none)$/;
+
+function parseMilestoneFilter(rawMilestone: string | undefined): string | undefined {
+  if (!rawMilestone) return undefined;
+  return VALID_MILESTONE_PATTERN.test(rawMilestone) ? rawMilestone : undefined;
+}
+
+/**
  * Parse issue filter options from URL search params.
  * Uses an `issue_` prefix to avoid conflicts with other filters on the same page.
  */
@@ -83,7 +98,7 @@ export function parseIssueFilters(url: URL): IssueFilterOptions {
     creator: creator || undefined,
     mentioned: mentioned || undefined,
     labels: labels || undefined,
-    milestone: milestone || undefined,
+    milestone: parseMilestoneFilter(milestone),
     type: type || undefined,
     page,
     perPage,

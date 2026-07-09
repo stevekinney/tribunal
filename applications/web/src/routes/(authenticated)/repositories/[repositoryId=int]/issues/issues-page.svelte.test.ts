@@ -128,6 +128,28 @@ describe('/repositories/[repositoryId]/issues page', () => {
       .not.toBeInTheDocument();
   });
 
+  it('tells the user the page is empty (not that there are no open issues) on an empty later page', async () => {
+    // A bookmarked/shared URL such as ?issue_page=3 can point past the last
+    // page of results after issues are closed or deleted. hasNextPage is
+    // false here, but filters.page > 1, so the copy should not claim the
+    // repository has no open issues — it should say this page is empty.
+    render(IssuesPage, {
+      data: {
+        ...baseData,
+        issues: [],
+        hasNextPage: false,
+        filters: { ...baseData.filters, page: 3 },
+      },
+    });
+
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'This page is empty' }))
+      .toBeVisible();
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No open issues' }))
+      .not.toBeInTheDocument();
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(IssuesPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
