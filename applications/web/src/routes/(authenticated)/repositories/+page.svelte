@@ -337,39 +337,14 @@
                         }}
                       >
                         <input type="hidden" name="repositoryId" value={repository.id} />
-                        <!--
-                          These labeled controls are visually hidden so they are present
-                          in the DOM and queryable by label without requiring the gear panel to open.
-                          They replace the old hidden inputs, preserving saved settings on toggle.
-                        -->
-                        {#if agents.length > 0}
-                          {@const selectedAgentIds = agentIdsForWatch(repository)}
-                          <label class="settings-visually-hidden">
-                            <span>Agents</span>
-                            <!-- Visually hidden, but kept in the DOM to preserve
-                                 saved settings on toggle. tabindex=-1 removes the
-                                 invisible control from the keyboard tab order. -->
-                            <select name="agentIds" multiple tabindex="-1">
-                              {#each agents as agent (agent.id)}
-                                <option
-                                  value={agent.id}
-                                  selected={selectedAgentIds.includes(agent.id)}
-                                >
-                                  {agent.slug}
-                                </option>
-                              {/each}
-                            </select>
-                          </label>
-                        {/if}
-                        <label class="settings-visually-hidden">
-                          <span>Ignore globs</span>
-                          <textarea
-                            name="ignoreGlobs"
-                            tabindex="-1"
-                            value={repository.review.ignoreGlobs.join('\n')}
-                          ></textarea>
-                        </label>
-                        <!-- Submit the current optimistic watch state. -->
+                        {#each agentIdsForWatch(repository) as agentId (agentId)}
+                          <input type="hidden" name="agentIds" value={agentId} />
+                        {/each}
+                        <input
+                          type="hidden"
+                          name="ignoreGlobs"
+                          value={repository.review.ignoreGlobs.join('\n')}
+                        />
                         <input type="hidden" name="watched" value={isWatching ? 'on' : ''} />
                         <Toggle
                           id="watching-{repository.id}"
@@ -474,20 +449,5 @@
   .table-hint {
     font-size: var(--text-xs);
     color: var(--text-subtle);
-  }
-
-  /* Visually hides an element while keeping it in the DOM and accessibility tree.
-     Controls labeled this way are queryable by assistive technology and by tests
-     without requiring the gear settings panel to be expanded. */
-  .settings-visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border-width: 0;
   }
 </style>
