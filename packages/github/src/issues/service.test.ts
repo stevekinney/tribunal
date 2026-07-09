@@ -177,11 +177,11 @@ describe('listIssues', () => {
     perPage: 30,
   };
 
-  function createMockOctokit(responseData: unknown[]) {
+  function createMockOctokit(responseData: unknown[], headers: Record<string, string> = {}) {
     return {
       rest: {
         issues: {
-          listForRepo: vi.fn().mockResolvedValue({ data: responseData }),
+          listForRepo: vi.fn().mockResolvedValue({ data: responseData, headers }),
         },
       },
     } as never;
@@ -376,27 +376,58 @@ describe('listIssues', () => {
     });
   });
 
-  it('reports hasNextPage true when a full page is returned', async () => {
+  const buildIssueRow = (number: number) => ({
+    number,
+    title: `Issue ${number}`,
+    state: 'open',
+    user: null,
+    labels: [],
+    assignees: [],
+    comments: 0,
+    created_at: '2024-01-15T10:00:00Z',
+    updated_at: '2024-01-15T10:00:00Z',
+    closed_at: null,
+    milestone: null,
+    html_url: `https://github.com/owner/repo/issues/${number}`,
+  });
+
+  it('falls back to a full-page row-count heuristic when no Link header is present', async () => {
     expect.assertions(1);
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
-    const mockIssue = (number: number) => ({
-      number,
-      title: `Issue ${number}`,
-      state: 'open',
-      user: null,
-      labels: [],
-      assignees: [],
-      comments: 0,
-      created_at: '2024-01-15T10:00:00Z',
-      updated_at: '2024-01-15T10:00:00Z',
-      closed_at: null,
-      milestone: null,
-      html_url: `https://github.com/owner/repo/issues/${number}`,
-    });
+    const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)]);
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
 
-    const context = createMockContext();
-    const octokit = createMockOctokit([mockIssue(1), mockIssue(2)]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', filters);
+    expect(result.hasNextPage).toBe(true);
+  });
+
+  it('reports hasNextPage false from the row-count heuristic when the page is not full', async () => {
+    expect.assertions(1);
+    const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
+    const octokit = createMockOctokit([buildIssueRow(1)]);
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
+
+    expect(result.hasNextPage).toBe(false);
+  });
+
+  it('prefers the GitHub Link header rel="next" over the row-count heuristic', async () => {
+    expect.assertions(1);
+    // Full page (perPage rows) but the Link header says this is the last page —
+    // the header must win over the heuristic that would otherwise say "true".
+    const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
+    const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)], {
+      link: '<https://api.github.com/repositories/1/issues?page=1>; rel="prev", <https://api.github.com/repositories/1/issues?page=1>; rel="first"',
+    });
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
+
+    expect(result.hasNextPage).toBe(false);
+  });
+
+  it('reports hasNextPage true when the Link header includes rel="next"', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([buildIssueRow(1)], {
+      link: '<https://api.github.com/repositories/1/issues?page=2>; rel="next", <https://api.github.com/repositories/1/issues?page=5>; rel="last"',
+    });
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', defaultFilters);
 
     expect(result.hasNextPage).toBe(true);
   });

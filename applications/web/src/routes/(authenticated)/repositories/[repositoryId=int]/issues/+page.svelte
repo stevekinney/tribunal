@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import Page from '$lib/components/page.svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -119,6 +120,21 @@
         label: 'Page size',
       });
     }
+    // These filters have no dedicated facet control yet, but a URL can still
+    // carry them (e.g. a bookmarked/shared link). Surface them as removable
+    // chips so an active filter is never invisible.
+    if (data.filters.creator) {
+      applied.push({ key: 'issue_creator', value: data.filters.creator, label: 'Creator' });
+    }
+    if (data.filters.mentioned) {
+      applied.push({ key: 'issue_mentioned', value: data.filters.mentioned, label: 'Mentions' });
+    }
+    if (data.filters.milestone) {
+      applied.push({ key: 'issue_milestone', value: data.filters.milestone, label: 'Milestone' });
+    }
+    if (data.filters.type) {
+      applied.push({ key: 'issue_type', value: data.filters.type, label: 'Issue type' });
+    }
     return applied;
   });
 
@@ -153,6 +169,7 @@
   }
 
   function handleClearAll(): void {
+    clearTimeout(labelsDebounceHandle);
     goto(page.url.pathname, { keepFocus: true, noScroll: true, invalidateAll: true });
   }
 
@@ -166,6 +183,8 @@
       updateFilters({ issue_labels: value || undefined });
     }, 400);
   }
+
+  onDestroy(() => clearTimeout(labelsDebounceHandle));
 
   let currentPage = $derived(data.filters.page);
 
@@ -289,7 +308,14 @@
         </Table.Body>
       </Table>
     </Card>
+  {/if}
 
+  {#if data.hasNextPage || data.filters.page > 1}
+    <!--
+      Pagination is independent of the current page's row count: GitHub paginates
+      before pull requests are filtered out of the issues response, so a page can
+      render zero issues while a later page still has real issues (hasNextPage).
+    -->
     <Pagination
       bind:currentPage
       hasNextPage={data.hasNextPage}

@@ -102,6 +102,16 @@ describe('/repositories/[repositoryId]/issues page', () => {
     await expect.element(browserPage.getByText('Showing 1 open issue')).toBeVisible();
   });
 
+  it('shows pagination even when the current page has zero issues but a next page exists', async () => {
+    // GitHub paginates before pull requests are filtered out of the issues
+    // response, so an empty-looking page can still have real issues later on.
+    render(IssuesPage, {
+      data: { ...baseData, issues: [], hasNextPage: true },
+    });
+
+    await expect.element(browserPage.getByRole('navigation', { name: 'Pagination' })).toBeVisible();
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(IssuesPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },

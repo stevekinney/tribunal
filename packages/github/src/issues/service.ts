@@ -129,6 +129,25 @@ function isPullRequestRow(issue: GitHubIssueListItem): boolean {
   return 'pull_request' in issue && issue.pull_request !== undefined;
 }
 
+/**
+ * Determine whether another page of results exists.
+ *
+ * Prefers GitHub's `Link` response header (`rel="next"`), which is exact.
+ * Falls back to a full-page row-count heuristic when the header is missing
+ * (some environments/mocks strip response headers), which can be wrong only
+ * when the final page happens to contain exactly `perPage` rows.
+ */
+function resolveHasNextPage(
+  linkHeader: string | undefined,
+  rowCount: number,
+  perPage: number,
+): boolean {
+  if (linkHeader) {
+    return /<[^>]+>;\s*rel="next"/.test(linkHeader);
+  }
+  return rowCount >= perPage;
+}
+
 function transformIssueListItem(issue: GitHubIssueListItem): IssueListItem {
   return {
     number: issue.number,
@@ -219,10 +238,7 @@ export async function listIssues(
 
     return {
       issues,
-      // Based on the raw (pre pull-request-filtering) row count: a full page from
-      // GitHub means another page may exist, even if some of this page's rows
-      // were pull requests we filtered out.
-      hasNextPage: response.data.length >= filters.perPage,
+      hasNextPage: resolveHasNextPage(response.headers.link, response.data.length, filters.perPage),
       filters,
     };
   };
