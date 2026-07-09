@@ -232,11 +232,17 @@ describe('/repositories page', () => {
     // "Settings for test-org/…" label (Playwright getByText defaults to substring).
     await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 
-    const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
-    expect(Array.from(agentsSelect.selectedOptions).map((option) => option.value)).toEqual(['2']);
-    await expect
-      .element(page.getByLabelText('Ignore globs'))
-      .toHaveValue('generated/**\nvendor/**');
+    await expect.element(page.getByLabelText('Agents')).not.toBeInTheDocument();
+    await expect.element(page.getByLabelText('Ignore globs')).not.toBeInTheDocument();
+
+    await page.getByRole('switch', { name: 'Add repository' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['2']);
+    expect(enhancedFormTesting.submissions[0]?.formData.get('ignoreGlobs')).toBe(
+      'generated/**\nvendor/**',
+    );
+    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
   });
 
   it('preserves empty saved agent assignments when re-watching a repository', async () => {
@@ -292,8 +298,14 @@ describe('/repositories page', () => {
     // "Settings for test-org/…" label (Playwright getByText defaults to substring).
     await expect.element(page.getByText('test-org', { exact: true })).toBeInTheDocument();
 
-    const agentsSelect = page.getByLabelText('Agents').element() as HTMLSelectElement;
-    expect(Array.from(agentsSelect.selectedOptions)).toHaveLength(0);
+    await expect.element(page.getByLabelText('Agents')).not.toBeInTheDocument();
+
+    await page.getByRole('switch', { name: 'Add repository' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual([]);
+    expect(enhancedFormTesting.submissions[0]?.formData.get('ignoreGlobs')).toBe('generated/**');
+    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
   });
 
   it('queues rapid watch re-toggles so the final submitted state wins', async () => {
