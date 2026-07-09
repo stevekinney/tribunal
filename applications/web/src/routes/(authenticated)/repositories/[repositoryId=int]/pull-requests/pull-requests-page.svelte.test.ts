@@ -44,7 +44,9 @@ const baseData = {
 const samplePullRequest = {
   number: 42,
   title: 'Add new feature',
+  state: 'open' as const,
   draft: false,
+  mergedAt: null,
   htmlUrl: 'https://github.com/acme/widgets/pull/42',
   headRef: 'feature-branch',
   headSha: 'abc123sha',
@@ -94,6 +96,46 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
     await expect.element(browserPage.getByText('#42')).toBeVisible();
     await expect.element(browserPage.getByText('by octocat')).toBeVisible();
     await expect.element(browserPage.getByText('feature-branch → main')).toBeVisible();
+  });
+
+  it('shows an Open badge for an open, non-draft pull request', async () => {
+    render(PullRequestsPage, { data: { ...baseData, pullRequests: [samplePullRequest] } });
+
+    await expect
+      .element(browserPage.getByRole('listitem').getByText('Open', { exact: true }))
+      .toBeVisible();
+  });
+
+  it('shows a Closed badge for a closed, unmerged pull request', async () => {
+    render(PullRequestsPage, {
+      data: {
+        ...baseData,
+        pullRequests: [{ ...samplePullRequest, state: 'closed', mergedAt: null }],
+      },
+    });
+
+    await expect
+      .element(browserPage.getByRole('listitem').getByText('Closed', { exact: true }))
+      .toBeVisible();
+  });
+
+  it('shows a Merged badge for a closed, merged pull request', async () => {
+    render(PullRequestsPage, {
+      data: {
+        ...baseData,
+        pullRequests: [{ ...samplePullRequest, state: 'closed', mergedAt: '2024-01-17T00:00:00Z' }],
+      },
+    });
+
+    await expect.element(browserPage.getByText('Merged', { exact: true })).toBeVisible();
+  });
+
+  it('shows a Draft badge for an open draft pull request', async () => {
+    render(PullRequestsPage, {
+      data: { ...baseData, pullRequests: [{ ...samplePullRequest, draft: true }] },
+    });
+
+    await expect.element(browserPage.getByText('Draft', { exact: true })).toBeVisible();
   });
 
   it('shows an honest, non-exact pull request count summary', async () => {

@@ -103,6 +103,28 @@
     }
   });
 
+  function pullRequestStateLabel(pullRequest: {
+    state: 'open' | 'closed';
+    draft: boolean;
+    mergedAt: string | null;
+  }): string {
+    if (pullRequest.state === 'closed') {
+      return pullRequest.mergedAt ? 'Merged' : 'Closed';
+    }
+    return pullRequest.draft ? 'Draft' : 'Open';
+  }
+
+  function pullRequestStateVariant(pullRequest: {
+    state: 'open' | 'closed';
+    draft: boolean;
+    mergedAt: string | null;
+  }): 'success' | 'neutral' | 'info' {
+    if (pullRequest.state === 'closed') {
+      return pullRequest.mergedAt ? 'info' : 'neutral';
+    }
+    return pullRequest.draft ? 'neutral' : 'success';
+  }
+
   function ciLabel(status: string): string {
     const labels: Record<string, string> = {
       passing: 'CI passing',
@@ -230,11 +252,9 @@
                   </span>
                 </div>
               </div>
-              {#if pullRequest.draft}
-                <Badge size="sm" variant="neutral">Draft</Badge>
-              {:else}
-                <Badge size="sm" variant="success">Open</Badge>
-              {/if}
+              <Badge size="sm" variant={pullRequestStateVariant(pullRequest)}>
+                {pullRequestStateLabel(pullRequest)}
+              </Badge>
             </div>
             <div class="status-row" aria-label="Pull request status">
               <Badge size="sm" variant={ciVariant(pullRequest.status.ciStatus)}>

@@ -42,7 +42,9 @@ function statusForE2ERun(status: string): PullRequestOperationalStatus {
 interface E2EPullRequest {
   number: number;
   title: string;
+  state: 'open' | 'closed';
   draft: boolean;
+  mergedAt: string | null;
   htmlUrl: string;
   headRef: string;
   headSha: string;
@@ -85,7 +87,9 @@ async function listE2EPullRequests(
       (run): E2EPullRequest => ({
         number: run.prNumber,
         title: `E2E pull request #${run.prNumber}`,
+        state: 'open',
         draft: false,
+        mergedAt: null,
         htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
         headRef: run.headSha,
         headSha: run.headSha,
@@ -182,7 +186,9 @@ async function listLivePullRequests(repositoryId: number, filters: PullRequestFi
     async (pullRequest) => ({
       number: pullRequest.number,
       title: pullRequest.title,
+      state: pullRequest.state,
       draft: pullRequest.draft,
+      mergedAt: pullRequest.mergedAt,
       htmlUrl: pullRequest.htmlUrl,
       headRef: pullRequest.headRef,
       headSha: pullRequest.headSha,

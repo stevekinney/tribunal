@@ -199,7 +199,9 @@ describe('repository pull requests page load', () => {
         {
           number: 1,
           title: 'Add feature',
+          state: 'closed',
           draft: false,
+          mergedAt: '2024-01-17T00:00:00Z',
           htmlUrl: 'https://github.com/acme/widgets/pull/1',
           headRef: 'feature',
           headSha: 'sha1',
@@ -214,7 +216,14 @@ describe('repository pull requests page load', () => {
 
     await expect(runLoad()).resolves.toMatchObject({
       repository: { id: 1, owner: 'acme', name: 'widgets' },
-      pullRequests: [{ number: 1, title: 'Add feature' }],
+      pullRequests: [
+        {
+          number: 1,
+          title: 'Add feature',
+          state: 'closed',
+          mergedAt: '2024-01-17T00:00:00Z',
+        },
+      ],
       filters: defaultFilters,
       hasNextPage: true,
     });
