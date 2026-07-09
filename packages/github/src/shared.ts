@@ -72,3 +72,26 @@ export const GITHUB_RESPONSE_CACHE_TTL_SECONDS = 5;
 export function encodeFilterValue(value: string): string {
   return value.replace(/%/g, '%25').replace(/[|:]/g, (ch) => `%${ch.charCodeAt(0).toString(16)}`);
 }
+
+// ============================================================================
+// Pagination helpers
+// ============================================================================
+
+/**
+ * Determine whether another page of REST list results exists.
+ *
+ * Prefers GitHub's `Link` response header (`rel="next"`), which is exact.
+ * Falls back to a full-page row-count heuristic when the header is missing
+ * (some environments/mocks strip response headers), which can be wrong only
+ * when the final page happens to contain exactly `perPage` rows.
+ */
+export function resolveHasNextPage(
+  linkHeader: string | undefined,
+  rowCount: number,
+  perPage: number,
+): boolean {
+  if (linkHeader) {
+    return /<[^>]+>;\s*rel="next"/.test(linkHeader);
+  }
+  return rowCount >= perPage;
+}

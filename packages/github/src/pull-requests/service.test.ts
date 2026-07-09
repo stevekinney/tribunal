@@ -377,6 +377,120 @@ describe('listPullRequests', () => {
       per_page: 50,
     });
   });
+
+  it('reports hasNextPage true when the Link header has a next relation', async () => {
+    expect.assertions(1);
+    const octokit = {
+      rest: {
+        pulls: {
+          list: vi.fn().mockResolvedValue({
+            data: [],
+            headers: { link: '<https://api.github.com/x?page=2>; rel="next"' },
+          }),
+        },
+      },
+    } as never;
+
+    const context = createMockContext();
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+
+    expect(result.hasNextPage).toBe(true);
+  });
+
+  it('reports hasNextPage false when the Link header has no next relation', async () => {
+    expect.assertions(1);
+    const octokit = {
+      rest: {
+        pulls: {
+          list: vi.fn().mockResolvedValue({
+            data: [
+              {
+                number: 1,
+                title: 'PR',
+                state: 'open',
+                draft: false,
+                locked: false,
+                user: null,
+                created_at: '2024-01-15T10:00:00Z',
+                updated_at: '2024-01-16T12:00:00Z',
+                closed_at: null,
+                merged_at: null,
+                labels: [],
+                head: { ref: 'branch', sha: 'sha' },
+                base: { ref: 'main' },
+                html_url: 'https://github.com/owner/repo/pull/1',
+              },
+            ],
+            headers: { link: '<https://api.github.com/x?page=1>; rel="prev"' },
+          }),
+        },
+      },
+    } as never;
+
+    const context = createMockContext();
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+
+    expect(result.hasNextPage).toBe(false);
+  });
+
+  it('falls back to a full-page row-count heuristic when the Link header is missing', async () => {
+    expect.assertions(2);
+    const fullPage = Array.from({ length: defaultFilters.perPage }, (_, index) => ({
+      number: index + 1,
+      title: `PR ${index + 1}`,
+      state: 'open',
+      draft: false,
+      locked: false,
+      user: null,
+      created_at: '2024-01-15T10:00:00Z',
+      updated_at: '2024-01-16T12:00:00Z',
+      closed_at: null,
+      merged_at: null,
+      labels: [],
+      head: { ref: 'branch', sha: 'sha' },
+      base: { ref: 'main' },
+      html_url: `https://github.com/owner/repo/pull/${index + 1}`,
+    }));
+    const octokit = createMockOctokit(fullPage);
+
+    const context = createMockContext();
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+
+    expect(result.pullRequests).toHaveLength(defaultFilters.perPage);
+    expect(result.hasNextPage).toBe(true);
+  });
+
+  it('caches results keyed by repository id and filters, and reuses the cached hasNextPage', async () => {
+    expect.assertions(2);
+    const mockList = vi.fn().mockResolvedValue({
+      data: [
+        {
+          number: 1,
+          title: 'PR',
+          state: 'open',
+          draft: false,
+          locked: false,
+          user: null,
+          created_at: '2024-01-15T10:00:00Z',
+          updated_at: '2024-01-16T12:00:00Z',
+          closed_at: null,
+          merged_at: null,
+          labels: [],
+          head: { ref: 'branch', sha: 'sha' },
+          base: { ref: 'main' },
+          html_url: 'https://github.com/owner/repo/pull/1',
+        },
+      ],
+      headers: { link: '<https://api.github.com/x?page=2>; rel="next"' },
+    });
+    const octokit = { rest: { pulls: { list: mockList } } } as never;
+    const context = createMockContext();
+
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 7);
+
+    expect(result.hasNextPage).toBe(true);
+    expect(context.cache.setCache).toHaveBeenCalled();
+  });
 });
 
 describe('getPullRequest', () => {

@@ -6,7 +6,7 @@
  */
 import type { Endpoints } from '@octokit/types';
 import type { Octokit as OctokitType } from 'octokit';
-import { transformAuthor, encodeFilterValue } from '@tribunal/github/shared';
+import { transformAuthor, encodeFilterValue, resolveHasNextPage } from '@tribunal/github/shared';
 import {
   isNotFoundError,
   isNotModifiedError,
@@ -267,8 +267,7 @@ export async function listPullRequests(
   filters: PullRequestFilterOptions,
   repositoryId?: number,
 ): Promise<PullRequestListResult> {
-  // When no repositoryId is provided, caching is not possible — call directly
-  if (repositoryId === undefined) {
+  const fetchPullRequests = async (): Promise<PullRequestListResult> => {
     const response = await octokit.rest.pulls.list({
       owner,
       repo,
@@ -280,29 +279,28 @@ export async function listPullRequests(
       page: filters.page,
       per_page: filters.perPage,
     });
-    return { pullRequests: response.data.map(transformPullRequestListItem), filters };
+
+    return {
+      pullRequests: response.data.map(transformPullRequestListItem),
+      filters,
+      hasNextPage: resolveHasNextPage(
+        response.headers?.link,
+        response.data.length,
+        filters.perPage,
+      ),
+    };
+  };
+
+  // When no repositoryId is provided, caching is not possible — call directly
+  if (repositoryId === undefined) {
+    return fetchPullRequests();
   }
 
   const policy = requirePolicy('list-pull-requests');
   const { value } = await cachedRead(
     context.cache,
     policy,
-    async () => {
-      const response = await octokit.rest.pulls.list({
-        owner,
-        repo,
-        state: filters.state,
-        sort: filters.sort,
-        direction: filters.direction,
-        head: filters.head,
-        base: filters.base,
-        page: filters.page,
-        per_page: filters.perPage,
-      });
-      return {
-        data: { pullRequests: response.data.map(transformPullRequestListItem), filters },
-      };
-    },
+    async () => ({ data: await fetchPullRequests() }),
     [repositoryId, buildPullRequestFilterKey(filters)],
   );
   return value;
