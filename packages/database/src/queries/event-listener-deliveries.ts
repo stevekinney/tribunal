@@ -1,0 +1,173 @@
+/**
+ * `event_listener_delivery` queries: matching, atomic claiming, and the
+ * retry/abandon status machine.
+ *
+ * The claim is a compare-and-set expressed entirely in the `UPDATE ... WHERE`
+ * clause (`status IN ('pending','retryable')`). Postgres row-level locking
+ * on the UPDATE means only one concurrent caller's statement can match and
+ * mutate a given row -- the second caller's `WHERE` simply no longer matches
+ * once the first commits, so it gets zero rows back rather than a race.
+ */
+
+import { and, eq, inArray, sql } from '../operators';
+import type { Database } from '../connection';
+import {
+  eventListenerDelivery,
+  type EventListenerDelivery,
+} from '../schema/event-listener-delivery';
+import { repositoryEventListener } from '../schema/repository-event-listener';
+import { agent } from '../schema/agent';
+
+/** Retries cap at this many attempts, after which a delivery is abandoned. */
+export const MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS = 5;
+
+/**
+ * Insert `pending` delivery rows for every matched listener against a
+ * webhook event. Uses `onConflictDoNothing` on the `(listener_id,
+ * webhook_event_id)` unique constraint so a redelivered webhook that matches
+ * the same listener against the same event never creates duplicate work --
+ * the conflicting insert is silently skipped, not retried or errored.
+ *
+ * Returns only the rows actually inserted (i.e. newly matched work), not
+ * rows skipped by the conflict.
+ */
+export async function insertPendingEventListenerDeliveries(
+  database: Database,
+  listenerIds: string[],
+  webhookEventId: number,
+): Promise<EventListenerDelivery[]> {
+  if (listenerIds.length === 0) return [];
+
+  return database
+    .insert(eventListenerDelivery)
+    .values(
+      listenerIds.map((listenerId) => ({
+        listenerId,
+        webhookEventId,
+      })),
+    )
+    .onConflictDoNothing()
+    .returning();
+}
+
+/**
+ * Row shape returned by `listClaimableEventListenerDeliveries`: the delivery
+ * plus enough listener/agent state for the caller to re-verify eligibility
+ * before doing any work.
+ */
+export interface ClaimableEventListenerDelivery {
+  delivery: EventListenerDelivery;
+  listenerId: string;
+  listenerEnabled: boolean;
+  agentId: string;
+  agentEnabled: boolean;
+}
+
+/**
+ * Find `pending`/`retryable` rows eligible for a claim attempt, scoped to a
+ * repository and bounded to `limit` rows. This is a read used to drive a
+ * bounded post-response drain -- it does not itself claim anything, so
+ * multiple concurrent drains may see the same candidate rows; the actual
+ * claim (`claimEventListenerDelivery`) is what resolves the race.
+ */
+export async function listClaimableEventListenerDeliveries(
+  database: Database,
+  repositoryId: number,
+  limit: number,
+): Promise<ClaimableEventListenerDelivery[]> {
+  const rows = await database
+    .select({
+      delivery: eventListenerDelivery,
+      listenerId: repositoryEventListener.id,
+      listenerEnabled: repositoryEventListener.enabled,
+      agentId: agent.id,
+      agentEnabled: agent.enabled,
+    })
+    .from(eventListenerDelivery)
+    .innerJoin(
+      repositoryEventListener,
+      eq(eventListenerDelivery.listenerId, repositoryEventListener.id),
+    )
+    .innerJoin(agent, eq(repositoryEventListener.agentId, agent.id))
+    .where(
+      and(
+        eq(repositoryEventListener.repositoryId, repositoryId),
+        inArray(eventListenerDelivery.status, ['pending', 'retryable']),
+      ),
+    )
+    .limit(limit);
+
+  return rows;
+}
+
+/**
+ * Atomically claim a single `pending`/`retryable` delivery for execution.
+ * Returns null if another caller already claimed it (or it moved to a
+ * terminal state) between the read and this call.
+ */
+export async function claimEventListenerDelivery(
+  database: Database,
+  deliveryId: number,
+): Promise<EventListenerDelivery | null> {
+  const [row] = await database
+    .update(eventListenerDelivery)
+    .set({
+      status: 'running',
+      claimedAt: new Date(),
+      startedAt: new Date(),
+      attemptCount: sql`${eventListenerDelivery.attemptCount} + 1`,
+    })
+    .where(
+      and(
+        eq(eventListenerDelivery.id, deliveryId),
+        inArray(eventListenerDelivery.status, ['pending', 'retryable']),
+      ),
+    )
+    .returning();
+
+  return row ?? null;
+}
+
+export async function markEventListenerDeliverySucceeded(
+  database: Database,
+  deliveryId: number,
+  runId: string,
+): Promise<void> {
+  await database
+    .update(eventListenerDelivery)
+    .set({ status: 'succeeded', runId, finishedAt: new Date(), lastError: null })
+    .where(eq(eventListenerDelivery.id, deliveryId));
+}
+
+/**
+ * Record a dispatch/execution failure. Moves to `retryable` while under the
+ * attempt cap so a later drain can pick it back up, or `abandoned` once the
+ * cap is reached so operators see a terminal, visible failure instead of an
+ * endlessly retried row.
+ */
+export async function markEventListenerDeliveryFailed(
+  database: Database,
+  deliveryId: number,
+  errorMessage: string,
+  options?: { maxAttempts?: number },
+): Promise<EventListenerDelivery | null> {
+  const maxAttempts = options?.maxAttempts ?? MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS;
+
+  const [current] = await database
+    .select({ attemptCount: eventListenerDelivery.attemptCount })
+    .from(eventListenerDelivery)
+    .where(eq(eventListenerDelivery.id, deliveryId))
+    .limit(1);
+
+  if (!current) return null;
+
+  const nextStatus = current.attemptCount >= maxAttempts ? 'abandoned' : 'retryable';
+
+  const [row] = await database
+    .update(eventListenerDelivery)
+    .set({ status: nextStatus, lastError: errorMessage, finishedAt: new Date() })
+    .where(eq(eventListenerDelivery.id, deliveryId))
+    .returning();
+
+  return row ?? null;
+}

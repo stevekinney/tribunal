@@ -2,6 +2,8 @@ import { json, error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { ValidationError } from '@tribunal/github/error-taxonomy';
 import { storeWebhookEvent } from '@tribunal/github/webhooks/webhook-events';
+import { matchAndPersistEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-matching';
+import { drainEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-dispatch';
 import { githubContext } from '$lib/server/github-context';
 import type { RequestHandler } from './$types';
 
@@ -187,14 +189,18 @@ export const POST: RequestHandler = async (event) => {
     return json({ ok: true, ignored: true });
   }
 
-  // 4. Store event if it has a repository
+  // 4. Store event if it has a repository, then match enabled event listeners
+  // against it. Matching only inserts `pending` `event_listener_delivery`
+  // rows -- claiming and running them happens later, outside this request
+  // (see step 9).
   if (repository && deliveryId && eventType) {
+    let storedEvent: Awaited<ReturnType<typeof storeWebhookEvent>> | undefined;
     try {
       const { owner, repo } = getRepositoryIdentity(data);
       const eventFields = extractEventFields(eventType, data);
       const sender = data.sender as { id: number; login: string } | undefined;
 
-      await storeWebhookEvent(githubContext, {
+      storedEvent = await storeWebhookEvent(githubContext, {
         eventType,
         action,
         deliveryId,
@@ -209,6 +215,14 @@ export const POST: RequestHandler = async (event) => {
       });
     } catch (e) {
       console.error('Failed to store webhook event:', e);
+    }
+
+    if (storedEvent) {
+      try {
+        await matchAndPersistEventListenerDeliveries(githubContext, storedEvent);
+      } catch (e) {
+        console.error('Failed to match event listeners for webhook event:', e);
+      }
     }
   }
 
@@ -303,6 +317,19 @@ export const POST: RequestHandler = async (event) => {
 
   // 9. PR state tracking (fire-and-forget)
   dispatchPRStateTracking(githubContext, eventType, action, data);
+
+  // 10. Drain pending event listener deliveries for this repository
+  // (fire-and-forget, bounded). This is the "no background worker" execution
+  // path: every delivery opportunistically re-drains any pending/retryable
+  // rows left over from an earlier failed or interrupted drain, so work
+  // never needs more than the next webhook for this repository to make
+  // progress. Never awaited -- a slow or failing drain must never block or
+  // fail the webhook HTTP response.
+  if (repositoryId) {
+    void drainEventListenerDeliveries(githubContext, repositoryId).catch((e) => {
+      console.error('[webhook] Event listener delivery drain failed:', e);
+    });
+  }
 
   return json({ ok: true });
 };

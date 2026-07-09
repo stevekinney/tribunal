@@ -10,6 +10,8 @@ const releaseWebhookDeliveryClaimMock = vi.fn();
 const storeWebhookEventMock = vi.fn();
 const validateRequestMock = vi.fn();
 const verifySignatureMock = vi.fn();
+const matchAndPersistEventListenerDeliveriesMock = vi.fn();
+const drainEventListenerDeliveriesMock = vi.fn();
 
 vi.mock('$env/dynamic/private', () => ({
   env: { GITHUB_APP_WEBHOOK_SECRET: 'webhook-secret' },
@@ -39,6 +41,14 @@ vi.mock('@tribunal/github/webhooks/claim-delivery', () => ({
 
 vi.mock('@tribunal/github/webhooks/webhook-events', () => ({
   storeWebhookEvent: storeWebhookEventMock,
+}));
+
+vi.mock('@tribunal/github/webhooks/event-listener-matching', () => ({
+  matchAndPersistEventListenerDeliveries: matchAndPersistEventListenerDeliveriesMock,
+}));
+
+vi.mock('@tribunal/github/webhooks/event-listener-dispatch', () => ({
+  drainEventListenerDeliveries: drainEventListenerDeliveriesMock,
 }));
 
 vi.mock('github-webhook-schemas/registry', () => ({
@@ -132,9 +142,16 @@ describe('GitHub webhook route', () => {
     verifySignatureMock.mockResolvedValue(undefined);
     getRepositoryIdentityMock.mockReturnValue({ owner: 'lostgradient', repo: 'tribunal' });
     extractEventFieldsMock.mockReturnValue({ pullRequestNumber: 7, commitSha: 'aaa111' });
-    storeWebhookEventMock.mockResolvedValue(undefined);
+    storeWebhookEventMock.mockResolvedValue({ id: 999, eventType: 'pull_request' });
     handlePullRequestEventMock.mockResolvedValue(undefined);
     releaseWebhookDeliveryClaimMock.mockResolvedValue(true);
+    matchAndPersistEventListenerDeliveriesMock.mockResolvedValue([]);
+    drainEventListenerDeliveriesMock.mockResolvedValue({
+      attempted: 0,
+      dispatched: 0,
+      skippedDisabled: 0,
+      failed: 0,
+    });
   });
 
   it('claims review-engine deliveries before dispatch so redelivery cannot enqueue twice', async () => {

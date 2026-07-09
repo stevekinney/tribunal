@@ -1,4 +1,4 @@
-import { webhookEvent } from '@tribunal/database/schema';
+import { webhookEvent, type WebhookEvent } from '@tribunal/database/schema';
 import { getOrCreateRepository } from '../repositories/service.js';
 import type { GithubServiceContext } from '../context.js';
 
@@ -23,11 +23,14 @@ export interface StoreWebhookEventData {
 /**
  * Store a webhook event.
  * Automatically creates/updates the repository record if needed.
+ *
+ * Returns the persisted row (with its generated `id`) so callers -- notably
+ * event listener matching -- can reference it without a second read.
  */
 export async function storeWebhookEvent(
   context: GithubServiceContext,
   data: StoreWebhookEventData,
-): Promise<void> {
+): Promise<WebhookEvent> {
   // Ensure repository exists (creates if not, updates metadata if changed)
   await getOrCreateRepository(
     context,
@@ -37,21 +40,26 @@ export async function storeWebhookEvent(
     data.installationId,
   );
 
-  await context.db.insert(webhookEvent).values({
-    eventType: data.eventType,
-    action: data.action,
-    deliveryId: data.deliveryId,
-    payload: data.payload,
-    repositoryId: data.repositoryId,
-    installationId: data.installationId,
-    senderId: data.senderId,
-    senderLogin: data.senderLogin,
-    prNumber: data.prNumber,
-    issueNumber: data.issueNumber,
-    ref: data.ref,
-    commitSha: data.commitSha,
-    githubCreatedAt: data.githubCreatedAt,
-    receivedAt: new Date(),
-    createdAt: new Date(),
-  });
+  const [row] = await context.db
+    .insert(webhookEvent)
+    .values({
+      eventType: data.eventType,
+      action: data.action,
+      deliveryId: data.deliveryId,
+      payload: data.payload,
+      repositoryId: data.repositoryId,
+      installationId: data.installationId,
+      senderId: data.senderId,
+      senderLogin: data.senderLogin,
+      prNumber: data.prNumber,
+      issueNumber: data.issueNumber,
+      ref: data.ref,
+      commitSha: data.commitSha,
+      githubCreatedAt: data.githubCreatedAt,
+      receivedAt: new Date(),
+      createdAt: new Date(),
+    })
+    .returning();
+
+  return row;
 }
