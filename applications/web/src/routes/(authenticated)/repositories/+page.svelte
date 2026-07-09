@@ -9,12 +9,17 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { SearchField } from '@lostgradient/cinder/search-field';
-  import { Select } from '@lostgradient/cinder/select';
+  import { Combobox } from '@lostgradient/cinder/combobox';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
+  import { StatGroup } from '@lostgradient/cinder/stat-group';
+  import { DataList } from '@lostgradient/cinder/data-list';
+  import { StackedListItem } from '@lostgradient/cinder/stacked-list-item';
+  import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
+  import { Segment } from '@lostgradient/cinder/segment';
   import { Alert } from '@lostgradient/cinder/alert';
   import { FolderGit2, Plus } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
@@ -22,7 +27,9 @@
   let { data, form }: PageProps = $props();
 
   let searchQuery = $state('');
-  let repositoryToAdd = $state('');
+  let repositoryToAddId = $state('');
+  let repositoryToAddInput = $state('');
+  let watchView = $state<'all' | 'watched'>('all');
 
   /**
    * Optimistic watch states keyed by repository ID. Populated on toggle click and
@@ -34,26 +41,52 @@
   const activeWatchSubmissions = new SvelteSet<number>();
   const queuedWatchStates = new SvelteMap<number, boolean>();
 
+  // Every repository the user can access, per the locked decision to show all
+  // accessible repositories with a visible watched filter rather than silently
+  // narrowing the table to watched repositories only.
   const repositories = $derived(data.repositories);
-  const availableRepositories = $derived(data.availableRepositories ?? []);
-  const availableRepositoryOptions = $derived([
-    { value: '', label: 'Select repository', disabled: true },
-    ...availableRepositories.map((repository) => ({
-      value: String(repository.id),
-      label: `${repository.owner}/${repository.name}`,
-    })),
-  ]);
+  const summary = $derived(data.summary);
+  const attentionPullRequests = $derived(data.attentionPullRequests ?? []);
   const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
 
+  /**
+   * Resolves the effective watch state: returns the optimistic local state if
+   * a toggle is pending, otherwise falls back to the confirmed server state.
+   */
+  function watchedFor(id: number, serverValue: boolean): boolean {
+    return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
+  }
+
+  const addableRepositoryOptions = $derived(
+    repositories
+      .filter((repository) => !watchedFor(repository.id, repository.review.watched))
+      .map((repository) => ({
+        value: String(repository.id),
+        label: `${repository.owner}/${repository.name}`,
+        description: repository.defaultBranch
+          ? `Default branch: ${repository.defaultBranch}`
+          : undefined,
+      })),
+  );
+
   const subtitle = $derived(
     repositories.length > 0
-      ? `${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'} added`
+      ? `${repositories.length} accessible ${repositories.length === 1 ? 'repository' : 'repositories'}`
       : 'Add repositories to start reviewing pull requests',
   );
 
+  const viewFilteredRepositories = $derived.by(() => {
+    if (watchView === 'watched') {
+      return repositories.filter((repository) =>
+        watchedFor(repository.id, repository.review.watched),
+      );
+    }
+    return repositories;
+  });
+
   const filteredRepositories = $derived.by(() => {
-    const base = repositories;
+    const base = viewFilteredRepositories;
     if (!searchQuery.trim()) return base;
     const query = searchQuery.toLowerCase();
     return base.filter(
@@ -66,47 +99,73 @@
 
   const emptyStateTitle = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub to get started';
-    if (hasInstallations) return 'No repositories added';
+    if (hasInstallations) return 'No repositories found';
     return 'Install the GitHub App';
   });
   const emptyStateDescription = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub before installing the GitHub App.';
-    if (hasInstallations) return 'Choose a repository from the add control above.';
+    if (hasInstallations)
+      return 'Repositories will appear here once they are synced from your GitHub App installation.';
     return 'Install Tribunal on a repository, then add it here.';
   });
   const emptyStateActionLabel = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub';
-    if (hasInstallations) return 'Add repository';
+    if (hasInstallations) return 'Manage repository access';
     return 'Install Tribunal';
   });
   const emptyStateActionHref = $derived.by(() => {
     if (data.needsConnect) return '/connect/github/account';
-    if (hasInstallations && availableRepositories.length > 0) return '#repository-to-add';
     return '/connect/github';
   });
 
-  /** Maps a run status string to the nearest StatusDot semantic status. */
-  function statusDotForRun(status: string): StatusDotStatus {
+  /** Maps a default-branch/pull-request CI status to the nearest StatusDot semantic status. */
+  function ciStatusDotStatus(status: string): StatusDotStatus {
     const map: Record<string, StatusDotStatus> = {
-      completed: 'success',
-      failed: 'danger',
-      running: 'accent',
+      passing: 'success',
+      failing: 'danger',
       pending: 'pending',
-      skipped: 'neutral',
+      error: 'danger',
+      unknown: 'neutral',
     };
     return map[status] ?? 'neutral';
   }
 
-  /** Sentence-case display label for a run status. */
-  function statusLabel(status: string): string {
+  /** Sentence-case display label for a CI status, per the locked status vocabulary. */
+  function ciStatusLabel(status: string): string {
     const map: Record<string, string> = {
-      completed: 'Completed',
-      failed: 'Failed',
-      running: 'Running',
+      passing: 'Passing',
+      failing: 'Failing',
       pending: 'Pending',
-      skipped: 'Skipped',
+      error: 'Error',
+      unknown: 'Unknown',
     };
-    return map[status] ?? status;
+    return map[status] ?? 'Unknown';
+  }
+
+  /** Sentence-case display label for a merge status. */
+  function mergeStatusLabel(status: string): string {
+    const map: Record<string, string> = {
+      clean: 'Mergeable',
+      conflicts: 'Conflicts',
+      behind: 'Behind',
+      blocked: 'Blocked',
+      unknown: 'Unknown',
+    };
+    return map[status] ?? 'Unknown';
+  }
+
+  function mergeStatusVariant(status: string): 'success' | 'danger' | 'warning' | 'neutral' {
+    if (status === 'clean') return 'success';
+    if (status === 'conflicts') return 'danger';
+    if (status === 'blocked') return 'warning';
+    return 'neutral';
+  }
+
+  function ciBadgeVariant(status: string): 'success' | 'danger' | 'warning' | 'neutral' {
+    if (status === 'passing') return 'success';
+    if (status === 'failing' || status === 'error') return 'danger';
+    if (status === 'pending') return 'warning';
+    return 'neutral';
   }
 
   /**
@@ -121,14 +180,6 @@
       return agents.filter((a) => a.enabled).map((a) => a.id);
     }
     return repository.review.agents.map((a) => a.id);
-  }
-
-  /**
-   * Resolves the effective watch state: returns the optimistic local state if
-   * a toggle is pending, otherwise falls back to the confirmed server state.
-   */
-  function watchedFor(id: number, serverValue: boolean): boolean {
-    return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
   }
 
   function formDataForWatch(
@@ -199,18 +250,32 @@
 
 <Page title="Repositories" {subtitle}>
   {#snippet actions()}
-    {#if availableRepositories.length > 0}
-      <form method="POST" action="?/watch" class="add-repository-form" use:enhance>
-        <Select
+    {#if addableRepositoryOptions.length > 0}
+      <form
+        method="POST"
+        action="?/watch"
+        class="add-repository-form"
+        use:enhance={() => {
+          return async ({ update, result }) => {
+            await update();
+            if (result.type === 'success') {
+              repositoryToAddId = '';
+              repositoryToAddInput = '';
+            }
+          };
+        }}
+      >
+        <Combobox
           id="repository-to-add"
           name="repositoryId"
-          bind:value={repositoryToAdd}
-          options={availableRepositoryOptions}
           label="Add repository"
-          required
+          placeholder="Search by owner or name…"
+          options={addableRepositoryOptions}
+          bind:value={repositoryToAddId}
+          bind:inputValue={repositoryToAddInput}
         />
         <input type="hidden" name="watched" value="on" />
-        <Button type="submit" variant="primary" size="sm" disabled={repositoryToAdd === ''}>
+        <Button type="submit" variant="primary" size="sm" disabled={repositoryToAddId === ''}>
           {#snippet leadingIcon()}<Plus size={14} aria-hidden="true" />{/snippet}
           Add
         </Button>
@@ -226,6 +291,13 @@
     <Alert variant="danger">{form.error}</Alert>
   {/if}
 
+  {#if repositories.some((repository) => repository.dashboard?.dataStatus === 'unavailable')}
+    <Alert variant="warning">
+      GitHub data for some repositories could not be refreshed this build. Their status shows as
+      Unknown until the next refresh.
+    </Alert>
+  {/if}
+
   {#if repositories.length === 0}
     <Card padding="none">
       <EmptyState title={emptyStateTitle} description={emptyStateDescription}>
@@ -239,6 +311,63 @@
       </EmptyState>
     </Card>
   {:else}
+    {#if summary}
+      <StatGroup label="Dashboard summary">
+        <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
+        <StatGroup.Stat label="Failing default branch" value={summary.failingDefaultBranchCount} />
+        <StatGroup.Stat
+          label="Open pull requests"
+          value={summary.openPullRequestCountExact
+            ? summary.openPullRequestCount
+            : `${summary.openPullRequestCount}+`}
+        />
+        <StatGroup.Stat
+          label="Needs attention"
+          value={summary.attentionPullRequestCountExact
+            ? summary.attentionPullRequestCount
+            : `${summary.attentionPullRequestCount}+`}
+        />
+      </StatGroup>
+    {/if}
+
+    <ul class="attention-list-wrapper">
+      <li>
+        <h2 class="section-heading">Needs attention</h2>
+        <DataList items={attentionPullRequests} key={(pr) => `${pr.repositoryId}:${pr.number}`}>
+          {#snippet empty()}
+            <p>No open pull requests need attention right now.</p>
+          {/snippet}
+          {#snippet children(pullRequest)}
+            <StackedListItem href={pullRequest.htmlUrl} target="_blank">
+              {#snippet title()}#{pullRequest.number} {pullRequest.title}{/snippet}
+              {#snippet description()}{pullRequest.repositoryOwner}/{pullRequest.repositoryName}{/snippet}
+              {#snippet meta()}
+                <div class="attention-badges">
+                  <Badge size="sm" variant={pullRequest.draft ? 'neutral' : 'success'}>
+                    {pullRequest.draft ? 'Draft' : 'Open'}
+                  </Badge>
+                  <Badge size="sm" variant={ciBadgeVariant(pullRequest.ciStatus)}>
+                    {ciStatusLabel(pullRequest.ciStatus)}
+                  </Badge>
+                  <Badge size="sm" variant={mergeStatusVariant(pullRequest.mergeStatus)}>
+                    {mergeStatusLabel(pullRequest.mergeStatus)}
+                  </Badge>
+                  <Badge
+                    size="sm"
+                    variant={(pullRequest.unresolvedThreadCount ?? 0) > 0 ? 'warning' : 'neutral'}
+                  >
+                    {pullRequest.unresolvedThreadCount === null
+                      ? 'Unresolved threads unknown'
+                      : `${pullRequest.unresolvedThreadCount} unresolved`}
+                  </Badge>
+                </div>
+              {/snippet}
+            </StackedListItem>
+          {/snippet}
+        </DataList>
+      </li>
+    </ul>
+
     <div class="toolbar">
       <div class="search-wrapper">
         <SearchField
@@ -248,6 +377,14 @@
           oninput={(value) => (searchQuery = value)}
         />
       </div>
+      <SegmentedControl
+        id="repository-watch-filter"
+        label="Filter repositories"
+        bind:value={watchView}
+      >
+        <Segment value="all">All</Segment>
+        <Segment value="watched">Watched</Segment>
+      </SegmentedControl>
     </div>
 
     {#if filteredRepositories.length === 0}
@@ -255,7 +392,7 @@
         {#if searchQuery.trim()}
           No repositories matching "{searchQuery}".
         {:else}
-          No repositories found.
+          No repositories match this filter.
         {/if}
       </p>
     {:else}
@@ -265,49 +402,67 @@
             <Table.Header>
               <Table.Row>
                 <Table.HeaderCell>Repository</Table.HeaderCell>
-                <Table.HeaderCell>Last run</Table.HeaderCell>
-                <Table.HeaderCell align="right">30-day est.</Table.HeaderCell>
-                <Table.HeaderCell align="center">Added</Table.HeaderCell>
+                <Table.HeaderCell>Default branch CI</Table.HeaderCell>
+                <Table.HeaderCell align="right">Open PRs</Table.HeaderCell>
+                <Table.HeaderCell align="right">Attention</Table.HeaderCell>
+                <Table.HeaderCell align="right">Unresolved threads</Table.HeaderCell>
+                <Table.HeaderCell align="center">Watching</Table.HeaderCell>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {#each filteredRepositories as repository (repository.id)}
                 {@const isWatching = watchedFor(repository.id, repository.review.watched)}
+                {@const dashboard = repository.dashboard}
                 <Table.Row>
                   <Table.Cell>
                     <div class="repository-identity">
-                      {#if repository.review.watched}
-                        <Link href={`/repositories/${repository.id}/pull-requests`}>
-                          <span class="repository-owner">{repository.owner}</span><span
-                            class="repository-separator">/</span
-                          ><span class="repository-name">{repository.name}</span>
-                        </Link>
-                      {:else}
+                      <Link href={`/repositories/${repository.id}/pull-requests`}>
                         <span class="repository-owner">{repository.owner}</span><span
                           class="repository-separator">/</span
                         ><span class="repository-name">{repository.name}</span>
-                      {/if}
+                      </Link>
                       {#if repository.defaultBranch}
                         <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
                       {/if}
                     </div>
                   </Table.Cell>
                   <Table.Cell>
-                    {#if repository.review.lastRunStatus}
-                      <StatusDot
-                        status={statusDotForRun(repository.review.lastRunStatus)}
-                        label={statusLabel(repository.review.lastRunStatus)}
-                        showLabel
-                        size="sm"
-                      />
+                    <StatusDot
+                      status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
+                      label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
+                      showLabel
+                      size="sm"
+                    />
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    {#if dashboard && dashboard.openPullRequestCount !== null}
+                      <Link href={`/repositories/${repository.id}/pull-requests`}>
+                        {dashboard.openPullRequestCountAtCap
+                          ? `${dashboard.openPullRequestCount}+`
+                          : dashboard.openPullRequestCount}
+                      </Link>
                     {:else}
-                      <span class="text-muted">Never</span>
+                      <span class="text-muted">Unknown</span>
                     {/if}
                   </Table.Cell>
                   <Table.Cell align="right">
-                    <span class="cost"
-                      >${repository.review.estimatedCostLast30DaysUsd.toFixed(2)}</span
-                    >
+                    {#if dashboard && dashboard.attentionPullRequestCount !== null}
+                      <Badge
+                        size="sm"
+                        variant={dashboard.attentionPullRequestCount > 0 ? 'warning' : 'success'}
+                      >
+                        {dashboard.attentionPullRequestCount}
+                      </Badge>
+                    {:else}
+                      <span class="text-muted">Unknown</span>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    {#if dashboard && dashboard.unresolvedThreadCount !== null}
+                      {dashboard.unresolvedThreadCount}
+                    {:else}
+                      <span class="text-muted">Unknown</span>
+                    {/if}
                   </Table.Cell>
                   <Table.Cell align="center">
                     <div class="watching-cell">
@@ -398,6 +553,25 @@
     color: var(--text-muted);
   }
 
+  .section-heading {
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+  }
+
+  .attention-list-wrapper {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .attention-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+
   .table-scroll {
     overflow-x: auto;
   }
@@ -420,12 +594,6 @@
 
   .repository-name {
     font-weight: var(--font-medium);
-    color: var(--text);
-  }
-
-  .cost {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
     color: var(--text);
   }
 
