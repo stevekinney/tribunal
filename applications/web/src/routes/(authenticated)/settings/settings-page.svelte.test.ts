@@ -27,8 +27,18 @@ const baseData = {
   surfaceStates: [],
 } satisfies PageProps['data'];
 
+// The switch's accessible name stays stable ("Reviews enabled") across
+// states — aria-checked communicates on/off, per the WAI-ARIA switch
+// pattern. The dangerous *direction* of the action is communicated
+// separately, by the confirm dialog and its "Pause reviews" button.
 function killSwitchToggle() {
-  return page.getByRole('switch', { name: /(Pause|Resume) reviews/ });
+  return page.getByRole('switch', { name: 'Reviews enabled' });
+}
+
+function hiddenReviewsEnabledInput(): HTMLInputElement {
+  const input = document.querySelector<HTMLInputElement>('input[name="reviewsEnabled"]');
+  expect(input).toBeInstanceOf(HTMLInputElement);
+  return input as HTMLInputElement;
 }
 
 describe('/settings page — kill switch danger zone', () => {
@@ -41,11 +51,12 @@ describe('/settings page — kill switch danger zone', () => {
     await expect.element(page.getByText('Danger zone')).toBeVisible();
     await expect.element(page.getByText('Reviews active')).toBeVisible();
     await expect
-      .element(page.getByText('Immediately stops new run and automation dispatch'))
+      .element(page.getByText('stops new run and automation dispatch across every repository'))
       .toBeVisible();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'true');
-    // The toggle's action label makes the dangerous direction explicit.
-    await expect.element(page.getByRole('switch', { name: 'Pause reviews' })).toBeVisible();
+    // The hidden checkbox that actually submits with the form mirrors the
+    // visible switch state, so a save posts the value the user sees.
+    expect(hiddenReviewsEnabledInput().checked).toBe(true);
   });
 
   it('renders the paused state as a visibly dangerous status', async () => {
@@ -57,7 +68,7 @@ describe('/settings page — kill switch danger zone', () => {
 
     await expect.element(page.getByText('Reviews paused')).toBeVisible();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'false');
-    await expect.element(page.getByRole('switch', { name: 'Resume reviews' })).toBeVisible();
+    expect(hiddenReviewsEnabledInput().checked).toBe(false);
     // Turning reviews back on is a normal save — no unsaved-change badge yet
     // because the saved and staged values match.
     await expect.element(page.getByText('Unsaved change')).not.toBeInTheDocument();
@@ -66,30 +77,34 @@ describe('/settings page — kill switch danger zone', () => {
   it('requires confirmation before staging a paused state, and shows the staged/unsaved state', async () => {
     render(SettingsPage, { data: baseData, form: null, params: {} });
 
-    await page.getByRole('switch', { name: 'Pause reviews' }).click();
+    await killSwitchToggle().click();
 
     // Confirmation dialog appears; the toggle has not flipped yet.
     await expect.element(page.getByRole('dialog', { name: 'Pause reviews?' })).toBeInTheDocument();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'true');
+    expect(hiddenReviewsEnabledInput().checked).toBe(true);
 
     await page.getByRole('button', { name: 'Pause reviews' }).click();
 
-    // Confirmed: the toggle now reflects the staged (unsaved) paused state.
+    // Confirmed: the toggle — and the hidden field the form actually submits
+    // — now reflect the staged (unsaved) paused state.
     await expect.element(page.getByText('Reviews paused')).toBeVisible();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'false');
+    expect(hiddenReviewsEnabledInput().checked).toBe(false);
     await expect.element(page.getByText('Unsaved change')).toBeVisible();
   });
 
   it('cancelling the confirmation leaves reviews enabled', async () => {
     render(SettingsPage, { data: baseData, form: null, params: {} });
 
-    await page.getByRole('switch', { name: 'Pause reviews' }).click();
+    await killSwitchToggle().click();
     await expect.element(page.getByRole('dialog', { name: 'Pause reviews?' })).toBeInTheDocument();
 
     await page.getByRole('button', { name: 'Cancel' }).click();
 
     await expect.element(page.getByText('Reviews active')).toBeVisible();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'true');
+    expect(hiddenReviewsEnabledInput().checked).toBe(true);
     await expect.element(page.getByText('Unsaved change')).not.toBeInTheDocument();
   });
 
@@ -100,12 +115,13 @@ describe('/settings page — kill switch danger zone', () => {
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Resume reviews' }).click();
+    await killSwitchToggle().click();
 
     await expect
       .element(page.getByRole('dialog', { name: 'Pause reviews?' }))
       .not.toBeInTheDocument();
     await expect.element(page.getByText('Reviews active')).toBeVisible();
+    expect(hiddenReviewsEnabledInput().checked).toBe(true);
     await expect.element(page.getByText('Unsaved change')).toBeVisible();
   });
 
@@ -125,5 +141,6 @@ describe('/settings page — kill switch danger zone', () => {
       .toBeVisible();
     await expect.element(page.getByText('Reviews paused')).toBeVisible();
     await expect.element(killSwitchToggle()).toHaveAttribute('aria-checked', 'false');
+    expect(hiddenReviewsEnabledInput().checked).toBe(false);
   });
 });

@@ -36,9 +36,7 @@
 
   const hasUnsavedKillSwitchChange = $derived(reviewsEnabled !== savedReviewsEnabled);
 
-  const toggleLabel = $derived(reviewsEnabled ? 'Pause reviews' : 'Resume reviews');
-
-  // Turning the kill switch off is a global, immediate, blast-radius action, so
+  // Turning the kill switch off is a global, blast-radius action, so
   // it requires an explicit confirmation. Turning it back on is a normal,
   // reversible toggle and does not need one. `onValueChange` can veto the
   // proposed value synchronously; the confirm dialog resolves the change later.
@@ -116,9 +114,9 @@
           Kill switch
         </h2>
         <p class="kill-switch-desc">
-          Immediately stops new run and automation dispatch across every repository. In-flight runs
-          keep going unless a separate cancellation control stops them. Use this if costs spike or
-          an agent misbehaves.
+          Once saved, this stops new run and automation dispatch across every repository. In-flight
+          runs keep going unless a separate cancellation control stops them. Use this if costs spike
+          or an agent misbehaves.
         </p>
       {/snippet}
       <div class="kill-switch-body">
@@ -135,7 +133,7 @@
           checked={reviewsEnabled}
           onValueChange={handleReviewsToggle}
           name="reviewsEnabled"
-          label={toggleLabel}
+          label="Reviews enabled"
         />
       </div>
     </Card>
@@ -143,7 +141,7 @@
     <ConfirmDialog
       bind:open={confirmPauseOpen}
       title="Pause reviews?"
-      description="This stops new run and automation dispatch across every repository immediately. In-flight runs keep going."
+      description="Once you save, this stops new run and automation dispatch across every repository. In-flight runs keep going."
       confirmLabel="Pause reviews"
       destructive
       onconfirm={confirmPause}
