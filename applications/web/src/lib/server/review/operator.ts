@@ -394,7 +394,22 @@ export async function getRunInspector(userId: number, runId: string) {
     .where(eq(tribunalRun.id, runId))
     .limit(1);
 
-  if (!runRow) error(404, 'Run not found.');
+  if (!runRow) {
+    // The inner join above only matches `pull_request_review` runs. A run
+    // that exists but has no `pull_request_review_run` child (e.g. a
+    // `webhook_event_handler` run) falls through here rather than the
+    // `pull_request_review_run` join failing to find a row for a genuinely
+    // missing run. Distinguish those cases explicitly instead of returning a
+    // misleading "not found" for a run the caller does own.
+    const [baseRun] = await db
+      .select({ userId: tribunalRun.userId, runKind: tribunalRun.runKind })
+      .from(tribunalRun)
+      .where(eq(tribunalRun.id, runId))
+      .limit(1);
+    if (!baseRun) error(404, 'Run not found.');
+    if (baseRun.userId !== userId) error(403, 'You do not have access to this run.');
+    error(404, 'This run kind does not have an inspector view yet.');
+  }
   if (runRow.run.userId !== userId) error(403, 'You do not have access to this run.');
 
   const [agentRows, findingRows] = await Promise.all([

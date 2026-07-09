@@ -468,6 +468,38 @@ describe('review operator server helpers', () => {
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
   });
 
+  it('reports a clear error for run kinds without an inspector view instead of a false 404', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+    await testDb.db.insert(tribunalRun).values({
+      id: 'run_webhook_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      runKind: 'webhook_event_handler',
+      status: 'queued',
+    });
+
+    // The run exists and is owned by `owner`, so this must not be reported
+    // as a plain "not found" -- that would be indistinguishable from a truly
+    // missing/nonexistent run id.
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({
+      status: 404,
+      body: { message: 'This run kind does not have an inspector view yet.' },
+    });
+
+    // Ownership is still checked before revealing anything about the run,
+    // including its kind.
+    await expect(
+      withTestDatabase(() => getRunInspector(otherUser.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // A genuinely nonexistent run id still reports plain "not found".
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_does_not_exist')),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });
+  });
+
   it('streams only new agent events and sends an idle keepalive', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     await insertReviewRun({
