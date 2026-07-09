@@ -1,4 +1,4 @@
-import { error, fail, redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { and, desc, eq } from 'drizzle-orm';
 import { reviewRun } from '@tribunal/database/schema';
@@ -15,14 +15,7 @@ import type { PullRequestOperationalStatus } from '@tribunal/github/types/pull-r
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
-import {
-  getRepositoryOperatorDetails,
-  listAgents,
-  parseIgnoreGlobs,
-  saveRepositoryWatchSettings,
-} from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
-import type { Actions } from './$types';
 
 /** Always list OPEN pull requests, most recently updated first. */
 const OPEN_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
@@ -103,11 +96,6 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     error(404, 'Repository not found');
   }
 
-  const [operatorDetails, agents] = await Promise.all([
-    getRepositoryOperatorDetails(user.id, [repositoryId]),
-    listAgents(user.id),
-  ]);
-
   const pullRequests = shouldUseE2EPullRequests()
     ? await listE2EPullRequests(user.id, repository)
     : await listLivePullRequests(repositoryId);
@@ -117,16 +105,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
       id: repository.id,
       owner: repository.owner,
       name: repository.name,
-      review: operatorDetails.get(repository.id) ?? {
-        hasSavedSettings: false,
-        watched: false,
-        ignoreGlobs: [],
-        agents: [],
-        lastRunStatus: null,
-        estimatedCostLast30DaysUsd: 0,
-      },
     },
-    agents,
     pullRequests,
   };
 };
@@ -187,30 +166,3 @@ async function mapWithConcurrency<T, U>(
 
   return results;
 }
-
-export const actions: Actions = {
-  saveSettings: async ({ locals, request, params }) => {
-    const { user } = locals;
-    if (!user) redirect(302, '/login');
-
-    const repositoryId = Number(params.repositoryId);
-    if (!Number.isInteger(repositoryId) || repositoryId <= 0) {
-      return fail(400, { error: 'Repository is invalid.' });
-    }
-
-    const canAccess = await userCanAccessRepository(user.id, repositoryId);
-    if (!canAccess) {
-      error(404, 'Repository not found');
-    }
-
-    const formData = await request.formData();
-    const submittedAgentIds = formData.getAll('agentIds').map(String);
-
-    return saveRepositoryWatchSettings(user.id, {
-      repositoryId,
-      watched: true,
-      ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
-      agentIds: submittedAgentIds,
-    });
-  },
-};
