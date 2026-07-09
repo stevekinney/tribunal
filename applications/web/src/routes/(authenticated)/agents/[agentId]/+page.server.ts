@@ -1,4 +1,4 @@
-import { error, isActionFailure, redirect } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import {
   deleteAgent,
   getAgent,
@@ -39,9 +39,7 @@ export const actions: Actions = {
     if (!user) redirect(302, '/login');
 
     const result = await deleteAgent(user.id, await request.formData());
-    if (isActionFailure(result)) {
-      return result;
-    }
+    if ('status' in result) return result;
 
     redirect(303, '/agents');
   },

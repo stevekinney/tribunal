@@ -46,7 +46,7 @@
 
   <Card title="Danger zone" tone="danger" headingLevel={2}>
     <p class="danger-copy">
-      Permanently delete this agent. It stops running in every repository review immediately. This
+      Permanently delete this agent. It stops running for repository automation immediately. This
       action cannot be undone.
     </p>
     <form method="POST" action="?/delete" bind:this={deleteFormElement} class="delete-form">
