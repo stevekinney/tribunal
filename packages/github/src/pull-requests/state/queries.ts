@@ -169,6 +169,75 @@ interface CIState {
   failingCount: number;
 }
 
+type CheckRunSummary = Pick<CIState, 'ciStatus' | 'checkCount' | 'failingCount'>;
+
+/**
+ * Paginate through GitHub check runs for a ref and roll them up into a single
+ * {@link CIStatus}. Shared by pull-request-head CI reads and default-branch
+ * CI reads so the "what counts as failing/error/pending/passing" state
+ * machine only exists once.
+ */
+async function paginateCheckRunsRollup(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<CheckRunSummary> {
+  const perPage = 100;
+  let page = 1;
+  let totalCount = 0;
+  let failingCount = 0;
+  let hasError = false;
+  let hasPending = false;
+
+  while (true) {
+    const { data } = await octokit.rest.checks.listForRef({
+      owner,
+      repo,
+      ref,
+      per_page: perPage,
+      page,
+    });
+
+    if (page === 1) {
+      totalCount = data.total_count;
+    }
+
+    for (const run of data.check_runs) {
+      if (run.status !== 'completed') {
+        hasPending = true;
+        continue;
+      }
+      if (run.conclusion === 'failure') {
+        failingCount++;
+      } else if (run.conclusion === 'cancelled' || run.conclusion === 'timed_out') {
+        hasError = true;
+      }
+    }
+
+    if (data.check_runs.length < perPage) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  let ciStatus: CIStatus;
+  if (failingCount > 0) {
+    ciStatus = 'failing';
+  } else if (hasError) {
+    ciStatus = 'error';
+  } else if (hasPending) {
+    ciStatus = 'pending';
+  } else if (totalCount > 0) {
+    ciStatus = 'passing';
+  } else {
+    ciStatus = 'unknown';
+  }
+
+  return { ciStatus, checkCount: totalCount, failingCount };
+}
+
 /**
  * Get CI status from check runs for a commit SHA.
  *
@@ -182,62 +251,7 @@ export async function getFailingCheckCount(
   repo: string,
   headSha: string,
 ): Promise<CIState> {
-  const fetchCIState = async (): Promise<CIState> => {
-    // Paginate through all check runs
-    const perPage = 100;
-    let page = 1;
-    let totalCount = 0;
-    let failingCount = 0;
-    let hasError = false;
-    let hasPending = false;
-
-    while (true) {
-      const { data } = await octokit.rest.checks.listForRef({
-        owner,
-        repo,
-        ref: headSha,
-        per_page: perPage,
-        page,
-      });
-
-      if (page === 1) {
-        totalCount = data.total_count;
-      }
-
-      for (const run of data.check_runs) {
-        if (run.status !== 'completed') {
-          hasPending = true;
-          continue;
-        }
-        if (run.conclusion === 'failure') {
-          failingCount++;
-        } else if (run.conclusion === 'cancelled' || run.conclusion === 'timed_out') {
-          hasError = true;
-        }
-      }
-
-      if (data.check_runs.length < perPage) {
-        break;
-      }
-
-      page += 1;
-    }
-
-    let ciStatus: CIStatus;
-    if (failingCount > 0) {
-      ciStatus = 'failing';
-    } else if (hasError) {
-      ciStatus = 'error';
-    } else if (hasPending) {
-      ciStatus = 'pending';
-    } else if (totalCount > 0) {
-      ciStatus = 'passing';
-    } else {
-      ciStatus = 'unknown';
-    }
-
-    return { ciStatus, checkCount: totalCount, failingCount };
-  };
+  const fetchCIState = () => paginateCheckRunsRollup(octokit, owner, repo, headSha);
 
   if (!context) {
     return fetchCIState();
@@ -249,6 +263,47 @@ export async function getFailingCheckCount(
     policy,
     async () => ({ data: await fetchCIState() }),
     [owner, repo, headSha],
+  );
+  return value;
+}
+
+// ============================================================================
+// DEFAULT-BRANCH CI STATE
+// ============================================================================
+
+/**
+ * Get the continuous integration rollup for a repository's default branch.
+ *
+ * Reads check runs for the branch's known head commit SHA — never the
+ * branch name — so the result reflects a specific, citable commit rather
+ * than "whatever HEAD is right now" at read time. Callers must resolve
+ * `defaultBranch` and `commit` before calling; this function does not
+ * fall back to guessing `main` or re-resolving a missing SHA.
+ *
+ * Cached under the `get-branch-ci-status` policy, keyed by
+ * `(owner, repo, branch)` — distinct from the PR-head CI cache key, which
+ * is keyed by `(owner, repo, headSha)`.
+ */
+export async function getDefaultBranchCiStatus(
+  context: GithubServiceContext | undefined,
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branch: string,
+  commitSha: string,
+): Promise<CIState> {
+  const fetchCIState = () => paginateCheckRunsRollup(octokit, owner, repo, commitSha);
+
+  if (!context) {
+    return fetchCIState();
+  }
+
+  const policy = requirePolicy('get-branch-ci-status');
+  const { value } = await cachedRead<CIState>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchCIState() }),
+    [owner, repo, branch],
   );
   return value;
 }

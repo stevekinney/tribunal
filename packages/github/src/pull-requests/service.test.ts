@@ -709,6 +709,67 @@ describe('getPullRequestOperationalStatus', () => {
     expect(status.resolvedReviewThreadCount).toBeNull();
     expect(status.unresolvedReviewThreadCount).toBeNull();
   });
+
+  it('maps a null REST mergeable to unknown, never clean (GitHub computes mergeability asynchronously)', async () => {
+    expect.assertions(1);
+    const octokit = {
+      rest: {
+        pulls: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              number: 7,
+              title: 'Fresh PR',
+              state: 'open',
+              draft: false,
+              locked: false,
+              user: null,
+              created_at: '2024-01-15T10:00:00Z',
+              updated_at: '2024-01-16T12:00:00Z',
+              closed_at: null,
+              merged_at: null,
+              labels: [],
+              head: { ref: 'feature', sha: 'freshsha' },
+              base: { ref: 'main' },
+              html_url: 'https://github.com/owner/repo/pull/7',
+              body: null,
+              additions: 1,
+              deletions: 0,
+              changed_files: 1,
+              // GitHub has not finished computing mergeability yet.
+              mergeable: null,
+              mergeable_state: 'unknown',
+              merged: false,
+              merged_by: null,
+              comments: 0,
+              review_comments: 0,
+              commits: 1,
+            },
+          }),
+        },
+        checks: {
+          listForRef: vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } }),
+        },
+      },
+      graphql: vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        },
+      }),
+    } as never;
+
+    const status = await getPullRequestOperationalStatus(
+      createMockContext(),
+      octokit,
+      'owner',
+      'repo',
+      7,
+      'freshsha',
+    );
+
+    expect(status.mergeConflictStatus).toBe('unknown');
+  });
 });
 
 describe('isRateLimitError', () => {

@@ -1,0 +1,128 @@
+import { describe, it, expect, vi } from 'vitest';
+import type { GithubServiceContext } from '../../context.js';
+import { getDefaultBranchCiStatus, getFailingCheckCount, mapMergeableState } from './queries.js';
+
+function createMockContext(overrides?: Partial<GithubServiceContext>): GithubServiceContext {
+  return {
+    db: {} as never,
+    cache: {
+      getCached: vi.fn().mockResolvedValue(null),
+      setCache: vi.fn().mockResolvedValue(true),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    },
+    getInstallationOctokit: vi.fn().mockResolvedValue(null),
+    getGithubApplication: vi.fn().mockReturnValue(null),
+    ...overrides,
+  };
+}
+
+function createMockOctokit(
+  pages: Array<{ total_count: number; check_runs: Array<Record<string, unknown>> }>,
+) {
+  const listForRef = vi.fn();
+  for (const page of pages) {
+    listForRef.mockResolvedValueOnce({ data: page });
+  }
+  return { rest: { checks: { listForRef } } } as never;
+}
+
+describe('mapMergeableState', () => {
+  it.each([
+    ['clean', 'clean'],
+    ['dirty', 'conflicts'],
+    ['behind', 'behind'],
+    ['blocked', 'blocked'],
+    ['unknown', 'unknown'],
+    [undefined, 'unknown'],
+    ['garbage', 'unknown'],
+  ] as const)('maps mergeable_state %s to %s', (input, expected) => {
+    expect.assertions(1);
+    expect(mapMergeableState(input)).toBe(expected);
+  });
+});
+
+describe('getFailingCheckCount', () => {
+  it.each([
+    ['passing', [{ status: 'completed', conclusion: 'success' }], 1],
+    ['failing', [{ status: 'completed', conclusion: 'failure' }], 1],
+    ['error', [{ status: 'completed', conclusion: 'cancelled' }], 1],
+    ['pending', [{ status: 'in_progress', conclusion: null }], 1],
+    ['unknown', [], 0],
+  ] as const)('maps check runs to %s', async (expected, checkRuns, totalCount) => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([{ total_count: totalCount, check_runs: [...checkRuns] }]);
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    expect(result.ciStatus).toBe(expected);
+  });
+
+  it('prioritizes failing over error and pending', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([
+      {
+        total_count: 3,
+        check_runs: [
+          { status: 'completed', conclusion: 'failure' },
+          { status: 'completed', conclusion: 'cancelled' },
+          { status: 'in_progress', conclusion: null },
+        ],
+      },
+    ]);
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    expect(result.ciStatus).toBe('failing');
+  });
+});
+
+describe('getDefaultBranchCiStatus', () => {
+  it('reads check runs for the resolved commit SHA, not the branch name', async () => {
+    expect.assertions(2);
+    const listForRef = vi.fn().mockResolvedValue({
+      data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    });
+    const octokit = { rest: { checks: { listForRef } } } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'commitsha1',
+    );
+
+    expect(result.ciStatus).toBe('passing');
+    expect(listForRef).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'owner', repo: 'repo', ref: 'commitsha1' }),
+    );
+  });
+
+  it('caches under the get-branch-ci-status policy keyed by (owner, repo, branch)', async () => {
+    expect.assertions(2);
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc');
+
+    expect(context.cache.setCache).toHaveBeenCalledTimes(1);
+    const [cacheKey] = (context.cache.setCache as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(cacheKey).toBe('github:response:acme:widgets:branch:main:ci-status');
+  });
+
+  it('maps no check runs to unknown', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([{ total_count: 0, check_runs: [] }]);
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+    expect(result.ciStatus).toBe('unknown');
+  });
+});
