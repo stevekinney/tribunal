@@ -35,10 +35,10 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
 
   await page.goto('/runs');
   await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
-  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText(
+  await expect(page.getByRole('table', { name: 'Recent runs' })).toContainText(
     `${session.repository.owner}/${session.repository.name} #17`,
   );
-  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('Posted');
+  await expect(page.getByRole('table', { name: 'Recent runs' })).toContainText('Posted');
 
   await page.goto('/costs');
   await expect(page.getByRole('heading', { name: 'Costs' })).toBeVisible();

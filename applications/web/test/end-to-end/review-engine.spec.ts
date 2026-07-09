@@ -120,7 +120,7 @@ test('fake-backed review lifecycle covers open, synchronize, close, redelivery, 
   expect(reopenedAfterClosePayload.totalCostUsd).toBe(synchronizedPayload.totalCostUsd);
 
   await page.goto('/runs');
-  await expect(page.getByRole('table', { name: 'Review runs' })).toContainText('Cancelled');
+  await expect(page.getByRole('table', { name: 'Recent runs' })).toContainText('Cancelled');
 
   await page.goto('/costs');
   // The breakdown defaults to Agent. The review lifecycle should still surface

@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   check,
+  foreignKey,
   index,
   integer,
   pgTable,
@@ -46,6 +47,15 @@ export const pullRequestReviewRun = pgTable(
     reviewPostClaimedAt: timestamp('review_post_claimed_at', { withTimezone: true }),
   },
   (table) => [
+    // Composite FK to tribunal_run(id, user_id, repository_id): the database
+    // rejects a child row whose denormalized user/repository ever diverges
+    // from its parent's, closing a gap the single-column FK on runId alone
+    // cannot enforce.
+    foreignKey({
+      name: 'pull_request_review_run_run_user_repository_fk',
+      columns: [table.runId, table.userId, table.repositoryId],
+      foreignColumns: [tribunalRun.id, tribunalRun.userId, tribunalRun.repositoryId],
+    }).onDelete('cascade'),
     uniqueIndex('pull_request_review_run_user_repository_pr_head_trigger_idx').on(
       table.userId,
       table.repositoryId,
