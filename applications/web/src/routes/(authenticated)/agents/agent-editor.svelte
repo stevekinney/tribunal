@@ -1,11 +1,13 @@
 <script lang="ts">
   import { getEffortFallbackNotice } from '$lib/review/operator-ui';
   import { Alert } from '@lostgradient/cinder/alert';
+  import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Input } from '@lostgradient/cinder/input';
   import { MarkdownEditor } from '@lostgradient/cinder/markdown-editor';
   import { Select } from '@lostgradient/cinder/select';
+  import { StatusDot } from '@lostgradient/cinder/status-dot';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import Save from 'lucide-svelte/icons/save';
   import { untrack } from 'svelte';
@@ -73,7 +75,7 @@
   {/if}
   <input type="hidden" name="body" value={body} />
 
-  <Card title="Agent identity" headingLevel={2}>
+  <Card title="Agent basics" headingLevel={2}>
     <div class="field-grid">
       <Input
         id="agent-slug"
@@ -94,9 +96,26 @@
         placeholder="Finds authentication and permission issues"
       />
     </div>
+
+    <div class="agent-meta">
+      <StatusDot
+        status={enabled ? 'success' : 'offline'}
+        label={enabled ? 'Enabled' : 'Disabled'}
+      />
+      <Badge size="sm">{selectedModel}</Badge>
+      {#if selectedEffort}<Badge size="sm">{selectedEffort}</Badge>{/if}
+    </div>
+
+    <div class="enabled-row">
+      <div>
+        <span class="enabled-label">Enabled</span>
+        <p>Available for repository automation.</p>
+      </div>
+      <Toggle id="agent-enabled" label="Enabled" hideLabel name="enabled" bind:checked={enabled} />
+    </div>
   </Card>
 
-  <Card title="Prompt" description="Markdown is supported." headingLevel={2}>
+  <Card title="Prompt" headingLevel={2}>
     <MarkdownEditor
       id="agent-body"
       label="System prompt"
@@ -117,29 +136,18 @@
         bind:value={selectedModel}
         options={modelSelectOptions}
       />
-      <div class="effort-field">
-        <Select
-          id="agent-effort"
-          name="effort"
-          label="Effort"
-          bind:value={selectedEffort}
-          options={effortSelectOptions}
-        />
-        <p>Higher effort uses more tokens per review.</p>
-      </div>
+      <Select
+        id="agent-effort"
+        name="effort"
+        label="Effort"
+        bind:value={selectedEffort}
+        options={effortSelectOptions}
+      />
     </div>
 
     {#if fallbackNotice}
       <Alert variant="warning">{fallbackNotice}</Alert>
     {/if}
-
-    <div class="enabled-row">
-      <div>
-        <span class="enabled-label">Enabled</span>
-        <p>Runs on watched repositories.</p>
-      </div>
-      <Toggle id="agent-enabled" label="Enabled" name="enabled" bind:checked={enabled} />
-    </div>
   </Card>
 
   <div class="form-actions">
@@ -164,10 +172,11 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .effort-field {
+  .agent-meta {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
   }
 
   .enabled-label {
@@ -176,7 +185,6 @@
     font-weight: var(--font-medium);
   }
 
-  .effort-field p,
   .enabled-row p {
     color: var(--text-subtle);
     font-size: var(--text-sm);
