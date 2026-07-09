@@ -172,16 +172,36 @@ interface CIState {
 type CheckRunSummary = Pick<CIState, 'ciStatus' | 'checkCount' | 'failingCount'>;
 
 /**
+ * Minimal shape `paginateCheckRunsRollup` needs from a caller-provided call
+ * budget. Kept structural (rather than importing `ApiBudget` from the
+ * dashboard module) so this state-query module doesn't take a dependency on
+ * the dashboard feature.
+ */
+export interface CheckRunBudget {
+  canSpend(cost?: number): boolean;
+  spend(cost?: number): void;
+}
+
+/**
  * Paginate through GitHub check runs for a ref and roll them up into a single
  * {@link CIStatus}. Shared by pull-request-head CI reads and default-branch
  * CI reads so the "what counts as failing/error/pending/passing" state
  * machine only exists once.
+ *
+ * When `budget` is supplied, each page fetched (not just the first) spends
+ * one unit against it. Repositories with large CI matrices otherwise consume
+ * many live GitHub requests while a caller-side budget records only one,
+ * defeating the fan-out cap that budget exists to enforce. If the budget
+ * runs out mid-pagination, the rollup is marked `truncated` and reports
+ * `unknown` rather than a possibly-incomplete `passing`/`pending` verdict —
+ * a failing/error signal already observed in fetched pages still wins.
  */
 async function paginateCheckRunsRollup(
   octokit: Octokit,
   owner: string,
   repo: string,
   ref: string,
+  budget?: CheckRunBudget,
 ): Promise<CheckRunSummary> {
   const perPage = 100;
   let page = 1;
@@ -189,8 +209,17 @@ async function paginateCheckRunsRollup(
   let failingCount = 0;
   let hasError = false;
   let hasPending = false;
+  let truncated = false;
 
   while (true) {
+    if (budget) {
+      if (!budget.canSpend(1)) {
+        truncated = true;
+        break;
+      }
+      budget.spend(1);
+    }
+
     const { data } = await octokit.rest.checks.listForRef({
       owner,
       repo,
@@ -210,7 +239,14 @@ async function paginateCheckRunsRollup(
       }
       if (run.conclusion === 'failure') {
         failingCount++;
-      } else if (run.conclusion === 'cancelled' || run.conclusion === 'timed_out') {
+      } else if (
+        run.conclusion === 'cancelled' ||
+        run.conclusion === 'timed_out' ||
+        run.conclusion === 'action_required'
+      ) {
+        // `action_required` (e.g. a check waiting on manual approval) is not
+        // a passing signal — roll it up as an error alongside cancelled/
+        // timed-out runs rather than silently falling through to `passing`.
         hasError = true;
       }
     }
@@ -229,6 +265,8 @@ async function paginateCheckRunsRollup(
     ciStatus = 'error';
   } else if (hasPending) {
     ciStatus = 'pending';
+  } else if (truncated) {
+    ciStatus = 'unknown';
   } else if (totalCount > 0) {
     ciStatus = 'passing';
   } else {
@@ -301,9 +339,10 @@ export async function getDefaultBranchCiStatus(
   repo: string,
   branch: string,
   commitSha: string,
+  budget?: CheckRunBudget,
 ): Promise<CIState> {
   const fetchCIState = async (): Promise<BranchCIState> => ({
-    ...(await paginateCheckRunsRollup(octokit, owner, repo, commitSha)),
+    ...(await paginateCheckRunsRollup(octokit, owner, repo, commitSha, budget)),
     commitSha,
   });
 

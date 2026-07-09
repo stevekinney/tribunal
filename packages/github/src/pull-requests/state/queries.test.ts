@@ -73,6 +73,15 @@ describe('getFailingCheckCount', () => {
     const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
     expect(result.ciStatus).toBe('failing');
   });
+
+  it('rolls up action_required as error rather than passing', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'action_required' }] },
+    ]);
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    expect(result.ciStatus).toBe('error');
+  });
 });
 
 describe('getDefaultBranchCiStatus', () => {
@@ -161,5 +170,63 @@ describe('getDefaultBranchCiStatus', () => {
 
     expect(result.ciStatus).toBe('failing');
     expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'new-sha' }));
+  });
+
+  it('spends one budget unit per check-run page fetched, not one per call', async () => {
+    expect.assertions(3);
+    const page1 = Array.from({ length: 100 }, () => ({
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const page2 = [{ status: 'completed', conclusion: 'success' }];
+    const octokit = createMockOctokit([
+      { total_count: 101, check_runs: page1 },
+      { total_count: 101, check_runs: page2 },
+    ]);
+    const budget = { canSpend: vi.fn().mockReturnValue(true), spend: vi.fn() };
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+      budget,
+    );
+
+    expect(result.ciStatus).toBe('passing');
+    expect(budget.spend).toHaveBeenCalledTimes(2);
+    expect(budget.canSpend).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports unknown instead of a guessed passing status when the budget runs out mid-pagination', async () => {
+    expect.assertions(2);
+    const page1 = Array.from({ length: 100 }, () => ({
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const octokit = createMockOctokit([{ total_count: 150, check_runs: page1 }]);
+    let calls = 0;
+    const budget = {
+      canSpend: vi.fn().mockImplementation(() => {
+        calls += 1;
+        return calls <= 1;
+      }),
+      spend: vi.fn(),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+      budget,
+    );
+
+    expect(result.ciStatus).toBe('unknown');
+    expect(budget.spend).toHaveBeenCalledTimes(1);
   });
 });
