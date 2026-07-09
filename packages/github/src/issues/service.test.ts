@@ -391,16 +391,20 @@ describe('listIssues', () => {
     html_url: `https://github.com/owner/repo/issues/${number}`,
   });
 
-  it('falls back to a full-page row-count heuristic when no Link header is present', async () => {
+  it('reports hasNextPage false when the page is full but no Link header is present', async () => {
+    // A full page (exactly perPage rows) with no Link header means this is the
+    // only page — GitHub omits the header when there is nothing more to
+    // paginate to, even if the page happens to be "full". A row-count
+    // heuristic would misread this as "more pages exist".
     expect.assertions(1);
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
     const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)]);
     const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
 
-    expect(result.hasNextPage).toBe(true);
+    expect(result.hasNextPage).toBe(false);
   });
 
-  it('reports hasNextPage false from the row-count heuristic when the page is not full', async () => {
+  it('reports hasNextPage false when the page is not full and no Link header is present', async () => {
     expect.assertions(1);
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
     const octokit = createMockOctokit([buildIssueRow(1)]);
@@ -409,10 +413,8 @@ describe('listIssues', () => {
     expect(result.hasNextPage).toBe(false);
   });
 
-  it('prefers the GitHub Link header rel="next" over the row-count heuristic', async () => {
+  it('reports hasNextPage false when the Link header is present without rel="next"', async () => {
     expect.assertions(1);
-    // Full page (perPage rows) but the Link header says this is the last page —
-    // the header must win over the heuristic that would otherwise say "true".
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
     const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)], {
       link: '<https://api.github.com/repositories/1/issues?page=1>; rel="prev", <https://api.github.com/repositories/1/issues?page=1>; rel="first"',

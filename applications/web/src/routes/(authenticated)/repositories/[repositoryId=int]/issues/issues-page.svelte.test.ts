@@ -112,6 +112,22 @@ describe('/repositories/[repositoryId]/issues page', () => {
     await expect.element(browserPage.getByRole('navigation', { name: 'Pagination' })).toBeVisible();
   });
 
+  it('does not claim there are no open issues when a filled-with-PRs page still has a next page', async () => {
+    // A page can be entirely pull requests (filtered out client-side) while
+    // hasNextPage is still true — telling the user "No open issues" here is
+    // misleading since the next page can contain real issues.
+    render(IssuesPage, {
+      data: { ...baseData, issues: [], hasNextPage: true },
+    });
+
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No issues on this page' }))
+      .toBeVisible();
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No open issues' }))
+      .not.toBeInTheDocument();
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(IssuesPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },

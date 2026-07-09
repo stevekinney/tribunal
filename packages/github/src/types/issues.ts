@@ -64,9 +64,8 @@ export interface IssueListResult {
   issues: IssueListItem[];
   filters: IssueFilterOptions;
   /**
-   * Whether a next page is available. Derived from GitHub's `Link` response
-   * header (`rel="next"`) when present, falling back to a full-page
-   * row-count heuristic only when the header is missing.
+   * Whether a next page is available. Derived solely from GitHub's `Link`
+   * response header (`rel="next"`); absent when there is no next page.
    */
   hasNextPage: boolean;
 }

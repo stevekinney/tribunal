@@ -132,20 +132,15 @@ function isPullRequestRow(issue: GitHubIssueListItem): boolean {
 /**
  * Determine whether another page of results exists.
  *
- * Prefers GitHub's `Link` response header (`rel="next"`), which is exact.
- * Falls back to a full-page row-count heuristic when the header is missing
- * (some environments/mocks strip response headers), which can be wrong only
- * when the final page happens to contain exactly `perPage` rows.
+ * Relies solely on GitHub's `Link` response header (`rel="next"`), which is
+ * the only exact signal: GitHub omits the header entirely once a page is the
+ * only (or last) page, even when that page happens to contain exactly
+ * `perPage` rows. A row-count heuristic would misread that case as "more
+ * pages exist" and enable a Next control that navigates to an empty page.
  */
-function resolveHasNextPage(
-  linkHeader: string | undefined,
-  rowCount: number,
-  perPage: number,
-): boolean {
-  if (linkHeader) {
-    return /<[^>]+>;\s*rel="next"/.test(linkHeader);
-  }
-  return rowCount >= perPage;
+function resolveHasNextPage(linkHeader: string | undefined): boolean {
+  if (!linkHeader) return false;
+  return /<[^>]+>;\s*rel="next"/.test(linkHeader);
 }
 
 function transformIssueListItem(issue: GitHubIssueListItem): IssueListItem {
@@ -238,7 +233,7 @@ export async function listIssues(
 
     return {
       issues,
-      hasNextPage: resolveHasNextPage(response.headers.link, response.data.length, filters.perPage),
+      hasNextPage: resolveHasNextPage(response.headers.link),
       filters,
     };
   };

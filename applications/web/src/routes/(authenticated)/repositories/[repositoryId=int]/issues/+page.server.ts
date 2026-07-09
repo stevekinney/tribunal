@@ -4,6 +4,7 @@ import {
   getInstallationForRepository,
 } from '@tribunal/github/repositories/service';
 import { listIssues, parseIssueFilters } from '@tribunal/github/issues/service';
+import { isOctokitRequestError, isRateLimitError } from '@tribunal/github/errors';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
 import type { PageServerLoad } from './$types';
@@ -45,7 +46,19 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     installation.repo,
     filters,
     repositoryId,
-  );
+  ).catch((cause: unknown) => {
+    // GitHub's "List repository issues" endpoint requires the app's
+    // installation to have accepted the "Issues" repository permission
+    // (separate from "Pull requests"). Installations that predate that
+    // permission request 403 here rather than returning PR-only rows.
+    if (isOctokitRequestError(cause) && cause.status === 403 && !isRateLimitError(cause)) {
+      error(
+        403,
+        'This GitHub App installation needs the "Issues" permission to show repository issues. Ask an installation owner to accept the updated permissions request on GitHub, then reload this page.',
+      );
+    }
+    throw cause;
+  });
 
   return {
     repository: {

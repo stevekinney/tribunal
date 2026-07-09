@@ -234,10 +234,16 @@
   {#if data.issues.length === 0}
     <Card padding="none">
       <EmptyState
-        title={isFiltered ? 'No issues match these filters' : 'No open issues'}
+        title={isFiltered
+          ? 'No issues match these filters'
+          : data.hasNextPage
+            ? 'No issues on this page'
+            : 'No open issues'}
         description={isFiltered
           ? 'Try widening the state, assignee, or label filters.'
-          : 'When this repository has open issues, they will appear here.'}
+          : data.hasNextPage
+            ? 'This page was filled entirely by pull requests. Continue to the next page to see more issues.'
+            : 'When this repository has open issues, they will appear here.'}
       >
         {#snippet icon()}<CircleDot size={48} />{/snippet}
       </EmptyState>

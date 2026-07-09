@@ -143,6 +143,50 @@ describe('repository issues page load', () => {
     );
   });
 
+  it('returns 403 with a helpful message when GitHub denies access due to a missing Issues permission', async () => {
+    expect.assertions(1);
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockGetInstallationForRepository.mockResolvedValue({
+      ok: true,
+      octokit: {},
+      owner: 'acme',
+      repo: 'widgets',
+    });
+    const forbidden = Object.assign(new Error('Resource not accessible by integration'), {
+      status: 403,
+      response: { data: { message: 'Resource not accessible by integration' }, headers: {} },
+    });
+    mockListIssues.mockRejectedValue(forbidden);
+
+    await expect(runLoad()).rejects.toMatchObject({
+      status: 403,
+      body: { message: expect.stringContaining('Issues') },
+    });
+  });
+
+  it('rethrows a rate-limit 403 instead of misreporting it as a missing permission', async () => {
+    expect.assertions(1);
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockGetInstallationForRepository.mockResolvedValue({
+      ok: true,
+      octokit: {},
+      owner: 'acme',
+      repo: 'widgets',
+    });
+    const rateLimited = Object.assign(new Error('API rate limit exceeded'), {
+      status: 403,
+      response: {
+        data: { message: 'API rate limit exceeded' },
+        headers: { 'x-ratelimit-remaining': '0' },
+      },
+    });
+    mockListIssues.mockRejectedValue(rateLimited);
+
+    await expect(runLoad()).rejects.toBe(rateLimited);
+  });
+
   it('forwards installation owner, repo, filters, and repository id to listIssues', async () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
