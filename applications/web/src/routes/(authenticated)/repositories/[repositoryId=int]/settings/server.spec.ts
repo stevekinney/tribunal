@@ -171,6 +171,22 @@ describe('/repositories/[repositoryId]/settings server action', () => {
     });
   });
 
+  it('dedupes duplicate submitted agentIds, preserving first-occurrence order', async () => {
+    const formData = new FormData();
+    formData.append('agentIds', 'agent_2');
+    formData.append('agentIds', 'agent_1');
+    formData.append('agentIds', 'agent_2');
+
+    await actions.default(createActionEvent(formData));
+
+    expect(mockSaveRepositoryWatchSettings).toHaveBeenCalledWith(1, {
+      repositoryId: 101,
+      watched: true,
+      ignoreGlobs: [],
+      agentIds: ['agent_2', 'agent_1'],
+    });
+  });
+
   it('returns 404 when the user cannot access the repository', async () => {
     mockUserCanAccessRepository.mockResolvedValue(false);
 

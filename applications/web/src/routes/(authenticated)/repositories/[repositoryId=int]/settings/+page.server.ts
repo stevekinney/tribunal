@@ -91,7 +91,12 @@ export const actions: Actions = {
     }
 
     const formData = await request.formData();
-    const submittedAgentIds = formData.getAll('agentIds').map(String);
+    // Dedupe: saveRepositoryWatchSettings compares the count of allowed
+    // agents it finds in the database to input.agentIds.length. A submission
+    // with a duplicate id would deflate that comparison against the deduped
+    // database result and fail with a false "unavailable" error even though
+    // every submitted id is valid.
+    const submittedAgentIds = [...new Set(formData.getAll('agentIds').map(String))];
     const submittedIgnoreGlobs = normalizeIgnoreGlobs(formData.getAll('ignoreGlobs').map(String));
 
     return saveRepositoryWatchSettings(user.id, {
