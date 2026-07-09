@@ -1,5 +1,5 @@
 {
-  "id": "0fa30f0a-0cca-4764-ac8b-2d11bae4c9ff",
+  "id": "ce644c8b-4239-4d65-9561-f52d7180ab63",
   "prevId": "82213eab-c565-4dd6-9d35-a572a75bfad7",
   "version": "7",
   "dialect": "postgresql",
@@ -3041,33 +3041,6 @@
         }
       },
       "indexes": {
-        "tribunal_run_id_user_repository_idx": {
-          "name": "tribunal_run_id_user_repository_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "repository_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "tribunal_run_user_idx": {
           "name": "tribunal_run_user_idx",
           "columns": [
@@ -3126,7 +3099,13 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "tribunal_run_id_user_repository_unique": {
+          "name": "tribunal_run_id_user_repository_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "user_id", "repository_id"]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "tribunal_run_kind_check": {

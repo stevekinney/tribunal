@@ -8,7 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
-  uniqueIndex,
+  unique,
 } from 'drizzle-orm/pg-core';
 import { repository } from './repository';
 import { user } from './user';
@@ -48,12 +48,11 @@ export const tribunalRun = pgTable(
   (table) => [
     // Backs the composite foreign key from pull_request_review_run(run_id,
     // user_id, repository_id), so the database rejects a child row whose
-    // user/repository ever diverges from its parent's.
-    uniqueIndex('tribunal_run_id_user_repository_idx').on(
-      table.id,
-      table.userId,
-      table.repositoryId,
-    ),
+    // user/repository ever diverges from its parent's. A named UNIQUE
+    // constraint (not just a unique index) is required here -- PGlite's
+    // migrator does not recognize a bare unique index as a valid foreign key
+    // reference target.
+    unique('tribunal_run_id_user_repository_unique').on(table.id, table.userId, table.repositoryId),
     index('tribunal_run_user_idx').on(table.userId),
     index('tribunal_run_repository_run_kind_idx').on(table.repositoryId, table.runKind),
     check(
