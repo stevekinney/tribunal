@@ -14,15 +14,19 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
 
   await page.goto(`/repositories/${session.repository.id}/pull-requests`);
   await expect(page.getByRole('heading', { name: 'Open pull requests' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Repository settings' })).toBeVisible();
-  await expect(page.getByLabel('Ignore globs')).toBeVisible();
-  await expect(page.getByLabel('security-review')).toBeChecked();
+  await expect(page.getByRole('link', { name: 'Repository settings' })).toBeVisible();
   await expect(page.getByLabel('Pull request status')).toContainText(
     /CI (passing|failing|pending|unknown)/,
   );
   await expect(page.getByLabel('Pull request status')).toContainText('unresolved');
   await expect(page.getByLabel('Pull request status')).toContainText('resolved');
   await expect(page.getByLabel('Pull request status')).toContainText(/conflicts|Conflict status/i);
+
+  await page.getByRole('link', { name: 'Repository settings' }).click();
+  await expect(page).toHaveURL(`/repositories/${session.repository.id}/settings`);
+  await expect(page.getByRole('heading', { name: 'Repository settings' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Ignore globs' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Remove security-review' })).toBeChecked();
 
   await page.goto('/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();

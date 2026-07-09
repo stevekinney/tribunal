@@ -254,6 +254,20 @@ describe('/repositories/[repositoryId]/settings page', () => {
     ]);
   });
 
+  it('includes an uncommitted ignore-glob draft on save without requiring Enter first', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('textbox', { name: 'Ignore globs' }).fill('node_modules/**');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('ignoreGlobs')).toEqual([
+      'dist/**',
+      'coverage/**',
+      'node_modules/**',
+    ]);
+  });
+
   it('shows a success alert after a successful save', async () => {
     render(SettingsPage, {
       data: baseData,

@@ -35,7 +35,23 @@
   <form
     method="POST"
     class="settings-form"
-    use:enhance={() => {
+    use:enhance={({ formData, formElement }) => {
+      // TagInput only turns typed text into a committed tag (and a hidden
+      // input) on Enter or the comma delimiter. If the user types a glob and
+      // clicks "Save settings" without committing it first, `formData` here
+      // would silently omit it. Read the pending draft straight off the
+      // visible text input and fold it in so nothing typed is ever dropped.
+      const ignoreGlobsInput = formElement.querySelector<HTMLInputElement>('#ignore-globs');
+      const draftIgnoreGlob = ignoreGlobsInput?.value.trim();
+      if (ignoreGlobsInput && draftIgnoreGlob) {
+        formData.append('ignoreGlobs', draftIgnoreGlob);
+        // Also commit it into the visible tag list so the UI matches what
+        // was actually submitted instead of leaving stale draft text behind.
+        ignoreGlobsInput.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+        );
+      }
+
       saving = true;
       return async ({ update }) => {
         try {
