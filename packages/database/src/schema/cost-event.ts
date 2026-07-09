@@ -14,7 +14,7 @@ import {
 import { agent } from './agent';
 import { agentRun } from './agent-run';
 import { repository } from './repository';
-import { reviewRun } from './review-run';
+import { tribunalRun } from './tribunal-run';
 import { user } from './user';
 
 export const costEvent = pgTable(
@@ -29,7 +29,10 @@ export const costEvent = pgTable(
     repositoryId: bigint('repository_id', { mode: 'number' }).references(() => repository.id, {
       onDelete: 'set null',
     }),
-    reviewRunId: text('review_run_id').references(() => reviewRun.id, { onDelete: 'set null' }),
+    // References the generic `tribunal_run` parent, not just pull request
+    // review runs -- the column name is kept for backward compatibility with
+    // existing cost data and call sites.
+    reviewRunId: text('review_run_id').references(() => tribunalRun.id, { onDelete: 'set null' }),
     agentRunId: text('agent_run_id').references(() => agentRun.id, { onDelete: 'set null' }),
     agentId: text('agent_id').references(() => agent.id, { onDelete: 'set null' }),
     amountUsd: numeric('amount_usd').notNull(),

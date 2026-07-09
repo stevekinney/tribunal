@@ -6,7 +6,8 @@ import {
   agent,
   agentRun,
   costEvent,
-  reviewRun,
+  pullRequestReviewRun,
+  tribunalRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
 import {
@@ -40,20 +41,26 @@ async function createCostFixture() {
   const user = await factories.user.create();
   const repository = await factories.repository.create({ id: 42 });
   const review = await testDatabase.db
-    .insert(reviewRun)
+    .insert(tribunalRun)
     .values({
       id: 'run_cost',
       userId: user.id,
       repositoryId: repository.id,
-      prNumber: 12,
-      headSha: 'abc123',
-      trigger: 'opened',
+      runKind: 'pull_request_review',
       status: 'running',
       startedAt: new Date('2026-06-17T12:00:00.000Z'),
       finishedAt: new Date('2026-06-17T12:30:00.000Z'),
     })
     .returning()
     .then(([row]) => row);
+  await testDatabase.db.insert(pullRequestReviewRun).values({
+    runId: review.id,
+    userId: user.id,
+    repositoryId: repository.id,
+    prNumber: 12,
+    headSha: 'abc123',
+    trigger: 'opened',
+  });
   const reviewer = await testDatabase.db
     .insert(agent)
     .values({
@@ -70,7 +77,7 @@ async function createCostFixture() {
     .values({
       id: 'agent_run_security',
       userId: user.id,
-      reviewRunId: review.id,
+      runId: review.id,
       agentId: reviewer.id,
       status: 'succeeded',
     })
@@ -230,9 +237,9 @@ describe('cost ledger', () => {
   it('reconciles legacy review runs without startedAt using the estimate window', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     await testDatabase.db
-      .update(reviewRun)
+      .update(tribunalRun)
       .set({ startedAt: null })
-      .where(eq(reviewRun.id, review.id));
+      .where(eq(tribunalRun.id, review.id));
     await recordLlmEstimate(testDatabase.db, {
       userId: user.id,
       repositoryId: repository.id,
@@ -277,12 +284,12 @@ describe('cost ledger', () => {
   it('reconciles with a one-hour fallback window when the run start is not before finish', async () => {
     const { review } = await createCostFixture();
     await testDatabase.db
-      .update(reviewRun)
+      .update(tribunalRun)
       .set({
         startedAt: new Date('2026-06-17T12:30:00.000Z'),
         finishedAt: new Date('2026-06-17T12:30:00.000Z'),
       })
-      .where(eq(reviewRun.id, review.id));
+      .where(eq(tribunalRun.id, review.id));
     let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
     const client: UsageCostApiClient = {
       async listReviewRunCosts(target) {
