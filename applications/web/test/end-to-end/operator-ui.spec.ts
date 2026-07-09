@@ -52,5 +52,8 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByRole('spinbutton', { name: 'Daily cost cap in US dollars' })).toHaveValue(
     '25',
   );
-  await expect(page.getByLabel('Reviews enabled')).toBeChecked();
+  // The kill switch toggle's accessible name states the action it takes, not
+  // a static "enabled" label, so the seeded (reviews-enabled) state exposes
+  // "Pause reviews" as the thing clicking it would do.
+  await expect(page.getByLabel('Pause reviews')).toBeChecked();
 });
