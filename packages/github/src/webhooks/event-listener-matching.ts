@@ -60,7 +60,17 @@ export function eventListenerMatchesEvent(
  */
 export async function matchAndPersistEventListenerDeliveries(
   context: GithubServiceContext,
-  event: WebhookEvent,
+  event: Pick<
+    WebhookEvent,
+    | 'id'
+    | 'repositoryId'
+    | 'eventType'
+    | 'action'
+    | 'ref'
+    | 'prNumber'
+    | 'issueNumber'
+    | 'senderLogin'
+  >,
 ): Promise<EventListenerDelivery[]> {
   const candidates = await listEnabledListenersForRepositoryEventType(
     context.db,

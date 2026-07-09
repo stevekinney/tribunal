@@ -9,7 +9,7 @@
  * once the first commits, so it gets zero rows back rather than a race.
  */
 
-import { and, eq, inArray, sql } from '../operators';
+import { and, eq, inArray, lt, or, sql } from '../operators';
 import type { Database } from '../connection';
 import {
   eventListenerDelivery,
@@ -20,6 +20,34 @@ import { agent } from '../schema/agent';
 
 /** Retries cap at this many attempts, after which a delivery is abandoned. */
 export const MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS = 5;
+
+/**
+ * A `running` delivery whose `started_at` is older than this is considered
+ * abandoned by whatever process claimed it (crash, killed process,
+ * interrupted fire-and-forget drain) rather than genuinely still in
+ * progress, and becomes claimable again. There is no heartbeat -- dispatch
+ * is expected to be fast (a handful of inserts), so this is generous
+ * relative to normal dispatch latency while still bounding how long a
+ * crashed claim can strand a delivery.
+ */
+export const STALE_RUNNING_DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Claimable status condition shared by the candidate read and the atomic
+ * claim itself: `pending`/`retryable` rows, plus `running` rows whose claim
+ * is older than {@link STALE_RUNNING_DELIVERY_TIMEOUT_MS} (presumed
+ * abandoned by a crashed or interrupted dispatch).
+ */
+function claimableStatusCondition(now: Date, staleTimeoutMs: number) {
+  const staleCutoff = new Date(now.getTime() - staleTimeoutMs);
+  return or(
+    inArray(eventListenerDelivery.status, ['pending', 'retryable']),
+    and(
+      eq(eventListenerDelivery.status, 'running'),
+      lt(eventListenerDelivery.startedAt, staleCutoff),
+    ),
+  );
+}
 
 /**
  * Insert `pending` delivery rows for every matched listener against a
@@ -64,17 +92,23 @@ export interface ClaimableEventListenerDelivery {
 }
 
 /**
- * Find `pending`/`retryable` rows eligible for a claim attempt, scoped to a
- * repository and bounded to `limit` rows. This is a read used to drive a
- * bounded post-response drain -- it does not itself claim anything, so
- * multiple concurrent drains may see the same candidate rows; the actual
- * claim (`claimEventListenerDelivery`) is what resolves the race.
+ * Find `pending`/`retryable` rows (plus stale `running` rows abandoned by a
+ * crashed or interrupted dispatch -- see {@link STALE_RUNNING_DELIVERY_TIMEOUT_MS})
+ * eligible for a claim attempt, scoped to a repository and bounded to
+ * `limit` rows. This is a read used to drive a bounded post-response drain --
+ * it does not itself claim anything, so multiple concurrent drains may see
+ * the same candidate rows; the actual claim (`claimEventListenerDelivery`)
+ * is what resolves the race.
  */
 export async function listClaimableEventListenerDeliveries(
   database: Database,
   repositoryId: number,
   limit: number,
+  options: { now?: Date; staleTimeoutMs?: number } = {},
 ): Promise<ClaimableEventListenerDelivery[]> {
+  const now = options.now ?? new Date();
+  const staleTimeoutMs = options.staleTimeoutMs ?? STALE_RUNNING_DELIVERY_TIMEOUT_MS;
+
   const rows = await database
     .select({
       delivery: eventListenerDelivery,
@@ -92,7 +126,7 @@ export async function listClaimableEventListenerDeliveries(
     .where(
       and(
         eq(repositoryEventListener.repositoryId, repositoryId),
-        inArray(eventListenerDelivery.status, ['pending', 'retryable']),
+        claimableStatusCondition(now, staleTimeoutMs),
       ),
     )
     .limit(limit);
@@ -101,27 +135,30 @@ export async function listClaimableEventListenerDeliveries(
 }
 
 /**
- * Atomically claim a single `pending`/`retryable` delivery for execution.
- * Returns null if another caller already claimed it (or it moved to a
- * terminal state) between the read and this call.
+ * Atomically claim a single `pending`/`retryable` (or stale `running`)
+ * delivery for execution. Returns null if another caller already claimed it
+ * (or it moved to a terminal state, or is `running` but not yet stale)
+ * between the read and this call.
  */
 export async function claimEventListenerDelivery(
   database: Database,
   deliveryId: number,
+  options: { now?: Date; staleTimeoutMs?: number } = {},
 ): Promise<EventListenerDelivery | null> {
+  const now = options.now ?? new Date();
+  const staleTimeoutMs = options.staleTimeoutMs ?? STALE_RUNNING_DELIVERY_TIMEOUT_MS;
+  const claimedAt = new Date();
+
   const [row] = await database
     .update(eventListenerDelivery)
     .set({
       status: 'running',
-      claimedAt: new Date(),
-      startedAt: new Date(),
+      claimedAt,
+      startedAt: claimedAt,
       attemptCount: sql`${eventListenerDelivery.attemptCount} + 1`,
     })
     .where(
-      and(
-        eq(eventListenerDelivery.id, deliveryId),
-        inArray(eventListenerDelivery.status, ['pending', 'retryable']),
-      ),
+      and(eq(eventListenerDelivery.id, deliveryId), claimableStatusCondition(now, staleTimeoutMs)),
     )
     .returning();
 

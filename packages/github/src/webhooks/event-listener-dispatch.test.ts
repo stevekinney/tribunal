@@ -10,6 +10,7 @@ import {
   webhookEventHandlerRun,
 } from '@tribunal/database/schema';
 import {
+  STALE_RUNNING_DELIVERY_TIMEOUT_MS,
   createEventListener,
   insertPendingEventListenerDeliveries,
 } from '@tribunal/database/queries';
@@ -281,5 +282,112 @@ describe('drainEventListenerDeliveries', () => {
     const runs = await testContext.db.select().from(tribunalRun);
     expect(runs).toHaveLength(2);
     expect(event.id).not.toBe(secondEvent.id);
+  });
+
+  it('drains a backlog larger than a single round within one call', async () => {
+    const { repository, listener } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    // The fixture already left one pending delivery. Add enough more pending
+    // deliveries (against fresh webhook events, since a listener can only
+    // have one delivery per event) that the total backlog exceeds
+    // `DEFAULT_EVENT_LISTENER_DRAIN_LIMIT` and requires more than one round
+    // to fully drain.
+    const extraCount = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT * 2;
+    for (let i = 0; i < extraCount; i += 1) {
+      const extraEvent = await insertWebhookEvent({ repositoryId: repository.id });
+      await insertPendingEventListenerDeliveries(testContext.db, [listener.id], extraEvent.id);
+    }
+
+    const result = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(result.attempted).toBe(extraCount + 1);
+    expect(result.dispatched).toBe(extraCount + 1);
+
+    const remainingPending = await testContext.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.status, 'pending'));
+    expect(remainingPending).toHaveLength(0);
+  });
+
+  it('a multi-round drain never attempts the same delivery more than once, even when failures make it re-claimable within the same call', async () => {
+    const { repository, listener, testAgent } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    // Disable the agent so every dispatch fails with EventListenerDisabledError,
+    // which moves the delivery to `retryable` -- itself claimable again.
+    // Without per-call dedup, a multi-round drain would re-claim and
+    // re-attempt these deliveries in later rounds within the *same* call,
+    // burning through the 5-attempt retry cap in seconds instead of across
+    // separate webhooks.
+    await testContext.db.update(agent).set({ enabled: false }).where(eq(agent.id, testAgent.id));
+
+    const totalCount = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT + 2;
+    // The fixture already left one pending delivery -- add enough more to
+    // exceed the per-round limit.
+    for (let i = 0; i < totalCount - 1; i += 1) {
+      const extraEvent = await insertWebhookEvent({ repositoryId: repository.id });
+      await insertPendingEventListenerDeliveries(testContext.db, [listener.id], extraEvent.id);
+    }
+
+    const result = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(result.attempted).toBe(totalCount);
+    expect(result.skippedDisabled).toBe(totalCount);
+
+    const deliveries = await testContext.db.select().from(eventListenerDelivery);
+    expect(deliveries).toHaveLength(totalCount);
+    for (const delivery of deliveries) {
+      expect(delivery.attemptCount).toBe(1);
+      expect(delivery.status).toBe('retryable');
+    }
+  });
+
+  it('reclaims a delivery stranded in `running` past the stale timeout, from an earlier crashed/interrupted drain', async () => {
+    const { repository, pending } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    // Simulate a claim that never completed (process crash between claim
+    // and dispatch): the row is `running`, but its `started_at` is older
+    // than the stale timeout.
+    const staleStartedAt = new Date(Date.now() - STALE_RUNNING_DELIVERY_TIMEOUT_MS - 1000);
+    await testContext.db
+      .update(eventListenerDelivery)
+      .set({ status: 'running', claimedAt: staleStartedAt, startedAt: staleStartedAt })
+      .where(eq(eventListenerDelivery.id, pending.id));
+
+    const result = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+
+    const [deliveryRow] = await testContext.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(deliveryRow?.status).toBe('succeeded');
+    // Reclaiming counts as a new attempt.
+    expect(deliveryRow?.attemptCount).toBe(1);
+  });
+
+  it('does not reclaim a `running` delivery that has not yet gone stale', async () => {
+    const { repository, pending } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    const recentStartedAt = new Date();
+    await testContext.db
+      .update(eventListenerDelivery)
+      .set({ status: 'running', claimedAt: recentStartedAt, startedAt: recentStartedAt })
+      .where(eq(eventListenerDelivery.id, pending.id));
+
+    const result = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+
+    const [deliveryRow] = await testContext.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(deliveryRow?.status).toBe('running');
   });
 });

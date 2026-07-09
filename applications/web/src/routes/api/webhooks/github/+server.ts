@@ -214,14 +214,49 @@ export const POST: RequestHandler = async (event) => {
         ...eventFields,
       });
     } catch (e) {
-      console.error('Failed to store webhook event:', e);
+      console.error('Failed to store webhook event:', {
+        eventType,
+        action,
+        deliveryId,
+        repositoryId: repository.id,
+        installationId,
+        error: e,
+      });
     }
 
     if (storedEvent) {
-      try {
-        await matchAndPersistEventListenerDeliveries(githubContext, storedEvent);
-      } catch (e) {
-        console.error('Failed to match event listeners for webhook event:', e);
+      // Matching only fails on transient conditions (a listener deleted
+      // between the candidate read and the delivery insert, or a transient
+      // database error) -- `matchAndPersistEventListenerDeliveries` re-reads
+      // candidates on every call, so a bounded in-process retry resolves
+      // those without re-running the (already-committed) event store above.
+      // GitHub will not redeliver this webhook once the delivery is claimed,
+      // so a failure here that isn't retried would silently drop listener
+      // dispatch for this event -- see the linked review thread for the
+      // narrower, schema-level fix (a durable "unmatched" marker surviving
+      // process crashes) left as a follow-up.
+      const MAX_MATCH_ATTEMPTS = 3;
+      let matchError: unknown;
+      for (let attempt = 1; attempt <= MAX_MATCH_ATTEMPTS; attempt += 1) {
+        try {
+          await matchAndPersistEventListenerDeliveries(githubContext, storedEvent);
+          matchError = undefined;
+          break;
+        } catch (e) {
+          matchError = e;
+        }
+      }
+      if (matchError) {
+        console.error('Failed to match event listeners for webhook event:', {
+          webhookEventId: storedEvent.id,
+          eventType,
+          action,
+          deliveryId,
+          repositoryId: repository.id,
+          installationId,
+          attempts: MAX_MATCH_ATTEMPTS,
+          error: matchError,
+        });
       }
     }
   }
