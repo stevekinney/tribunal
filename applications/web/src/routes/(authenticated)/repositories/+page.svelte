@@ -18,6 +18,7 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { FolderGit2, Plus } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
+  import WebhookIcon from 'lucide-svelte/icons/webhook';
 
   let { data, form }: PageProps = $props();
 
@@ -290,6 +291,17 @@
                       {#if repository.defaultBranch}
                         <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
                       {/if}
+                      <Button
+                        href={`/repositories/${repository.id}/webhooks`}
+                        variant="ghost"
+                        size="xs"
+                      >
+                        {#snippet leadingIcon()}<WebhookIcon
+                            size={14}
+                            aria-hidden="true"
+                          />{/snippet}
+                        <span class="sr-only">Webhook events</span>
+                      </Button>
                     </div>
                   </Table.Cell>
                   <Table.Cell>
@@ -449,5 +461,17 @@
   .table-hint {
     font-size: var(--text-xs);
     color: var(--text-subtle);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>
