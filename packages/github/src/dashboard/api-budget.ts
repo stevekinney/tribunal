@@ -15,7 +15,7 @@
  *   attempt, regardless of whether individual calls would have been cache
  *   hits — this keeps the contract simple and deterministic to test.
  * - Trips permanently for the rest of the request the moment GitHub itself
- * 	 reports a rate limit, so a single 403/429 stops further fan-out instead
+ *   reports a rate limit, so a single 403/429 stops further fan-out instead
  *   of hammering the remaining repositories into the same wall.
  *
  * Callers must treat `canSpend(...) === false` as "do not call GitHub for

@@ -348,4 +348,67 @@ describe('buildRepositoryDashboard', () => {
       'github:repository:42:prs:list:s:open|sort:updated|dir:desc|p:1|pp:100',
     );
   });
+
+  it('does not reuse a passing CI decoration recorded for a since-superseded head commit', async () => {
+    expect.assertions(1);
+    // The projection's ciStatus/ciUpdatedAt are fresh by wall-clock, but were
+    // recorded for an earlier head commit ('old-head') than the PR's current
+    // head ('new-head') — as happens when a new commit lands shortly after
+    // the previous head's checks finished. The decoration must not be
+    // replayed for the new commit.
+    const octokit = makeOctokit({
+      pullRequests: [makePullRequest({ head: { ref: 'feature', sha: 'new-head' } })],
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([makePullRequestState({ headSha: 'old-head', ciStatus: 'passing' })]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].pullRequests[0].ciStatus).toBe('unknown');
+  });
+
+  it('trusts a fresh CI decoration when the recorded head SHA matches the PR head', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({
+      pullRequests: [makePullRequest({ head: { ref: 'feature', sha: 'same-head' } })],
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([makePullRequestState({ headSha: 'same-head', ciStatus: 'passing' })]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].pullRequests[0].ciStatus).toBe('passing');
+  });
+
+  it('renders a github-error row (not no-installation) when installation token resolution throws', async () => {
+    expect.assertions(2);
+    const getInstallationOctokit = vi.fn().mockRejectedValue(new Error('token mint failed'));
+    const context = createMockContext({ getInstallationOctokit });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].dataStatus).toBe('unavailable');
+    expect(rows[0].unavailableReason).toBe('github-error');
+  });
+
+  it('marks the shared budget rate-limited when installation token resolution throws a rate-limit error', async () => {
+    expect.assertions(3);
+    const getInstallationOctokit = vi.fn().mockRejectedValue(rateLimitError);
+    const context = createMockContext({ getInstallationOctokit });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ id: 1 }),
+      makeRepository({ id: 2 }),
+    ]);
+
+    expect(rows[0].unavailableReason).toBe('rate-limited');
+    // The budget trips for the whole build, so the second repository never
+    // even attempts to resolve an installation client.
+    expect(rows[1].unavailableReason).toBe('rate-limited');
+    expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
+  });
 });

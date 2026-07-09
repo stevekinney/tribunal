@@ -111,7 +111,24 @@ async function buildRepositoryRow(
     return unavailableRow(identity, refreshedAt, 'no-installation');
   }
 
-  const octokit = await resolveOctokit(context, repository.installationId);
+  let octokit: Awaited<ReturnType<GithubServiceContext['getInstallationOctokit']>>;
+  try {
+    octokit = await context.getInstallationOctokit(repository.installationId);
+  } catch (error) {
+    // A thrown error means installation-token resolution itself failed
+    // (e.g. a 403/429 while minting the token, or a transient GitHub
+    // error) — distinct from `getInstallationOctokit` returning `null` for
+    // a genuinely missing installation. Reporting this as `no-installation`
+    // would make the dashboard keep retrying token resolution on every
+    // load instead of short-circuiting on the rate limit / surfacing the
+    // real failure.
+    if (isRateLimitError(error)) budget.markRateLimited();
+    return unavailableRow(
+      identity,
+      refreshedAt,
+      isRateLimitError(error) ? 'rate-limited' : 'github-error',
+    );
+  }
   if (!octokit) {
     return unavailableRow(identity, refreshedAt, 'no-installation');
   }
@@ -178,14 +195,6 @@ async function buildRepositoryRow(
   };
 }
 
-async function resolveOctokit(context: GithubServiceContext, installationId: number) {
-  try {
-    return await context.getInstallationOctokit(installationId);
-  } catch {
-    return null;
-  }
-}
-
 async function readDefaultBranchStatus(
   context: GithubServiceContext,
   octokit: NonNullable<Awaited<ReturnType<GithubServiceContext['getInstallationOctokit']>>>,
@@ -200,9 +209,14 @@ async function readDefaultBranchStatus(
   if (!budget.canSpend(1)) {
     return 'unknown';
   }
-  budget.spend(1);
 
   try {
+    // Budget accounting happens per-page inside `getDefaultBranchCiStatus`
+    // (via the shared check-run paginator), not as a flat one-unit charge
+    // here — a repository with a large CI matrix can otherwise consume many
+    // live GitHub requests while this budget records only one, defeating
+    // the fan-out cap. On a cache hit no live call is made and no budget is
+    // spent at all.
     const ciState = await getDefaultBranchCiStatus(
       context,
       octokit,
@@ -210,6 +224,7 @@ async function readDefaultBranchStatus(
       repository.name,
       repository.defaultBranch,
       repository.commit,
+      budget,
     );
     return ciState.ciStatus;
   } catch (error) {
@@ -235,7 +250,15 @@ function decoratePullRequest(
   nowMs: number,
   staleAfterMs: number,
 ): PullRequestDashboardRow {
-  const ciFresh = isFresh(state?.ciUpdatedAt, nowMs, staleAfterMs);
+  // A PR receiving a new commit shortly after checks finished on the
+  // previous head would otherwise still look "fresh" by wall-clock alone —
+  // `synchronize` updates the PR's head but the previous ciStatus/
+  // ciUpdatedAt can linger until the next CI webhook lands. Require the
+  // projection's recorded head SHA to match the PR's *current* head before
+  // trusting its CI decoration; a mismatch renders `unknown` rather than
+  // replaying stale CI for the new commit.
+  const ciFresh =
+    isFresh(state?.ciUpdatedAt, nowMs, staleAfterMs) && state?.headSha === pullRequest.headSha;
   const mergeFresh = isFresh(state?.mergeUpdatedAt, nowMs, staleAfterMs);
   const reviewFresh = isFresh(state?.reviewUpdatedAt, nowMs, staleAfterMs);
 
