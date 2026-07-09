@@ -97,21 +97,20 @@
       />
     </div>
 
-    <div class="agent-meta">
-      <StatusDot
-        status={enabled ? 'success' : 'offline'}
-        label={enabled ? 'Enabled' : 'Disabled'}
-      />
-      <Badge size="sm">{selectedModel}</Badge>
-      {#if selectedEffort}<Badge size="sm">{selectedEffort}</Badge>{/if}
-    </div>
-
     <div class="enabled-row">
       <div>
         <span class="enabled-label">Enabled</span>
         <p>Available for repository automation.</p>
       </div>
       <Toggle id="agent-enabled" label="Enabled" hideLabel name="enabled" bind:checked={enabled} />
+    </div>
+
+    <div class="agent-meta">
+      <StatusDot
+        status={enabled ? 'success' : 'offline'}
+        label={enabled ? 'Enabled' : 'Disabled'}
+      />
+      <Badge size="sm">{selectedModel}</Badge>
     </div>
   </Card>
 
