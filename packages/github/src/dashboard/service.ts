@@ -275,7 +275,7 @@ function unavailableRow(
     openPullRequestCount: null,
     openPullRequestCountAtCap: false,
     attentionPullRequestCount: null,
-    unresolvedThreadCount: 0,
+    unresolvedThreadCount: null,
     pullRequests: [],
     refreshedAt,
     dataStatus: 'unavailable',

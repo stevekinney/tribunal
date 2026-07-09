@@ -11,7 +11,19 @@ describe('ApiBudget', () => {
 
   it('rejects a negative budget', () => {
     expect.assertions(1);
-    expect(() => new ApiBudget(-1)).toThrow('non-negative');
+    expect(() => new ApiBudget(-1)).toThrow('non-negative integer');
+  });
+
+  it('rejects a fractional budget', () => {
+    expect.assertions(1);
+    expect(() => new ApiBudget(1.5)).toThrow('non-negative integer');
+  });
+
+  it('rejects a fractional spend cost, closing the fractional-cost bypass', () => {
+    expect.assertions(2);
+    const budget = new ApiBudget(1);
+    expect(() => budget.canSpend(0.5)).toThrow('positive integer');
+    expect(() => budget.spend(0.5)).toThrow('positive integer');
   });
 
   it('allows spending while calls remain', () => {

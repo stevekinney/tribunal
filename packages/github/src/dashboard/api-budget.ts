@@ -42,19 +42,25 @@ export class ApiBudget {
   private rateLimited = false;
 
   constructor(maxCalls: number = DEFAULT_DASHBOARD_API_BUDGET) {
-    if (!Number.isFinite(maxCalls) || maxCalls < 0) {
-      throw new Error(`ApiBudget maxCalls must be a non-negative finite number, got ${maxCalls}`);
+    if (!Number.isInteger(maxCalls) || maxCalls < 0) {
+      throw new Error(`ApiBudget maxCalls must be a non-negative integer, got ${maxCalls}`);
     }
     this.remaining = maxCalls;
   }
 
   /** Whether a call of the given cost may still be attempted. */
   canSpend(cost = 1): boolean {
+    if (!Number.isInteger(cost) || cost < 1) {
+      throw new Error(`ApiBudget cost must be a positive integer, got ${cost}`);
+    }
     return !this.rateLimited && this.remaining >= cost;
   }
 
   /** Record a completed (attempted) call against the budget. */
   spend(cost = 1): void {
+    if (!Number.isInteger(cost) || cost < 1) {
+      throw new Error(`ApiBudget cost must be a positive integer, got ${cost}`);
+    }
     this.remaining = Math.max(0, this.remaining - cost);
   }
 

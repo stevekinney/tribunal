@@ -125,4 +125,41 @@ describe('getDefaultBranchCiStatus', () => {
     );
     expect(result.ciStatus).toBe('unknown');
   });
+
+  it('bypasses a cache hit computed for a different commit than requested', async () => {
+    expect.assertions(2);
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn().mockResolvedValue({
+          value: { ciStatus: 'passing', checkCount: 1, failingCount: 0, commitSha: 'old-sha' },
+          etag: undefined,
+          fetchedAt: Date.now(),
+          expiresAt: Date.now() + 30_000,
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+    const listForRef = vi.fn().mockResolvedValue({
+      data: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'failure' }] },
+    });
+    const octokit = { rest: { checks: { listForRef } } } as never;
+
+    // The default branch advanced to 'new-sha' since the cached entry (for
+    // 'old-sha') was stored — the stale commit's rollup must not be reused.
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'new-sha',
+    );
+
+    expect(result.ciStatus).toBe('failing');
+    expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'new-sha' }));
+  });
 });

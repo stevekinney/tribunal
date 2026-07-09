@@ -336,7 +336,16 @@ describe('buildRepositoryDashboard', () => {
 
     await buildRepositoryDashboard(context, [makeRepository({ id: 42 })]);
 
-    // A repositoryId-aware call goes through cachedRead, which reads the cache first.
-    expect(context.cache.getCached).toHaveBeenCalled();
+    // A repositoryId-aware call is keyed by repository ID under cachedRead's
+    // list-pull-requests policy. Asserting the exact key (rather than "cache
+    // was touched at all") ensures this fails if the dashboard ever calls
+    // listPullRequests without repositoryId, even though the default-branch
+    // CI read also touches the cache.
+    const cacheKeys = (context.cache.getCached as ReturnType<typeof vi.fn>).mock.calls.map(
+      ([key]) => key,
+    );
+    expect(cacheKeys).toContain(
+      'github:repository:42:prs:list:s:open|sort:updated|dir:desc|p:1|pp:100',
+    );
   });
 });

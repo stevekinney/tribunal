@@ -271,6 +271,11 @@ export async function getFailingCheckCount(
 // DEFAULT-BRANCH CI STATE
 // ============================================================================
 
+interface BranchCIState extends CIState {
+  /** Commit SHA this rollup was computed for — used to detect a stale cross-commit cache hit. */
+  commitSha: string;
+}
+
 /**
  * Get the continuous integration rollup for a repository's default branch.
  *
@@ -282,7 +287,12 @@ export async function getFailingCheckCount(
  *
  * Cached under the `get-branch-ci-status` policy, keyed by
  * `(owner, repo, branch)` — distinct from the PR-head CI cache key, which
- * is keyed by `(owner, repo, headSha)`.
+ * is keyed by `(owner, repo, headSha)`. Because the cache key does not
+ * include the commit SHA, a cached entry from before the default branch
+ * advanced would otherwise be replayed for the new commit. The cached
+ * envelope stores the commit SHA it was computed for; a mismatch bypasses
+ * the cache and refetches for the requested SHA instead of silently
+ * reusing a different commit's rollup.
  */
 export async function getDefaultBranchCiStatus(
   context: GithubServiceContext | undefined,
@@ -292,18 +302,33 @@ export async function getDefaultBranchCiStatus(
   branch: string,
   commitSha: string,
 ): Promise<CIState> {
-  const fetchCIState = () => paginateCheckRunsRollup(octokit, owner, repo, commitSha);
+  const fetchCIState = async (): Promise<BranchCIState> => ({
+    ...(await paginateCheckRunsRollup(octokit, owner, repo, commitSha)),
+    commitSha,
+  });
 
   if (!context) {
     return fetchCIState();
   }
 
   const policy = requirePolicy('get-branch-ci-status');
-  const { value } = await cachedRead<CIState>(
+  const { value } = await cachedRead<BranchCIState>(
     context.cache,
     policy,
     async () => ({ data: await fetchCIState() }),
     [owner, repo, branch],
   );
-  return value;
+
+  if (value.commitSha === commitSha) {
+    return value;
+  }
+
+  const { value: refreshed } = await cachedRead<BranchCIState>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchCIState() }),
+    [owner, repo, branch],
+    { bypass: true },
+  );
+  return refreshed;
 }

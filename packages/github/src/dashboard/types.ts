@@ -95,8 +95,15 @@ export interface RepositoryDashboardRow {
   openPullRequestCountAtCap: boolean;
   /** `null` when inventory is unavailable; otherwise a count derived from `pullRequests`. */
   attentionPullRequestCount: number | null;
-  /** Sum of known per-PR unresolved thread counts (nulls treated as 0 for this rollup). */
-  unresolvedThreadCount: number;
+  /**
+   * Sum of known per-PR unresolved thread counts. `null` when inventory
+   * itself is unavailable (rate limited, budget exhausted, no installation,
+   * GitHub error) — a repository we never read from is not evidence of zero
+   * unresolved threads. When inventory is available, individual PRs with
+   * missing/stale decoration contribute 0 to the sum (that per-PR count
+   * still renders `null` on the PR row itself).
+   */
+  unresolvedThreadCount: number | null;
   pullRequests: PullRequestDashboardRow[];
   refreshedAt: string;
   dataStatus: 'ok' | 'unavailable';
