@@ -1,11 +1,21 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import { createFactories } from '@tribunal/test/factories';
 import { runWithDatabase } from '$lib/server/database';
-import { repository, webhookEvent } from '@tribunal/database/schema';
 import {
+  agent,
+  eventListenerDelivery,
+  repository,
+  repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
+} from '@tribunal/database/schema';
+import {
+  getObservedEventTypeActionMap,
   getWebhookEventFilterOptions,
   listWebhookEvents,
   parseWebhookEventFilters,
+  summarizeListenerProgress,
 } from './webhook-events';
 
 describe('webhook-events server helper', () => {
@@ -352,6 +362,250 @@ describe('webhook-events server helper', () => {
         // options are derived from stored rows, not filtered against a catalog.
         expect(options.eventTypes).toEqual(['a_totally_novel_event']);
       });
+    });
+  });
+
+  describe('getObservedEventTypeActionMap', () => {
+    it('groups distinct observed actions by event type, scoped to one repository', async () => {
+      const repoA = await createRepository({ id: 1, owner: 'acme', name: 'a' });
+      const repoB = await createRepository({ id: 2, owner: 'acme', name: 'b' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'opened' });
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'closed' });
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'opened' });
+        await createWebhookEvent({
+          repositoryId: repoA.id,
+          eventType: 'pull_request',
+          action: 'opened',
+        });
+        await createWebhookEvent({
+          repositoryId: repoB.id,
+          eventType: 'issues',
+          action: 'labeled',
+        });
+
+        const map = await getObservedEventTypeActionMap(repoA.id);
+
+        expect(map).toEqual({
+          issues: ['closed', 'opened'],
+          pull_request: ['opened'],
+        });
+      });
+    });
+
+    it('omits events with no action', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repo.id, eventType: 'push', action: null });
+
+        const map = await getObservedEventTypeActionMap(repo.id);
+
+        expect(map).toEqual({});
+      });
+    });
+  });
+
+  describe('listener progress', () => {
+    async function createUser() {
+      const factories = createFactories(testDb.db);
+      return factories.user.create();
+    }
+
+    async function insertAgentRow(userId: number) {
+      const unique = Math.random().toString(36).slice(2);
+      const [row] = await testDb.db
+        .insert(agent)
+        .values({
+          id: `agent_${unique}`,
+          userId,
+          slug: `agent-${unique}`,
+          description: 'Test agent',
+          body: 'Do the thing.',
+        })
+        .returning();
+      return row;
+    }
+
+    async function insertListener(input: { userId: number; repositoryId: number; name: string }) {
+      const agentRow = await insertAgentRow(input.userId);
+      const [row] = await testDb.db
+        .insert(repositoryEventListener)
+        .values({
+          id: `listener_${Math.random()}`,
+          userId: input.userId,
+          repositoryId: input.repositoryId,
+          name: input.name,
+          eventType: 'issues',
+          agentId: agentRow.id,
+        })
+        .returning();
+      return row;
+    }
+
+    it('shows no matches as received-only, never as an error', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repo.id, eventType: 'push' });
+
+        const result = await listWebhookEvents([repo.id]);
+
+        expect(result.events[0]?.listenerProgress).toEqual({
+          receivedOnly: true,
+          matchCount: 0,
+          matchedListenerNames: [],
+          status: 'received_only',
+          hasError: false,
+          matches: [],
+        });
+      });
+    });
+
+    it('shows one matched listener whose run is still queued', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listener = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Triage issues',
+        });
+        const [run] = await testDb.db
+          .insert(tribunalRun)
+          .values({
+            id: 'run:test:1',
+            userId: user.id,
+            repositoryId: repo.id,
+            runKind: 'webhook_event_handler',
+            status: 'queued',
+          })
+          .returning();
+        await testDb.db.insert(eventListenerDelivery).values({
+          listenerId: listener.id,
+          webhookEventId: event.id,
+          status: 'succeeded',
+          runId: run.id,
+        });
+
+        const result = await listWebhookEvents([repo.id]);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.receivedOnly).toBe(false);
+        expect(progress?.matchCount).toBe(1);
+        expect(progress?.matchedListenerNames).toEqual(['Triage issues']);
+        expect(progress?.status).toBe('queued');
+        expect(progress?.hasError).toBe(false);
+        expect(progress?.matches[0]?.runId).toBe('run:test:1');
+      });
+    });
+
+    it('surfaces multiple matched listeners and prioritizes running work in the overall status', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listenerA = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Listener A',
+        });
+        const listenerB = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Listener B',
+        });
+        const [runningRun] = await testDb.db
+          .insert(tribunalRun)
+          .values({
+            id: 'run:test:running',
+            userId: user.id,
+            repositoryId: repo.id,
+            runKind: 'webhook_event_handler',
+            status: 'running',
+          })
+          .returning();
+        await testDb.db.insert(eventListenerDelivery).values([
+          {
+            listenerId: listenerA.id,
+            webhookEventId: event.id,
+            status: 'succeeded',
+            runId: runningRun.id,
+          },
+          {
+            listenerId: listenerB.id,
+            webhookEventId: event.id,
+            status: 'succeeded',
+            runId: null,
+          },
+        ]);
+
+        const result = await listWebhookEvents([repo.id]);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.matchCount).toBe(2);
+        expect(progress?.matchedListenerNames).toEqual(
+          expect.arrayContaining(['Listener A', 'Listener B']),
+        );
+        // A run in progress is more operationally interesting than a
+        // dispatch whose run row could not be resolved (defaults to queued).
+        expect(progress?.status).toBe('running');
+      });
+    });
+
+    it('surfaces a dispatch failure as an error, not as received-only', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listener = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Flaky listener',
+        });
+        await testDb.db.insert(eventListenerDelivery).values({
+          listenerId: listener.id,
+          webhookEventId: event.id,
+          status: 'abandoned',
+          lastError: 'Agent no longer exists',
+        });
+
+        const result = await listWebhookEvents([repo.id]);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.status).toBe('failed');
+        expect(progress?.hasError).toBe(true);
+        expect(progress?.matches[0]?.lastError).toBe('Agent no longer exists');
+      });
+    });
+  });
+
+  describe('summarizeListenerProgress', () => {
+    it('returns received_only for no matches', () => {
+      expect(summarizeListenerProgress([])).toEqual({ status: 'received_only', hasError: false });
+    });
+
+    it('flags hasError when any match failed, regardless of others', () => {
+      const result = summarizeListenerProgress([{ status: 'succeeded' }, { status: 'failed' }]);
+      expect(result).toEqual({ status: 'failed', hasError: true });
+    });
+
+    it('prefers running over queued or matched', () => {
+      const result = summarizeListenerProgress([{ status: 'matched' }, { status: 'running' }]);
+      expect(result.status).toBe('running');
+    });
+
+    it('only reports succeeded once nothing is pending, running, or failed', () => {
+      const result = summarizeListenerProgress([{ status: 'succeeded' }, { status: 'cancelled' }]);
+      expect(result.status).toBe('succeeded');
     });
   });
 

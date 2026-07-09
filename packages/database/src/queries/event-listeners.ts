@@ -5,15 +5,21 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq } from '../operators';
+import { and, desc, eq } from '../operators';
 import type { Database } from '../connection';
 import { agent } from '../schema/agent';
+import { eventListenerDelivery } from '../schema/event-listener-delivery';
+import { tribunalRun } from '../schema/tribunal-run';
 import {
   repositoryEventListener,
   type NewRepositoryEventListener,
   type RepositoryEventListener,
 } from '../schema/repository-event-listener';
 import { serializeEventListenerFilters, type EventListenerFilters } from './event-listener-filters';
+import {
+  deriveEventListenerDisplayStatus,
+  type EventListenerDisplayStatus,
+} from './event-listener-deliveries';
 
 export class EventListenerAgentOwnershipError extends Error {
   constructor(agentId: string) {
@@ -225,4 +231,96 @@ export async function listEnabledListenersForRepositoryEventType(
     );
 
   return rows.map((row) => row.listener);
+}
+
+/** The most recent matched delivery for a listener, shaped for display. */
+export interface EventListenerLastDelivery {
+  id: number;
+  matchedAt: Date;
+  deliveryStatus: string;
+  runId: string | null;
+  runStatus: string | null;
+  lastError: string | null;
+  /** See {@link deriveEventListenerDisplayStatus}. */
+  displayStatus: EventListenerDisplayStatus;
+}
+
+/** A listener plus enough agent and delivery-history context to render a row. */
+export interface EventListenerWithProgress {
+  listener: RepositoryEventListener;
+  agentSlug: string;
+  agentEnabled: boolean;
+  lastDelivery: EventListenerLastDelivery | null;
+}
+
+/**
+ * Listeners for a repository, each paired with its owning agent's slug and
+ * its most recent matched delivery (if any). Powers the repository events
+ * page's listener rows: name, event/action, agent, enabled state, last
+ * match, and last run status.
+ *
+ * Fetches the latest delivery per listener with one query per listener
+ * rather than a window-function join. Repository listener counts are small
+ * (operator-configured, not GitHub-scale), so this stays simple and readable
+ * rather than reaching for `DISTINCT ON`.
+ */
+export async function listEventListenersWithProgressForRepository(
+  database: Database,
+  userId: number,
+  repositoryId: number,
+): Promise<EventListenerWithProgress[]> {
+  const listeners = await listEventListenersForRepository(database, userId, repositoryId);
+  if (listeners.length === 0) return [];
+
+  const agentIds = [...new Set(listeners.map((listener) => listener.agentId))];
+  const agentRows = await database
+    .select({ id: agent.id, slug: agent.slug, enabled: agent.enabled })
+    .from(agent)
+    .where(and(eq(agent.userId, userId)));
+  const agentById = new Map(
+    agentRows.filter((row) => agentIds.includes(row.id)).map((row) => [row.id, row]),
+  );
+
+  const results: EventListenerWithProgress[] = [];
+
+  for (const listener of listeners) {
+    const [deliveryRow] = await database
+      .select({
+        id: eventListenerDelivery.id,
+        matchedAt: eventListenerDelivery.matchedAt,
+        deliveryStatus: eventListenerDelivery.status,
+        runId: eventListenerDelivery.runId,
+        runStatus: tribunalRun.status,
+        lastError: eventListenerDelivery.lastError,
+      })
+      .from(eventListenerDelivery)
+      .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
+      .where(eq(eventListenerDelivery.listenerId, listener.id))
+      .orderBy(desc(eventListenerDelivery.matchedAt))
+      .limit(1);
+
+    const agentRow = agentById.get(listener.agentId);
+
+    results.push({
+      listener,
+      agentSlug: agentRow?.slug ?? 'unknown-agent',
+      agentEnabled: agentRow?.enabled ?? false,
+      lastDelivery: deliveryRow
+        ? {
+            id: deliveryRow.id,
+            matchedAt: deliveryRow.matchedAt,
+            deliveryStatus: deliveryRow.deliveryStatus,
+            runId: deliveryRow.runId,
+            runStatus: deliveryRow.runStatus,
+            lastError: deliveryRow.lastError,
+            displayStatus: deriveEventListenerDisplayStatus(
+              deliveryRow.deliveryStatus,
+              deliveryRow.runStatus,
+            ),
+          }
+        : null,
+    });
+  }
+
+  return results;
 }

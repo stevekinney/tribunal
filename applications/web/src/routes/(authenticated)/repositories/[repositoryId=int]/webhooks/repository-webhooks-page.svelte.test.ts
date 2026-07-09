@@ -25,6 +25,14 @@ function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow 
     rawPayload: 'not valid json {{{',
     payload: null,
     payloadParseError: true,
+    listenerProgress: {
+      receivedOnly: true,
+      matchCount: 0,
+      matchedListenerNames: [],
+      status: 'received_only',
+      hasError: false,
+      matches: [],
+    },
     ...overrides,
   };
 }

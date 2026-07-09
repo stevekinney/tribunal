@@ -13,6 +13,10 @@
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Webhook from 'lucide-svelte/icons/webhook';
   import type { WebhookEventRow } from '$lib/server/webhook-events';
+  import {
+    eventListenerStatusLabel as progressLabel,
+    eventListenerStatusVariant as progressVariant,
+  } from '$lib/components/event-listener-status';
 
   let {
     events,
@@ -50,7 +54,7 @@
     return new Date(iso).toLocaleString();
   }
 
-  const columnCount = $derived(showRepositoryColumn ? 7 : 6);
+  const columnCount = $derived(showRepositoryColumn ? 8 : 7);
 </script>
 
 {#if events.length === 0}
@@ -76,6 +80,7 @@
             <Table.HeaderCell scope="col">Related object</Table.HeaderCell>
             <Table.HeaderCell scope="col">Sender</Table.HeaderCell>
             <Table.HeaderCell scope="col">Delivery ID</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Listener progress</Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
@@ -126,6 +131,16 @@
                   —
                 {/if}
               </Table.Cell>
+              <Table.Cell>
+                <Badge size="sm" variant={progressVariant(event.listenerProgress.status)}>
+                  {progressLabel(event.listenerProgress.status)}
+                </Badge>
+                {#if event.listenerProgress.matchCount > 0}
+                  <span class="listener-names">
+                    {event.listenerProgress.matchedListenerNames.join(', ')}
+                  </span>
+                {/if}
+              </Table.Cell>
             </Table.Row>
             {#if expanded}
               <Table.Row>
@@ -169,6 +184,35 @@
                         <dd>{event.deliveryId ?? 'Unknown'}</dd>
                       </div>
                     </dl>
+
+                    <div class="listener-progress-detail">
+                      <h3>Event listener progress</h3>
+                      {#if event.listenerProgress.receivedOnly}
+                        <p class="listener-progress-empty">
+                          No event listeners matched this delivery.
+                        </p>
+                      {:else}
+                        <ul class="listener-match-list">
+                          {#each event.listenerProgress.matches as match (match.listenerId)}
+                            <li>
+                              <div class="listener-match-header">
+                                <span class="listener-match-name">{match.listenerName}</span>
+                                <Badge size="sm" variant={progressVariant(match.status)}>
+                                  {progressLabel(match.status)}
+                                </Badge>
+                              </div>
+                              {#if match.runId}
+                                <Link href={`/runs/${match.runId}`}>View run</Link>
+                              {/if}
+                              {#if match.lastError}
+                                <Alert variant="danger">{match.lastError}</Alert>
+                              {/if}
+                            </li>
+                          {/each}
+                        </ul>
+                      {/if}
+                    </div>
+
                     {#if event.payloadParseError}
                       <Alert variant="warning">
                         This event's stored payload was not valid JSON. Showing the raw text
@@ -202,6 +246,43 @@
   .delivery-id {
     font-family: var(--font-mono, monospace);
     font-size: var(--text-sm);
+  }
+
+  .listener-names {
+    margin-left: var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .listener-progress-detail h3 {
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+    margin: 0 0 var(--space-2) 0;
+  }
+
+  .listener-progress-empty {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    margin: 0;
+  }
+
+  .listener-match-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .listener-match-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .listener-match-name {
+    font-weight: var(--font-medium);
   }
 
   .detail-panel {

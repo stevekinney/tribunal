@@ -18,6 +18,7 @@
   } from 'lucide-svelte';
   import Save from 'lucide-svelte/icons/save';
   import WebhookIcon from 'lucide-svelte/icons/webhook';
+  import ZapIcon from 'lucide-svelte/icons/zap';
 
   let { data, form } = $props();
 
@@ -65,6 +66,10 @@
   {breadcrumbs}
 >
   {#snippet actions()}
+    <Button href={`/repositories/${data.repository.id}/events`} variant="secondary" size="sm">
+      {#snippet leadingIcon()}<ZapIcon size={14} aria-hidden="true" />{/snippet}
+      Events
+    </Button>
     <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
       {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
       Webhooks
