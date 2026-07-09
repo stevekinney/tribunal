@@ -41,6 +41,52 @@ export function parseIgnoreGlobs(value: string): string[] {
 }
 
 /**
+ * Normalizes submitted ignore globs: trims whitespace, drops empty values, and
+ * removes duplicates while preserving the first occurrence's order.
+ */
+export function normalizeIgnoreGlobs(values: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
+}
+
+/**
+ * Parses and saves a repository settings form submission (ignore globs and
+ * agent assignments). Shared by the settings page's `default` action and the
+ * repository pull-requests page's legacy `saveSettings` action so a stale
+ * client tab still viewing the pre-move UI can submit successfully.
+ */
+export async function submitRepositorySettingsForm(
+  userId: number,
+  repositoryId: number,
+  formData: FormData,
+) {
+  // Dedupe: saveRepositoryWatchSettings compares the count of allowed
+  // agents it finds in the database to input.agentIds.length. A submission
+  // with a duplicate id would deflate that comparison against the deduped
+  // database result and fail with a false "unavailable" error even though
+  // every submitted id is valid.
+  const submittedAgentIds = [...new Set(formData.getAll('agentIds').map(String))];
+  const submittedIgnoreGlobs = normalizeIgnoreGlobs(formData.getAll('ignoreGlobs').map(String));
+
+  return saveRepositoryWatchSettings(userId, {
+    repositoryId,
+    watched: true,
+    ignoreGlobs: submittedIgnoreGlobs,
+    agentIds: submittedAgentIds,
+  });
+}
+
+/**
  * Returns whether the user has active installation access to a repository,
  * without throwing. Use this to pre-authorize a batch of repository ids before
  * writing, so a mixed owned/unauthorized submission fails fast with no partial

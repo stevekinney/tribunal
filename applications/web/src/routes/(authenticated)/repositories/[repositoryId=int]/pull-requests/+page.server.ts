@@ -1,4 +1,4 @@
-import { error, redirect } from '@sveltejs/kit';
+import { error, fail, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { and, desc, eq } from 'drizzle-orm';
 import { reviewRun } from '@tribunal/database/schema';
@@ -18,7 +18,9 @@ import type {
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
+import { submitRepositorySettingsForm } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
+import type { Actions } from './$types';
 
 const STATUS_LOOKUP_CONCURRENCY = 5;
 
@@ -217,3 +219,29 @@ async function mapWithConcurrency<T, U>(
 
   return results;
 }
+
+export const actions: Actions = {
+  // Legacy action name: repository settings used to live on this page and
+  // posted here. Kept so a tab still showing the pre-move UI at deploy time
+  // (with the old settings form still rendered) saves successfully instead of
+  // hitting a missing action and landing on +error.svelte. Settings now live
+  // at /repositories/[repositoryId]/settings; remove this once stale tabs
+  // from before that move are no longer a concern.
+  saveSettings: async ({ locals, request, params }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    const repositoryId = Number(params.repositoryId);
+    if (!Number.isInteger(repositoryId) || repositoryId <= 0) {
+      return fail(400, { error: 'Repository is invalid.' });
+    }
+
+    const canAccess = await userCanAccessRepository(user.id, repositoryId);
+    if (!canAccess) {
+      error(404, 'Repository not found');
+    }
+
+    const formData = await request.formData();
+    return submitRepositorySettingsForm(user.id, repositoryId, formData);
+  },
+};

@@ -5,7 +5,7 @@ const {
   mockUserCanAccessRepository,
   mockGetRepositoryOperatorDetails,
   mockListAgents,
-  mockSaveRepositoryWatchSettings,
+  mockSubmitRepositorySettingsForm,
 } = vi.hoisted(() => ({
   mockGetRepositoryById: vi.fn(),
   mockUserCanAccessRepository: vi.fn(),
@@ -13,7 +13,7 @@ const {
   mockListAgents: vi.fn<() => Promise<Array<{ id: string; slug: string; enabled: boolean }>>>(() =>
     Promise.resolve([]),
   ),
-  mockSaveRepositoryWatchSettings: vi.fn(() => Promise.resolve({ success: true })),
+  mockSubmitRepositorySettingsForm: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -41,7 +41,7 @@ vi.mock('$lib/server/repositories', () => ({
 vi.mock('$lib/server/review/operator', () => ({
   getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
   listAgents: mockListAgents,
-  saveRepositoryWatchSettings: mockSaveRepositoryWatchSettings,
+  submitRepositorySettingsForm: mockSubmitRepositorySettingsForm,
 }));
 
 import { actions, load } from './+page.server';
@@ -58,8 +58,8 @@ describe('/repositories/[repositoryId]/settings server load', () => {
     mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
     mockListAgents.mockReset();
     mockListAgents.mockResolvedValue([]);
-    mockSaveRepositoryWatchSettings.mockReset();
-    mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
+    mockSubmitRepositorySettingsForm.mockReset();
+    mockSubmitRepositorySettingsForm.mockResolvedValue({ success: true });
   });
 
   function createLoadEvent() {
@@ -141,8 +141,8 @@ describe('/repositories/[repositoryId]/settings server action', () => {
   beforeEach(() => {
     mockUserCanAccessRepository.mockReset();
     mockUserCanAccessRepository.mockResolvedValue(true);
-    mockSaveRepositoryWatchSettings.mockReset();
-    mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
+    mockSubmitRepositorySettingsForm.mockReset();
+    mockSubmitRepositorySettingsForm.mockResolvedValue({ success: true });
   });
 
   function createActionEvent(formData: FormData) {
@@ -153,38 +153,14 @@ describe('/repositories/[repositoryId]/settings server action', () => {
     } as unknown as Parameters<(typeof actions)['default']>[0];
   }
 
-  it('trims, rejects empty, and dedupes submitted ignore globs', async () => {
+  it('delegates the submitted form to submitRepositorySettingsForm for the authorized user and repository', async () => {
     const formData = new FormData();
-    formData.append('ignoreGlobs', '  dist/** ');
     formData.append('ignoreGlobs', 'dist/**');
-    formData.append('ignoreGlobs', '   ');
-    formData.append('ignoreGlobs', 'coverage/**');
     formData.append('agentIds', 'agent_1');
 
     await actions.default(createActionEvent(formData));
 
-    expect(mockSaveRepositoryWatchSettings).toHaveBeenCalledWith(1, {
-      repositoryId: 101,
-      watched: true,
-      ignoreGlobs: ['dist/**', 'coverage/**'],
-      agentIds: ['agent_1'],
-    });
-  });
-
-  it('dedupes duplicate submitted agentIds, preserving first-occurrence order', async () => {
-    const formData = new FormData();
-    formData.append('agentIds', 'agent_2');
-    formData.append('agentIds', 'agent_1');
-    formData.append('agentIds', 'agent_2');
-
-    await actions.default(createActionEvent(formData));
-
-    expect(mockSaveRepositoryWatchSettings).toHaveBeenCalledWith(1, {
-      repositoryId: 101,
-      watched: true,
-      ignoreGlobs: [],
-      agentIds: ['agent_2', 'agent_1'],
-    });
+    expect(mockSubmitRepositorySettingsForm).toHaveBeenCalledWith(1, 101, formData);
   });
 
   it('returns 404 when the user cannot access the repository', async () => {

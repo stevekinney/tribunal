@@ -6,8 +6,10 @@ import type { PageData } from './$types';
 
 const enhancedFormTesting = vi.hoisted(() => ({
   submissions: [] as Array<{ formData: FormData }>,
+  onSubmitted: undefined as ((input: unknown) => Promise<void>) | undefined,
   reset() {
     this.submissions.length = 0;
+    this.onSubmitted = undefined;
   },
 }));
 
@@ -26,13 +28,14 @@ vi.mock('$app/forms', () => ({
       event.preventDefault();
       const formData = new FormData(formElement);
       enhancedFormTesting.submissions.push({ formData });
-      submitFunction?.({
+      const onSubmitted = submitFunction?.({
         action: new URL(formElement.getAttribute('action') ?? '.', 'http://localhost/settings'),
         cancel: () => {},
         formData,
         formElement,
         submitter: event.submitter,
       });
+      enhancedFormTesting.onSubmitted = typeof onSubmitted === 'function' ? onSubmitted : undefined;
     };
 
     formElement.addEventListener('submit', handleSubmit);
@@ -288,5 +291,31 @@ describe('/repositories/[repositoryId]/settings page', () => {
     await expect
       .element(page.getByText('One or more selected agents are unavailable.'))
       .toBeVisible();
+  });
+
+  it('does not call update() when the enhanced result is an error, to avoid navigating to +error.svelte', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    const mockUpdate = vi.fn();
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'error', status: 500, error: new Error('boom') },
+      update: mockUpdate,
+    });
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('calls update({ reset: false }) when the enhanced result succeeds', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    const mockUpdate = vi.fn();
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'success', status: 200, data: { success: true } },
+      update: mockUpdate,
+    });
+
+    expect(mockUpdate).toHaveBeenCalledWith({ reset: false });
   });
 });
