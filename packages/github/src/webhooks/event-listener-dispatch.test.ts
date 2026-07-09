@@ -311,6 +311,39 @@ describe('drainEventListenerDeliveries', () => {
     expect(remainingPending).toHaveLength(0);
   });
 
+  it('a multi-round drain never attempts the same delivery more than once, even when failures make it re-claimable within the same call', async () => {
+    const { repository, listener, testAgent } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    // Disable the agent so every dispatch fails with EventListenerDisabledError,
+    // which moves the delivery to `retryable` -- itself claimable again.
+    // Without per-call dedup, a multi-round drain would re-claim and
+    // re-attempt these deliveries in later rounds within the *same* call,
+    // burning through the 5-attempt retry cap in seconds instead of across
+    // separate webhooks.
+    await testContext.db.update(agent).set({ enabled: false }).where(eq(agent.id, testAgent.id));
+
+    const totalCount = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT + 2;
+    // The fixture already left one pending delivery -- add enough more to
+    // exceed the per-round limit.
+    for (let i = 0; i < totalCount - 1; i += 1) {
+      const extraEvent = await insertWebhookEvent({ repositoryId: repository.id });
+      await insertPendingEventListenerDeliveries(testContext.db, [listener.id], extraEvent.id);
+    }
+
+    const result = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(result.attempted).toBe(totalCount);
+    expect(result.skippedDisabled).toBe(totalCount);
+
+    const deliveries = await testContext.db.select().from(eventListenerDelivery);
+    expect(deliveries).toHaveLength(totalCount);
+    for (const delivery of deliveries) {
+      expect(delivery.attemptCount).toBe(1);
+      expect(delivery.status).toBe('retryable');
+    }
+  });
+
   it('reclaims a delivery stranded in `running` past the stale timeout, from an earlier crashed/interrupted drain', async () => {
     const { repository, pending } = await createFixture();
     const context = createGithubContext(testContext);

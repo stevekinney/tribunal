@@ -81,14 +81,28 @@ export async function drainEventListenerDeliveries(
     failed: 0,
   };
 
+  // Rows this call has already attempted. A failed dispatch moves a
+  // delivery to `retryable`, which is itself claimable -- without this
+  // guard, a later round in the *same* drain call would re-read and
+  // re-claim it, spending more than one of its five total attempts in a
+  // single webhook's drain. That collapses the "one attempt per webhook,
+  // spread across separate deliveries of the same repository" retry model
+  // this module is designed around (see the module docstring) into "up to
+  // `maxRounds` attempts in one drain," reaching `abandoned` far sooner
+  // than intended.
+  const attemptedDeliveryIds = new Set<number>();
+
   for (let round = 0; round < maxRounds; round += 1) {
-    const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit);
+    const candidates = (
+      await listClaimableEventListenerDeliveries(context.db, repositoryId, limit)
+    ).filter((candidate) => !attemptedDeliveryIds.has(candidate.delivery.id));
     if (candidates.length === 0) break;
 
     for (const candidate of candidates) {
       const claimed = await claimEventListenerDelivery(context.db, candidate.delivery.id);
       if (!claimed) continue; // Lost the race to another concurrent claimer, or already terminal.
 
+      attemptedDeliveryIds.add(claimed.id);
       result.attempted += 1;
 
       try {
