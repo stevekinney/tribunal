@@ -354,4 +354,70 @@ describe('/repositories/[repositoryId]/settings page', () => {
 
     expect(mockUpdate).toHaveBeenCalledWith({ reset: false });
   });
+
+  it('defaults a first-time (unwatched, unconfigured) repository to all enabled agents on save', async () => {
+    // Regression for: saving settings on a never-configured repository used to
+    // submit an empty `agentIds` list (only the repository's saved agents,
+    // which are empty for first-time repos), silently adding the repository
+    // with no reviewers instead of the all-enabled-agent default used by the
+    // dashboard's Add/toggle flow.
+    render(SettingsPage, {
+      data: {
+        ...baseData,
+        repository: {
+          ...baseData.repository,
+          review: {
+            ...baseData.repository.review,
+            hasSavedSettings: false,
+            watched: false,
+            agents: [],
+          },
+        },
+      },
+      form: null,
+      params: { repositoryId: '101' },
+    });
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual([
+      'agent_1',
+      'agent_4',
+    ]);
+  });
+
+  it('does not default a disabled agent onto a first-time repository', async () => {
+    render(SettingsPage, {
+      data: {
+        ...baseData,
+        repository: {
+          ...baseData.repository,
+          review: {
+            ...baseData.repository.review,
+            hasSavedSettings: false,
+            watched: false,
+            agents: [],
+          },
+        },
+        agents: baseData.agents.filter((agent) => agent.id === 'agent_1' || agent.id === 'agent_2'),
+      },
+      form: null,
+      params: { repositoryId: '101' },
+    });
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['agent_1']);
+  });
+
+  it('preserves the saved agent assignment for an already-configured repository', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['agent_1']);
+  });
 });
