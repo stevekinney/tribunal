@@ -59,6 +59,21 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
       openPullRequestCountExact = false;
       attentionPullRequestCountExact = false;
     }
+    // A fetched pull request with an unknown CI/merge status or a missing
+    // unresolved-thread count means its cached decoration is missing or
+    // stale — that PR was never actually inspected for attention signals,
+    // so a `0` attention total here would be an absence of evidence, not
+    // evidence of absence.
+    if (
+      row.pullRequests.some(
+        (pullRequest) =>
+          pullRequest.ciStatus === 'unknown' ||
+          pullRequest.mergeStatus === 'unknown' ||
+          pullRequest.unresolvedThreadCount === null,
+      )
+    ) {
+      attentionPullRequestCountExact = false;
+    }
   }
 
   return {

@@ -137,22 +137,34 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
   // silently narrowing the table to watched repositories only.
   const repositoryIds = result.repositories.map((entry) => entry.repository.id);
   const skipLiveGithubReads = shouldSkipLiveGithubDashboardReads();
-  const [operatorDetails, agents, dashboardRows] = await Promise.all([
+
+  // Resolve watch state (a local DB read) before spending the shared
+  // dashboard API budget, so watched repositories are prioritized ahead of
+  // unwatched ones and don't render as api-budget-exhausted/Unknown just
+  // because they sorted later in the accessible-repository list.
+  const [operatorDetails, agents] = await Promise.all([
     getRepositoryOperatorDetails(user.id, repositoryIds),
     listAgents(user.id),
-    buildRepositoryDashboard(
-      githubContext,
-      result.repositories.map((entry) => ({
-        id: entry.repository.id,
-        owner: entry.repository.owner,
-        name: entry.repository.name,
-        defaultBranch: entry.repository.defaultBranch,
-        commit: entry.repository.commit,
-        installationId: skipLiveGithubReads ? null : entry.installation.installationId,
-        htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
-      })),
-    ),
   ]);
+
+  const budgetOrderedRepositories = [...result.repositories].sort((a, b) => {
+    const aWatched = operatorDetails.get(a.repository.id)?.watched ? 0 : 1;
+    const bWatched = operatorDetails.get(b.repository.id)?.watched ? 0 : 1;
+    return aWatched - bWatched;
+  });
+
+  const dashboardRows = await buildRepositoryDashboard(
+    githubContext,
+    budgetOrderedRepositories.map((entry) => ({
+      id: entry.repository.id,
+      owner: entry.repository.owner,
+      name: entry.repository.name,
+      defaultBranch: entry.repository.defaultBranch,
+      commit: entry.repository.commit,
+      installationId: skipLiveGithubReads ? null : entry.installation.installationId,
+      htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
+    })),
+  );
 
   const dashboardRowsById = new Map<number, RepositoryDashboardRow>(
     dashboardRows.map((row) => [row.repository.id, row]),

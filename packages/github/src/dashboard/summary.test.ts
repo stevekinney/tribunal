@@ -118,4 +118,76 @@ describe('buildDashboardSummary', () => {
     expect(summary.attentionPullRequestCountExact).toBe(false);
     expect(summary.hasUnavailableRepositories).toBe(false);
   });
+
+  it('marks the attention rollup inexact when a fetched pull request has unknown/missing signals', () => {
+    // Repository inventory can succeed (`dataStatus: 'ok'`) while an
+    // individual pull request's cached decoration is missing or stale, so
+    // `decoratePullRequest` reports `ciStatus`/`mergeStatus: 'unknown'` and
+    // `unresolvedThreadCount: null`. That PR was never actually inspected,
+    // so a `0` attention total would be an absence of evidence, not
+    // evidence of absence — even though the row is otherwise available and
+    // under the page cap.
+    const summary = buildDashboardSummary([
+      makeRow({
+        openPullRequestCount: 1,
+        attentionPullRequestCount: 0,
+        pullRequests: [
+          {
+            repositoryId: 1,
+            number: 1,
+            title: 'Uninspected PR',
+            htmlUrl: 'https://github.com/acme/widgets/pull/1',
+            author: null,
+            draft: false,
+            headRef: 'feature',
+            baseRef: 'main',
+            headSha: 'abc123',
+            ciStatus: 'unknown',
+            ciUpdatedAt: null,
+            mergeStatus: 'unknown',
+            mergeUpdatedAt: null,
+            unresolvedThreadCount: null,
+            reviewUpdatedAt: null,
+            updatedAt: '2026-07-09T00:00:00.000Z',
+          },
+        ],
+      }),
+    ]);
+
+    expect(summary.attentionPullRequestCount).toBe(0);
+    expect(summary.attentionPullRequestCountExact).toBe(false);
+    expect(summary.openPullRequestCountExact).toBe(true);
+    expect(summary.hasUnavailableRepositories).toBe(false);
+  });
+
+  it('keeps the attention rollup exact when every fetched pull request has known signals', () => {
+    const summary = buildDashboardSummary([
+      makeRow({
+        openPullRequestCount: 1,
+        attentionPullRequestCount: 0,
+        pullRequests: [
+          {
+            repositoryId: 1,
+            number: 1,
+            title: 'Inspected PR',
+            htmlUrl: 'https://github.com/acme/widgets/pull/1',
+            author: null,
+            draft: false,
+            headRef: 'feature',
+            baseRef: 'main',
+            headSha: 'abc123',
+            ciStatus: 'passing',
+            ciUpdatedAt: '2026-07-09T00:00:00.000Z',
+            mergeStatus: 'clean',
+            mergeUpdatedAt: '2026-07-09T00:00:00.000Z',
+            unresolvedThreadCount: 0,
+            reviewUpdatedAt: '2026-07-09T00:00:00.000Z',
+            updatedAt: '2026-07-09T00:00:00.000Z',
+          },
+        ],
+      }),
+    ]);
+
+    expect(summary.attentionPullRequestCountExact).toBe(true);
+  });
 });
