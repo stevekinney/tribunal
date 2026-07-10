@@ -324,6 +324,24 @@ describe('/repositories/[repositoryId]/settings page', () => {
     await expect.element(toggle).not.toBeDisabled();
   });
 
+  it('disables the ignore-globs tag input while a save is in flight so pending edits cannot race the request', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const textbox = page.getByRole('textbox', { name: 'Ignore globs' });
+    await expect.element(textbox).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    await expect.element(textbox).toBeDisabled();
+
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'success', status: 200, data: { success: true } },
+      update: vi.fn(),
+    });
+
+    await expect.element(textbox).not.toBeDisabled();
+  });
+
   it('calls update({ reset: false }) when the enhanced result succeeds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 

@@ -87,6 +87,7 @@
           name="ignoreGlobs"
           defaultValue={data.repository.review.ignoreGlobs}
           placeholder="dist/**"
+          disabled={saving}
         />
       </FormField>
     </Card>
