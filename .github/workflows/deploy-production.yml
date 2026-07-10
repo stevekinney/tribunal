@@ -118,6 +118,18 @@ jobs:
             | tar -x -f - -C "$reviewer_context"
 
           cp "$reviewer_context/deployment/containers/reviewer.Dockerfile" "$reviewer_context/Dockerfile"
+
+          # Prebuild the reviewer's workspace dist on this runner and stage it
+          # into the context. The Tensorlake builder sandbox is capped at
+          # 1024 MB RAM and repeatedly OOMs when the image build runs a
+          # workspace install + tsc build, so the image consumes prebuilt
+          # artifacts instead.
+          bun install --frozen-lockfile --filter tribunal --filter @tribunal/review-core --filter @tribunal/agents
+          bun run --cwd packages/review-core build
+          bun run --cwd packages/agents build
+          cp -R packages/review-core/dist "$reviewer_context/packages/review-core/dist"
+          cp -R packages/agents/dist "$reviewer_context/packages/agents/dist"
+
           echo "REVIEWER_IMAGE_CONTEXT=$reviewer_context" >> "$GITHUB_ENV"
 
       - name: Build reviewer image

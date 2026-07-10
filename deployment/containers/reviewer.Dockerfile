@@ -1,22 +1,8 @@
-FROM oven/bun:1.3.13 AS build
-
-WORKDIR /workspace
-COPY package.json bun.lock ./
-COPY applications/engine/package.json ./applications/engine/package.json
-COPY applications/proxy/package.json ./applications/proxy/package.json
-COPY applications/web/package.json ./applications/web/package.json
-COPY runner/package.json ./runner/package.json
-COPY packages ./packages
-COPY scripts/package.json ./scripts/package.json
-COPY scripts/install-git-hooks.ts ./scripts/install-git-hooks.ts
-# Filtered install: this stage only builds @tribunal/review-core and
-# @tribunal/agents. Installing the full workspace (web/engine dev graphs)
-# exceeds the 1024 MB RAM cap of the Tensorlake builder sandbox that
-# rebuilds this Dockerfile at publish time.
-RUN bun install --frozen-lockfile --filter tribunal --filter @tribunal/review-core --filter @tribunal/agents
-RUN bun run --cwd packages/review-core build
-RUN bun run --cwd packages/agents build
-
+# Single-stage build: @tribunal/review-core and @tribunal/agents dist output
+# is prebuilt by the deploy workflow and staged into the build context.
+# Tensorlake rebuilds this Dockerfile inside a 1024 MB builder sandbox; an
+# in-image workspace install + tsc build repeatedly OOMs that sandbox, so the
+# image build must stay as small as the production runner install.
 FROM oven/bun:1.3.13
 
 WORKDIR /workspace
@@ -45,7 +31,7 @@ COPY packages/test/package.json ./packages/test/package.json
 COPY packages/typescript/package.json ./packages/typescript/package.json
 COPY scripts/package.json ./scripts/package.json
 RUN bun install --production --frozen-lockfile --filter @tribunal/runner
-COPY --from=build /workspace/packages/agents/dist ./packages/agents/dist
-COPY --from=build /workspace/packages/review-core/dist ./packages/review-core/dist
+COPY packages/agents/dist ./packages/agents/dist
+COPY packages/review-core/dist ./packages/review-core/dist
 COPY runner ./runner
 CMD ["bun", "runner/verify-image.mjs"]
