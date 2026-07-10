@@ -243,6 +243,30 @@ describe('buildRepositoryDashboard', () => {
     );
   });
 
+  it('uses the live branch head instead of a stale stored commit after a push', async () => {
+    expect.assertions(3);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'new-push-sha' } } });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: 'stale-stored-sha' }),
+    ]);
+
+    expect(getBranch).toHaveBeenCalledWith({ owner: 'acme', repo: 'widgets', branch: 'main' });
+    expect(octokit.rest.checks.listForRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'new-push-sha' }),
+    );
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
   it('serves a cached branch head SHA without a live getBranch call', async () => {
     expect.assertions(2);
     const getBranch = vi.fn();

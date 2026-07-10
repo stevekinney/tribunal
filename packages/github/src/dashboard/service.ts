@@ -208,43 +208,34 @@ async function readDefaultBranchStatus(
     return 'unknown';
   }
 
+  // The stored commit is a projection updated by the push handler and can lag
+  // behind GitHub during that asynchronous write. Resolve the branch head
+  // through the short-lived cache first so a push invalidation or a synced
+  // default-branch change cannot make the dashboard trust the old SHA.
   let commitSha = repository.commit;
-  if (!commitSha) {
-    // `commit` in the `repository` row is only ever written by the
-    // default-branch push handler, so a newly installed repository (or one
-    // with no push since install) stays `unknown` forever without this:
-    // resolve the branch head live here instead of bailing out. Routed
-    // through `cachedRead` (per packages/github's caching rule) with a
-    // short TTL, since the branch can move at any time via push.
-    //
-    // No budget pre-check up front, matching `getDefaultBranchCiStatus`
-    // below — a cached head SHA costs nothing to serve even when the
-    // budget is otherwise exhausted. The budget is only spent, and only
-    // checked, inside the fetch function itself (i.e. on a cache miss).
-    try {
-      const policy = requirePolicy('get-branch-head-sha');
-      const { value } = await cachedRead<string>(
-        context.cache,
-        policy,
-        async () => {
-          if (!budget.canSpend(1)) {
-            throw new Error('API budget exhausted before resolving branch head SHA');
-          }
-          budget.spend(1);
-          const { data: branch } = await octokit.rest.repos.getBranch({
-            owner: repository.owner,
-            repo: repository.name,
-            branch: repository.defaultBranch as string,
-          });
-          return { data: branch.commit.sha };
-        },
-        [repository.owner, repository.name, repository.defaultBranch],
-      );
-      commitSha = value;
-    } catch (error) {
-      if (isRateLimitError(error)) budget.markRateLimited();
-      return 'unknown';
-    }
+  try {
+    const policy = requirePolicy('get-branch-head-sha');
+    const { value } = await cachedRead<string>(
+      context.cache,
+      policy,
+      async () => {
+        if (!budget.canSpend(1)) {
+          throw new Error('API budget exhausted before resolving branch head SHA');
+        }
+        budget.spend(1);
+        const { data: branch } = await octokit.rest.repos.getBranch({
+          owner: repository.owner,
+          repo: repository.name,
+          branch: repository.defaultBranch as string,
+        });
+        return { data: branch.commit.sha };
+      },
+      [repository.owner, repository.name, repository.defaultBranch],
+    );
+    commitSha = value;
+  } catch (error) {
+    if (isRateLimitError(error)) budget.markRateLimited();
+    if (!commitSha) return 'unknown';
   }
 
   try {
