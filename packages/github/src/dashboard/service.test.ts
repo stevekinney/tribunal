@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { GithubServiceContext } from '../context.js';
+import { CACHE_KEYS } from '../cache-keys.js';
 import type { PullRequestState } from '@tribunal/database/schema';
 import { buildRepositoryDashboard, DEFAULT_STALE_AFTER_MS } from './service.js';
 import type { DashboardRepositoryIdentity } from './types.js';
@@ -60,6 +61,7 @@ function makeOctokit(options: {
   listPullsError?: unknown;
   checkRuns?: { total_count: number; check_runs: Array<Record<string, unknown>> };
   checksError?: unknown;
+  getBranch?: ReturnType<typeof vi.fn>;
 }) {
   const list = options.listPullsError
     ? vi.fn().mockRejectedValue(options.listPullsError)
@@ -79,7 +81,10 @@ function makeOctokit(options: {
     rest: {
       pulls: { list },
       checks: { listForRef },
-      repos: { getCombinedStatusForRef },
+      repos: {
+        getCombinedStatusForRef,
+        ...(options.getBranch ? { getBranch: options.getBranch } : {}),
+      },
     },
   } as never;
 }
@@ -203,6 +208,99 @@ describe('buildRepositoryDashboard', () => {
 
     expect(rows[0].defaultBranchStatus).toBe('unknown');
     expect(listForRef).not.toHaveBeenCalled();
+  });
+
+  it('resolves the branch head live (via cachedRead) when commit is missing, instead of staying unknown forever', async () => {
+    expect.assertions(4);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranch).toHaveBeenCalledWith({ owner: 'acme', repo: 'widgets', branch: 'main' });
+    // The resolved SHA is cached under the dedicated branch-head-sha key so
+    // the next dashboard build (or a cache hit within the TTL) doesn't repeat
+    // the live call.
+    expect(context.cache.setCache).toHaveBeenCalledWith(
+      CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+    // The resolved SHA (not the missing stored one) drives the CI lookup.
+    expect(octokit.rest.checks.listForRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'resolved-sha' }),
+    );
+  });
+
+  it('serves a cached branch head SHA without a live getBranch call', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn();
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+      getBranch,
+    });
+    const now = Date.now();
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+      cache: {
+        getCached: vi.fn(async (key: string) => {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+            return {
+              value: 'cached-sha',
+              fetchedAt: now,
+              expiresAt: now + 60_000,
+              source: 'cache',
+            };
+          }
+          return null;
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranch).not.toHaveBeenCalled();
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('does not attempt a live branch-head lookup once the api budget is exhausted', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const octokit = makeOctokit({ pullRequests: [], getBranch });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    // Budget of 1 covers only the pull-request inventory call.
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ defaultBranch: 'main', commit: null })],
+      { apiBudget: 1 },
+    );
+
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+    expect(getBranch).not.toHaveBeenCalled();
   });
 
   it('treats missing pull_request_state rows as unknown decoration, not absence', async () => {
@@ -389,6 +487,42 @@ describe('buildRepositoryDashboard', () => {
     const rows = await buildRepositoryDashboard(context, [makeRepository()]);
 
     expect(rows[0].pullRequests[0].ciStatus).toBe('passing');
+  });
+
+  it('does not reuse a merge decoration recorded for a since-superseded head commit', async () => {
+    expect.assertions(1);
+    // Mirrors the CI head-mismatch regression test above: a new head commit
+    // landed before the `synchronize` event's projection update, so the
+    // stored `mergeStatus` describes the previous head — it must not be
+    // replayed for the new commit even though it is fresh by wall-clock.
+    const octokit = makeOctokit({
+      pullRequests: [makePullRequest({ head: { ref: 'feature', sha: 'new-head' } })],
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([makePullRequestState({ headSha: 'old-head', mergeStatus: 'clean' })]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].pullRequests[0].mergeStatus).toBe('unknown');
+  });
+
+  it('trusts a fresh merge decoration when the recorded head SHA matches the PR head', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({
+      pullRequests: [makePullRequest({ head: { ref: 'feature', sha: 'same-head' } })],
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([
+        makePullRequestState({ headSha: 'same-head', mergeStatus: 'clean' }),
+      ]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].pullRequests[0].mergeStatus).toBe('clean');
   });
 
   it('renders a github-error row (not no-installation) when installation token resolution throws', async () => {

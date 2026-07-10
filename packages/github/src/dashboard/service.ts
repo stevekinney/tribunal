@@ -25,6 +25,8 @@
  * requests.
  */
 import type { GithubServiceContext } from '../context.js';
+import { requirePolicy } from '../core/cache-policy.js';
+import { cachedRead } from '../core/github-read-client.js';
 import { isRateLimitError } from '../errors.js';
 import { listPullRequests, type PullRequestFilterOptions } from '../pull-requests/service.js';
 import { getDefaultBranchCiStatus } from '../pull-requests/state/queries.js';
@@ -201,9 +203,48 @@ async function readDefaultBranchStatus(
   repository: DashboardRepositoryIdentity,
   budget: ApiBudget,
 ): Promise<BranchCIStatus> {
-  // Missing defaultBranch or commit renders `unknown` — never assume `main`.
-  if (!repository.defaultBranch || !repository.commit) {
+  // Missing defaultBranch renders `unknown` — never assume `main`.
+  if (!repository.defaultBranch) {
     return 'unknown';
+  }
+
+  let commitSha = repository.commit;
+  if (!commitSha) {
+    // `commit` in the `repository` row is only ever written by the
+    // default-branch push handler, so a newly installed repository (or one
+    // with no push since install) stays `unknown` forever without this:
+    // resolve the branch head live here instead of bailing out. Routed
+    // through `cachedRead` (per packages/github's caching rule) with a
+    // short TTL, since the branch can move at any time via push.
+    //
+    // No budget pre-check up front, matching `getDefaultBranchCiStatus`
+    // below — a cached head SHA costs nothing to serve even when the
+    // budget is otherwise exhausted. The budget is only spent, and only
+    // checked, inside the fetch function itself (i.e. on a cache miss).
+    try {
+      const policy = requirePolicy('get-branch-head-sha');
+      const { value } = await cachedRead<string>(
+        context.cache,
+        policy,
+        async () => {
+          if (!budget.canSpend(1)) {
+            throw new Error('API budget exhausted before resolving branch head SHA');
+          }
+          budget.spend(1);
+          const { data: branch } = await octokit.rest.repos.getBranch({
+            owner: repository.owner,
+            repo: repository.name,
+            branch: repository.defaultBranch as string,
+          });
+          return { data: branch.commit.sha };
+        },
+        [repository.owner, repository.name, repository.defaultBranch],
+      );
+      commitSha = value;
+    } catch (error) {
+      if (isRateLimitError(error)) budget.markRateLimited();
+      return 'unknown';
+    }
   }
 
   try {
@@ -223,7 +264,7 @@ async function readDefaultBranchStatus(
       repository.owner,
       repository.name,
       repository.defaultBranch,
-      repository.commit,
+      commitSha,
       budget,
     );
     return ciState.ciStatus;
@@ -257,9 +298,14 @@ function decoratePullRequest(
   // projection's recorded head SHA to match the PR's *current* head before
   // trusting its CI decoration; a mismatch renders `unknown` rather than
   // replaying stale CI for the new commit.
-  const ciFresh =
-    isFresh(state?.ciUpdatedAt, nowMs, staleAfterMs) && state?.headSha === pullRequest.headSha;
-  const mergeFresh = isFresh(state?.mergeUpdatedAt, nowMs, staleAfterMs);
+  // Merge decoration is just as head-dependent as CI: a new head commit
+  // before `synchronize` has been processed means the stored `mergeStatus`
+  // still describes the previous head's mergeability, not the current one.
+  // Require the same head-SHA match CI decoration uses rather than reusing
+  // a recent-but-stale merge decision.
+  const headMatchesCurrent = state?.headSha === pullRequest.headSha;
+  const ciFresh = isFresh(state?.ciUpdatedAt, nowMs, staleAfterMs) && headMatchesCurrent;
+  const mergeFresh = isFresh(state?.mergeUpdatedAt, nowMs, staleAfterMs) && headMatchesCurrent;
   const reviewFresh = isFresh(state?.reviewUpdatedAt, nowMs, staleAfterMs);
 
   return {

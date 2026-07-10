@@ -68,6 +68,18 @@ export async function invalidateGitHubResourceCacheForEvent(
         }
         break;
 
+      case 'status':
+        if (owner && repo) {
+          await invalidateStatusEventCache(context, owner, repo, data);
+        }
+        break;
+
+      case 'push':
+        if (owner && repo) {
+          await invalidatePushCache(context, owner, repo, data);
+        }
+        break;
+
       case 'installation_repositories':
         await invalidateInstallationRepositoriesCache(context, data);
         break;
@@ -276,6 +288,61 @@ async function invalidateCheckRelatedCache(
   }
 
   await Promise.all(invalidations);
+}
+
+/**
+ * Invalidate branch-CI and failing-check caches when a legacy commit
+ * `status` context (Statuses API) updates.
+ *
+ * `getDefaultBranchCiStatus` folds `getCombinedStatusForRef` into the
+ * cached branch CI rollup, so a status context flipping pending ->
+ * failing/passing on a branch's current commit needs the same
+ * invalidation check_run/check_suite completions get — otherwise it sits
+ * stale until the cache TTL expires even though the app subscribes to
+ * `status` webhooks.
+ */
+async function invalidateStatusEventCache(
+  context: GithubServiceContext,
+  owner: string,
+  repo: string,
+  data: WebhookPayload,
+): Promise<void> {
+  const sha = data.sha as string | undefined;
+  const branches = data.branches as Array<{ name?: string }> | undefined;
+
+  const invalidations: Promise<unknown>[] = [];
+
+  if (sha) {
+    invalidations.push(context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, sha)));
+  }
+
+  for (const branch of branches ?? []) {
+    if (branch?.name) {
+      invalidations.push(
+        context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, branch.name)),
+      );
+    }
+  }
+
+  await Promise.all(invalidations);
+}
+
+/**
+ * Invalidate the cached branch-head SHA (`get-branch-head-sha` policy, used
+ * by the dashboard to resolve `defaultBranchStatus` when the `repository`
+ * row's own `commit` column hasn't been populated yet) when a branch moves.
+ */
+async function invalidatePushCache(
+  context: GithubServiceContext,
+  owner: string,
+  repo: string,
+  data: WebhookPayload,
+): Promise<void> {
+  const ref = data.ref as string | undefined;
+  if (!ref?.startsWith('refs/heads/')) return;
+
+  const branch = ref.replace('refs/heads/', '');
+  await context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch));
 }
 
 async function invalidateInstallationRepositoriesCache(

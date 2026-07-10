@@ -423,20 +423,85 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
   });
 
   // --------------------------------------------------------------------------
+  // status (legacy commit status contexts, e.g. Statuses API CI)
+  // --------------------------------------------------------------------------
+  describe('status events', () => {
+    it('invalidates check counts cache by sha', async () => {
+      const data = makePayload({
+        sha: 'statussha123',
+        branches: [],
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'status', null, data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'statussha123'),
+      );
+    });
+
+    it('invalidates the branch CI cache for every branch the status commit is head of', async () => {
+      const data = makePayload({
+        sha: 'statussha123',
+        branches: [{ name: 'main' }, { name: 'feature/phase-two' }],
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'status', null, data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      );
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/phase-two'),
+      );
+    });
+
+    it('does not attempt branch CI invalidation when branches is empty', async () => {
+      const data = makePayload({ sha: 'statussha123', branches: [] });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'status', null, data);
+
+      expect(context.cache.deleteCache).not.toHaveBeenCalledWith(
+        expect.stringContaining('branch:'),
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // push (branch-head-sha cache used by the dashboard when `repository.commit`
+  // hasn't been populated yet)
+  // --------------------------------------------------------------------------
+  describe('push events', () => {
+    it('invalidates the cached branch head SHA for the pushed branch', async () => {
+      const data = makePayload({ ref: 'refs/heads/main', after: 'newsha123' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'push', null, data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      );
+    });
+
+    it('does not invalidate for tag pushes', async () => {
+      const data = makePayload({ ref: 'refs/tags/v1.0.0', after: 'newsha123' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'push', null, data);
+
+      expect(context.cache.deleteCache).not.toHaveBeenCalled();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Unrelated events
   // --------------------------------------------------------------------------
   describe('unrelated events', () => {
-    it.each(['push', 'status', 'deployment'])(
-      'does not invalidate for %s events',
-      async (eventType) => {
-        const data = makePayload({ action: 'completed' });
+    it.each(['deployment'])('does not invalidate for %s events', async (eventType) => {
+      const data = makePayload({ action: 'completed' });
 
-        await invalidateGitHubResourceCacheForEvent(context, eventType, 'completed', data);
+      await invalidateGitHubResourceCacheForEvent(context, eventType, 'completed', data);
 
-        expect(context.cache.deleteCache).not.toHaveBeenCalled();
-        expect(context.cache.deleteCacheByPattern).not.toHaveBeenCalled();
-      },
-    );
+      expect(context.cache.deleteCache).not.toHaveBeenCalled();
+      expect(context.cache.deleteCacheByPattern).not.toHaveBeenCalled();
+    });
   });
 
   // --------------------------------------------------------------------------
