@@ -5,18 +5,23 @@
  * It handles: cache lookup, eTag conditional requests, fail-open on
  * Redis errors, and structured logging.
  *
- * Four files use direct getCached/setCache for non-API-read caching that
- * does not fit the cachedRead model (computed artifacts, access checks,
- * rate-limit state). Each is guarded by an eslint-disable comment and
- * tracked for future migration:
+ * Two files use direct getCached/setCache for non-API-read caching that
+ * does not fit the cachedRead model (access checks, rate-limit state). Each
+ * is guarded by an eslint-disable comment and tracked for future migration:
  *
- *   - pull-requests/project-dependencies.ts — computed dependency graph
- *   - pull-requests/project-summaries.ts — computed PR summaries
  *   - installations/access.ts — write-then-read access checks
  *   - core/rate-limits.ts — rate-limit state tracking (write-heavy)
  *
  * New direct getCached/setCache usage is blocked by the no-restricted-syntax
  * rule in packages/github/eslint.config.js.
+ *
+ * `listPullRequests` (pull-requests/service.ts) intentionally bypasses
+ * `cachedRead` entirely when called without a `repositoryId` — there is no
+ * cache key to use without it. In production there is exactly one caller,
+ * and it always passes `repositoryId`; the bypass exists for direct/test
+ * call sites that have no repository row to key off of. Any new caller that
+ * can supply a `repositoryId` must do so — omitting it silently disables
+ * caching and Redis-backed rate/API-budget accounting for that call.
  */
 
 import type { CacheOperations } from '../context.js';

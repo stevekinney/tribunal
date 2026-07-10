@@ -167,6 +167,177 @@ interface CIState {
   ciStatus: CIStatus;
   checkCount: number;
   failingCount: number;
+  /**
+   * True when pagination stopped early because the caller-supplied budget
+   * ran out before every page of check runs (and, for branch reads,
+   * commit-status contexts) was fetched — the rollup is incomplete and
+   * must not be treated as a trustworthy `passing`/`pending` verdict, nor
+   * cached as if it were complete.
+   */
+  truncated: boolean;
+}
+
+type CheckRunSummary = Pick<CIState, 'ciStatus' | 'checkCount' | 'failingCount' | 'truncated'>;
+
+/**
+ * Minimal shape `paginateCheckRunsRollup` needs from a caller-provided call
+ * budget. Kept structural (rather than importing `ApiBudget` from the
+ * dashboard module) so this state-query module doesn't take a dependency on
+ * the dashboard feature.
+ */
+export interface CheckRunBudget {
+  canSpend(cost?: number): boolean;
+  spend(cost?: number): void;
+}
+
+/**
+ * Paginate through GitHub check runs for a ref and roll them up into a single
+ * {@link CIStatus}. Shared by pull-request-head CI reads and default-branch
+ * CI reads so the "what counts as failing/error/pending/passing" state
+ * machine only exists once.
+ *
+ * When `budget` is supplied, each page fetched (not just the first) spends
+ * one unit against it. Repositories with large CI matrices otherwise consume
+ * many live GitHub requests while a caller-side budget records only one,
+ * defeating the fan-out cap that budget exists to enforce. If the budget
+ * runs out mid-pagination, the rollup is marked `truncated` and reports
+ * `unknown` rather than a possibly-incomplete `passing`/`pending` verdict —
+ * a failing/error signal already observed in fetched pages still wins.
+ *
+ * `includeStatusContexts` additionally rolls in legacy commit-status
+ * contexts (the pre-Checks-API `status` API), which some repositories still
+ * use as required CI alongside or instead of check runs. It defaults to
+ * `false` so the pull-request-head CI path (`getFailingCheckCount`, called
+ * without a budget) keeps its existing single-source-of-truth behavior and
+ * request shape; only the default-branch path opts in.
+ */
+async function paginateCheckRunsRollup(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  budget?: CheckRunBudget,
+  includeStatusContexts = false,
+): Promise<CheckRunSummary> {
+  const perPage = 100;
+  let page = 1;
+  let totalCount = 0;
+  let fetchedCount = 0;
+  let failingCount = 0;
+  let hasError = false;
+  let hasPending = false;
+  let truncated = false;
+
+  while (true) {
+    if (budget) {
+      if (!budget.canSpend(1)) {
+        truncated = true;
+        break;
+      }
+      budget.spend(1);
+    }
+
+    const { data } = await octokit.rest.checks.listForRef({
+      owner,
+      repo,
+      ref,
+      per_page: perPage,
+      page,
+    });
+
+    if (page === 1) {
+      totalCount = data.total_count;
+    }
+
+    for (const run of data.check_runs) {
+      if (run.status !== 'completed') {
+        hasPending = true;
+        continue;
+      }
+      // Octokit's `checks.listForRef` response type omits `stale` from the
+      // conclusion union, but GitHub's Checks API can and does report it
+      // (a previously-completed run GitHub has invalidated, e.g. after the
+      // base branch moved) — widen to `string` so that real-world value
+      // isn't silently missed just because the generated type lags the API.
+      const conclusion = run.conclusion as string | null;
+      if (conclusion === 'failure') {
+        failingCount++;
+      } else if (
+        conclusion === 'cancelled' ||
+        conclusion === 'timed_out' ||
+        conclusion === 'action_required' ||
+        conclusion === 'stale'
+      ) {
+        // `action_required` (e.g. a check waiting on manual approval) and
+        // `stale` are not passing signals — roll them up as an error
+        // alongside cancelled/timed-out runs rather than silently falling
+        // through to `passing`.
+        hasError = true;
+      }
+    }
+
+    fetchedCount += data.check_runs.length;
+
+    // Stop once every check run GitHub reported (`total_count`) has been
+    // fetched. Relying only on "this page came back short" leaves a repo
+    // with exactly `N * perPage` check runs assuming another page exists;
+    // with a tight budget, that spends the last allowed unit on an empty
+    // page and reports `unknown` instead of the actual complete rollup.
+    if (data.check_runs.length < perPage || fetchedCount >= totalCount) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  let statusTotalCount = 0;
+  if (includeStatusContexts && !truncated) {
+    if (budget && !budget.canSpend(1)) {
+      truncated = true;
+    } else {
+      budget?.spend(1);
+      const { data: combined } = await octokit.rest.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+      });
+      statusTotalCount = combined.total_count;
+      // An empty status-context set reports an aggregate `state` of
+      // "pending" even though there is nothing to be pending on — gate
+      // every contribution on there actually being statuses, or a
+      // check-run-only repository would flip from `passing` to `pending`.
+      if (statusTotalCount > 0) {
+        if (combined.state === 'failure') {
+          failingCount++;
+        } else if (combined.state === 'error') {
+          hasError = true;
+        } else if (combined.state === 'pending') {
+          hasPending = true;
+        }
+      }
+    }
+  }
+
+  let ciStatus: CIStatus;
+  if (failingCount > 0) {
+    ciStatus = 'failing';
+  } else if (hasError) {
+    ciStatus = 'error';
+  } else if (truncated) {
+    // Only an already-observed failure/error above may override truncation.
+    // A pending or passing verdict built from an incomplete page set isn't
+    // trustworthy for a repository with more check runs (or status
+    // contexts) than the budget allowed us to read.
+    ciStatus = 'unknown';
+  } else if (hasPending) {
+    ciStatus = 'pending';
+  } else if (totalCount > 0 || statusTotalCount > 0) {
+    ciStatus = 'passing';
+  } else {
+    ciStatus = 'unknown';
+  }
+
+  return { ciStatus, checkCount: totalCount + statusTotalCount, failingCount, truncated };
 }
 
 /**
@@ -182,62 +353,7 @@ export async function getFailingCheckCount(
   repo: string,
   headSha: string,
 ): Promise<CIState> {
-  const fetchCIState = async (): Promise<CIState> => {
-    // Paginate through all check runs
-    const perPage = 100;
-    let page = 1;
-    let totalCount = 0;
-    let failingCount = 0;
-    let hasError = false;
-    let hasPending = false;
-
-    while (true) {
-      const { data } = await octokit.rest.checks.listForRef({
-        owner,
-        repo,
-        ref: headSha,
-        per_page: perPage,
-        page,
-      });
-
-      if (page === 1) {
-        totalCount = data.total_count;
-      }
-
-      for (const run of data.check_runs) {
-        if (run.status !== 'completed') {
-          hasPending = true;
-          continue;
-        }
-        if (run.conclusion === 'failure') {
-          failingCount++;
-        } else if (run.conclusion === 'cancelled' || run.conclusion === 'timed_out') {
-          hasError = true;
-        }
-      }
-
-      if (data.check_runs.length < perPage) {
-        break;
-      }
-
-      page += 1;
-    }
-
-    let ciStatus: CIStatus;
-    if (failingCount > 0) {
-      ciStatus = 'failing';
-    } else if (hasError) {
-      ciStatus = 'error';
-    } else if (hasPending) {
-      ciStatus = 'pending';
-    } else if (totalCount > 0) {
-      ciStatus = 'passing';
-    } else {
-      ciStatus = 'unknown';
-    }
-
-    return { ciStatus, checkCount: totalCount, failingCount };
-  };
+  const fetchCIState = () => paginateCheckRunsRollup(octokit, owner, repo, headSha);
 
   if (!context) {
     return fetchCIState();
@@ -251,4 +367,93 @@ export async function getFailingCheckCount(
     [owner, repo, headSha],
   );
   return value;
+}
+
+// ============================================================================
+// DEFAULT-BRANCH CI STATE
+// ============================================================================
+
+interface BranchCIState extends CIState {
+  /** Commit SHA this rollup was computed for — used to detect a stale cross-commit cache hit. */
+  commitSha: string;
+}
+
+/**
+ * Get the continuous integration rollup for a repository's default branch.
+ *
+ * Reads check runs for the branch's known head commit SHA — never the
+ * branch name — so the result reflects a specific, citable commit rather
+ * than "whatever HEAD is right now" at read time. Callers must resolve
+ * `defaultBranch` and `commit` before calling; this function does not
+ * fall back to guessing `main` or re-resolving a missing SHA.
+ *
+ * Cached under the `get-branch-ci-status` policy, keyed by
+ * `(owner, repo, branch)` — distinct from the PR-head CI cache key, which
+ * is keyed by `(owner, repo, headSha)`. Because the cache key does not
+ * include the commit SHA, a cached entry from before the default branch
+ * advanced would otherwise be replayed for the new commit. The cached
+ * envelope stores the commit SHA it was computed for; a mismatch bypasses
+ * the cache and refetches for the requested SHA instead of silently
+ * reusing a different commit's rollup.
+ */
+export async function getDefaultBranchCiStatus(
+  context: GithubServiceContext | undefined,
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branch: string,
+  commitSha: string,
+  budget?: CheckRunBudget,
+): Promise<CIState> {
+  const fetchCIState = async (): Promise<BranchCIState> => ({
+    ...(await paginateCheckRunsRollup(
+      octokit,
+      owner,
+      repo,
+      commitSha,
+      budget,
+      /* includeStatusContexts */ true,
+    )),
+    commitSha,
+  });
+
+  if (!context) {
+    return fetchCIState();
+  }
+
+  const policy = requirePolicy('get-branch-ci-status');
+  const cacheKey = policy.keyFactory(owner, repo, branch);
+
+  const { value, source } = await cachedRead<BranchCIState>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchCIState() }),
+    [owner, repo, branch],
+  );
+
+  // A budget-truncated rollup is incomplete by construction. Letting it sit
+  // in the cache would poison later requests — even ones with plenty of
+  // budget left — into reusing `unknown` for the remainder of the TTL
+  // instead of fetching the complete rollup. Only a freshly-fetched
+  // (non-cache-hit) result needs this; a cache hit was already checked when
+  // it was written.
+  if (value.truncated && source !== 'cache') {
+    await context.cache.deleteCache(cacheKey);
+  }
+
+  if (value.commitSha === commitSha) {
+    return value;
+  }
+
+  const { value: refreshed, source: refreshedSource } = await cachedRead<BranchCIState>(
+    context.cache,
+    policy,
+    async () => ({ data: await fetchCIState() }),
+    [owner, repo, branch],
+    { bypass: true },
+  );
+  if (refreshed.truncated && refreshedSource !== 'cache') {
+    await context.cache.deleteCache(cacheKey);
+  }
+  return refreshed;
 }

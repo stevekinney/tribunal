@@ -28,6 +28,24 @@ export {
   type CachedReadOptions,
 } from './core/github-read-client.js';
 
+// Dashboard read model
+export {
+  buildRepositoryDashboard,
+  DEFAULT_STALE_AFTER_MS,
+  ApiBudget,
+  DEFAULT_DASHBOARD_API_BUDGET,
+  isAttentionCiStatus,
+  isAttentionMergeStatus,
+  pullRequestNeedsAttention,
+  type BranchCIStatus,
+  type DashboardRepositoryIdentity,
+  type DashboardPullRequestAuthor,
+  type DashboardOptions,
+  type DashboardUnavailableReason,
+  type PullRequestDashboardRow,
+  type RepositoryDashboardRow,
+} from './dashboard/service.js';
+
 // Issues
 export {
   parseIssueFilters,

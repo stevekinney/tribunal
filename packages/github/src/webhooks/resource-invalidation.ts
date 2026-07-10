@@ -29,9 +29,14 @@ export async function invalidateGitHubResourceCacheForEvent(
   data: WebhookPayload,
 ): Promise<void> {
   try {
-    const repository = data.repository as { owner: { login: string }; name: string } | undefined;
+    const repository = data.repository as
+      | { owner: { login?: string; name?: string }; name: string }
+      | undefined;
 
-    const owner = repository?.owner?.login;
+    // Fall back to owner.name when owner.login is absent, mirroring the
+    // pattern used in pr-state-dispatch.ts and extract.ts so push deliveries
+    // whose owner is only exposed via `name` still invalidate their cache.
+    const owner = repository?.owner?.login ?? repository?.owner?.name;
     const repo = repository?.name;
 
     switch (eventType) {
@@ -65,6 +70,18 @@ export async function invalidateGitHubResourceCacheForEvent(
       case 'check_suite':
         if (owner && repo) {
           await invalidateCheckRelatedCache(context, owner, repo, data);
+        }
+        break;
+
+      case 'status':
+        if (owner && repo) {
+          await invalidateStatusEventCache(context, owner, repo, data);
+        }
+        break;
+
+      case 'push':
+        if (owner && repo) {
+          await invalidatePushCache(context, owner, repo, data);
         }
         break;
 
@@ -221,10 +238,15 @@ async function invalidatePullRequestReviewRelatedCache(
 }
 
 /**
- * Invalidate failing-check count caches when check runs/suites complete.
+ * Invalidate failing-check count and branch-CI caches when check runs/suites
+ * complete.
  *
  * Note: check_run and check_suite events include a head_sha that keys the
- * cached failing-check counts.
+ * cached failing-check counts, and a head_branch that keys the cached
+ * branch CI rollup (`getDefaultBranchCiStatus`) — without this, a check
+ * that completes on a branch's current commit (moving pending ->
+ * failing/passing) would otherwise keep serving the previous rollup until
+ * the 30s TTL expires.
  */
 async function invalidateCheckRelatedCache(
   context: GithubServiceContext,
@@ -232,25 +254,104 @@ async function invalidateCheckRelatedCache(
   repo: string,
   data: WebhookPayload,
 ): Promise<void> {
-  // completed events expose a typed head_sha; narrow with guards. Other check
-  // actions have no listed guard, so fall back to structural access.
-  // check_run events have head_sha at data.check_run.head_sha
-  // check_suite events have head_sha at data.check_suite.head_sha
+  // completed events expose a typed head_sha/head_branch; narrow with
+  // guards. Other check actions have no listed guard, so fall back to
+  // structural access.
+  // check_run events have head_sha/check_suite.head_branch at data.check_run
+  // check_suite events have head_sha/head_branch at data.check_suite
   let headSha: string | undefined;
+  let headBranch: string | null | undefined;
   if (isCheckRunCompletedEvent(data)) {
     headSha = data.check_run.head_sha;
+    headBranch = data.check_run.check_suite.head_branch;
   } else if (isCheckSuiteCompletedEvent(data)) {
     headSha = data.check_suite.head_sha;
+    headBranch = data.check_suite.head_branch;
   } else {
-    const checkRun = data.check_run as { head_sha?: string } | undefined;
-    const checkSuite = data.check_suite as { head_sha?: string } | undefined;
+    const checkRun = data.check_run as
+      | { head_sha?: string; check_suite?: { head_branch?: string | null } }
+      | undefined;
+    const checkSuite = data.check_suite as
+      | { head_sha?: string; head_branch?: string | null }
+      | undefined;
     headSha = checkRun?.head_sha ?? checkSuite?.head_sha;
+    headBranch = checkRun?.check_suite?.head_branch ?? checkSuite?.head_branch;
   }
+
+  const invalidations: Promise<unknown>[] = [];
 
   // Invalidate cached failing check counts for this commit SHA
   if (headSha) {
-    await context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha));
+    invalidations.push(
+      context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha)),
+    );
   }
+
+  // Invalidate the cached branch CI rollup for whatever branch these checks
+  // ran on. Correct regardless of whether it's the repository's default
+  // branch, since the cache key is keyed by branch name, not "is default".
+  if (headBranch) {
+    invalidations.push(
+      context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, headBranch)),
+    );
+  }
+
+  await Promise.all(invalidations);
+}
+
+/**
+ * Invalidate branch-CI and failing-check caches when a legacy commit
+ * `status` context (Statuses API) updates.
+ *
+ * `getDefaultBranchCiStatus` folds `getCombinedStatusForRef` into the
+ * cached branch CI rollup, so a status context flipping pending ->
+ * failing/passing on a branch's current commit needs the same
+ * invalidation check_run/check_suite completions get — otherwise it sits
+ * stale until the cache TTL expires even though the app subscribes to
+ * `status` webhooks.
+ */
+async function invalidateStatusEventCache(
+  context: GithubServiceContext,
+  owner: string,
+  repo: string,
+  data: WebhookPayload,
+): Promise<void> {
+  const sha = data.sha as string | undefined;
+  const branches = data.branches as Array<{ name?: string }> | undefined;
+
+  const invalidations: Promise<unknown>[] = [];
+
+  if (sha) {
+    invalidations.push(context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, sha)));
+  }
+
+  for (const branch of branches ?? []) {
+    if (branch?.name) {
+      invalidations.push(
+        context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, branch.name)),
+      );
+    }
+  }
+
+  await Promise.all(invalidations);
+}
+
+/**
+ * Invalidate the cached branch-head SHA (`get-branch-head-sha` policy, used
+ * by the dashboard to resolve `defaultBranchStatus` when the `repository`
+ * row's own `commit` column hasn't been populated yet) when a branch moves.
+ */
+async function invalidatePushCache(
+  context: GithubServiceContext,
+  owner: string,
+  repo: string,
+  data: WebhookPayload,
+): Promise<void> {
+  const ref = data.ref as string | undefined;
+  if (!ref?.startsWith('refs/heads/')) return;
+
+  const branch = ref.replace('refs/heads/', '');
+  await context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch));
 }
 
 async function invalidateInstallationRepositoriesCache(

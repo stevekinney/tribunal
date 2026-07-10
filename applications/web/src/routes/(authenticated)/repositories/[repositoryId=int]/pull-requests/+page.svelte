@@ -1,11 +1,7 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
-  import { enhance } from '$app/forms';
-  import { Alert } from '@lostgradient/cinder/alert';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
-  import { Checkbox } from '@lostgradient/cinder/checkbox';
-  import { Textarea } from '@lostgradient/cinder/textarea';
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
@@ -16,18 +12,16 @@
     CheckCircle2,
     CircleAlert,
   } from 'lucide-svelte';
-  import Save from 'lucide-svelte/icons/save';
+  import Settings from 'lucide-svelte/icons/settings';
   import WebhookIcon from 'lucide-svelte/icons/webhook';
 
-  let { data, form } = $props();
+  let { data } = $props();
 
   const repositoryName = $derived(`${data.repository.owner}/${data.repository.name}`);
   const breadcrumbs = $derived([
     { label: 'Repositories', href: '/repositories' },
     { label: repositoryName },
   ]);
-  let ignoreGlobs = $derived(data.repository.review.ignoreGlobs.join('\n'));
-  let selectedAgentIds = $derived(new Set(data.repository.review.agents.map((agent) => agent.id)));
 
   function ciLabel(status: string): string {
     const labels: Record<string, string> = {
@@ -61,6 +55,14 @@
 
 {#snippet pageActions()}
   <Link href={`/repositories/${data.repository.id}/issues`}>Issues</Link>
+  <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
+    {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
+    Webhooks
+  </Button>
+  <Button href={`/repositories/${data.repository.id}/settings`} variant="secondary" size="sm">
+    {#snippet leadingIcon()}<Settings size={14} aria-hidden="true" />{/snippet}
+    Repository settings
+  </Button>
 {/snippet}
 
 <Page
@@ -69,78 +71,6 @@
   {breadcrumbs}
   actions={pageActions}
 >
-  {#snippet actions()}
-    <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
-      {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
-      Webhooks
-    </Button>
-  {/snippet}
-  {#if form?.error}
-    <Alert variant="danger">{form.error}</Alert>
-  {/if}
-
-  <Card
-    title="Repository settings"
-    description="Controls how Tribunal reviews this repository."
-    headingLevel={2}
-  >
-    <form method="POST" action="?/saveSettings" class="settings-form" use:enhance>
-      <Textarea
-        id="ignore-globs"
-        name="ignoreGlobs"
-        rows={4}
-        label="Ignore globs"
-        description="One glob per line. Matching files are skipped during review."
-        placeholder="dist/**&#10;coverage/**"
-        bind:value={ignoreGlobs}
-      />
-
-      <div class="agent-assignment">
-        <span class="field-label">Review agents</span>
-        {#if data.agents.length === 0}
-          <p class="field-description">Create an agent before assigning repository reviewers.</p>
-        {:else}
-          <div class="agent-list">
-            {#each data.agents as agent (agent.id)}
-              {@const selected = selectedAgentIds.has(agent.id)}
-              {@const canToggle = agent.enabled || selected}
-              <Checkbox
-                id="repository-agent-{agent.id}"
-                name="agentIds"
-                value={agent.id}
-                checked={selected}
-                label={agent.slug}
-                disabled={!canToggle}
-                description={agent.enabled
-                  ? undefined
-                  : selected
-                    ? 'Disabled; uncheck to remove'
-                    : 'Disabled'}
-                onValueChange={(next) => {
-                  const nextSelectedAgentIds = new Set(selectedAgentIds);
-                  if (next) {
-                    nextSelectedAgentIds.add(agent.id);
-                  } else {
-                    nextSelectedAgentIds.delete(agent.id);
-                  }
-                  selectedAgentIds = nextSelectedAgentIds;
-                  return next;
-                }}
-              />
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <div class="settings-actions">
-        <Button type="submit" variant="primary" size="sm">
-          {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
-          Save settings
-        </Button>
-      </div>
-    </form>
-  </Card>
-
   {#if data.pullRequests.length === 0}
     <Card padding="none">
       <EmptyState
@@ -270,35 +200,5 @@
     font-family: var(--font-mono, monospace);
     font-size: var(--text-xs);
     color: var(--text-subtle);
-  }
-
-  .settings-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .field-label {
-    color: var(--text);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  .field-description {
-    color: var(--text-subtle);
-    font-size: var(--text-sm);
-    margin: 0;
-  }
-
-  .agent-assignment,
-  .agent-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .settings-actions {
-    display: flex;
-    justify-content: flex-end;
   }
 </style>
