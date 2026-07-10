@@ -58,10 +58,15 @@
   }
 </script>
 
+{#snippet pageActions()}
+  <Link href={`/repositories/${data.repository.id}/issues`}>Issues</Link>
+{/snippet}
+
 <Page
   title="Open pull requests"
   subtitle={`${data.pullRequests.length} open ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`}
   {breadcrumbs}
+  actions={pageActions}
 >
   {#if form?.error}
     <Alert variant="danger">{form.error}</Alert>

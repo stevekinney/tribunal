@@ -149,6 +149,21 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 10),
       );
     });
+
+    it('invalidates the repository issue list cache so commentCount/updatedAt stay fresh', async () => {
+      const data = makePayload({
+        action: 'created',
+        issue: { number: 10 },
+      });
+      mockGetRepositoryByOwnerAndName.mockResolvedValueOnce({ id: 12345 });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'issue_comment', 'created', data);
+
+      expect(mockGetRepositoryByOwnerAndName).toHaveBeenCalledWith(context, 'acme', 'widgets');
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_ISSUES_LIST_PATTERN(12345),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
