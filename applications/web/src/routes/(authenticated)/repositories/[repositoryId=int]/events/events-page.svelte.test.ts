@@ -139,15 +139,52 @@ describe('/repositories/[repositoryId]/events page', () => {
     });
 
     await expect
-      .element(page.getByRole('dialog', { name: 'Delete event listener' }))
+      .element(page.getByRole('alertdialog', { name: 'Delete event listener' }))
       .not.toBeInTheDocument();
 
     await page.getByRole('button', { name: 'Delete Triage issues' }).click();
 
     await expect
-      .element(page.getByRole('dialog', { name: 'Delete event listener' }))
+      .element(page.getByRole('alertdialog', { name: 'Delete event listener' }))
       .toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
+  });
+
+  it('requires typing the listener name before the delete button is enabled', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: null,
+    });
+
+    await page.getByRole('button', { name: 'Delete Triage issues' }).click();
+
+    const deleteButton = page.getByRole('button', { name: 'Delete', exact: true });
+    await expect.element(deleteButton).toBeDisabled();
+
+    const confirmationInput = page.getByLabelText('Type "Triage issues" to confirm');
+    await confirmationInput.fill('not the right name');
+    await expect.element(deleteButton).toBeDisabled();
+
+    // Case-insensitive match per .claude/rules/component-library.md.
+    await confirmationInput.fill('TRIAGE ISSUES');
+    await expect.element(deleteButton).toBeEnabled();
+  });
+
+  it('resets the typed confirmation when the delete dialog is reopened', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: null,
+    });
+
+    await page.getByRole('button', { name: 'Delete Triage issues' }).click();
+    await page.getByLabelText('Type "Triage issues" to confirm').fill('Triage issues');
+    await expect.element(page.getByRole('button', { name: 'Delete', exact: true })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('button', { name: 'Delete Triage issues' }).click();
+
+    await expect.element(page.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled();
+    await expect.element(page.getByLabelText('Type "Triage issues" to confirm')).toHaveValue('');
   });
 
   it('shows a server-side error message when the form action fails', async () => {

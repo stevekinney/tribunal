@@ -184,6 +184,30 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       expect(result.editing).toBe('listener_1');
       expect(result.editingListener?.name).toBe('Triage issues');
       expect(result.editingListenerFilters).toEqual({ ref: 'refs/heads/main' });
+      expect(result.editingListenerFiltersInvalid).toBe(false);
+    });
+
+    it('surfaces malformed stored filters as invalid instead of silently treating them as "no filters"', async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Corrupted listener',
+        eventType: 'issues',
+        agentId: testAgent.id,
+        // `unsupportedKey` fails `parseEventListenerFilters`'s allow-list
+        // check, so it returns null (fail closed) rather than `{}`.
+        filtersJson: JSON.stringify({ unsupportedKey: 'value' }),
+      });
+
+      const result = await loadPage(user.id, '?listener=listener_1');
+
+      expect(result.editingListenerFiltersInvalid).toBe(true);
+      // The form must still render (blank filter inputs), but the caller
+      // must not be able to tell this apart from a listener that has
+      // genuinely never had filters set without checking the invalid flag.
+      expect(result.editingListenerFilters).toEqual({});
     });
 
     it("includes the edited listener's stored event type in eventTypeOptions even when it is no longer subscribed or received", async () => {
@@ -342,6 +366,71 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       const [row] = await testDb.db.select().from(repositoryEventListener);
       expect(row?.name).toBe('Renamed');
       expect(row?.action).toBe('archaic_action');
+    });
+
+    it('refuses to overwrite malformed stored filters without explicit acknowledgement', async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Corrupted listener',
+        eventType: 'issues',
+        agentId: testAgent.id,
+        filtersJson: JSON.stringify({ unsupportedKey: 'value' }),
+      });
+
+      const result = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, {
+            listenerId: 'listener_1',
+            name: 'Renamed',
+            eventType: 'issues',
+            agentId: testAgent.id,
+            enabled: 'on',
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400 });
+
+      const [row] = await testDb.db.select().from(repositoryEventListener);
+      // Unchanged -- an unrelated edit must not silently normalize the
+      // malformed (fail-closed) filters to "no filters" (matches everything).
+      expect(row?.name).toBe('Corrupted listener');
+      expect(row?.filtersJson).toBe(JSON.stringify({ unsupportedKey: 'value' }));
+    });
+
+    it('overwrites malformed stored filters once the user explicitly acknowledges the reset', async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Corrupted listener',
+        eventType: 'issues',
+        agentId: testAgent.id,
+        filtersJson: JSON.stringify({ unsupportedKey: 'value' }),
+      });
+
+      await expect(
+        withTestDatabase(() =>
+          actions.update(
+            createActionEvent(user.id, {
+              listenerId: 'listener_1',
+              name: 'Renamed',
+              eventType: 'issues',
+              agentId: testAgent.id,
+              enabled: 'on',
+              acknowledgeFiltersReset: 'true',
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ status: 303, location: '/repositories/42/events' });
+
+      const [row] = await testDb.db.select().from(repositoryEventListener);
+      expect(row?.name).toBe('Renamed');
+      expect(row?.filtersJson).toBe('{}');
     });
   });
 

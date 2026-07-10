@@ -122,6 +122,30 @@ describe('/webhooks page', () => {
     expect(document.body.textContent).not.toContain('No repositories added');
   });
 
+  it('suppresses the events table and filters entirely during a load error, instead of a synthetic empty-events result', async () => {
+    // The server returns `loadError` alongside a synthetic empty `events`
+    // array when it could not determine repository/event state (GitHub
+    // outage). Rendering the filters form and the events table's own
+    // "No webhook events received" empty state would misleadingly imply we
+    // queried and found nothing, rather than never having queried at all.
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: true,
+        events: [],
+        totalCount: 0,
+        loadError: 'Could not reach GitHub to list your installations. Please try again.',
+      }),
+    });
+
+    await expect
+      .element(
+        page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
+      )
+      .toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('No webhook events received');
+    expect(document.body.textContent).not.toContain('Apply filters');
+  });
+
   it('shows a filtered-empty state when repositories exist but no events match', async () => {
     render(WebhooksPage, {
       data: createData({

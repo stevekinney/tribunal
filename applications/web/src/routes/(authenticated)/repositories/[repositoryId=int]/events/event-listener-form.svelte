@@ -16,6 +16,7 @@
     mode: 'new' | 'edit';
     listener: RepositoryEventListener | null;
     listenerFilters: EventListenerFilters;
+    listenerFiltersInvalid?: boolean;
     agents: { id: string; slug: string; enabled: boolean }[];
     eventTypeOptions: string[];
     actionsByEventType: Record<string, string[]>;
@@ -27,12 +28,21 @@
     mode,
     listener,
     listenerFilters,
+    listenerFiltersInvalid = false,
     agents,
     eventTypeOptions,
     actionsByEventType,
     form = null,
     cancelHref,
   }: Props = $props();
+
+  // Stored filters that failed to parse fail closed (the listener currently
+  // matches nothing). Saving must not silently replace that state with
+  // whatever the (blank) filter inputs show until the user explicitly
+  // confirms they want to reset the filters -- see `+page.server.ts`'s
+  // `editingListenerFiltersInvalid`/`acknowledgeFiltersReset` handling.
+  let acknowledgeFiltersReset = $state(false);
+  const filtersResetBlocked = $derived(listenerFiltersInvalid && !acknowledgeFiltersReset);
 
   let name = $state(untrack(() => listener?.name ?? ''));
   let eventType = $state(untrack(() => listener?.eventType ?? eventTypeOptions[0] ?? ''));
@@ -134,6 +144,21 @@
 
     <fieldset class="filters-fieldset">
       <legend>Filters (optional)</legend>
+      {#if listenerFiltersInvalid}
+        <Alert variant="danger">
+          This listener's stored filters could not be parsed, so it currently matches nothing (fails
+          closed). Saving will replace them with whatever you set below -- confirm below to proceed.
+        </Alert>
+        <label class="acknowledge-filters-reset">
+          <input type="checkbox" bind:checked={acknowledgeFiltersReset} />
+          I understand this replaces the invalid filters below.
+        </label>
+        <input
+          type="hidden"
+          name="acknowledgeFiltersReset"
+          value={acknowledgeFiltersReset ? 'true' : 'false'}
+        />
+      {/if}
       <div class="field-grid">
         <Input
           id="listener-filter-ref"
@@ -191,7 +216,7 @@
 
     <div class="form-actions">
       <Button href={cancelHref} variant="secondary">Cancel</Button>
-      <Button type="submit" variant="primary">
+      <Button type="submit" variant="primary" disabled={filtersResetBlocked}>
         {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
         {submitLabel}
       </Button>
@@ -222,6 +247,15 @@
     font-size: var(--text-sm);
     font-weight: var(--font-medium);
     padding: 0 var(--space-1);
+  }
+
+  .acknowledge-filters-reset {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text);
+    margin: var(--space-3) 0;
   }
 
   .enabled-row {

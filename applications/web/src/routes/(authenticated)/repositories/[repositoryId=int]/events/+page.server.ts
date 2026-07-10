@@ -5,6 +5,7 @@ import {
   createEventListener,
   deleteEventListener,
   EventListenerAgentOwnershipError,
+  getEventListener,
   InvalidEventListenerFiltersError,
   listEventListenersWithProgressForRepository,
   parseEventListenerFilters,
@@ -124,9 +125,20 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     editingParam && editingParam !== 'new'
       ? (listeners.find((row) => row.listener.id === editingParam)?.listener ?? null)
       : null;
-  const editingListenerFilters = editingListener
-    ? (parseEventListenerFilters(editingListener.filtersJson) ?? {})
+  // `parseEventListenerFilters` returns null to fail closed on malformed
+  // `filtersJson` (the matcher would otherwise treat `{}` as "no filters" and
+  // match every event). Coercing that null straight to `{}` here would make
+  // the edit form render as if the listener had no filters, and saving an
+  // unrelated change would silently persist that empty state -- turning a
+  // listener that currently matches nothing into one that matches
+  // everything. Surface the invalid state instead so the form can warn and
+  // require explicit confirmation before overwriting it.
+  const editingListenerFiltersParsed = editingListener
+    ? parseEventListenerFilters(editingListener.filtersJson)
     : {};
+  const editingListenerFiltersInvalid =
+    editingListener != null && editingListenerFiltersParsed === null;
+  const editingListenerFilters = editingListenerFiltersParsed ?? {};
 
   // Include the listener's own stored event type even if it has since
   // dropped out of the subscribed/received set (App subscription removed,
@@ -154,6 +166,7 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     editing: editingParam === 'new' ? ('new' as const) : (editingListener?.id ?? null),
     editingListener,
     editingListenerFilters,
+    editingListenerFiltersInvalid,
   };
 };
 
@@ -237,6 +250,24 @@ export const actions: Actions = {
       const message =
         thrown instanceof InvalidEventListenerFiltersError ? thrown.message : 'Invalid filters.';
       return fail(400, { error: message });
+    }
+
+    // Re-check the stored filters at submit time (not just at load time --
+    // the form may have been open a while) and require an explicit
+    // acknowledgement before overwriting them. Without this, a listener
+    // whose filters failed to parse (and therefore fails closed, matching
+    // nothing) would silently become "no filters" -- matching everything --
+    // the moment the user saves any unrelated change, because the edit form
+    // has no way to represent "invalid" other than blank inputs.
+    const currentListener = await getEventListener(db, userId, repositoryId, listenerId);
+    if (!currentListener) return fail(404, { error: 'Listener not found.' });
+    const currentFiltersInvalid = parseEventListenerFilters(currentListener.filtersJson) === null;
+    const acknowledgedFiltersReset = formData.get('acknowledgeFiltersReset') === 'true';
+    if (currentFiltersInvalid && !acknowledgedFiltersReset) {
+      return fail(400, {
+        error:
+          'This listener has invalid stored filters (it currently matches nothing). Confirm the filters reset above before saving.',
+      });
     }
 
     try {

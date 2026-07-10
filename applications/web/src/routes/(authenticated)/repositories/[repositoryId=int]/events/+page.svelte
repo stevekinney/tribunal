@@ -5,8 +5,9 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
-  import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
+  import { Input } from '@lostgradient/cinder/input';
+  import { Modal } from '@lostgradient/cinder/modal';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import {
@@ -28,7 +29,18 @@
   ]);
   const eventsPath = $derived(`/repositories/${data.repository.id}/events`);
 
-  let deleteTargetId = $state<string | null>(null);
+  let deleteTarget = $state<{ id: string; name: string } | null>(null);
+  // Cinder's ConfirmDialog (0.9.0) has no typed-confirmation primitive --
+  // see the upstream ticket filed while addressing this -- so this
+  // destructive delete is composed directly from Modal + Input + Button per
+  // .claude/rules/component-library.md ("Destructive actions: require
+  // explicit typed confirmation, case-insensitive comparison, disabled
+  // button until confirmed, autocomplete='off'").
+  let deleteConfirmationText = $state('');
+  const deleteConfirmed = $derived(
+    deleteTarget !== null &&
+      deleteConfirmationText.trim().toLowerCase() === deleteTarget.name.trim().toLowerCase(),
+  );
 
   function formatMatchedAt(value: Date | string | null | undefined): string {
     if (!value) return 'Never';
@@ -42,12 +54,17 @@
     form?.requestSubmit();
   }
 
+  function closeDeleteDialog(): void {
+    deleteTarget = null;
+    deleteConfirmationText = '';
+  }
+
   function submitDeleteForm(listenerId: string): void {
     const form = document.getElementById(
       `listener-${listenerId}-delete-form`,
     ) as HTMLFormElement | null;
     form?.requestSubmit();
-    deleteTargetId = null;
+    closeDeleteDialog();
   }
 </script>
 
@@ -69,6 +86,7 @@
         mode={data.editing === 'new' ? 'new' : 'edit'}
         listener={data.editingListener}
         listenerFilters={data.editingListenerFilters}
+        listenerFiltersInvalid={data.editingListenerFiltersInvalid}
         agents={data.agents}
         eventTypeOptions={data.eventTypeOptions}
         actionsByEventType={data.actionsByEventType}
@@ -170,7 +188,8 @@
                     <Button
                       variant="danger"
                       size="sm"
-                      onclick={() => (deleteTargetId = row.listener.id)}
+                      onclick={() =>
+                        (deleteTarget = { id: row.listener.id, name: row.listener.name })}
                     >
                       {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
                       <span class="cinder-sr-only">Delete {row.listener.name}</span>
@@ -192,17 +211,44 @@
     </Card>
   {/if}
 
-  <ConfirmDialog
-    open={deleteTargetId !== null}
+  <Modal
+    open={deleteTarget !== null}
     title="Delete event listener"
-    description="Deleting this listener does not affect runs it has already spawned."
-    confirmLabel="Delete"
-    destructive
-    onconfirm={() => {
-      if (deleteTargetId) submitDeleteForm(deleteTargetId);
-    }}
-    oncancel={() => (deleteTargetId = null)}
-  />
+    role="alertdialog"
+    describedById="delete-listener-description"
+    dismissOnBackdropClick={false}
+    dismissOnEscape={false}
+    showCloseButton={false}
+    ondismiss={closeDeleteDialog}
+  >
+    {#if deleteTarget}
+      <p id="delete-listener-description">
+        Deleting this listener does not affect runs it has already spawned. Type <strong
+          >{deleteTarget.name}</strong
+        > to confirm.
+      </p>
+      <Input
+        id="delete-listener-confirmation"
+        label={`Type "${deleteTarget.name}" to confirm`}
+        hideLabel
+        bind:value={deleteConfirmationText}
+        placeholder={deleteTarget.name}
+        autocomplete="off"
+      />
+    {/if}
+    {#snippet footer()}
+      <Button variant="secondary" autofocus onclick={closeDeleteDialog}>Cancel</Button>
+      <Button
+        variant="danger"
+        disabled={!deleteConfirmed}
+        onclick={() => {
+          if (deleteTarget) submitDeleteForm(deleteTarget.id);
+        }}
+      >
+        Delete
+      </Button>
+    {/snippet}
+  </Modal>
 </Page>
 
 <style>

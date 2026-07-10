@@ -67,9 +67,7 @@
 <Page title="Webhook events" {subtitle}>
   {#if data.loadError}
     <Alert variant="danger">{data.loadError}</Alert>
-  {/if}
-
-  {#if !data.loadError && !data.hasRepositories}
+  {:else if !data.hasRepositories}
     <Card padding="none">
       <EmptyState
         title="No repositories added"
