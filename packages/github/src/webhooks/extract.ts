@@ -9,6 +9,8 @@ import {
   isIssueCommentCreatedEvent,
   isCheckRunCompletedEvent,
   isCheckSuiteCompletedEvent,
+  isPullRequestReviewThreadResolvedEvent,
+  isPullRequestReviewThreadUnresolvedEvent,
 } from './validate-github-webhook.js';
 import type { StoreWebhookEventData } from './webhook-events.js';
 import type { WebhookPayload } from './types.js';
@@ -53,6 +55,24 @@ export function extractEventFields(
       }
       break;
     }
+    case 'pull_request_review_thread': {
+      // No shared library guard covers both resolved/unresolved actions at
+      // once; narrow with each and fall back to structural extraction so a
+      // schema drift here degrades to "no prNumber filter match" rather than
+      // throwing.
+      if (
+        isPullRequestReviewThreadResolvedEvent(data) ||
+        isPullRequestReviewThreadUnresolvedEvent(data)
+      ) {
+        fields.prNumber = data.pull_request.number;
+      } else {
+        const pullRequest = data.pull_request as { number: number } | undefined;
+        if (pullRequest) {
+          fields.prNumber = pullRequest.number;
+        }
+      }
+      break;
+    }
     case 'issues': {
       const issue = data.issue as { number: number; created_at?: string } | undefined;
       if (issue) {
@@ -67,12 +87,24 @@ export function extractEventFields(
       // created events expose a typed issue.number; narrow with the guard for that.
       if (isIssueCommentCreatedEvent(data)) {
         fields.issueNumber = data.issue.number;
+        // GitHub represents pull requests as issues for issue_comment: a
+        // comment on a PR carries `issue.pull_request` and `issue.number` IS
+        // the PR number (issues and PRs share one numbering space per repo).
+        // Without this, a listener filtering on `prNumber` never matches PR
+        // comments even though the event is, in every other respect, a PR
+        // comment event.
+        if ('pull_request' in data.issue && data.issue.pull_request) {
+          fields.prNumber = data.issue.number;
+        }
       } else {
         // Other issue_comment actions (edited, deleted) have no matching extraction
         // guard listed here; extract the issue number structurally.
-        const issue = data.issue as { number: number } | undefined;
+        const issue = data.issue as { number: number; pull_request?: unknown } | undefined;
         if (issue) {
           fields.issueNumber = issue.number;
+          if (issue.pull_request) {
+            fields.prNumber = issue.number;
+          }
         }
       }
       break;

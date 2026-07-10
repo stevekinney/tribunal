@@ -2,6 +2,8 @@ import { json, error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { ValidationError } from '@tribunal/github/error-taxonomy';
 import { storeWebhookEvent } from '@tribunal/github/webhooks/webhook-events';
+import { matchAndPersistEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-matching';
+import { drainEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-dispatch';
 import { githubContext } from '$lib/server/github-context';
 import type { RequestHandler } from './$types';
 
@@ -182,34 +184,120 @@ export const POST: RequestHandler = async (event) => {
     }
   }
 
-  if (isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)) {
-    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
-    return json({ ok: true, ignored: true });
-  }
+  // Fire-and-forget, bounded drain of pending event listener deliveries for
+  // this repository. Defined once and called from every exit path that may
+  // have left newly-matched `pending` deliveries behind: the pre-database
+  // ignore return below, a review-engine dispatch failure before the 500
+  // response, and the normal success path. Never awaited -- a slow or
+  // failing drain must never block or fail the webhook HTTP response.
+  const scheduleDrain = () => {
+    if (!repositoryId) return;
+    void drainEventListenerDeliveries(githubContext, repositoryId).catch((e) => {
+      console.error('[webhook] Event listener delivery drain failed:', e);
+    });
+  };
 
-  // 4. Store event if it has a repository
+  // 4. Store event if it has a repository, then match enabled event listeners
+  // against it. Matching only inserts `pending` `event_listener_delivery`
+  // rows -- claiming and running them happens later, outside this request
+  // (see the drain calls below). Runs *before* the pre-database-ignore check
+  // so a configured listener for, e.g., `check_run.created` still gets
+  // matched/persisted even though that action is otherwise not interesting
+  // to the review-engine path below.
   if (repository && deliveryId && eventType) {
-    try {
-      const { owner, repo } = getRepositoryIdentity(data);
-      const eventFields = extractEventFields(eventType, data);
-      const sender = data.sender as { id: number; login: string } | undefined;
+    let storedEvent: Awaited<ReturnType<typeof storeWebhookEvent>> | undefined;
+    // A transient failure here (e.g. a dropped database connection) is the
+    // only thing standing between this event and every listener match that
+    // depends on it -- the delivery is already claimed, so GitHub will not
+    // redeliver, and repository webhooks consumed only by event listeners
+    // (no router/typed handler) have no other path that creates this row.
+    // Retry a bounded number of times in-process before giving up, mirroring
+    // the listener-matching retry below. A durable "unmatched" marker
+    // surviving a process crash mid-retry is a further, schema-level
+    // improvement left as a tracked follow-up -- see the linked review
+    // thread -- this only closes the much more common transient-blip case.
+    const MAX_STORE_ATTEMPTS = 3;
+    let storeError: unknown;
+    for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt += 1) {
+      try {
+        const { owner, repo } = getRepositoryIdentity(data);
+        const eventFields = extractEventFields(eventType, data);
+        const sender = data.sender as { id: number; login: string } | undefined;
 
-      await storeWebhookEvent(githubContext, {
+        storedEvent = await storeWebhookEvent(githubContext, {
+          eventType,
+          action,
+          deliveryId,
+          payload,
+          repositoryId: repository.id,
+          repositoryOwner: owner ?? '',
+          repositoryName: repo ?? '',
+          installationId: installationId ?? null,
+          senderId: sender?.id ?? null,
+          senderLogin: sender?.login ?? null,
+          ...eventFields,
+        });
+        storeError = undefined;
+        break;
+      } catch (e) {
+        storeError = e;
+      }
+    }
+    if (storeError) {
+      console.error('Failed to store webhook event:', {
         eventType,
         action,
         deliveryId,
-        payload,
         repositoryId: repository.id,
-        repositoryOwner: owner ?? '',
-        repositoryName: repo ?? '',
-        installationId: installationId ?? null,
-        senderId: sender?.id ?? null,
-        senderLogin: sender?.login ?? null,
-        ...eventFields,
+        installationId,
+        attempts: MAX_STORE_ATTEMPTS,
+        error: storeError,
       });
-    } catch (e) {
-      console.error('Failed to store webhook event:', e);
     }
+
+    if (storedEvent) {
+      // Matching only fails on transient conditions (a listener deleted
+      // between the candidate read and the delivery insert, or a transient
+      // database error) -- `matchAndPersistEventListenerDeliveries` re-reads
+      // candidates on every call, so a bounded in-process retry resolves
+      // those without re-running the (already-committed) event store above.
+      // GitHub will not redeliver this webhook once the delivery is claimed,
+      // so a failure here that isn't retried would silently drop listener
+      // dispatch for this event -- see the linked review thread for the
+      // narrower, schema-level fix (a durable "unmatched" marker surviving
+      // process crashes) left as a follow-up.
+      const MAX_MATCH_ATTEMPTS = 3;
+      let matchError: unknown;
+      for (let attempt = 1; attempt <= MAX_MATCH_ATTEMPTS; attempt += 1) {
+        try {
+          await matchAndPersistEventListenerDeliveries(githubContext, storedEvent);
+          matchError = undefined;
+          break;
+        } catch (e) {
+          matchError = e;
+        }
+      }
+      if (matchError) {
+        console.error('Failed to match event listeners for webhook event:', {
+          webhookEventId: storedEvent.id,
+          eventType,
+          action,
+          deliveryId,
+          repositoryId: repository.id,
+          installationId,
+          attempts: MAX_MATCH_ATTEMPTS,
+          error: matchError,
+        });
+      }
+    }
+  }
+
+  if (isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    // Any listener matched above still needs to be drained -- this event is
+    // only "ignored" for the review-engine path, not for event listeners.
+    scheduleDrain();
+    return json({ ok: true, ignored: true });
   }
 
   // 5. Build context for handlers
@@ -270,6 +358,10 @@ export const POST: RequestHandler = async (event) => {
       console.error('[webhook] Review intent dispatch failed:', e);
       // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
       const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      // Any listener matched above (before this error path) still has
+      // pending deliveries -- drain them now, since this request exits via
+      // `error(500, ...)` below and never reaches the success-path drain.
+      scheduleDrain();
       if (!claimReleased) {
         console.error('[webhook] Failed to release review-engine delivery claim:', {
           deliveryId,
@@ -303,6 +395,13 @@ export const POST: RequestHandler = async (event) => {
 
   // 9. PR state tracking (fire-and-forget)
   dispatchPRStateTracking(githubContext, eventType, action, data);
+
+  // 10. Drain pending event listener deliveries for this repository. This is
+  // the "no background worker" execution path: every delivery opportunistically
+  // re-drains any pending/retryable rows left over from an earlier failed or
+  // interrupted drain, so work never needs more than the next webhook for
+  // this repository to make progress.
+  scheduleDrain();
 
   return json({ ok: true });
 };
