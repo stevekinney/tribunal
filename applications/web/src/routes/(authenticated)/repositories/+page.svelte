@@ -476,7 +476,9 @@
                   </Table.Cell>
                   <Table.Cell align="right">
                     {#if dashboard && dashboard.unresolvedThreadCount !== null}
-                      {dashboard.unresolvedThreadCount}
+                      {dashboard.openPullRequestCountAtCap
+                        ? `${dashboard.unresolvedThreadCount}+`
+                        : dashboard.unresolvedThreadCount}
                     {:else}
                       <span class="text-muted">Unknown</span>
                     {/if}

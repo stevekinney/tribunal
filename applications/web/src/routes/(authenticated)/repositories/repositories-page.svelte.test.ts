@@ -456,6 +456,44 @@ describe('/repositories page', () => {
     await expect.element(page.getByText('100+', { exact: true }).first()).toBeInTheDocument();
   });
 
+  // Regression: when a repository hits the 100-item pull request page cap,
+  // unresolvedThreadCount is only summed from the fetched PRs, so older
+  // unfetched PRs could still have unresolved threads. Mark it partial with
+  // the same "+" convention used for open PRs and attention counts.
+  it('marks the unresolved thread count as partial when the open pull request cap is hit', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [
+          makeRepository({
+            dashboard: makeDashboardRow({
+              openPullRequestCount: 100,
+              openPullRequestCountAtCap: true,
+              unresolvedThreadCount: 5,
+            }),
+          }),
+        ],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 100,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: false,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByText('5+', { exact: true })).toBeInTheDocument();
+  });
+
   it('filters the add-repository combobox by owner, name, and owner/name', async () => {
     render(RepositoriesPage, {
       data: {
