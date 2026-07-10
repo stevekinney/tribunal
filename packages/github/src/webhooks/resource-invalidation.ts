@@ -338,8 +338,7 @@ async function invalidateStatusEventCache(
 
 /**
  * Invalidate the cached branch-head SHA (`get-branch-head-sha` policy, used
- * by the dashboard to resolve `defaultBranchStatus` when the `repository`
- * row's own `commit` column hasn't been populated yet) when a branch moves.
+ * by the dashboard to resolve `defaultBranchStatus`) when a branch moves.
  */
 async function invalidatePushCache(
   context: GithubServiceContext,
