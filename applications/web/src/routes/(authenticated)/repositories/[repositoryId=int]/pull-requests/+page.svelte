@@ -61,6 +61,10 @@
 
 {#snippet pageActions()}
   <Link href={`/repositories/${data.repository.id}/issues`}>Issues</Link>
+  <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
+    {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
+    Webhooks
+  </Button>
 {/snippet}
 
 <Page
@@ -69,12 +73,6 @@
   {breadcrumbs}
   actions={pageActions}
 >
-  {#snippet actions()}
-    <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
-      {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
-      Webhooks
-    </Button>
-  {/snippet}
   {#if form?.error}
     <Alert variant="danger">{form.error}</Alert>
   {/if}
