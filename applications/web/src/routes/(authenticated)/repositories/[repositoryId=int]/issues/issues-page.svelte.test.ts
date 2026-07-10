@@ -150,6 +150,27 @@ describe('/repositories/[repositoryId]/issues page', () => {
       .not.toBeInTheDocument();
   });
 
+  it('shows the next-page copy (not the filtered no-match copy) when filters are active and the page is filled with pull requests', async () => {
+    // GitHub paginates issues before filtering out pull requests, so a
+    // filtered page can come back with zero issues while a later page still
+    // has matches. hasNextPage must win over isFiltered in the empty state.
+    render(IssuesPage, {
+      data: {
+        ...baseData,
+        issues: [],
+        hasNextPage: true,
+        filters: { ...baseData.filters, state: 'closed' },
+      },
+    });
+
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No issues on this page' }))
+      .toBeVisible();
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No issues match these filters' }))
+      .not.toBeInTheDocument();
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(IssuesPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
