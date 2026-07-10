@@ -15,6 +15,8 @@ export interface DashboardSummary {
   totalRepositoryCount: number;
   /** Repositories whose default branch continuous integration is `failing`. */
   failingDefaultBranchCount: number;
+  /** `false` when any repository's default-branch CI status is `unknown` (unread, unresolved, or an unavailable row). */
+  failingDefaultBranchCountExact: boolean;
   /** Sum of known open pull request counts. Unavailable repositories contribute 0. */
   openPullRequestCount: number;
   /** `false` when any repository is unavailable or hit the 100-item page cap. */
@@ -30,6 +32,7 @@ export interface DashboardSummary {
 /** Build the summary strip counts from already-built dashboard rows. */
 export function buildDashboardSummary(rows: RepositoryDashboardRow[]): DashboardSummary {
   let failingDefaultBranchCount = 0;
+  let failingDefaultBranchCountExact = true;
   let openPullRequestCount = 0;
   let openPullRequestCountExact = true;
   let attentionPullRequestCount = 0;
@@ -38,6 +41,10 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
 
   for (const row of rows) {
     if (row.defaultBranchStatus === 'failing') failingDefaultBranchCount += 1;
+    // `unknown` means the branch's CI was never confirmed non-failing this
+    // build (missing branch/commit, budget exhaustion, or a GitHub error) —
+    // it is not evidence the branch is passing, so the rollup can't be exact.
+    if (row.defaultBranchStatus === 'unknown') failingDefaultBranchCountExact = false;
 
     if (row.dataStatus === 'unavailable' || row.openPullRequestCount === null) {
       hasUnavailableRepositories = true;
@@ -57,6 +64,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
   return {
     totalRepositoryCount: rows.length,
     failingDefaultBranchCount,
+    failingDefaultBranchCountExact,
     openPullRequestCount,
     openPullRequestCountExact,
     attentionPullRequestCount,

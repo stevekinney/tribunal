@@ -137,6 +137,7 @@ function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
 const okSummaryForOne = {
   totalRepositoryCount: 1,
   failingDefaultBranchCount: 0,
+  failingDefaultBranchCountExact: true,
   openPullRequestCount: 2,
   openPullRequestCountExact: true,
   attentionPullRequestCount: 0,
@@ -190,6 +191,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 0,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 0,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,
@@ -215,6 +217,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 2,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,
@@ -272,6 +275,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 2,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 1,
@@ -314,6 +318,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: false,
           openPullRequestCount: 0,
           openPullRequestCountExact: false,
           attentionPullRequestCount: 0,
@@ -353,6 +358,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: false,
           openPullRequestCount: 0,
           openPullRequestCountExact: false,
           attentionPullRequestCount: 0,
@@ -396,6 +402,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: false,
           openPullRequestCount: 0,
           openPullRequestCountExact: false,
           attentionPullRequestCount: 0,
@@ -433,6 +440,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 100,
           openPullRequestCountExact: false,
           attentionPullRequestCount: 0,
@@ -488,6 +496,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 2,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 4,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,
@@ -546,6 +555,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 2,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,
@@ -611,6 +621,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 2,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,
@@ -668,6 +679,7 @@ describe('/repositories page', () => {
         summary: {
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
           openPullRequestCount: 2,
           openPullRequestCountExact: true,
           attentionPullRequestCount: 0,

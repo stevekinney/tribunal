@@ -92,6 +92,7 @@ type RepositoriesLoadResult = {
   summary: {
     totalRepositoryCount: number;
     failingDefaultBranchCount: number;
+    failingDefaultBranchCountExact: boolean;
     openPullRequestCount: number;
     openPullRequestCountExact: boolean;
     attentionPullRequestCount: number;
@@ -280,6 +281,7 @@ describe('/repositories server load', () => {
     expect(result.summary).toEqual({
       totalRepositoryCount: 2,
       failingDefaultBranchCount: 1,
+      failingDefaultBranchCountExact: true,
       openPullRequestCount: 3,
       openPullRequestCountExact: true,
       attentionPullRequestCount: 1,

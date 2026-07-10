@@ -316,9 +316,9 @@
         <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
         <StatGroup.Stat
           label="Failing default branch"
-          value={summary.hasUnavailableRepositories
-            ? `${summary.failingDefaultBranchCount}+`
-            : summary.failingDefaultBranchCount}
+          value={summary.failingDefaultBranchCountExact
+            ? summary.failingDefaultBranchCount
+            : `${summary.failingDefaultBranchCount}+`}
         />
         <StatGroup.Stat
           label="Open pull requests"
@@ -461,9 +461,14 @@
                     {#if dashboard && dashboard.attentionPullRequestCount !== null}
                       <Badge
                         size="sm"
-                        variant={dashboard.attentionPullRequestCount > 0 ? 'warning' : 'success'}
+                        variant={dashboard.attentionPullRequestCount > 0 ||
+                        dashboard.openPullRequestCountAtCap
+                          ? 'warning'
+                          : 'success'}
                       >
-                        {dashboard.attentionPullRequestCount}
+                        {dashboard.openPullRequestCountAtCap
+                          ? `${dashboard.attentionPullRequestCount}+`
+                          : dashboard.attentionPullRequestCount}
                       </Badge>
                     {:else}
                       <span class="text-muted">Unknown</span>

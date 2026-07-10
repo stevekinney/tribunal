@@ -22,6 +22,7 @@ describe('buildDashboardSummary', () => {
     expect(buildDashboardSummary([])).toEqual({
       totalRepositoryCount: 0,
       failingDefaultBranchCount: 0,
+      failingDefaultBranchCountExact: true,
       openPullRequestCount: 0,
       openPullRequestCountExact: true,
       attentionPullRequestCount: 0,
@@ -55,13 +56,30 @@ describe('buildDashboardSummary', () => {
         repository: { id: 2, owner: 'acme', name: 'b', defaultBranch: 'main' },
         defaultBranchStatus: 'error',
       }),
-      makeRow({
-        repository: { id: 3, owner: 'acme', name: 'c', defaultBranch: 'main' },
-        defaultBranchStatus: 'unknown',
-      }),
     ]);
 
     expect(summary.failingDefaultBranchCount).toBe(1);
+  });
+
+  it('marks the failing-branch rollup inexact when a row is `ok` but its branch CI is `unknown`', () => {
+    // A repository row can be `dataStatus: 'ok'` (pull requests were read
+    // fine) while its default-branch CI status is still `unknown` — missing
+    // branch/commit, per-check budget exhaustion, or a GitHub error scoped
+    // to just the branch-status read. `hasUnavailableRepositories` stays
+    // false in that case, so the failing-branch count must track its own
+    // exactness rather than piggybacking on row-level unavailability.
+    const summary = buildDashboardSummary([
+      makeRow({ defaultBranchStatus: 'passing' }),
+      makeRow({
+        repository: { id: 2, owner: 'acme', name: 'c', defaultBranch: 'main' },
+        defaultBranchStatus: 'unknown',
+        dataStatus: 'ok',
+      }),
+    ]);
+
+    expect(summary.failingDefaultBranchCount).toBe(0);
+    expect(summary.failingDefaultBranchCountExact).toBe(false);
+    expect(summary.hasUnavailableRepositories).toBe(false);
   });
 
   it('marks totals inexact and flags unavailability when a repository could not be read', () => {
