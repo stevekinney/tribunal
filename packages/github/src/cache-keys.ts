@@ -69,6 +69,8 @@ export const CACHE_KEYS = {
     `github:response:${owner}:${repo}:checks:${headSha}`,
   GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string) =>
     `github:response:${owner}:${repo}:branch:${branch}:ci-status`,
+  GITHUB_BRANCH_HEAD_SHA: (owner: string, repo: string, branch: string) =>
+    `github:response:${owner}:${repo}:branch:${branch}:head-sha`,
   GITHUB_SINGLE_REPOSITORY_READ_TOKEN: (installationId: number, repositoryId: number) =>
     `github:installation:${installationId}:repository:${repositoryId}:read-token`,
 
