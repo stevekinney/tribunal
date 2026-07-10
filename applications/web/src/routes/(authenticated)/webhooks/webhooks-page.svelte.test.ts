@@ -119,6 +119,7 @@ describe('/webhooks page', () => {
         page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
       )
       .toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('No repositories added');
   });
 
   it('shows a filtered-empty state when repositories exist but no events match', async () => {
@@ -163,7 +164,11 @@ describe('/webhooks page', () => {
     expect(detailText).toContain('GitHub timestamp');
   });
 
-  it('shows a matched listener, its status badge, and a link to its run', async () => {
+  it('shows a matched listener and its status badge, without a link to its run', async () => {
+    // `/runs/[runId]` only supports pull-request-review runs today, and a
+    // listener match's run is always a `webhook_event_handler` run --
+    // linking there would always 404. No link until the run inspector
+    // supports webhook runs.
     render(WebhooksPage, {
       data: createData({
         events: [
@@ -194,7 +199,7 @@ describe('/webhooks page', () => {
     await expect.element(page.getByText('Triage issues')).toBeInTheDocument();
 
     await page.getByRole('button', { name: /Show details/ }).click();
-    await expect.element(page.getByRole('link', { name: 'View run' })).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('View run');
   });
 
   it('shows a dispatch error as a visible failure, and a delivery with no matches as received-only', async () => {

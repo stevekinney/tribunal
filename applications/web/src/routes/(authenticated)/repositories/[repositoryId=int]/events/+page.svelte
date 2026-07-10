@@ -7,7 +7,6 @@
   import { Card } from '@lostgradient/cinder/card';
   import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import { Link } from '@lostgradient/cinder/link';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import {
@@ -155,9 +154,6 @@
                     >
                       {eventListenerStatusLabel(row.lastDelivery.displayStatus)}
                     </Badge>
-                    {#if row.lastDelivery.runId}
-                      <Link href={`/runs/${row.lastDelivery.runId}`}>View run</Link>
-                    {/if}
                   {:else}
                     <span class="no-runs">No runs yet</span>
                   {/if}

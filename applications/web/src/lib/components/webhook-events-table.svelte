@@ -201,9 +201,6 @@
                                   {progressLabel(match.status)}
                                 </Badge>
                               </div>
-                              {#if match.runId}
-                                <Link href={`/runs/${match.runId}`}>View run</Link>
-                              {/if}
                               {#if match.lastError}
                                 <Alert variant="danger">{match.lastError}</Alert>
                               {/if}

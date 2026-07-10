@@ -104,7 +104,7 @@ describe('/webhooks server load', () => {
   it('scopes events to the user’s authorized repository IDs', async () => {
     await load(createEvent());
 
-    expect(mockListWebhookEvents).toHaveBeenCalledWith([1], expect.any(Object));
+    expect(mockListWebhookEvents).toHaveBeenCalledWith([1], 1, expect.any(Object));
   });
 
   it('reflects no repositories when the user has none', async () => {
@@ -113,7 +113,7 @@ describe('/webhooks server load', () => {
     const result = (await load(createEvent())) as WebhooksLoadResult;
 
     expect(result.hasRepositories).toBe(false);
-    expect(mockListWebhookEvents).toHaveBeenCalledWith([], expect.any(Object));
+    expect(mockListWebhookEvents).toHaveBeenCalledWith([], 1, expect.any(Object));
   });
 
   it('surfaces subscribed App events without throwing when the App is unconfigured', async () => {
@@ -135,6 +135,7 @@ describe('/webhooks server load', () => {
 
     expect(mockListWebhookEvents).toHaveBeenCalledWith(
       [1],
+      1,
       expect.objectContaining({ eventType: 'pull_request', page: 2 }),
     );
   });

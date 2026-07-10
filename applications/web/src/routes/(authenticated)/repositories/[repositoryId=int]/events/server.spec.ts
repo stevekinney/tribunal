@@ -186,6 +186,42 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       expect(result.editingListenerFilters).toEqual({ ref: 'refs/heads/main' });
     });
 
+    it("includes the edited listener's stored event type in eventTypeOptions even when it is no longer subscribed or received", async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Legacy listener',
+        eventType: 'deployment_status',
+        agentId: testAgent.id,
+      });
+
+      const result = await loadPage(user.id, '?listener=listener_1');
+
+      // Neither subscribed (mocked to ['issues', 'pull_request']) nor
+      // received (no webhook events created), so it would otherwise be
+      // dropped from the select and the edit form could no longer submit
+      // the listener's own event type.
+      expect(result.eventTypeOptions).toContain('deployment_status');
+    });
+
+    it('does not duplicate the event type when it is already subscribed or received', async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Triage issues',
+        eventType: 'issues',
+        agentId: testAgent.id,
+      });
+
+      const result = await loadPage(user.id, '?listener=listener_1');
+
+      expect(result.eventTypeOptions.filter((type) => type === 'issues')).toHaveLength(1);
+    });
+
     it('treats ?listener=new as a create form, not an edit target', async () => {
       const { user } = await createFixture();
 

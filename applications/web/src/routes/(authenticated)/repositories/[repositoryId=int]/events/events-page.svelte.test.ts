@@ -77,7 +77,11 @@ describe('/repositories/[repositoryId]/events page', () => {
       .toHaveAttribute('href', '/repositories/42/events?listener=listener_1');
   });
 
-  it('shows the last matched delivery and run status with a link to the run', async () => {
+  it('shows the last matched delivery and run status, without a link to the run', async () => {
+    // `/runs/[runId]` only supports pull-request-review runs today, and a
+    // listener's dispatched run is always a `webhook_event_handler` run --
+    // linking there would always 404. No link until the run inspector
+    // supports webhook runs.
     render(EventsPage, {
       data: createData({
         listeners: [
@@ -99,9 +103,7 @@ describe('/repositories/[repositoryId]/events page', () => {
     });
 
     await expect.element(page.getByText('Running')).toBeVisible();
-    await expect
-      .element(page.getByRole('link', { name: 'View run' }))
-      .toHaveAttribute('href', '/runs/run:webhook:1');
+    expect(document.body.textContent).not.toContain('View run');
   });
 
   it('opens the create form when linking to ?listener=new', async () => {

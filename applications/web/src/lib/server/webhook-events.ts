@@ -214,9 +214,15 @@ function toRow(
  * Load event listener match/dispatch progress for a batch of webhook event
  * ids, keyed by event id. Shared by every caller of {@link listWebhookEvents}
  * so the global and repository-scoped pages never compute this differently.
+ *
+ * Scoped to `userId` -- `repository_event_listener` rows belong to the user
+ * who created them, and a repository can be added by more than one Tribunal
+ * user. Without this predicate, one user could see another user's listener
+ * names, errors, and run links for a repository they both happen to access.
  */
 async function loadListenerProgressByEventId(
   eventIds: number[],
+  userId: number,
 ): Promise<Map<number, WebhookEventListenerMatch[]>> {
   const progressByEventId = new Map<number, WebhookEventListenerMatch[]>();
   if (eventIds.length === 0) return progressByEventId;
@@ -237,7 +243,12 @@ async function loadListenerProgressByEventId(
       eq(eventListenerDelivery.listenerId, repositoryEventListener.id),
     )
     .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
-    .where(inArray(eventListenerDelivery.webhookEventId, eventIds))
+    .where(
+      and(
+        inArray(eventListenerDelivery.webhookEventId, eventIds),
+        eq(repositoryEventListener.userId, userId),
+      ),
+    )
     // Deterministic order -- without it, `matchedListenerNames` (and the
     // expanded-row list) can jitter between requests since Postgres makes no
     // ordering guarantee for an unordered join.
@@ -325,11 +336,19 @@ function buildWhereClause(
  * bypasses the authorized-set check (the caller must still have separately
  * confirmed access to that repository, e.g. via `userCanAccessRepository`).
  *
+ * `userId` scopes the per-event listener progress (names, errors, run
+ * links) to listeners the caller owns -- see
+ * {@link loadListenerProgressByEventId}. A repository can be shared by more
+ * than one Tribunal user, and `webhookEvent` rows themselves are not
+ * per-user, so this predicate is required even though the events list
+ * itself is already bounded by `authorizedRepositoryIds`.
+ *
  * An empty `authorizedRepositoryIds` array always yields an empty result —
  * it never falls back to "no filter."
  */
 export async function listWebhookEvents(
   authorizedRepositoryIds: number[],
+  userId: number,
   filters: WebhookEventFilters = {},
   fixedRepositoryId?: number,
 ): Promise<WebhookEventListResult> {
@@ -384,7 +403,10 @@ export async function listWebhookEvents(
     .limit(perPage)
     .offset((page - 1) * perPage);
 
-  const progressByEventId = await loadListenerProgressByEventId(rows.map((row) => row.id));
+  const progressByEventId = await loadListenerProgressByEventId(
+    rows.map((row) => row.id),
+    userId,
+  );
 
   return {
     events: rows.map((row) => toRow(row, progressByEventId.get(row.id) ?? [])),

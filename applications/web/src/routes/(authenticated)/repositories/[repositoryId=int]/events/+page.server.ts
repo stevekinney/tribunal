@@ -128,6 +128,15 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
     ? (parseEventListenerFilters(editingListener.filtersJson) ?? {})
     : {};
 
+  // Include the listener's own stored event type even if it has since
+  // dropped out of the subscribed/received set (App subscription removed,
+  // App lookup failed, or no matching event received yet). Otherwise an
+  // ordinary edit can no longer submit the listener's current event type.
+  const eventTypeOptions =
+    editingListener && !filterOptions.eventTypes.includes(editingListener.eventType)
+      ? [...filterOptions.eventTypes, editingListener.eventType].sort()
+      : filterOptions.eventTypes;
+
   return {
     repository: {
       id: repositoryRow.id,
@@ -140,7 +149,7 @@ export const load: PageServerLoad = async ({ locals, params, url }) => {
       slug: agentRow.slug,
       enabled: agentRow.enabled,
     })),
-    eventTypeOptions: filterOptions.eventTypes,
+    eventTypeOptions,
     actionsByEventType,
     editing: editingParam === 'new' ? ('new' as const) : (editingListener?.id ?? null),
     editingListener,

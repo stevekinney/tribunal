@@ -56,7 +56,7 @@
   // issues), and must not silently persist into the submitted listener.
   // Skipped on the very first run so an existing listener's stored
   // event type/action pairing is preserved when the form first mounts.
-  let previousEventType = eventType;
+  let previousEventType = untrack(() => eventType);
   $effect(() => {
     if (eventType !== previousEventType) {
       selectedAction = '';

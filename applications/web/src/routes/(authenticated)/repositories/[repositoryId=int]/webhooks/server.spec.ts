@@ -82,7 +82,7 @@ describe('/repositories/[repositoryId]/webhooks server load', () => {
   it('fixes the query to the route repository ID', async () => {
     await load(createEvent());
 
-    expect(mockListWebhookEvents).toHaveBeenCalledWith([42], expect.any(Object), 42);
+    expect(mockListWebhookEvents).toHaveBeenCalledWith([42], 1, expect.any(Object), 42);
     expect(mockGetFilterOptions).toHaveBeenCalledWith([42], 42);
   });
 
@@ -91,6 +91,7 @@ describe('/repositories/[repositoryId]/webhooks server load', () => {
 
     expect(mockListWebhookEvents).toHaveBeenCalledWith(
       [42],
+      1,
       expect.objectContaining({ eventType: 'push', page: 3 }),
       42,
     );
