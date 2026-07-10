@@ -248,3 +248,11 @@ registerPolicy({
   ttlSeconds: 30, // Short TTL — branch CI changes frequently
   supportsEtag: false, // GraphQL — no eTag support
 });
+
+registerPolicy({
+  operationId: 'get-branch-head-sha',
+  keyFactory: (owner: string, repo: string, branch: string) =>
+    CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch),
+  ttlSeconds: 30, // Short TTL — a branch can move at any time via push
+  supportsEtag: false, // repos.getBranch — no conditional-request support wired here
+});

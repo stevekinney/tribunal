@@ -1,13 +1,22 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
   import AgentEditor from '../agent-editor.svelte';
-  import { Badge } from '@lostgradient/cinder/badge';
+  import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
-  import { CodeBlock } from '@lostgradient/cinder/code-block';
-  import { StatusDot } from '@lostgradient/cinder/status-dot';
+  import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
   import type { PageProps } from './$types';
 
   let { data, form }: PageProps = $props();
+
+  let confirmDeleteOpen = $state(false);
+  let deleteTriggerRef = $state<HTMLElement | null>(null);
+  let deleteFormElement = $state<HTMLFormElement | null>(null);
+
+  function openDeleteConfirmation(event: MouseEvent) {
+    deleteTriggerRef = event.currentTarget as HTMLElement;
+    confirmDeleteOpen = true;
+  }
 </script>
 
 <Page
@@ -18,21 +27,6 @@
     { label: data.agent.slug, href: `/agents/${data.agent.id}` },
   ]}
 >
-  <Card title="Prompt preview" headingLevel={2}>
-    <div class="agent-status">
-      <Badge size="sm" variant={data.agent.enabled ? 'success' : 'neutral'}>
-        <StatusDot
-          status={data.agent.enabled ? 'success' : 'offline'}
-          label={data.agent.enabled ? 'Enabled' : 'Disabled'}
-        />
-        {data.agent.enabled ? 'Enabled' : 'Disabled'}
-      </Badge>
-      <Badge size="sm">{data.agent.model}</Badge>
-      {#if data.agent.effort}<Badge size="sm">{data.agent.effort}</Badge>{/if}
-    </div>
-    <CodeBlock code={data.agent.body} language="markdown" copyable />
-  </Card>
-
   <AgentEditor
     agent={{
       id: data.agent.id,
@@ -49,13 +43,41 @@
     {form}
     submitLabel="Save changes"
   />
+
+  <Card title="Danger zone" tone="danger" headingLevel={2}>
+    <p class="danger-copy">
+      Permanently delete this agent. It stops running for repository automation immediately. This
+      action cannot be undone.
+    </p>
+    <form method="POST" action="?/delete" bind:this={deleteFormElement} class="delete-form">
+      <input type="hidden" name="id" value={data.agent.id} />
+      <Button type="button" variant="danger" onclick={openDeleteConfirmation}>
+        {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
+        Delete agent
+      </Button>
+    </form>
+  </Card>
 </Page>
 
+<ConfirmDialog
+  bind:open={confirmDeleteOpen}
+  triggerRef={deleteTriggerRef}
+  title={`Delete ${data.agent.slug}?`}
+  description="This permanently deletes the agent. This action cannot be undone."
+  destructive
+  confirmLabel="Delete agent"
+  onconfirm={() => deleteFormElement?.requestSubmit()}
+/>
+
 <style>
-  .agent-status {
+  .danger-copy {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-4);
+  }
+
+  .delete-form {
     display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin-bottom: var(--space-3);
+    justify-content: flex-start;
   }
 </style>

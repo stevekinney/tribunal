@@ -114,7 +114,7 @@ describe('/onboarding page', () => {
     await expect
       .element(page.getByRole('link', { name: 'Manage repository access' }))
       .toHaveAttribute('href', '/connect/github');
-    expect(currentStepText()).toBe('3 Choose repositories to watch');
+    expect(currentStepText()).toBe('3 Choose repositories to monitor');
     expect(completedStepLabels()).toEqual(['Sign in with GitHub', 'Install the GitHub App']);
   });
 
@@ -130,11 +130,21 @@ describe('/onboarding page', () => {
     render(OnboardingPage, { data, form: null, params: {} });
 
     await expect
-      .element(page.getByRole('heading', { name: 'Choose repositories to watch' }))
+      .element(page.getByRole('heading', { name: 'Add repositories to Tribunal' }))
       .toBeInTheDocument();
     // Exact + case-sensitive so this resolves to the repo-name span only, not
     // the "Tribunal" wordmark or the surrounding prose.
     await expect.element(page.getByText('tribunal', { exact: true })).toBeInTheDocument();
+
+    // Copy talks about adding/monitoring repositories, not only enabling
+    // reviews — repository access is useful for event-triggered automation
+    // too, not just pull-request review dispatch.
+    await expect
+      .element(page.getByText('Pick the ones to add to Tribunal for monitoring and automation.'))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Add 0 repositories' }))
+      .toBeInTheDocument();
   });
 
   it('surfaces a batch-watch failure message on the picker', async () => {

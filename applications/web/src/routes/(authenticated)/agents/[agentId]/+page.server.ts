@@ -1,5 +1,6 @@
 import { error, redirect } from '@sveltejs/kit';
 import {
+  deleteAgent,
   getAgent,
   getReviewEffortOptions,
   getReviewModelOptions,
@@ -32,5 +33,14 @@ export const actions: Actions = {
     if (!user) redirect(302, '/login');
 
     return saveAgent(user.id, await request.formData());
+  },
+  delete: async ({ locals, request }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    const result = await deleteAgent(user.id, await request.formData());
+    if ('status' in result) return result;
+
+    redirect(303, '/agents');
   },
 };

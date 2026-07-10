@@ -10,13 +10,13 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await page.goto('/repositories');
   await expect(page.getByRole('heading', { name: 'Repositories', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: /e2e-owner-.*e2e-repository-/ })).toBeVisible();
-  await expect(page.getByText('$0.42')).toBeVisible();
+  // No live GitHub installation exists in the E2E harness, so the dashboard
+  // health columns honestly render "Unknown" rather than a guessed status.
+  await expect(page.getByText('Unknown').first()).toBeVisible();
 
   await page.goto(`/repositories/${session.repository.id}/pull-requests`);
-  await expect(page.getByRole('heading', { name: 'Open pull requests' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Repository settings' })).toBeVisible();
-  await expect(page.getByLabel('Ignore globs')).toBeVisible();
-  await expect(page.getByLabel('security-review')).toBeChecked();
+  await expect(page.getByRole('heading', { name: 'Pull requests', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Repository settings' })).toBeVisible();
   await expect(page.getByLabel('Pull request status')).toContainText(
     /CI (passing|failing|pending|unknown)/,
   );
@@ -24,14 +24,20 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByLabel('Pull request status')).toContainText('resolved');
   await expect(page.getByLabel('Pull request status')).toContainText(/conflicts|Conflict status/i);
 
+  await page.getByRole('link', { name: 'Repository settings' }).click();
+  await expect(page).toHaveURL(`/repositories/${session.repository.id}/settings`);
+  await expect(page.getByRole('heading', { name: 'Repository settings' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Ignore globs' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Remove security-review' })).toBeChecked();
+
   await page.goto('/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'security-review' })).toBeVisible();
   await expect(page.getByText('Finds authentication and permission issues')).toBeVisible();
-  await page.getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('link', { name: 'security-review' }).click();
   await expect(page).toHaveURL(/\/agents\/agent-e2e-\d+$/);
   await expect(page.getByRole('heading', { name: 'security-review' })).toBeVisible();
-  await expect(page.getByText('Prompt preview')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agent basics' })).toBeVisible();
 
   await page.goto('/runs');
   await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();

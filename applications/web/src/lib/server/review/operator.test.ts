@@ -32,6 +32,7 @@ import {
   stopAgent,
   stopRun,
   streamRunAgentEvents,
+  submitRepositorySettingsForm,
   userOwnsRepository,
 } from './operator';
 
@@ -367,6 +368,46 @@ describe('review operator server helpers', () => {
 
     expect(settings).toEqual([]);
     expect(assignments).toEqual([]);
+  });
+
+  it('trims, rejects empty, and dedupes submitted ignore globs and agentIds', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.append('ignoreGlobs', '  dist/** ');
+    formData.append('ignoreGlobs', 'dist/**');
+    formData.append('ignoreGlobs', '   ');
+    formData.append('ignoreGlobs', 'coverage/**');
+    formData.append('agentIds', reviewAgent.id);
+    formData.append('agentIds', reviewAgent.id);
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+    const assignments = await testDb.db.select().from(repositoryAgent);
+
+    expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
+    expect(assignments).toHaveLength(1);
+  });
+
+  it('splits a single newline-delimited ignoreGlobs value from a stale legacy textarea submission', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    // The pre-move pull-requests settings form submitted the whole textarea
+    // as one newline-delimited string under the `ignoreGlobs` key, unlike the
+    // new settings page which submits one value per committed tag.
+    const formData = new FormData();
+    formData.append('ignoreGlobs', 'dist/**\ncoverage/**\ndist/**');
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+
+    expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
   });
 
   it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {
