@@ -9,9 +9,12 @@ import {
 import {
   getPullRequestOperationalStatus,
   listPullRequests,
+  parsePullRequestFilters,
 } from '@tribunal/github/pull-requests/service';
-import type { PullRequestFilterOptions } from '@tribunal/github/types/pull-requests';
-import type { PullRequestOperationalStatus } from '@tribunal/github/types/pull-requests';
+import type {
+  PullRequestFilterOptions,
+  PullRequestOperationalStatus,
+} from '@tribunal/github/types/pull-requests';
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
@@ -23,14 +26,6 @@ import {
 import type { PageServerLoad } from './$types';
 import type { Actions } from './$types';
 
-/** Always list OPEN pull requests, most recently updated first. */
-const OPEN_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
-  state: 'open',
-  sort: 'updated',
-  direction: 'desc',
-  page: 1,
-  perPage: 50,
-};
 const STATUS_LOOKUP_CONCURRENCY = 5;
 
 function shouldUseE2EPullRequests(): boolean {
@@ -48,10 +43,37 @@ function statusForE2ERun(status: string): PullRequestOperationalStatus {
   };
 }
 
+interface E2EPullRequest {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  mergedAt: string | null;
+  htmlUrl: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  updatedAt: string;
+  author: { login: string; htmlUrl: string };
+  status: PullRequestOperationalStatus;
+}
+
+/**
+ * Synthesizes pull requests from `review_run` rows instead of calling
+ * GitHub, for use in E2E test environments where GitHub cannot be reached.
+ *
+ * `review_run` has no genuine open/closed concept, so every synthesized
+ * pull request is treated as open; a `closed`/`all` state filter narrows
+ * the synthesized set rather than reflecting a real GitHub state. Sorting
+ * only honors `updated` (the one timestamp the run data reliably carries)
+ * and `direction`; `created`/`popularity`/`long-running` fall back to the
+ * same `updated` ordering.
+ */
 async function listE2EPullRequests(
   userId: number,
   repository: { id: number; owner: string; name: string },
-) {
+  filters: PullRequestFilterOptions,
+): Promise<{ pullRequests: E2EPullRequest[]; hasNextPage: boolean }> {
   const rows = await db
     .select()
     .from(reviewRun)
@@ -59,31 +81,56 @@ async function listE2EPullRequests(
     .orderBy(desc(reviewRun.startedAt), desc(reviewRun.id));
 
   const seenPullRequestNumbers = new Set<number>();
-  return rows
+  let synthesized = rows
     .filter((run) => {
       if (seenPullRequestNumbers.has(run.prNumber)) return false;
       seenPullRequestNumbers.add(run.prNumber);
       return true;
     })
-    .map((run) => ({
-      number: run.prNumber,
-      title: `E2E pull request #${run.prNumber}`,
-      draft: false,
-      htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
-      headRef: run.headSha,
-      headSha: run.headSha,
-      baseRef: 'main',
-      updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
-      author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },
-      status: statusForE2ERun(run.status),
-    }));
+    .map(
+      (run): E2EPullRequest => ({
+        number: run.prNumber,
+        title: `E2E pull request #${run.prNumber}`,
+        state: 'open',
+        draft: false,
+        mergedAt: null,
+        htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
+        headRef: `e2e/pr-${run.prNumber}`,
+        headSha: run.headSha,
+        baseRef: 'main',
+        updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
+        author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },
+        status: statusForE2ERun(run.status),
+      }),
+    );
+
+  if (filters.state === 'closed') {
+    synthesized = [];
+  }
+  if (filters.head) {
+    synthesized = synthesized.filter((pullRequest) => pullRequest.headRef === filters.head);
+  }
+  if (filters.base) {
+    synthesized = synthesized.filter((pullRequest) => pullRequest.baseRef === filters.base);
+  }
+
+  synthesized.sort((a, b) => {
+    const comparison = a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0;
+    return filters.direction === 'asc' ? comparison : -comparison;
+  });
+
+  const start = (filters.page - 1) * filters.perPage;
+  const page = synthesized.slice(start, start + filters.perPage);
+
+  return { pullRequests: page, hasNextPage: start + filters.perPage < synthesized.length };
 }
 
 /**
- * Lists OPEN pull requests for a single repository the user can access through
- * one of their GitHub App installations.
+ * Lists pull requests for a single repository the user can access through
+ * one of their GitHub App installations, filtered and paginated by the
+ * `pr_*` URL contract (`parsePullRequestFilters`).
  */
-export const load: PageServerLoad = async ({ params, locals }) => {
+export const load: PageServerLoad = async ({ params, locals, url }) => {
   const { user } = locals;
   if (!user) {
     redirect(302, '/login');
@@ -102,18 +149,20 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     error(404, 'Repository not found');
   }
 
+  const filters = parsePullRequestFilters(url);
+
   // Legacy data shape: a tab still running the pre-move bundle (whose
   // component reads `data.repository.review` and `data.agents`) can trigger
   // an invalidateAll() after a successful legacy `?/saveSettings` submit (see
   // the `saveSettings` action below). That reruns this load with the OLD
   // component still mounted, so keep returning the fields it expects until
   // stale tabs from before the settings-page move are no longer a concern.
-  const [operatorDetails, agents, pullRequests] = await Promise.all([
+  const [operatorDetails, agents, { pullRequests, hasNextPage }] = await Promise.all([
     getRepositoryOperatorDetails(user.id, [repositoryId]),
     listAgents(user.id),
     shouldUseE2EPullRequests()
-      ? listE2EPullRequests(user.id, repository)
-      : listLivePullRequests(repositoryId),
+      ? listE2EPullRequests(user.id, repository, filters)
+      : listLivePullRequests(repositoryId, filters),
   ]);
 
   return {
@@ -132,10 +181,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     },
     agents,
     pullRequests,
+    filters,
+    hasNextPage,
   };
 };
 
-async function listLivePullRequests(repositoryId: number) {
+async function listLivePullRequests(repositoryId: number, filters: PullRequestFilterOptions) {
   const installation = await getInstallationForRepository(githubContext, repositoryId);
   if (!installation.ok) {
     error(502, `Could not reach GitHub for this repository: ${installation.error}`);
@@ -146,17 +197,21 @@ async function listLivePullRequests(repositoryId: number) {
     installation.octokit,
     installation.owner,
     installation.repo,
-    OPEN_PULL_REQUEST_FILTERS,
+    filters,
     repositoryId,
   );
 
-  return mapWithConcurrency(
+  // Operational status lookup only runs for the pull requests on this page —
+  // GitHub has already paginated `result.pullRequests` to `filters.perPage`.
+  const pullRequests = await mapWithConcurrency(
     result.pullRequests,
     STATUS_LOOKUP_CONCURRENCY,
     async (pullRequest) => ({
       number: pullRequest.number,
       title: pullRequest.title,
+      state: pullRequest.state,
       draft: pullRequest.draft,
+      mergedAt: pullRequest.mergedAt,
       htmlUrl: pullRequest.htmlUrl,
       headRef: pullRequest.headRef,
       headSha: pullRequest.headSha,
@@ -175,6 +230,8 @@ async function listLivePullRequests(repositoryId: number) {
       ),
     }),
   );
+
+  return { pullRequests, hasNextPage: result.hasNextPage };
 }
 
 async function mapWithConcurrency<T, U>(
