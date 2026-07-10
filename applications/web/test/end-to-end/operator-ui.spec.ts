@@ -28,10 +28,10 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'security-review' })).toBeVisible();
   await expect(page.getByText('Finds authentication and permission issues')).toBeVisible();
-  await page.getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('link', { name: 'security-review' }).click();
   await expect(page).toHaveURL(/\/agents\/agent-e2e-\d+$/);
   await expect(page.getByRole('heading', { name: 'security-review' })).toBeVisible();
-  await expect(page.getByText('Prompt preview')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agent basics' })).toBeVisible();
 
   await page.goto('/runs');
   await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();

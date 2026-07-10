@@ -47,7 +47,7 @@ describe('/agents page', () => {
       .toBeVisible();
   });
 
-  it('renders agents as rows with edit, toggle, and delete actions', async () => {
+  it('links the agent slug to the detail route as the primary navigation', async () => {
     render(AgentsPage, {
       data: {
         ...data,
@@ -57,15 +57,53 @@ describe('/agents page', () => {
       params: {},
     });
 
-    await expect.element(page.getByRole('heading', { name: 'security' })).toBeVisible();
-    await expect.element(page.getByText('Finds security issues')).toBeVisible();
     await expect
-      .element(page.getByRole('link', { name: 'Edit' }))
+      .element(page.getByRole('link', { name: 'security' }))
       .toHaveAttribute('href', '/agents/agent_security');
+    await expect.element(page.getByText('Finds security issues')).toBeVisible();
+  });
+
+  it('does not render a delete button or a redundant edit link', async () => {
+    render(AgentsPage, {
+      data: {
+        ...data,
+        agents: [baseAgent],
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+  });
+
+  it('shows one visible status label and an accessible toggle', async () => {
+    render(AgentsPage, {
+      data: {
+        ...data,
+        agents: [baseAgent],
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByText('Enabled', { exact: true })).toBeVisible();
     await expect
       .element(page.getByRole('switch', { name: 'Disable security' }))
       .toHaveAttribute('aria-checked', 'true');
-    await expect.element(page.getByRole('button', { name: 'Delete' })).toBeVisible();
-    await expect.element(page.getByText('Review security changes.')).not.toBeInTheDocument();
+  });
+
+  it('omits the description line when a row has no description', async () => {
+    render(AgentsPage, {
+      data: {
+        ...data,
+        agents: [{ ...baseAgent, description: '' }],
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByRole('link', { name: 'security' })).toBeVisible();
+    await expect.element(page.getByText('Finds security issues')).not.toBeInTheDocument();
   });
 });
