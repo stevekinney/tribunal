@@ -16,7 +16,22 @@ async function readPackageJson(): Promise<Record<string, unknown>> {
   return JSON.parse(content) as Record<string, unknown>;
 }
 
+async function readRepositoryFile(...segments: string[]): Promise<string> {
+  return readFile(packageRoot('../..', ...segments), 'utf-8');
+}
+
 describe('CI workflow validation', () => {
+  describe('production deploy workflow', () => {
+    it('records reviewer build context and image sizes in the step summary', async () => {
+      const workflow = await readRepositoryFile('.github/workflows/deploy-production.yml');
+
+      expect(workflow).toContain('du -sb "$REVIEWER_IMAGE_CONTEXT"');
+      expect(workflow).toContain("docker image inspect --format '{{.Size}}'");
+      expect(workflow).toContain('Reviewer build context size');
+      expect(workflow).toContain('Reviewer image size');
+    });
+  });
+
   describe('package.json scripts', () => {
     let packageJson: Record<string, any>;
 
