@@ -1,0 +1,1 @@
+CREATE INDEX "finding_verifier_agent_run_idx" ON "finding" USING btree ("verifier_agent_run_id");

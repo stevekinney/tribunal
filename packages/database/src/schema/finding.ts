@@ -59,6 +59,7 @@ export const finding = pgTable(
     uniqueIndex('finding_agent_run_fingerprint_idx').on(table.agentRunId, table.fingerprint),
     index('finding_agent_run_idx').on(table.agentRunId),
     index('finding_user_idx').on(table.userId),
+    index('finding_verifier_agent_run_idx').on(table.verifierAgentRunId),
     check('finding_side_check', sql`${table.side} IN ('LEFT','RIGHT')`),
     check('finding_severity_check', sql`${table.severity} IN ('info','warning','error')`),
     check('finding_start_line_check', sql`${table.startLine} IS NULL OR ${table.startLine} > 0`),
