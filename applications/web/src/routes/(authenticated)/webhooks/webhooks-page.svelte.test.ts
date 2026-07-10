@@ -1,0 +1,170 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { page } from 'vitest/browser';
+import { cleanup, render } from 'vitest-browser-svelte';
+import WebhooksPage from './+page.svelte';
+import type { PageData } from './$types';
+import type { WebhookEventRow } from '$lib/server/webhook-events';
+
+const mockGoto = vi.hoisted(() => vi.fn());
+
+vi.mock('$app/navigation', () => ({ goto: mockGoto }));
+vi.mock('$app/state', () => ({
+  page: { url: new URL('http://localhost/webhooks?webhook_event_type=pull_request') },
+}));
+
+function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow {
+  return {
+    id: 1,
+    eventType: 'pull_request',
+    action: 'opened',
+    deliveryId: 'delivery-1',
+    repositoryId: 42,
+    repositoryOwner: 'acme',
+    repositoryName: 'widgets',
+    installationId: 99,
+    senderLogin: 'octocat',
+    prNumber: 7,
+    issueNumber: null,
+    ref: null,
+    commitSha: null,
+    receivedAt: '2026-01-01T00:00:00.000Z',
+    githubCreatedAt: null,
+    rawPayload: '{"ok":true}',
+    payload: { ok: true },
+    payloadParseError: false,
+    ...overrides,
+  };
+}
+
+function createData(overrides: Partial<PageData> = {}): PageData {
+  return {
+    hasRepositories: true,
+    repositories: [{ id: 42, owner: 'acme', name: 'widgets' }],
+    events: [createEvent()],
+    page: 1,
+    perPage: 25,
+    totalCount: 1,
+    filters: {
+      eventType: undefined,
+      action: undefined,
+      repositoryId: undefined,
+      prNumber: undefined,
+      issueNumber: undefined,
+      senderLogin: undefined,
+      ref: undefined,
+      deliveryId: undefined,
+      page: 1,
+      perPage: 25,
+    },
+    filterOptions: { eventTypes: ['pull_request'], actions: ['opened'] },
+    subscribedEventTypes: ['pull_request', 'push'],
+    loadError: null,
+    ...overrides,
+  } as PageData;
+}
+
+describe('/webhooks page', () => {
+  afterEach(() => {
+    cleanup();
+    mockGoto.mockReset();
+  });
+
+  it('lists webhook events with repository, event/action, and delivery ID', async () => {
+    render(WebhooksPage, { data: createData() });
+
+    await expect.element(page.getByRole('link', { name: 'acme/widgets' })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('cell', { name: 'pull_request opened' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('delivery-1', { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByText('PR #7')).toBeInTheDocument();
+  });
+
+  it('shows the subscribed events summary', async () => {
+    render(WebhooksPage, { data: createData() });
+
+    await expect.element(page.getByText('Subscribed events')).toBeInTheDocument();
+    await expect.element(page.getByText('push')).toBeInTheDocument();
+  });
+
+  it('shows a "no repositories" empty state distinct from "no events match"', async () => {
+    render(WebhooksPage, {
+      data: createData({ hasRepositories: false, repositories: [], events: [], totalCount: 0 }),
+    });
+
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+  });
+
+  it('shows a load error distinct from the "no repositories" empty state when GitHub is unreachable', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        loadError: 'Could not reach GitHub to list your installations. Please try again.',
+      }),
+    });
+
+    await expect
+      .element(
+        page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
+      )
+      .toBeInTheDocument();
+  });
+
+  it('shows a filtered-empty state when repositories exist but no events match', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [],
+        totalCount: 0,
+        filters: {
+          eventType: 'issues',
+          action: undefined,
+          repositoryId: undefined,
+          prNumber: undefined,
+          issueNumber: undefined,
+          senderLogin: undefined,
+          ref: undefined,
+          deliveryId: undefined,
+          page: 1,
+          perPage: 25,
+        },
+      }),
+    });
+
+    await expect
+      .element(page.getByText('No webhook events match these filters'))
+      .toBeInTheDocument();
+  });
+
+  it('shows installation ID, sender, related object, and GitHub timestamp in the expanded detail', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [createEvent({ githubCreatedAt: '2026-01-01T00:00:00.000Z' })],
+      }),
+    });
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+
+    await expect.poll(() => document.getElementById('webhook-event-detail-1')).not.toBeNull();
+    const detailText = document.getElementById('webhook-event-detail-1')?.textContent ?? '';
+    expect(detailText).toContain('Installation ID');
+    expect(detailText).toContain('99');
+    expect(detailText).toContain('Related object');
+    expect(detailText).toContain('GitHub timestamp');
+  });
+
+  it('navigates to the next page, preserving other filters, when pagination is clicked', async () => {
+    render(WebhooksPage, {
+      data: createData({ page: 1, perPage: 1, totalCount: 2, events: [createEvent()] }),
+    });
+
+    await page.getByRole('button', { name: 'Go to next page' }).click();
+
+    expect(mockGoto).toHaveBeenCalledTimes(1);
+    const [calledUrl] = mockGoto.mock.calls[0] as [URL];
+    expect(calledUrl.searchParams.get('webhook_page')).toBe('2');
+    expect(calledUrl.searchParams.get('webhook_event_type')).toBe('pull_request');
+  });
+});

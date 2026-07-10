@@ -5,11 +5,10 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
+  import { Link } from '@lostgradient/cinder/link';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import { Toggle } from '@lostgradient/cinder/toggle';
-  import Pencil from 'lucide-svelte/icons/pencil';
   import Plus from 'lucide-svelte/icons/plus';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
   import type { PageProps } from './$types';
 
   let { data, form }: PageProps = $props();
@@ -47,20 +46,19 @@
             <div class="agent-row">
               <div class="agent-copy">
                 <div class="agent-heading">
-                  <h2 class="agent-slug">{agent.slug}</h2>
-                  <Badge size="sm" variant={agent.enabled ? 'success' : 'neutral'}>
-                    <StatusDot
-                      status={agent.enabled ? 'success' : 'offline'}
-                      label={agent.enabled ? 'Enabled' : 'Disabled'}
-                    />
-                    {agent.enabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                </div>
-                <p class="agent-description">{agent.description}</p>
-                <div class="agent-meta">
+                  <h2 class="agent-slug">
+                    <Link href={`/agents/${agent.id}`} color="inherit">{agent.slug}</Link>
+                  </h2>
+                  <StatusDot
+                    status={agent.enabled ? 'success' : 'offline'}
+                    label={agent.enabled ? 'Enabled' : 'Disabled'}
+                  />
                   <Badge size="sm">{agent.model}</Badge>
                   {#if agent.effort}<Badge size="sm">{agent.effort}</Badge>{/if}
                 </div>
+                {#if agent.description}
+                  <p class="agent-description">{agent.description}</p>
+                {/if}
               </div>
               <div class="agent-actions">
                 <form id={`agent-${agent.id}-enabled-form`} method="POST" action="?/setEnabled">
@@ -69,6 +67,7 @@
                   <Toggle
                     id={`agent-${agent.id}-enabled`}
                     label={`${agent.enabled ? 'Disable' : 'Enable'} ${agent.slug}`}
+                    hideLabel
                     checked={agent.enabled}
                     onValueChange={(next) => {
                       if (next === agent.enabled) return;
@@ -78,17 +77,6 @@
                       form?.requestSubmit();
                     }}
                   />
-                </form>
-                <Button href={`/agents/${agent.id}`} variant="secondary">
-                  {#snippet leadingIcon()}<Pencil size={14} aria-hidden="true" />{/snippet}
-                  Edit
-                </Button>
-                <form method="POST" action="?/delete">
-                  <input type="hidden" name="id" value={agent.id} />
-                  <Button type="submit" variant="danger">
-                    {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
-                    Delete
-                  </Button>
                 </form>
               </div>
             </div>
@@ -111,7 +99,7 @@
 
   .agent-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
   }
@@ -123,11 +111,10 @@
     min-width: 0;
   }
 
-  .agent-heading,
-  .agent-meta,
-  .agent-actions {
+  .agent-heading {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-2);
   }
 
@@ -148,8 +135,7 @@
   }
 
   @media (max-width: 760px) {
-    .agent-row,
-    .agent-actions {
+    .agent-row {
       align-items: stretch;
       flex-direction: column;
     }

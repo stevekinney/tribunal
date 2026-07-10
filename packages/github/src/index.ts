@@ -45,3 +45,17 @@ export {
   type PullRequestDashboardRow,
   type RepositoryDashboardRow,
 } from './dashboard/service.js';
+
+// Issues
+export {
+  parseIssueFilters,
+  listIssues,
+  type IssueFilterState,
+  type IssueSort,
+  type IssueFilterOptions,
+  type IssueAuthor,
+  type IssueLabel,
+  type IssueMilestone,
+  type IssueListItem,
+  type IssueListResult,
+} from './issues/service.js';

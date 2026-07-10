@@ -149,6 +149,10 @@ async function invalidateIssueCommentCache(
     context.cache.deleteCacheByPattern(
       CACHE_KEYS.GITHUB_RESPONSE_ISSUE_PATTERN(owner, repo, issueNumber),
     ),
+    // A new/edited comment changes the issue's commentCount and updatedAt,
+    // both of which are displayed by the cached listIssues result — so list
+    // caches must be invalidated here too, not just on `issues` events.
+    invalidateExistingListCaches(context, owner, repo),
   ];
 
   // If the issue is actually a PR, also invalidate PR detail (comment count changes)
