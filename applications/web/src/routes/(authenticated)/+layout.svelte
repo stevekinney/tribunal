@@ -14,6 +14,7 @@
   import SettingsIcon from 'lucide-svelte/icons/settings';
   import Workflow from 'lucide-svelte/icons/workflow';
   import Menu from 'lucide-svelte/icons/menu';
+  import WebhookIcon from 'lucide-svelte/icons/webhook';
 
   let { data, children }: LayoutProps = $props();
 
@@ -26,6 +27,9 @@
   );
   const runsActive = $derived(
     page.url.pathname === '/runs' || page.url.pathname.startsWith('/runs/'),
+  );
+  const webhooksActive = $derived(
+    page.url.pathname === '/webhooks' || page.url.pathname.startsWith('/webhooks/'),
   );
   const costsActive = $derived(page.url.pathname === '/costs');
   const settingsActive = $derived(page.url.pathname === '/settings');
@@ -95,6 +99,10 @@
         <SideNavigation.Item href="/runs" active={runsActive}>
           <Activity size={16} aria-hidden="true" />
           Runs
+        </SideNavigation.Item>
+        <SideNavigation.Item href="/webhooks" active={webhooksActive}>
+          <WebhookIcon size={16} aria-hidden="true" />
+          Webhooks
         </SideNavigation.Item>
         <SideNavigation.Item href="/costs" active={costsActive}>
           <CircleDollarSign size={16} aria-hidden="true" />

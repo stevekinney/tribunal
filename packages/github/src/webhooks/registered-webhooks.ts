@@ -1,3 +1,4 @@
+import { emitterEventNames } from '@octokit/webhooks';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { requirePolicy } from '../core/cache-policy.js';
@@ -9,86 +10,20 @@ import { ValidationError } from '../error-taxonomy.js';
 // ============================================================================
 
 /**
- * Complete sorted list of known GitHub webhook event types for GitHub Apps.
+ * Complete sorted catalog of GitHub webhook event *types* (excluding
+ * action-qualified variants), derived at runtime from the installed
+ * `@octokit/webhooks` package's generated `emitterEventNames` export.
  *
- * Source: https://docs.github.com/en/webhooks/webhook-events-and-payloads
- * This list should be updated when GitHub adds new webhook event types.
+ * `emitterEventNames` mixes bare event names (`check_run`) with dotted
+ * action-qualified variants (`check_run.completed`); filtering out entries
+ * that contain a `.` yields the event-type catalog. This is intentionally
+ * NOT a hand-maintained list — it tracks whatever `@octokit/webhooks` ships,
+ * so it stays current when GitHub adds new webhook event types and the
+ * dependency is upgraded.
  */
-export const ALL_GITHUB_WEBHOOK_EVENTS = Object.freeze([
-  'branch_protection_configuration',
-  'branch_protection_rule',
-  'check_run',
-  'check_suite',
-  'code_scanning_alert',
-  'commit_comment',
-  'create',
-  'custom_property',
-  'custom_property_values',
-  'delete',
-  'dependabot_alert',
-  'deploy_key',
-  'deployment',
-  'deployment_protection_rule',
-  'deployment_review',
-  'deployment_status',
-  'discussion',
-  'discussion_comment',
-  'fork',
-  'github_app_authorization',
-  'gollum',
-  'installation',
-  'installation_repositories',
-  'installation_target',
-  'issue_comment',
-  'issues',
-  'label',
-  'marketplace_purchase',
-  'member',
-  'membership',
-  'merge_group',
-  'meta',
-  'milestone',
-  'org_block',
-  'organization',
-  'package',
-  'page_build',
-  'personal_access_token_request',
-  'ping',
-  'project',
-  'project_card',
-  'project_column',
-  'projects_v2',
-  'projects_v2_item',
-  'projects_v2_status_update',
-  'public',
-  'pull_request',
-  'pull_request_review',
-  'pull_request_review_comment',
-  'pull_request_review_thread',
-  'push',
-  'registry_package',
-  'release',
-  'repository',
-  'repository_advisory',
-  'repository_dispatch',
-  'repository_import',
-  'repository_ruleset',
-  'repository_vulnerability_alert',
-  'secret_scanning_alert',
-  'secret_scanning_alert_location',
-  'security_advisory',
-  'security_and_analysis',
-  'sponsorship',
-  'star',
-  'status',
-  'sub_issues',
-  'team',
-  'team_add',
-  'watch',
-  'workflow_dispatch',
-  'workflow_job',
-  'workflow_run',
-] as const);
+export const SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG = Object.freeze(
+  [...new Set(emitterEventNames.filter((name) => !name.includes('.')))].sort(),
+);
 
 /**
  * GitHub App events that are delivered by default and cannot be configured
@@ -105,25 +40,32 @@ const nonConfigurableGitHubWebhookEventSet: ReadonlySet<string> = new Set(
 );
 
 /**
- * Sorted list of events that can be explicitly subscribed/unsubscribed
+ * Sorted list of catalog events that can be explicitly subscribed/unsubscribed
  * in GitHub App settings.
  */
-export const CONFIGURABLE_GITHUB_WEBHOOK_EVENTS = Object.freeze(
-  ALL_GITHUB_WEBHOOK_EVENTS.filter((event) => !nonConfigurableGitHubWebhookEventSet.has(event)),
+export const CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG = Object.freeze(
+  SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG.filter(
+    (event) => !nonConfigurableGitHubWebhookEventSet.has(event),
+  ),
 );
 
-/** A single GitHub webhook event type string. */
-export type GitHubWebhookEventType = (typeof ALL_GITHUB_WEBHOOK_EVENTS)[number];
+/** A single GitHub webhook event type string from the generated catalog. */
+export type GitHubWebhookEventType = (typeof SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG)[number];
 
 // ============================================================================
 // Types
 // ============================================================================
 
-/** Result of comparing registered events against the full event catalog. */
+/** Result of comparing subscribed events against the generated event catalog. */
 export interface RegisteredWebhooks {
-  /** Events the GitHub App is currently subscribed to (sorted). */
+  /**
+   * Events the GitHub App is currently subscribed to (sorted), exactly as
+   * returned by `octokit.rest.apps.getAuthenticated()`. Event types GitHub
+   * returns that are not present in the generated catalog are preserved here
+   * rather than filtered out.
+   */
   registered: string[];
-  /** Configurable events the GitHub App is NOT subscribed to (sorted). */
+  /** Configurable catalog events the GitHub App is NOT subscribed to (sorted). */
   unregistered: string[];
 }
 
@@ -133,7 +75,7 @@ export interface RegisteredWebhooks {
 
 /**
  * Query the GitHub App configuration and diff subscribed events against
- * the full webhook event catalog.
+ * the `@octokit/webhooks`-generated event catalog.
  *
  * Uses `cachedRead` with a 24-hour TTL and ETag conditional requests,
  * since webhook configuration changes are rare.
@@ -163,21 +105,23 @@ export async function getRegisteredWebhooks(
 
       const events = response.data?.events ?? [];
       const registeredSet = new Set(events);
+      // Preserve every event GitHub reports, including ones the generated
+      // catalog does not (yet) recognize — never silently drop them.
       const registered: string[] = [...registeredSet].sort();
 
-      // Warn when GitHub returns event types not present in our canonical list.
-      // This indicates ALL_GITHUB_WEBHOOK_EVENTS needs updating.
-      const knownEvents: ReadonlySet<string> = new Set(ALL_GITHUB_WEBHOOK_EVENTS);
+      // Warn when GitHub returns event types not present in the generated
+      // catalog. This usually means `@octokit/webhooks` needs upgrading.
+      const knownEvents: ReadonlySet<string> = new Set(SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG);
       const unknownEvents = registered.filter((event) => !knownEvents.has(event));
       if (unknownEvents.length > 0) {
         console.warn(
-          'GitHub returned webhook events not present in ALL_GITHUB_WEBHOOK_EVENTS. ' +
-            'The constant may need updating. Unknown events:',
+          'GitHub returned webhook events not present in the @octokit/webhooks-generated ' +
+            'catalog. Upgrading @octokit/webhooks may resolve this. Unknown events:',
           unknownEvents,
         );
       }
 
-      const unregistered: string[] = CONFIGURABLE_GITHUB_WEBHOOK_EVENTS.filter(
+      const unregistered: string[] = CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG.filter(
         (event) => !registeredSet.has(event),
       );
 

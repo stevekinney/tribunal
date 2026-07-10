@@ -17,6 +17,7 @@
     CircleAlert,
   } from 'lucide-svelte';
   import Save from 'lucide-svelte/icons/save';
+  import WebhookIcon from 'lucide-svelte/icons/webhook';
 
   let { data, form } = $props();
 
@@ -68,6 +69,12 @@
   {breadcrumbs}
   actions={pageActions}
 >
+  {#snippet actions()}
+    <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
+      {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
+      Webhooks
+    </Button>
+  {/snippet}
   {#if form?.error}
     <Alert variant="danger">{form.error}</Alert>
   {/if}
