@@ -138,6 +138,24 @@
     return applied;
   });
 
+  // Target of the most recently issued (but not yet landed) navigation. When
+  // two filter changes happen back-to-back, `$app/state`'s `page.url` does
+  // not update until the first `goto` finishes loading, so building the
+  // second navigation from `page.url` would drop the first change. Basing
+  // each navigation on the last *issued* target instead keeps rapid changes
+  // additive instead of clobbering.
+  let pendingNavigationTarget: URL | undefined = $state();
+
+  $effect(() => {
+    // `page.url` only changes once a navigation actually lands, so treat
+    // that as the signal that the pending target is now authoritative and
+    // stop overriding it. Reading `page.url` here (rather than clearing on
+    // the `goto()` promise settling) ties the reset to real navigation
+    // completion instead of arbitrary promise-resolution timing.
+    void page.url;
+    pendingNavigationTarget = undefined;
+  });
+
   /**
    * Navigate to the same page with updated filter query params, resetting
    * pagination to page 1 whenever a filter (not the page itself) changes.
@@ -152,7 +170,7 @@
     // update would silently drop this change. Flush/cancel it first so every
     // navigation is built from the same up-to-date filter state.
     clearTimeout(labelsDebounceHandle);
-    const url = new URL(page.url);
+    const url = new URL(pendingNavigationTarget ?? page.url);
     for (const [key, value] of Object.entries(next)) {
       if (value) {
         url.searchParams.set(key, value);
@@ -163,6 +181,7 @@
     if (options?.resetPage !== false) {
       url.searchParams.set('issue_page', '1');
     }
+    pendingNavigationTarget = url;
     goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true, invalidateAll: true });
   }
 
@@ -176,6 +195,7 @@
 
   function handleClearAll(): void {
     clearTimeout(labelsDebounceHandle);
+    pendingNavigationTarget = undefined;
     goto(page.url.pathname, { keepFocus: true, noScroll: true, invalidateAll: true });
   }
 

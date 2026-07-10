@@ -211,6 +211,26 @@ describe('/repositories/[repositoryId]/issues page', () => {
     );
   });
 
+  it('preserves an in-flight filter change when a second filter changes before the first navigation lands', async () => {
+    // goto() is mocked and never resolves here, simulating the window while
+    // a real navigation is still loading (during which $app/state's
+    // `page.url` has not updated yet). A second filter change in that window
+    // must still carry the first change forward instead of rebuilding from
+    // the stale `page.url`.
+    render(IssuesPage, { data: baseData });
+
+    const stateSelect = browserPage.getByLabelText('State');
+    await stateSelect.selectOptions('closed');
+
+    const directionSelect = browserPage.getByLabelText('Direction');
+    await directionSelect.selectOptions('asc');
+
+    expect(mocks.goto).toHaveBeenCalledTimes(2);
+    const [secondTarget] = mocks.goto.mock.calls[1] as [string, unknown];
+    expect(secondTarget).toContain('issue_state=closed');
+    expect(secondTarget).toContain('issue_direction=asc');
+  });
+
   it('cancels a pending label debounce when another facet changes first, instead of firing later and dropping it', async () => {
     // Typing in the label box starts a 400ms debounce. If the state facet
     // changes before that timer fires, the debounce must not go on to build a
