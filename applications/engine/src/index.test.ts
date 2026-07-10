@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEngineServerOptions,
   createReviewIntentKickScheduler,
+  createStartingEngineServerOptions,
   createStorageConfigurationFromEnvironment,
   parsePort,
   startSandboxReaper,
@@ -446,6 +447,34 @@ describe('createEngineServerOptions', () => {
       ok: false,
       error: 'agent_run_not_active',
     });
+  });
+});
+
+describe('createStartingEngineServerOptions', () => {
+  it('binds immediately on the configured Fly hostname while the runtime starts', async () => {
+    const server = createStartingEngineServerOptions(3001, '0.0.0.0');
+
+    expect(server.hostname).toBe('0.0.0.0');
+    const response = server.fetch(new Request('http://engine.test/health'));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      dependencies: [
+        { name: 'weft_database', ok: false, detail: 'engine runtime is starting' },
+        { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
+      ],
+    });
+  });
+
+  it('rejects control requests until the runtime is ready', async () => {
+    const server = createStartingEngineServerOptions(3001);
+    const response = server.fetch(
+      new Request('http://engine.test/review-intents/kick', { method: 'POST' }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_starting' });
   });
 });
 

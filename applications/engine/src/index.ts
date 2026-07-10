@@ -23,6 +23,11 @@ if (import.meta.main) {
   const environment = parseEngineEnvironment(Bun.env);
   const storageConfiguration = createStorageConfigurationFromEnvironment(environment);
 
+  const server = Bun.serve(
+    createStartingEngineServerOptions(port, environment.TRIBUNAL_ENGINE_BIND_HOST),
+  );
+  console.log(`[engine] listening on ${server.hostname}:${server.port}; starting runtime`);
+
   const runtime = await createEngineRuntime({
     storage: storageConfiguration.storage,
     lock: storageConfiguration.lock,
@@ -45,7 +50,7 @@ if (import.meta.main) {
       activeSandboxReaperRuns = Math.max(0, activeSandboxReaperRuns - 1);
     },
   });
-  const server = Bun.serve(
+  server.reload(
     createEngineServerOptions(
       port,
       runtime,
@@ -55,7 +60,30 @@ if (import.meta.main) {
     ),
   );
   reviewIntentKickScheduler.kick();
-  console.log(`[engine] listening on ${server.hostname}:${server.port}`);
+  console.log('[engine] runtime ready');
+}
+
+export function createStartingEngineServerOptions(port: number, hostname?: string) {
+  return {
+    port,
+    ...(hostname === undefined ? {} : { hostname }),
+    fetch(request: Request) {
+      const url = new URL(request.url);
+      if (url.pathname === '/health') {
+        return Response.json(
+          {
+            ok: false,
+            dependencies: [
+              { name: 'weft_database', ok: false, detail: 'engine runtime is starting' },
+              { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
+            ],
+          },
+          { status: 503 },
+        );
+      }
+      return Response.json({ ok: false, error: 'engine_starting' }, { status: 503 });
+    },
+  };
 }
 
 export function startSandboxReaper(
