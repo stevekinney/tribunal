@@ -72,3 +72,27 @@ export const GITHUB_RESPONSE_CACHE_TTL_SECONDS = 5;
 export function encodeFilterValue(value: string): string {
   return value.replace(/%/g, '%25').replace(/[|:]/g, (ch) => `%${ch.charCodeAt(0).toString(16)}`);
 }
+
+// ============================================================================
+// Pagination helpers
+// ============================================================================
+
+/**
+ * Determine whether another page of REST list results exists.
+ *
+ * Relies entirely on GitHub's `Link` response header (`rel="next"`). Per
+ * GitHub's pagination docs, the header is included whenever another page
+ * exists and omitted otherwise — including when the current page happens to
+ * contain exactly `perPage` rows but is the last page. A row-count fallback
+ * (`rowCount >= perPage`) would misreport `hasNextPage: true` in that exact
+ * case, so no such fallback is used: a missing header means there is no next
+ * page.
+ *
+ * @see https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api#using-link-headers
+ */
+export function resolveHasNextPage(linkHeader: string | undefined): boolean {
+  if (!linkHeader) {
+    return false;
+  }
+  return /<[^>]+>;\s*rel="next"/.test(linkHeader);
+}

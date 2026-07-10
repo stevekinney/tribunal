@@ -32,6 +32,7 @@ import {
   stopAgent,
   stopRun,
   streamRunAgentEvents,
+  submitRepositorySettingsForm,
   userOwnsRepository,
 } from './operator';
 
@@ -369,6 +370,46 @@ describe('review operator server helpers', () => {
     expect(assignments).toEqual([]);
   });
 
+  it('trims, rejects empty, and dedupes submitted ignore globs and agentIds', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.append('ignoreGlobs', '  dist/** ');
+    formData.append('ignoreGlobs', 'dist/**');
+    formData.append('ignoreGlobs', '   ');
+    formData.append('ignoreGlobs', 'coverage/**');
+    formData.append('agentIds', reviewAgent.id);
+    formData.append('agentIds', reviewAgent.id);
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+    const assignments = await testDb.db.select().from(repositoryAgent);
+
+    expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
+    expect(assignments).toHaveLength(1);
+  });
+
+  it('splits a single newline-delimited ignoreGlobs value from a stale legacy textarea submission', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    // The pre-move pull-requests settings form submitted the whole textarea
+    // as one newline-delimited string under the `ignoreGlobs` key, unlike the
+    // new settings page which submits one value per committed tag.
+    const formData = new FormData();
+    formData.append('ignoreGlobs', 'dist/**\ncoverage/**\ndist/**');
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+
+    expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
+  });
+
   it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
     const updateFormData = new FormData();
@@ -466,6 +507,38 @@ describe('review operator server helpers', () => {
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
+  });
+
+  it('reports a clear error for run kinds without an inspector view instead of a false 404', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+    await testDb.db.insert(tribunalRun).values({
+      id: 'run_webhook_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      runKind: 'webhook_event_handler',
+      status: 'queued',
+    });
+
+    // The run exists and is owned by `owner`, so this must not be reported
+    // as a plain "not found" -- that would be indistinguishable from a truly
+    // missing/nonexistent run id.
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({
+      status: 404,
+      body: { message: 'This run kind does not have an inspector view yet.' },
+    });
+
+    // Ownership is still checked before revealing anything about the run,
+    // including its kind.
+    await expect(
+      withTestDatabase(() => getRunInspector(otherUser.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // A genuinely nonexistent run id still reports plain "not found".
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_does_not_exist')),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });
   });
 
   it('streams only new agent events and sends an idle keepalive', async () => {

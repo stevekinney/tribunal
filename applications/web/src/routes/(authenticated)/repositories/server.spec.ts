@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RepositoryDashboardRow } from '@tribunal/github/dashboard/types';
 
 const {
   mockRepositoriesResult,
   mockGetRepositoryOperatorDetails,
   mockListAgents,
   mockSaveRepositoryWatchSettings,
+  mockBuildRepositoryDashboard,
 } = vi.hoisted(() => ({
   mockRepositoriesResult: {
     value: {
@@ -14,8 +16,25 @@ const {
     } as
       | {
           ok: true;
-          repositories: [];
-          installations: [];
+          repositories: Array<{
+            repository: {
+              id: number;
+              owner: string;
+              name: string;
+              defaultBranch: string | null;
+              commit: string | null;
+            };
+            installation: {
+              installationId: number;
+              accountLogin: string;
+              accountAvatarUrl: string | null;
+            };
+          }>;
+          installations: Array<{
+            installationId: number;
+            accountLogin: string;
+            accountAvatarUrl: string | null;
+          }>;
         }
       | {
           ok: false;
@@ -28,6 +47,9 @@ const {
     Promise.resolve([]),
   ),
   mockSaveRepositoryWatchSettings: vi.fn(() => Promise.resolve({ success: true })),
+  mockBuildRepositoryDashboard: vi.fn<() => Promise<RepositoryDashboardRow[]>>(() =>
+    Promise.resolve([]),
+  ),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -39,6 +61,14 @@ vi.mock('@sveltejs/kit', () => ({
 
 vi.mock('$lib/server/repositories', () => ({
   getRepositoriesForUser: vi.fn(() => Promise.resolve(mockRepositoriesResult.value)),
+}));
+
+vi.mock('$lib/server/github-context', () => ({
+  githubContext: {},
+}));
+
+vi.mock('@tribunal/github/dashboard/service', () => ({
+  buildRepositoryDashboard: mockBuildRepositoryDashboard,
 }));
 
 vi.mock('$lib/server/review/operator', () => ({
@@ -58,6 +88,17 @@ import { actions, load } from './+page.server';
 type RepositoriesLoadResult = {
   needsConnect: boolean;
   loadError: string | null;
+  repositories: Array<{ id: number; review: { watched: boolean } }>;
+  summary: {
+    totalRepositoryCount: number;
+    failingDefaultBranchCount: number;
+    failingDefaultBranchCountExact: boolean;
+    openPullRequestCount: number;
+    openPullRequestCountExact: boolean;
+    attentionPullRequestCount: number;
+    attentionPullRequestCountExact: boolean;
+    hasUnavailableRepositories: boolean;
+  } | null;
 };
 
 describe('/repositories server load', () => {
@@ -73,6 +114,8 @@ describe('/repositories server load', () => {
     mockListAgents.mockResolvedValue([]);
     mockSaveRepositoryWatchSettings.mockReset();
     mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
+    mockBuildRepositoryDashboard.mockReset();
+    mockBuildRepositoryDashboard.mockResolvedValue([]);
   });
 
   function createEvent(search = '') {
@@ -128,6 +171,169 @@ describe('/repositories server load', () => {
       location: '/connect/github/account?returnTo=%2Frepositories',
     });
     expect.assertions(1);
+  });
+
+  it('returns dashboard rows and honest summary counts for every accessible repository, watched or not', async () => {
+    mockRepositoriesResult.value = {
+      ok: true,
+      repositories: [
+        {
+          repository: {
+            id: 101,
+            owner: 'acme',
+            name: 'widgets',
+            defaultBranch: 'main',
+            commit: 'sha1',
+          },
+          installation: { installationId: 1, accountLogin: 'acme', accountAvatarUrl: null },
+        },
+        {
+          repository: {
+            id: 202,
+            owner: 'acme',
+            name: 'gadgets',
+            defaultBranch: 'main',
+            commit: 'sha2',
+          },
+          installation: { installationId: 1, accountLogin: 'acme', accountAvatarUrl: null },
+        },
+      ],
+      installations: [{ installationId: 1, accountLogin: 'acme', accountAvatarUrl: null }],
+    };
+    // Only repository 101 has a saved "watched" setting; 202 is accessible but not yet added.
+    mockGetRepositoryOperatorDetails.mockResolvedValue(
+      new Map([
+        [
+          101,
+          {
+            hasSavedSettings: true,
+            watched: true,
+            ignoreGlobs: [],
+            agents: [],
+            lastRunStatus: null,
+            estimatedCostLast30DaysUsd: 0,
+          },
+        ],
+      ]),
+    );
+    mockBuildRepositoryDashboard.mockResolvedValue([
+      {
+        repository: { id: 101, owner: 'acme', name: 'widgets', defaultBranch: 'main' },
+        defaultBranchStatus: 'failing',
+        openPullRequestCount: 3,
+        openPullRequestCountAtCap: false,
+        attentionPullRequestCount: 1,
+        unresolvedThreadCount: 2,
+        pullRequests: [
+          {
+            repositoryId: 101,
+            number: 7,
+            title: 'Broken build',
+            htmlUrl: 'https://github.com/acme/widgets/pull/7',
+            author: null,
+            draft: false,
+            headRef: 'fix',
+            baseRef: 'main',
+            headSha: 'sha-head',
+            ciStatus: 'failing',
+            ciUpdatedAt: '2026-07-09T00:00:00.000Z',
+            mergeStatus: 'clean',
+            mergeUpdatedAt: '2026-07-09T00:00:00.000Z',
+            unresolvedThreadCount: 2,
+            reviewUpdatedAt: '2026-07-09T00:00:00.000Z',
+            updatedAt: '2026-07-09T00:00:00.000Z',
+          },
+        ],
+        refreshedAt: '2026-07-09T00:00:00.000Z',
+        dataStatus: 'ok',
+      },
+      {
+        repository: { id: 202, owner: 'acme', name: 'gadgets', defaultBranch: 'main' },
+        defaultBranchStatus: 'passing',
+        openPullRequestCount: 0,
+        openPullRequestCountAtCap: false,
+        attentionPullRequestCount: 0,
+        unresolvedThreadCount: 0,
+        pullRequests: [],
+        refreshedAt: '2026-07-09T00:00:00.000Z',
+        dataStatus: 'ok',
+      },
+    ]);
+
+    const result = (await load(createEvent())) as unknown as {
+      repositories: Array<{
+        id: number;
+        review: { watched: boolean };
+        dashboard: { defaultBranchStatus: string } | null;
+      }>;
+      summary: RepositoriesLoadResult['summary'];
+      attentionPullRequests: Array<{ number: number; repositoryOwner: string }>;
+    };
+
+    // Both accessible repositories render, not just the watched one.
+    expect(result.repositories.map((r) => r.id)).toEqual([101, 202]);
+    expect(result.repositories.find((r) => r.id === 101)?.review.watched).toBe(true);
+    expect(result.repositories.find((r) => r.id === 202)?.review.watched).toBe(false);
+    expect(result.repositories.find((r) => r.id === 101)?.dashboard?.defaultBranchStatus).toBe(
+      'failing',
+    );
+
+    expect(result.summary).toEqual({
+      totalRepositoryCount: 2,
+      failingDefaultBranchCount: 1,
+      failingDefaultBranchCountExact: true,
+      openPullRequestCount: 3,
+      openPullRequestCountExact: true,
+      attentionPullRequestCount: 1,
+      attentionPullRequestCountExact: true,
+      hasUnavailableRepositories: false,
+    });
+
+    expect(result.attentionPullRequests).toHaveLength(1);
+    expect(result.attentionPullRequests[0]).toMatchObject({
+      number: 7,
+      repositoryOwner: 'acme',
+    });
+  });
+
+  it('does not expose repositories the user cannot access', async () => {
+    mockRepositoriesResult.value = {
+      ok: true,
+      repositories: [
+        {
+          repository: {
+            id: 101,
+            owner: 'acme',
+            name: 'widgets',
+            defaultBranch: 'main',
+            commit: 'sha1',
+          },
+          installation: { installationId: 1, accountLogin: 'acme', accountAvatarUrl: null },
+        },
+      ],
+      installations: [{ installationId: 1, accountLogin: 'acme', accountAvatarUrl: null }],
+    };
+    mockBuildRepositoryDashboard.mockResolvedValue([
+      {
+        repository: { id: 101, owner: 'acme', name: 'widgets', defaultBranch: 'main' },
+        defaultBranchStatus: 'passing',
+        openPullRequestCount: 0,
+        openPullRequestCountAtCap: false,
+        attentionPullRequestCount: 0,
+        unresolvedThreadCount: 0,
+        pullRequests: [],
+        refreshedAt: '2026-07-09T00:00:00.000Z',
+        dataStatus: 'ok',
+      },
+    ]);
+
+    const result = (await load(createEvent())) as unknown as {
+      repositories: Array<{ id: number }>;
+    };
+
+    // getRepositoriesForUser is the sole authorization boundary here (mocked to
+    // return only repository 101); the route must not add anything beyond it.
+    expect(result.repositories.map((r) => r.id)).toEqual([101]);
   });
 });
 
