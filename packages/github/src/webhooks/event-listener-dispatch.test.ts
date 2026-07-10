@@ -5,6 +5,7 @@ import {
   agent,
   agentRun,
   eventListenerDelivery,
+  githubInstallationRepository,
   tribunalRun,
   webhookEvent,
   webhookEventHandlerRun,
@@ -71,10 +72,33 @@ async function insertWebhookEvent(input: { repositoryId: number; eventType?: str
   return row;
 }
 
+/**
+ * Link a user's active GitHub installation to a repository so
+ * `isEventListenerOwnerInstallationActive`'s dispatch-time revalidation
+ * matches, mirroring the check `listEnabledListenersForRepositoryEventType`
+ * already applies at match time.
+ */
+async function grantActiveInstallationAccess(
+  userId: number,
+  repositoryId: number,
+  options: { installationStatus?: 'active' | 'suspended'; linkActive?: boolean } = {},
+) {
+  const installation = await testContext.factories.githubInstallation.createForUser(userId, {
+    status: options.installationStatus ?? 'active',
+  });
+  await testContext.db.insert(githubInstallationRepository).values({
+    installationId: installation.installationId,
+    repositoryId,
+    isActive: options.linkActive ?? true,
+  });
+  return installation;
+}
+
 async function createFixture() {
   const user = await testContext.factories.user.create();
   const repository = await testContext.factories.repository.create({ id: 7001 });
   const testAgent = await insertAgent({ id: 'agent_1', userId: user.id });
+  await grantActiveInstallationAccess(user.id, repository.id);
   const listener = await createEventListener(testContext.db, {
     userId: user.id,
     repositoryId: repository.id,

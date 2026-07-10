@@ -44,11 +44,11 @@ export function serializeEventListenerFilters(filters: unknown): string {
   const result: EventListenerFilters = {};
 
   for (const [rawKey, value] of Object.entries(filters as Record<string, unknown>)) {
-    if (value === undefined || value === null) continue;
-
     if (!SUPPORTED_FILTER_KEYS.has(rawKey as keyof EventListenerFilters)) {
       throw new InvalidEventListenerFiltersError(`Unsupported event listener filter: ${rawKey}`);
     }
+
+    if (value === undefined || value === null) continue;
 
     const key = rawKey as keyof EventListenerFilters;
 
