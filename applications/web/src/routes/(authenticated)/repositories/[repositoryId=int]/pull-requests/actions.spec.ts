@@ -7,6 +7,7 @@ const {
   mockGetRepositoryOperatorDetails,
   mockListAgents,
   mockListPullRequests,
+  mockParsePullRequestFilters,
 } = vi.hoisted(() => ({
   mockUserCanAccessRepository: vi.fn(),
   mockSubmitRepositorySettingsForm: vi.fn(() => Promise.resolve({ success: true })),
@@ -15,7 +16,14 @@ const {
   mockListAgents: vi.fn<() => Promise<Array<{ id: string; slug: string; enabled: boolean }>>>(() =>
     Promise.resolve([]),
   ),
-  mockListPullRequests: vi.fn(() => Promise.resolve({ pullRequests: [] })),
+  mockListPullRequests: vi.fn(() => Promise.resolve({ pullRequests: [], hasNextPage: false })),
+  mockParsePullRequestFilters: vi.fn(() => ({
+    state: 'open' as const,
+    sort: 'updated' as const,
+    direction: 'desc' as const,
+    page: 1,
+    perPage: 30,
+  })),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -44,6 +52,7 @@ vi.mock('@tribunal/github/repositories/service', () => ({
 vi.mock('@tribunal/github/pull-requests/service', () => ({
   getPullRequestOperationalStatus: vi.fn(),
   listPullRequests: mockListPullRequests,
+  parsePullRequestFilters: mockParsePullRequestFilters,
 }));
 
 vi.mock('$lib/server/repositories', () => ({
@@ -119,13 +128,14 @@ describe('/repositories/[repositoryId]/pull-requests legacy load data shape', ()
     mockListAgents.mockReset();
     mockListAgents.mockResolvedValue([]);
     mockListPullRequests.mockReset();
-    mockListPullRequests.mockResolvedValue({ pullRequests: [] });
+    mockListPullRequests.mockResolvedValue({ pullRequests: [], hasNextPage: false });
   });
 
   function createLoadEvent() {
     return {
       params: { repositoryId: '101' },
       locals: { user: { id: 1, username: 'test-user' } },
+      url: new URL('https://example.com/repositories/101/pull-requests'),
     } as Parameters<typeof load>[0];
   }
 

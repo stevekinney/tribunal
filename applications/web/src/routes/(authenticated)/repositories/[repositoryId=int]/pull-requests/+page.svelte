@@ -1,10 +1,14 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
+  import { Pagination } from '@lostgradient/cinder/pagination';
+  import { Select } from '@lostgradient/cinder/select';
   import {
     GitPullRequest,
     GitMerge,
@@ -22,6 +26,105 @@
     { label: 'Repositories', href: '/repositories' },
     { label: repositoryName },
   ]);
+
+  const DEFAULT_FILTERS = {
+    state: 'open',
+    sort: 'updated',
+    direction: 'desc',
+    perPage: 30,
+  } as const;
+
+  const isFiltered = $derived(
+    data.filters.state !== DEFAULT_FILTERS.state || !!data.filters.head || !!data.filters.base,
+  );
+
+  const subtitle = $derived(
+    data.filters.page > 1
+      ? `Showing page ${data.filters.page}`
+      : isFiltered
+        ? `Showing ${data.pullRequests.length} matching ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`
+        : `Showing ${data.pullRequests.length} open ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`,
+  );
+
+  const stateOptions = [
+    { value: 'open', label: 'Open' },
+    { value: 'closed', label: 'Closed' },
+    { value: 'all', label: 'All' },
+  ] as const;
+
+  const sortOptions = [
+    { value: 'updated', label: 'Updated' },
+    { value: 'created', label: 'Created' },
+    { value: 'popularity', label: 'Popularity' },
+    { value: 'long-running', label: 'Long-running' },
+  ] as const;
+
+  const directionOptions = [
+    { value: 'desc', label: 'Descending' },
+    { value: 'asc', label: 'Ascending' },
+  ] as const;
+
+  const perPageOptions: { value: string; label: string }[] = [
+    { value: '30', label: '30 per page' },
+    { value: '50', label: '50 per page' },
+    { value: '100', label: '100 per page' },
+  ];
+
+  /**
+   * Navigate to the same page with updated filter query params, resetting
+   * pagination to page 1 whenever a filter (not the page itself) changes.
+   */
+  function updateFilters(
+    next: Record<string, string | undefined>,
+    options?: { resetPage?: boolean },
+  ): void {
+    const url = new URL(page.url);
+    for (const [key, value] of Object.entries(next)) {
+      if (value) {
+        url.searchParams.set(key, value);
+      } else {
+        url.searchParams.delete(key);
+      }
+    }
+    if (options?.resetPage !== false) {
+      url.searchParams.set('pr_page', '1');
+    }
+    goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true, invalidateAll: true });
+  }
+
+  function handleClearAll(): void {
+    goto(page.url.pathname, { keepFocus: true, noScroll: true, invalidateAll: true });
+  }
+
+  let currentPage = $derived(data.filters.page);
+
+  $effect(() => {
+    if (currentPage !== data.filters.page) {
+      updateFilters({ pr_page: String(currentPage) }, { resetPage: false });
+    }
+  });
+
+  function pullRequestStateLabel(pullRequest: {
+    state: 'open' | 'closed';
+    draft: boolean;
+    mergedAt: string | null;
+  }): string {
+    if (pullRequest.state === 'closed') {
+      return pullRequest.mergedAt ? 'Merged' : 'Closed';
+    }
+    return pullRequest.draft ? 'Draft' : 'Open';
+  }
+
+  function pullRequestStateVariant(pullRequest: {
+    state: 'open' | 'closed';
+    draft: boolean;
+    mergedAt: string | null;
+  }): 'success' | 'neutral' | 'info' {
+    if (pullRequest.state === 'closed') {
+      return pullRequest.mergedAt ? 'info' : 'neutral';
+    }
+    return pullRequest.draft ? 'neutral' : 'success';
+  }
 
   function ciLabel(status: string): string {
     const labels: Record<string, string> = {
@@ -65,17 +168,72 @@
   </Button>
 {/snippet}
 
-<Page
-  title="Open pull requests"
-  subtitle={`${data.pullRequests.length} open ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`}
-  {breadcrumbs}
-  actions={pageActions}
->
+<Page title="Pull requests" {subtitle} {breadcrumbs} actions={pageActions}>
+  <div class="pull-request-filters" role="search" aria-label="Pull request filters">
+    <Select
+      id="pr-filter-state"
+      label="State"
+      value={data.filters.state}
+      options={stateOptions}
+      onchange={(event: Event) =>
+        updateFilters({ pr_state: (event.currentTarget as HTMLSelectElement).value })}
+    />
+    <Select
+      id="pr-filter-sort"
+      label="Sort"
+      value={data.filters.sort}
+      options={sortOptions}
+      onchange={(event: Event) =>
+        updateFilters({ pr_sort: (event.currentTarget as HTMLSelectElement).value })}
+    />
+    <Select
+      id="pr-filter-direction"
+      label="Direction"
+      value={data.filters.direction}
+      options={directionOptions}
+      onchange={(event: Event) =>
+        updateFilters({ pr_direction: (event.currentTarget as HTMLSelectElement).value })}
+    />
+    <label class="branch-filter">
+      <span class="branch-filter-label">Base branch</span>
+      <input
+        type="text"
+        class="branch-input"
+        placeholder="main"
+        value={data.filters.base ?? ''}
+        onchange={(event) => updateFilters({ pr_base: event.currentTarget.value || undefined })}
+      />
+    </label>
+    <label class="branch-filter">
+      <span class="branch-filter-label">Head branch</span>
+      <input
+        type="text"
+        class="branch-input"
+        placeholder="owner:branch"
+        value={data.filters.head ?? ''}
+        onchange={(event) => updateFilters({ pr_head: event.currentTarget.value || undefined })}
+      />
+    </label>
+    <Select
+      id="pr-filter-per-page"
+      label="Page size"
+      value={String(data.filters.perPage)}
+      options={perPageOptions}
+      onchange={(event: Event) =>
+        updateFilters({ pr_per_page: (event.currentTarget as HTMLSelectElement).value })}
+    />
+    {#if isFiltered}
+      <Button variant="secondary" size="sm" onclick={handleClearAll}>Clear filters</Button>
+    {/if}
+  </div>
+
   {#if data.pullRequests.length === 0}
     <Card padding="none">
       <EmptyState
-        title="No open pull requests"
-        description="When this repository has open pull requests, they will appear here."
+        title={isFiltered ? 'No pull requests match these filters' : 'No open pull requests'}
+        description={isFiltered
+          ? 'Try widening the state, base branch, or head branch filters.'
+          : 'When this repository has open pull requests, they will appear here.'}
       >
         {#snippet icon()}<GitPullRequest size={48} />{/snippet}
       </EmptyState>
@@ -100,11 +258,9 @@
                   </span>
                 </div>
               </div>
-              {#if pullRequest.draft}
-                <Badge size="sm" variant="neutral">Draft</Badge>
-              {:else}
-                <Badge size="sm" variant="success">Open</Badge>
-              {/if}
+              <Badge size="sm" variant={pullRequestStateVariant(pullRequest)}>
+                {pullRequestStateLabel(pullRequest)}
+              </Badge>
             </div>
             <div class="status-row" aria-label="Pull request status">
               <Badge size="sm" variant={ciVariant(pullRequest.status.ciStatus)}>
@@ -150,9 +306,48 @@
       {/each}
     </ul>
   {/if}
+
+  {#if data.hasNextPage || data.filters.page > 1}
+    <Pagination
+      bind:currentPage
+      hasNextPage={data.hasNextPage}
+      hasPreviousPage={data.filters.page > 1}
+    />
+  {/if}
 </Page>
 
 <style>
+  .pull-request-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .branch-filter {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .branch-filter-label {
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    color: var(--text);
+  }
+
+  .branch-input {
+    height: var(--cinder-control-height-sm, 2rem);
+    padding-inline: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-size: var(--text-sm);
+    min-width: 8rem;
+  }
+
   .pull-request-list {
     display: flex;
     flex-direction: column;

@@ -63,6 +63,12 @@ export interface PullRequestDetail extends PullRequestListItem {
 export interface PullRequestListResult {
   pullRequests: PullRequestListItem[];
   filters: PullRequestFilterOptions;
+  /**
+   * Whether a next page is available. Derived from GitHub's `Link` response
+   * header (`rel="next"`) when present, falling back to a full-page
+   * row-count heuristic only when the header is missing.
+   */
+  hasNextPage: boolean;
 }
 
 export type PullRequestCiStatus = 'passing' | 'failing' | 'pending' | 'unknown';

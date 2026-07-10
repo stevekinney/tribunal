@@ -15,7 +15,7 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByText('Unknown').first()).toBeVisible();
 
   await page.goto(`/repositories/${session.repository.id}/pull-requests`);
-  await expect(page.getByRole('heading', { name: 'Open pull requests' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Pull requests', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Repository settings' })).toBeVisible();
   await expect(page.getByLabel('Pull request status')).toContainText(
     /CI (passing|failing|pending|unknown)/,
