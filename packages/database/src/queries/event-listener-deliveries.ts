@@ -9,7 +9,7 @@
  * once the first commits, so it gets zero rows back rather than a race.
  */
 
-import { and, eq, inArray, lt, or, sql } from '../operators';
+import { and, eq, inArray, lt, notInArray, or, sql } from '../operators';
 import type { Database } from '../connection';
 import {
   eventListenerDelivery,
@@ -99,12 +99,20 @@ export interface ClaimableEventListenerDelivery {
  * it does not itself claim anything, so multiple concurrent drains may see
  * the same candidate rows; the actual claim (`claimEventListenerDelivery`)
  * is what resolves the race.
+ *
+ * `excludeIds` lets a multi-round drain within a single call exclude rows it
+ * already attempted (and which may have become claimable again, e.g. moved
+ * to `retryable` by a failed dispatch) at the database level -- filtering
+ * those out of an already-fetched, limit-bounded page can silently starve a
+ * later round (the page can be entirely attempted ids, or short enough that
+ * the caller's "short page means drained" check trips early) while
+ * genuinely-unattempted rows sit beyond that page.
  */
 export async function listClaimableEventListenerDeliveries(
   database: Database,
   repositoryId: number,
   limit: number,
-  options: { now?: Date; staleTimeoutMs?: number } = {},
+  options: { now?: Date; staleTimeoutMs?: number; excludeIds?: number[] } = {},
 ): Promise<ClaimableEventListenerDelivery[]> {
   const now = options.now ?? new Date();
   const staleTimeoutMs = options.staleTimeoutMs ?? STALE_RUNNING_DELIVERY_TIMEOUT_MS;
@@ -127,6 +135,9 @@ export async function listClaimableEventListenerDeliveries(
       and(
         eq(repositoryEventListener.repositoryId, repositoryId),
         claimableStatusCondition(now, staleTimeoutMs),
+        options.excludeIds && options.excludeIds.length > 0
+          ? notInArray(eventListenerDelivery.id, options.excludeIds)
+          : undefined,
       ),
     )
     .limit(limit);
@@ -165,15 +176,34 @@ export async function claimEventListenerDelivery(
   return row ?? null;
 }
 
+/**
+ * Mark a claimed delivery `succeeded`. When `expectedAttemptCount` is given,
+ * the update only applies if the row is still `running` at that exact
+ * attempt count -- the value `claimEventListenerDelivery` incremented to and
+ * returned for this specific claim. Without that guard, a claimant whose
+ * claim went stale (past {@link STALE_RUNNING_DELIVERY_TIMEOUT_MS}) and was
+ * reclaimed by a second caller could still finish its own (abandoned) work
+ * afterward and overwrite the second claimant's result purely by matching
+ * `deliveryId`, even though the row had already moved past that claim.
+ */
 export async function markEventListenerDeliverySucceeded(
   database: Database,
   deliveryId: number,
   runId: string,
+  expectedAttemptCount?: number,
 ): Promise<void> {
   await database
     .update(eventListenerDelivery)
     .set({ status: 'succeeded', runId, finishedAt: new Date(), lastError: null })
-    .where(eq(eventListenerDelivery.id, deliveryId));
+    .where(
+      and(
+        eq(eventListenerDelivery.id, deliveryId),
+        eq(eventListenerDelivery.status, 'running'),
+        expectedAttemptCount === undefined
+          ? undefined
+          : eq(eventListenerDelivery.attemptCount, expectedAttemptCount),
+      ),
+    );
 }
 
 /**
@@ -181,12 +211,18 @@ export async function markEventListenerDeliverySucceeded(
  * attempt cap so a later drain can pick it back up, or `abandoned` once the
  * cap is reached so operators see a terminal, visible failure instead of an
  * endlessly retried row.
+ *
+ * When `options.expectedAttemptCount` is given, the terminal write only
+ * applies if the row is still `running` at that exact attempt count -- see
+ * {@link markEventListenerDeliverySucceeded} for why this guard matters (a
+ * stale claimant finishing after its claim was reclaimed must not clobber
+ * the reclaiming caller's outcome).
  */
 export async function markEventListenerDeliveryFailed(
   database: Database,
   deliveryId: number,
   errorMessage: string,
-  options?: { maxAttempts?: number },
+  options?: { maxAttempts?: number; expectedAttemptCount?: number },
 ): Promise<EventListenerDelivery | null> {
   const maxAttempts = options?.maxAttempts ?? MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS;
 
@@ -203,7 +239,15 @@ export async function markEventListenerDeliveryFailed(
   const [row] = await database
     .update(eventListenerDelivery)
     .set({ status: nextStatus, lastError: errorMessage, finishedAt: new Date() })
-    .where(eq(eventListenerDelivery.id, deliveryId))
+    .where(
+      and(
+        eq(eventListenerDelivery.id, deliveryId),
+        eq(eventListenerDelivery.status, 'running'),
+        options?.expectedAttemptCount === undefined
+          ? undefined
+          : eq(eventListenerDelivery.attemptCount, options.expectedAttemptCount),
+      ),
+    )
     .returning();
 
   return row ?? null;

@@ -9,6 +9,8 @@ import {
   isIssueCommentCreatedEvent,
   isCheckRunCompletedEvent,
   isCheckSuiteCompletedEvent,
+  isPullRequestReviewThreadResolvedEvent,
+  isPullRequestReviewThreadUnresolvedEvent,
 } from './validate-github-webhook.js';
 import type { StoreWebhookEventData } from './webhook-events.js';
 import type { WebhookPayload } from './types.js';
@@ -50,6 +52,24 @@ export function extractEventFields(
       const pullRequest = data.pull_request as { number: number } | undefined;
       if (pullRequest) {
         fields.prNumber = pullRequest.number;
+      }
+      break;
+    }
+    case 'pull_request_review_thread': {
+      // No shared library guard covers both resolved/unresolved actions at
+      // once; narrow with each and fall back to structural extraction so a
+      // schema drift here degrades to "no prNumber filter match" rather than
+      // throwing.
+      if (
+        isPullRequestReviewThreadResolvedEvent(data) ||
+        isPullRequestReviewThreadUnresolvedEvent(data)
+      ) {
+        fields.prNumber = data.pull_request.number;
+      } else {
+        const pullRequest = data.pull_request as { number: number } | undefined;
+        if (pullRequest) {
+          fields.prNumber = pullRequest.number;
+        }
       }
       break;
     }

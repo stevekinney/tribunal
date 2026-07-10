@@ -344,6 +344,41 @@ describe('drainEventListenerDeliveries', () => {
     }
   });
 
+  it('a tight per-round limit does not starve unattempted deliveries behind attempted ones (excludeIds pushed into the query)', async () => {
+    const { repository, listener, testAgent } = await createFixture();
+    const context = createGithubContext(testContext);
+
+    // Disable the agent so every dispatch fails and moves the delivery back
+    // to `retryable` -- itself claimable again. With a per-round limit of 1
+    // and only in-memory filtering of attempted ids (the pre-fix behavior),
+    // round 2 would re-fetch the same (now retryable) row 1, filter it out,
+    // end up with zero candidates, and stop -- even though row 2 is still
+    // genuinely pending and unattempted.
+    await testContext.db.update(agent).set({ enabled: false }).where(eq(agent.id, testAgent.id));
+
+    const secondEvent = await insertWebhookEvent({ repositoryId: repository.id });
+    await insertPendingEventListenerDeliveries(testContext.db, [listener.id], secondEvent.id);
+
+    const result = await drainEventListenerDeliveries(
+      context,
+      repository.id,
+      /* limit */ 1,
+      /* maxRounds */ 5,
+    );
+
+    // Both the original fixture delivery and the second one must be
+    // attempted -- neither is starved behind the other by the tight limit.
+    expect(result.attempted).toBe(2);
+    expect(result.skippedDisabled).toBe(2);
+
+    const deliveries = await testContext.db.select().from(eventListenerDelivery);
+    expect(deliveries).toHaveLength(2);
+    for (const delivery of deliveries) {
+      expect(delivery.attemptCount).toBe(1);
+      expect(delivery.status).toBe('retryable');
+    }
+  });
+
   it('reclaims a delivery stranded in `running` past the stale timeout, from an earlier crashed/interrupted drain', async () => {
     const { repository, pending } = await createFixture();
     const context = createGithubContext(testContext);
