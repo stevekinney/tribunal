@@ -212,6 +212,34 @@ describe('repository issues page load', () => {
     });
   });
 
+  it('returns 404 when GitHub reports the repository is gone, even though local rows still exist', async () => {
+    expect.assertions(1);
+    // https://docs.github.com/en/rest/issues/issues#list-repository-issues —
+    // "List repository issues" can 404 when the local repository/installation
+    // rows are stale relative to GitHub (repository deleted, transferred, or
+    // the app lost access since we last synced). This should degrade like the
+    // repository/access checks earlier in the load function, not surface a
+    // generic 500.
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockGetInstallationForRepository.mockResolvedValue({
+      ok: true,
+      octokit: {},
+      owner: 'acme',
+      repo: 'widgets',
+    });
+    const notFound = Object.assign(new Error('Not Found'), {
+      status: 404,
+      response: { data: { message: 'Not Found' }, headers: {} },
+    });
+    mockListIssues.mockRejectedValue(notFound);
+
+    await expect(runLoad()).rejects.toMatchObject({
+      status: 404,
+      body: { message: expect.stringContaining('not found') },
+    });
+  });
+
   it('forwards installation owner, repo, filters, and repository id to listIssues', async () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });

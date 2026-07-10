@@ -171,6 +171,28 @@ describe('/repositories/[repositoryId]/issues page', () => {
       .not.toBeInTheDocument();
   });
 
+  it('tells the user the page is empty (not that filters have no matches) on an out-of-range filtered page', async () => {
+    // A bookmarked/shared filtered URL such as ?issue_state=closed&issue_page=3
+    // can point past the last page for that filter. The Previous control still
+    // renders and earlier pages may have matches, so this should read as an
+    // out-of-range page, not as "filters have no matches".
+    render(IssuesPage, {
+      data: {
+        ...baseData,
+        issues: [],
+        hasNextPage: false,
+        filters: { ...baseData.filters, state: 'closed', page: 3 },
+      },
+    });
+
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'This page is empty' }))
+      .toBeVisible();
+    await expect
+      .element(browserPage.getByRole('heading', { name: 'No issues match these filters' }))
+      .not.toBeInTheDocument();
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(IssuesPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
@@ -187,5 +209,36 @@ describe('/repositories/[repositoryId]/issues page', () => {
       expect.stringContaining('issue_page=1'),
       expect.anything(),
     );
+  });
+
+  it('cancels a pending label debounce when another facet changes first, instead of firing later and dropping it', async () => {
+    // Typing in the label box starts a 400ms debounce. If the state facet
+    // changes before that timer fires, the debounce must not go on to build a
+    // URL from the (still pre-navigation) page.url and silently overwrite the
+    // facet change that was just navigated to.
+    vi.useFakeTimers();
+    try {
+      render(IssuesPage, { data: baseData });
+
+      const labelsInput = browserPage.getByLabelText('Labels');
+      await labelsInput.fill('bug');
+
+      const stateSelect = browserPage.getByLabelText('State');
+      await stateSelect.selectOptions('closed');
+
+      expect(mocks.goto).toHaveBeenCalledTimes(1);
+      expect(mocks.goto).toHaveBeenCalledWith(
+        expect.stringContaining('issue_state=closed'),
+        expect.anything(),
+      );
+
+      await vi.advanceTimersByTimeAsync(400);
+
+      // The label debounce must have been cancelled by the facet change, so
+      // no second navigation fires and clobbers it.
+      expect(mocks.goto).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

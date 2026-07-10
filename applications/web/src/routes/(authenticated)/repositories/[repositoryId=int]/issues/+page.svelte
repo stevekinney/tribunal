@@ -146,6 +146,12 @@
     next: Record<string, string | undefined>,
     options?: { resetPage?: boolean },
   ): void {
+    // A pending label debounce reads `page.url` when it eventually fires. If
+    // another filter change navigates first, `page.url` is still the
+    // pre-navigation URL until that load completes, so the debounced label
+    // update would silently drop this change. Flush/cancel it first so every
+    // navigation is built from the same up-to-date filter state.
+    clearTimeout(labelsDebounceHandle);
     const url = new URL(page.url);
     for (const [key, value] of Object.entries(next)) {
       if (value) {
@@ -236,17 +242,17 @@
       <EmptyState
         title={data.hasNextPage
           ? 'No issues on this page'
-          : isFiltered
-            ? 'No issues match these filters'
-            : data.filters.page > 1
-              ? 'This page is empty'
+          : data.filters.page > 1
+            ? 'This page is empty'
+            : isFiltered
+              ? 'No issues match these filters'
               : 'No open issues'}
         description={data.hasNextPage
           ? 'This page was filled entirely by pull requests. Continue to the next page to see more issues.'
-          : isFiltered
-            ? 'Try widening the state, assignee, or label filters.'
-            : data.filters.page > 1
-              ? 'Issues may have been closed or the page number is out of range. Go back to the first page to see current issues.'
+          : data.filters.page > 1
+            ? 'Issues may have been closed or the page number is out of range. Go back to the first page to see current issues.'
+            : isFiltered
+              ? 'Try widening the state, assignee, or label filters.'
               : 'When this repository has open issues, they will appear here.'}
       >
         {#snippet icon()}<CircleDot size={48} />{/snippet}

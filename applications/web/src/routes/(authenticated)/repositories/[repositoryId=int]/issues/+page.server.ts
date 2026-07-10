@@ -4,7 +4,7 @@ import {
   getInstallationForRepository,
 } from '@tribunal/github/repositories/service';
 import { listIssues, parseIssueFilters } from '@tribunal/github/issues/service';
-import { isOctokitRequestError, isRateLimitError } from '@tribunal/github/errors';
+import { isOctokitRequestError, isRateLimitError, isNotFoundError } from '@tribunal/github/errors';
 import { githubContext } from '$lib/server/github-context';
 import { userCanAccessRepository } from '$lib/server/repositories';
 import type { PageServerLoad } from './$types';
@@ -62,6 +62,13 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     // https://docs.github.com/en/rest/issues/issues#list-repository-issues
     if (isOctokitRequestError(cause) && cause.status === 410) {
       error(410, 'Issues are disabled for this repository.');
+    }
+    // GitHub returns 404 here when the local repository/installation rows are
+    // stale relative to GitHub (repository deleted, transferred, or the app
+    // lost access since we last synced). Treat it the same as the
+    // repository/access checks above rather than surfacing a generic 500.
+    if (isNotFoundError(cause)) {
+      error(404, 'Repository not found');
     }
     throw cause;
   });
