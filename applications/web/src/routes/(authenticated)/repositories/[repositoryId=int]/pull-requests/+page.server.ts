@@ -18,8 +18,7 @@ import { userCanAccessRepository } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
   listAgents,
-  parseIgnoreGlobs,
-  saveRepositoryWatchSettings,
+  submitRepositorySettingsForm,
 } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
 import type { Actions } from './$types';
@@ -103,14 +102,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     error(404, 'Repository not found');
   }
 
-  const [operatorDetails, agents] = await Promise.all([
+  // Legacy data shape: a tab still running the pre-move bundle (whose
+  // component reads `data.repository.review` and `data.agents`) can trigger
+  // an invalidateAll() after a successful legacy `?/saveSettings` submit (see
+  // the `saveSettings` action below). That reruns this load with the OLD
+  // component still mounted, so keep returning the fields it expects until
+  // stale tabs from before the settings-page move are no longer a concern.
+  const [operatorDetails, agents, pullRequests] = await Promise.all([
     getRepositoryOperatorDetails(user.id, [repositoryId]),
     listAgents(user.id),
+    shouldUseE2EPullRequests()
+      ? listE2EPullRequests(user.id, repository)
+      : listLivePullRequests(repositoryId),
   ]);
-
-  const pullRequests = shouldUseE2EPullRequests()
-    ? await listE2EPullRequests(user.id, repository)
-    : await listLivePullRequests(repositoryId);
 
   return {
     repository: {
@@ -189,6 +193,12 @@ async function mapWithConcurrency<T, U>(
 }
 
 export const actions: Actions = {
+  // Legacy action name: repository settings used to live on this page and
+  // posted here. Kept so a tab still showing the pre-move UI at deploy time
+  // (with the old settings form still rendered) saves successfully instead of
+  // hitting a missing action and landing on +error.svelte. Settings now live
+  // at /repositories/[repositoryId]/settings; remove this once stale tabs
+  // from before that move are no longer a concern.
   saveSettings: async ({ locals, request, params }) => {
     const { user } = locals;
     if (!user) redirect(302, '/login');
@@ -204,13 +214,6 @@ export const actions: Actions = {
     }
 
     const formData = await request.formData();
-    const submittedAgentIds = formData.getAll('agentIds').map(String);
-
-    return saveRepositoryWatchSettings(user.id, {
-      repositoryId,
-      watched: true,
-      ignoreGlobs: parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? '')),
-      agentIds: submittedAgentIds,
-    });
+    return submitRepositorySettingsForm(user.id, repositoryId, formData);
   },
 };
