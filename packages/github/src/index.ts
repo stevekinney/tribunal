@@ -27,3 +27,17 @@ export {
   type CachedReadFetchResult,
   type CachedReadOptions,
 } from './core/github-read-client.js';
+
+// Issues
+export {
+  parseIssueFilters,
+  listIssues,
+  type IssueFilterState,
+  type IssueSort,
+  type IssueFilterOptions,
+  type IssueAuthor,
+  type IssueLabel,
+  type IssueMilestone,
+  type IssueListItem,
+  type IssueListResult,
+} from './issues/service.js';

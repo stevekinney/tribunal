@@ -38,9 +38,9 @@ vi.mock('../core/cache-policy.js', () => ({
 // Import after mocking
 const {
   getRegisteredWebhooks,
-  ALL_GITHUB_WEBHOOK_EVENTS,
+  SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG,
   NON_CONFIGURABLE_GITHUB_WEBHOOK_EVENTS,
-  CONFIGURABLE_GITHUB_WEBHOOK_EVENTS,
+  CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG,
 } = await import('./registered-webhooks.js');
 
 // ============================================================================
@@ -80,39 +80,51 @@ function createMockApp(events: string[] = []) {
 }
 
 // ============================================================================
-// Tests — ALL_GITHUB_WEBHOOK_EVENTS constant
+// Tests — SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG (derived from @octokit/webhooks)
 // ============================================================================
 
-describe('ALL_GITHUB_WEBHOOK_EVENTS', () => {
+describe('SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG', () => {
   it('is frozen (immutable)', () => {
-    expect(Object.isFrozen(ALL_GITHUB_WEBHOOK_EVENTS)).toBe(true);
+    expect(Object.isFrozen(SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG)).toBe(true);
   });
 
   it('is sorted alphabetically', () => {
-    const sorted = [...ALL_GITHUB_WEBHOOK_EVENTS].sort();
-    expect([...ALL_GITHUB_WEBHOOK_EVENTS]).toEqual(sorted);
+    const sorted = [...SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG].sort();
+    expect([...SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG]).toEqual(sorted);
   });
 
   it('contains no duplicates', () => {
-    const unique = new Set(ALL_GITHUB_WEBHOOK_EVENTS);
-    expect(unique.size).toBe(ALL_GITHUB_WEBHOOK_EVENTS.length);
+    const unique = new Set(SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG);
+    expect(unique.size).toBe(SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG.length);
   });
 
   it('includes well-known event types', () => {
-    const events = [...ALL_GITHUB_WEBHOOK_EVENTS];
+    const events = [...SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG];
     expect(events).toContain('push');
     expect(events).toContain('pull_request');
     expect(events).toContain('installation');
     expect(events).toContain('issues');
     expect(events).toContain('check_run');
   });
+
+  it('excludes dotted action-qualified entries from @octokit/webhooks emitterEventNames', () => {
+    for (const event of SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG) {
+      expect(event).not.toContain('.');
+    }
+  });
+
+  it('is actually derived from the @octokit/webhooks package, not a hand-maintained list', async () => {
+    const { emitterEventNames } = await import('@octokit/webhooks');
+    const expected = [...new Set(emitterEventNames.filter((name) => !name.includes('.')))].sort();
+    expect([...SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG]).toEqual(expected);
+  });
 });
 
-describe('CONFIGURABLE_GITHUB_WEBHOOK_EVENTS', () => {
+describe('CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG', () => {
   it('omits default non-configurable events', () => {
-    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENTS).not.toContain('github_app_authorization');
-    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENTS).not.toContain('installation');
-    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENTS).not.toContain('installation_repositories');
+    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG).not.toContain('github_app_authorization');
+    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG).not.toContain('installation');
+    expect(CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG).not.toContain('installation_repositories');
   });
 
   it('contains all non-configurable events in dedicated constant', () => {
@@ -155,7 +167,7 @@ describe('getRegisteredWebhooks', () => {
     expect(result.unregistered).not.toContain('push');
     expect(result.unregistered).not.toContain('pull_request');
     expect(result.unregistered).not.toContain('issues');
-    expect(result.unregistered.length).toBe(CONFIGURABLE_GITHUB_WEBHOOK_EVENTS.length - 3);
+    expect(result.unregistered.length).toBe(CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG.length - 3);
   });
 
   it('returns all events as unregistered when App has no subscriptions', async () => {
@@ -167,7 +179,7 @@ describe('getRegisteredWebhooks', () => {
     const result = await getRegisteredWebhooks(context);
 
     expect(result.registered).toEqual([]);
-    expect(result.unregistered).toEqual([...CONFIGURABLE_GITHUB_WEBHOOK_EVENTS]);
+    expect(result.unregistered).toEqual([...CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG]);
   });
 
   it('sorts registered events alphabetically', async () => {
@@ -190,6 +202,18 @@ describe('getRegisteredWebhooks', () => {
     const result = await getRegisteredWebhooks(context);
 
     expect(result.registered).toEqual(['issues', 'push']);
+  });
+
+  it('preserves event types GitHub returns that are unknown to the generated catalog', async () => {
+    const app = createMockApp(['push', 'a_brand_new_github_event']);
+    const context = createMockContext({
+      getGithubApplication: vi.fn().mockReturnValue(app),
+    });
+
+    const result = await getRegisteredWebhooks(context);
+
+    expect(result.registered).toContain('a_brand_new_github_event');
+    expect(result.registered).toEqual(['a_brand_new_github_event', 'push']);
   });
 
   it('passes etag header for conditional requests', async () => {
@@ -281,7 +305,7 @@ describe('getRegisteredWebhooks', () => {
     const result = await getRegisteredWebhooks(context);
 
     expect(result.registered).toEqual([]);
-    expect(result.unregistered).toEqual([...CONFIGURABLE_GITHUB_WEBHOOK_EVENTS]);
+    expect(result.unregistered).toEqual([...CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG]);
   });
 
   it('defers App resolution to the fetch callback (not eagerly)', async () => {

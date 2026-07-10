@@ -13,6 +13,7 @@
     CircleAlert,
   } from 'lucide-svelte';
   import Settings from 'lucide-svelte/icons/settings';
+  import WebhookIcon from 'lucide-svelte/icons/webhook';
 
   let { data } = $props();
 
@@ -52,18 +53,24 @@
   }
 </script>
 
+{#snippet pageActions()}
+  <Link href={`/repositories/${data.repository.id}/issues`}>Issues</Link>
+  <Button href={`/repositories/${data.repository.id}/webhooks`} variant="secondary" size="sm">
+    {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
+    Webhooks
+  </Button>
+  <Button href={`/repositories/${data.repository.id}/settings`} variant="secondary" size="sm">
+    {#snippet leadingIcon()}<Settings size={14} aria-hidden="true" />{/snippet}
+    Repository settings
+  </Button>
+{/snippet}
+
 <Page
   title="Open pull requests"
   subtitle={`${data.pullRequests.length} open ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`}
   {breadcrumbs}
+  actions={pageActions}
 >
-  {#snippet actions()}
-    <Button href={`/repositories/${data.repository.id}/settings`} variant="secondary" size="sm">
-      {#snippet leadingIcon()}<Settings size={14} aria-hidden="true" />{/snippet}
-      Repository settings
-    </Button>
-  {/snippet}
-
   {#if data.pullRequests.length === 0}
     <Card padding="none">
       <EmptyState

@@ -59,7 +59,7 @@
   const onboardingSteps = [
     { id: 'sign-in', label: 'Sign in with GitHub' },
     { id: 'install', label: 'Install the GitHub App' },
-    { id: 'choose', label: 'Choose repositories to watch' },
+    { id: 'choose', label: 'Choose repositories to monitor' },
   ];
 
   // Display label for the connected GitHub account(s).
@@ -113,7 +113,7 @@
         return {
           title: 'Grant repository access',
           description:
-            "The Tribunal GitHub App is installed but can't see any repositories yet. Grant it access to the repositories you want reviewed.",
+            "The Tribunal GitHub App is installed but can't see any repositories yet. Grant it access to the repositories you want to add to Tribunal.",
           ctaLabel: 'Manage repository access',
           ctaHref: '/connect/github',
         };
@@ -202,7 +202,7 @@
 
           <div class="picker-header">
             <div class="picker-heading-row">
-              <h1 class="picker-title">Choose repositories to watch</h1>
+              <h1 class="picker-title">Add repositories to Tribunal</h1>
               {#if accountLabel}
                 <span class="account-pill">
                   <GitBranch size={14} aria-hidden="true" />
@@ -211,8 +211,8 @@
               {/if}
             </div>
             <p class="picker-subtitle">
-              The GitHub App can access {repoCountLabel}. Pick the ones Tribunal should review. You
-              can change this anytime.
+              The GitHub App can access {repoCountLabel}. Pick the ones to add to Tribunal for
+              monitoring and automation. You can change this anytime.
             </p>
             <SearchField
               value={searchQuery}
@@ -275,7 +275,7 @@
             <div class="footer-actions">
               <Button href="/repositories" variant="ghost" size="md">Skip for now</Button>
               <Button type="submit" variant="primary" size="md" disabled={!canSubmit}>
-                Watch {selectedCount}
+                Add {selectedCount}
                 {selectedCount === 1 ? 'repository' : 'repositories'}
               </Button>
             </div>
