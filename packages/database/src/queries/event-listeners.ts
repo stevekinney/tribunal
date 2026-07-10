@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from '../operators';
+import { and, desc, eq, inArray } from '../operators';
 import type { Database } from '../connection';
 import { agent } from '../schema/agent';
 import { eventListenerDelivery } from '../schema/event-listener-delivery';
@@ -286,10 +286,10 @@ export interface EventListenerWithProgress {
  * page's listener rows: name, event/action, agent, enabled state, last
  * match, and last run status.
  *
- * Fetches the latest delivery per listener with one query per listener
- * rather than a window-function join. Repository listener counts are small
- * (operator-configured, not GitHub-scale), so this stays simple and readable
- * rather than reaching for `DISTINCT ON`.
+ * Fetches the latest delivery per listener with a single `DISTINCT ON`
+ * query (ordered per-listener by `matched_at` descending), and constrains
+ * the agent lookup to exactly the agent ids referenced by these listeners --
+ * both batched rather than one round trip per listener/agent.
  */
 export async function listEventListenersWithProgressForRepository(
   database: Database,
@@ -299,20 +299,17 @@ export async function listEventListenersWithProgressForRepository(
   const listeners = await listEventListenersForRepository(database, userId, repositoryId);
   if (listeners.length === 0) return [];
 
+  const listenerIds = listeners.map((listener) => listener.id);
   const agentIds = [...new Set(listeners.map((listener) => listener.agentId))];
-  const agentRows = await database
-    .select({ id: agent.id, slug: agent.slug, enabled: agent.enabled })
-    .from(agent)
-    .where(and(eq(agent.userId, userId)));
-  const agentById = new Map(
-    agentRows.filter((row) => agentIds.includes(row.id)).map((row) => [row.id, row]),
-  );
 
-  const results: EventListenerWithProgress[] = [];
-
-  for (const listener of listeners) {
-    const [deliveryRow] = await database
-      .select({
+  const [agentRows, deliveryRows] = await Promise.all([
+    database
+      .select({ id: agent.id, slug: agent.slug, enabled: agent.enabled })
+      .from(agent)
+      .where(and(eq(agent.userId, userId), inArray(agent.id, agentIds))),
+    database
+      .selectDistinctOn([eventListenerDelivery.listenerId], {
+        listenerId: eventListenerDelivery.listenerId,
         id: eventListenerDelivery.id,
         matchedAt: eventListenerDelivery.matchedAt,
         deliveryStatus: eventListenerDelivery.status,
@@ -322,13 +319,18 @@ export async function listEventListenersWithProgressForRepository(
       })
       .from(eventListenerDelivery)
       .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
-      .where(eq(eventListenerDelivery.listenerId, listener.id))
-      .orderBy(desc(eventListenerDelivery.matchedAt))
-      .limit(1);
+      .where(inArray(eventListenerDelivery.listenerId, listenerIds))
+      .orderBy(eventListenerDelivery.listenerId, desc(eventListenerDelivery.matchedAt)),
+  ]);
 
+  const agentById = new Map(agentRows.map((row) => [row.id, row]));
+  const lastDeliveryByListenerId = new Map(deliveryRows.map((row) => [row.listenerId, row]));
+
+  return listeners.map((listener) => {
     const agentRow = agentById.get(listener.agentId);
+    const deliveryRow = lastDeliveryByListenerId.get(listener.id);
 
-    results.push({
+    return {
       listener,
       agentSlug: agentRow?.slug ?? 'unknown-agent',
       agentEnabled: agentRow?.enabled ?? false,
@@ -346,8 +348,6 @@ export async function listEventListenersWithProgressForRepository(
             ),
           }
         : null,
-    });
-  }
-
-  return results;
+    };
+  });
 }

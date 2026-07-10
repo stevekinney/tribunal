@@ -559,6 +559,37 @@ describe('webhook-events server helper', () => {
       });
     });
 
+    it('orders multiple matched listener names deterministically by name', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        // Insert in reverse-alphabetical order -- the returned order must
+        // not depend on insertion order or unordered join row order.
+        const listenerZ = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Z listener',
+        });
+        const listenerA = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'A listener',
+        });
+        await testDb.db.insert(eventListenerDelivery).values([
+          { listenerId: listenerZ.id, webhookEventId: event.id, status: 'pending' },
+          { listenerId: listenerA.id, webhookEventId: event.id, status: 'pending' },
+        ]);
+
+        const result = await listWebhookEvents([repo.id]);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.matchedListenerNames).toEqual(['A listener', 'Z listener']);
+      });
+    });
+
     it('surfaces a dispatch failure as an error, not as received-only', async () => {
       const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
 

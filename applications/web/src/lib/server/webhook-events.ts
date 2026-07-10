@@ -237,7 +237,11 @@ async function loadListenerProgressByEventId(
       eq(eventListenerDelivery.listenerId, repositoryEventListener.id),
     )
     .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
-    .where(inArray(eventListenerDelivery.webhookEventId, eventIds));
+    .where(inArray(eventListenerDelivery.webhookEventId, eventIds))
+    // Deterministic order -- without it, `matchedListenerNames` (and the
+    // expanded-row list) can jitter between requests since Postgres makes no
+    // ordering guarantee for an unordered join.
+    .orderBy(repositoryEventListener.name);
 
   for (const row of rows) {
     const match: WebhookEventListenerMatch = {
