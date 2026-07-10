@@ -142,6 +142,15 @@ jobs:
             "$REVIEWER_IMAGE_CONTEXT"
           docker run --rm "tribunal-reviewer:${DEPLOY_SHA}"
 
+          reviewer_context_size_bytes="$(du -sb "$REVIEWER_IMAGE_CONTEXT" | cut -f1)"
+          reviewer_image_size_bytes="$(docker image inspect --format '{{.Size}}' "tribunal-reviewer:${DEPLOY_SHA}")"
+          reviewer_context_size="$(numfmt --to=iec-i --suffix=B "$reviewer_context_size_bytes")"
+          reviewer_image_size="$(numfmt --to=iec-i --suffix=B "$reviewer_image_size_bytes")"
+          {
+            echo "- Reviewer build context size: \`${reviewer_context_size}\` (\`${reviewer_context_size_bytes}\` bytes)"
+            echo "- Reviewer image size: \`${reviewer_image_size}\` (\`${reviewer_image_size_bytes}\` bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish reviewer image to Tensorlake
         shell: bash
         run: |
