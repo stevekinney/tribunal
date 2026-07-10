@@ -138,7 +138,7 @@ jobs:
           registered_image_name="tribunal-reviewer-${DEPLOY_SHA}"
           tl sbx image create "$REVIEWER_IMAGE_CONTEXT/Dockerfile" \
             --cpus 1 \
-            --memory 1024 \
+            --memory 2048 \
             --registered-name "$registered_image_name" \
             | tee "$RUNNER_TEMP/tensorlake-image-create.log"
           published_image="$(grep -Fo "$registered_image_name" "$RUNNER_TEMP/tensorlake-image-create.log" | tail -n 1 || true)"
