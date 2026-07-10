@@ -317,4 +317,37 @@ describe('GitHub webhook route', () => {
       'pull_request',
     );
   });
+
+  it('retries a transient storeWebhookEvent failure in-process so listener matching is not silently skipped', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    storeWebhookEventMock
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce({ id: 999, eventType: 'pull_request' });
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    const response = await POST(createEvent() as Parameters<typeof POST>[0]);
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(2);
+    expect(matchAndPersistEventListenerDeliveriesMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      { id: 999, eventType: 'pull_request' },
+    );
+  });
+
+  it('gives up on storeWebhookEvent after exhausting retries and logs, without failing the response', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    storeWebhookEventMock.mockRejectedValue(new Error('database unavailable'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    const response = await POST(createEvent() as Parameters<typeof POST>[0]);
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(3);
+    expect(matchAndPersistEventListenerDeliveriesMock).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
 });

@@ -90,12 +90,19 @@ export async function drainEventListenerDeliveries(
   // this module is designed around (see the module docstring) into "up to
   // `maxRounds` attempts in one drain," reaching `abandoned` far sooner
   // than intended.
+  //
+  // Passed to the query itself (not filtered from an already-fetched page)
+  // -- filtering a limit-bounded page after the fact can return a short or
+  // empty page purely because its rows happen to be attempted ids, even
+  // though genuinely-unattempted rows exist beyond that page. That would
+  // trip both the "short page means drained" check below and the top-level
+  // "zero candidates" check, stalling the drain while backlog remains.
   const attemptedDeliveryIds = new Set<number>();
 
   for (let round = 0; round < maxRounds; round += 1) {
-    const candidates = (
-      await listClaimableEventListenerDeliveries(context.db, repositoryId, limit)
-    ).filter((candidate) => !attemptedDeliveryIds.has(candidate.delivery.id));
+    const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit, {
+      excludeIds: [...attemptedDeliveryIds],
+    });
     if (candidates.length === 0) break;
 
     for (const candidate of candidates) {
@@ -110,11 +117,18 @@ export async function drainEventListenerDeliveries(
         // than trusting `candidate`, which was read before this claim and may
         // be stale by the time we get here.
         const runId = await dispatchClaimedDelivery(context, claimed.id, candidate.listenerId);
-        await markEventListenerDeliverySucceeded(context.db, claimed.id, runId);
+        await markEventListenerDeliverySucceeded(
+          context.db,
+          claimed.id,
+          runId,
+          claimed.attemptCount,
+        );
         result.dispatched += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await markEventListenerDeliveryFailed(context.db, claimed.id, message);
+        await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
+          expectedAttemptCount: claimed.attemptCount,
+        });
         if (error instanceof EventListenerDisabledError) {
           result.skippedDisabled += 1;
         } else {

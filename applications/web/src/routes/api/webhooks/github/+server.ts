@@ -195,32 +195,52 @@ export const POST: RequestHandler = async (event) => {
   // (see step 9).
   if (repository && deliveryId && eventType) {
     let storedEvent: Awaited<ReturnType<typeof storeWebhookEvent>> | undefined;
-    try {
-      const { owner, repo } = getRepositoryIdentity(data);
-      const eventFields = extractEventFields(eventType, data);
-      const sender = data.sender as { id: number; login: string } | undefined;
+    // A transient failure here (e.g. a dropped database connection) is the
+    // only thing standing between this event and every listener match that
+    // depends on it -- the delivery is already claimed, so GitHub will not
+    // redeliver, and repository webhooks consumed only by event listeners
+    // (no router/typed handler) have no other path that creates this row.
+    // Retry a bounded number of times in-process before giving up, mirroring
+    // the listener-matching retry below. A durable "unmatched" marker
+    // surviving a process crash mid-retry is a further, schema-level
+    // improvement left as a tracked follow-up -- see the linked review
+    // thread -- this only closes the much more common transient-blip case.
+    const MAX_STORE_ATTEMPTS = 3;
+    let storeError: unknown;
+    for (let attempt = 1; attempt <= MAX_STORE_ATTEMPTS; attempt += 1) {
+      try {
+        const { owner, repo } = getRepositoryIdentity(data);
+        const eventFields = extractEventFields(eventType, data);
+        const sender = data.sender as { id: number; login: string } | undefined;
 
-      storedEvent = await storeWebhookEvent(githubContext, {
-        eventType,
-        action,
-        deliveryId,
-        payload,
-        repositoryId: repository.id,
-        repositoryOwner: owner ?? '',
-        repositoryName: repo ?? '',
-        installationId: installationId ?? null,
-        senderId: sender?.id ?? null,
-        senderLogin: sender?.login ?? null,
-        ...eventFields,
-      });
-    } catch (e) {
+        storedEvent = await storeWebhookEvent(githubContext, {
+          eventType,
+          action,
+          deliveryId,
+          payload,
+          repositoryId: repository.id,
+          repositoryOwner: owner ?? '',
+          repositoryName: repo ?? '',
+          installationId: installationId ?? null,
+          senderId: sender?.id ?? null,
+          senderLogin: sender?.login ?? null,
+          ...eventFields,
+        });
+        storeError = undefined;
+        break;
+      } catch (e) {
+        storeError = e;
+      }
+    }
+    if (storeError) {
       console.error('Failed to store webhook event:', {
         eventType,
         action,
         deliveryId,
         repositoryId: repository.id,
         installationId,
-        error: e,
+        attempts: MAX_STORE_ATTEMPTS,
+        error: storeError,
       });
     }
 
