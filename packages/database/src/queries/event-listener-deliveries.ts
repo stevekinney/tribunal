@@ -218,6 +218,70 @@ export async function markEventListenerDeliverySucceeded(
  * stale claimant finishing after its claim was reclaimed must not clobber
  * the reclaiming caller's outcome).
  */
+/**
+ * Small display vocabulary shared by every surface that shows event listener
+ * progress (the repository events page and both webhook event pages): a
+ * delivery is `matched` until dispatch durably creates a run, after which the
+ * run's own lifecycle status takes over.
+ */
+export type EventListenerDisplayStatus =
+  | 'matched'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * Maps a delivery's dispatch status (`event_listener_delivery.status`) and,
+ * once dispatch has durably created a run, that run's own lifecycle status
+ * (`tribunal_run.status`) onto the small display vocabulary above.
+ *
+ * This is the single source of truth for that mapping -- both the repository
+ * events page (last run status per listener) and the webhook event progress
+ * views (per-delivery match status) call this rather than each re-deriving
+ * their own notion of "failed" or "queued".
+ */
+export function deriveEventListenerDisplayStatus(
+  deliveryStatus: string,
+  runStatus: string | null,
+): EventListenerDisplayStatus {
+  if (deliveryStatus === 'pending' || deliveryStatus === 'running') {
+    // Matched, but dispatch has not yet durably created a run (still
+    // pending, or a claim is in flight).
+    return 'matched';
+  }
+
+  if (
+    deliveryStatus === 'retryable' ||
+    deliveryStatus === 'abandoned' ||
+    deliveryStatus === 'failed'
+  ) {
+    // Dispatch itself failed (transient-and-retryable, or terminal). Either
+    // way there is no run to reflect, so the dispatch outcome is the status.
+    return 'failed';
+  }
+
+  // deliveryStatus === 'succeeded': dispatch durably created a run. Reflect
+  // that run's own lifecycle status rather than the (now uninteresting)
+  // dispatch outcome.
+  switch (runStatus) {
+    case 'running':
+      return 'running';
+    case 'posted':
+    case 'superseded':
+      return 'succeeded';
+    case 'cancelled':
+      return 'cancelled';
+    case 'failed':
+    case 'quota_blocked':
+      return 'failed';
+    case 'queued':
+    default:
+      return 'queued';
+  }
+}
+
 export async function markEventListenerDeliveryFailed(
   database: Database,
   deliveryId: number,

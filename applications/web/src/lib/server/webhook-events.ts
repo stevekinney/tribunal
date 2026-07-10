@@ -12,7 +12,17 @@
  */
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '$lib/server/database';
-import { repository, webhookEvent } from '@tribunal/database/schema';
+import {
+  eventListenerDelivery,
+  repository,
+  repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
+} from '@tribunal/database/schema';
+import {
+  deriveEventListenerDisplayStatus,
+  type EventListenerDisplayStatus,
+} from '@tribunal/database/queries';
 
 /** Filters accepted by {@link listWebhookEvents}. */
 export interface WebhookEventFilters {
@@ -62,6 +72,8 @@ export interface WebhookEventRow {
   payload: unknown | null;
   /** True when `payload` is `null` because the stored text was not valid JSON. */
   payloadParseError: boolean;
+  /** Event listener match/dispatch progress for this event. */
+  listenerProgress: WebhookEventListenerProgress;
 }
 
 export interface WebhookEventListResult {
@@ -69,6 +81,67 @@ export interface WebhookEventListResult {
   page: number;
   perPage: number;
   totalCount: number;
+}
+
+/** One event listener that matched a webhook event, and its dispatch/run progress. */
+export interface WebhookEventListenerMatch {
+  listenerId: string;
+  listenerName: string;
+  /** `event_listener_delivery.status`: pending | running | succeeded | failed | retryable | abandoned. */
+  deliveryStatus: string;
+  /** Small shared display vocabulary -- see {@link deriveEventListenerDisplayStatus}. */
+  status: EventListenerDisplayStatus;
+  runId: string | null;
+  lastError: string | null;
+}
+
+/**
+ * Listener-match/dispatch progress for one webhook event, computed by the
+ * same helper on both the global and repository-scoped webhook pages.
+ *
+ * A delivery with no matching listeners is `receivedOnly: true` and must
+ * never be presented as an error -- it just means nothing was configured to
+ * react to it.
+ */
+export interface WebhookEventListenerProgress {
+  receivedOnly: boolean;
+  matchCount: number;
+  matchedListenerNames: string[];
+  /** Overall status across every match -- see {@link summarizeListenerProgress}. */
+  status: 'received_only' | EventListenerDisplayStatus;
+  hasError: boolean;
+  matches: WebhookEventListenerMatch[];
+}
+
+/**
+ * Precedence used to reduce multiple listener matches on one event down to a
+ * single overall status: surface the most operationally interesting state
+ * first (something failed, then something in flight, then something merely
+ * queued/matched) and only report a clean terminal state once every match
+ * has reached one.
+ */
+const STATUS_PRECEDENCE: readonly EventListenerDisplayStatus[] = [
+  'failed',
+  'running',
+  'queued',
+  'matched',
+  'succeeded',
+  'cancelled',
+];
+
+/** Combines per-listener match statuses into one overall row status. */
+export function summarizeListenerProgress(
+  matches: readonly Pick<WebhookEventListenerMatch, 'status'>[],
+): { status: 'received_only' | EventListenerDisplayStatus; hasError: boolean } {
+  if (matches.length === 0) {
+    return { status: 'received_only', hasError: false };
+  }
+
+  const statuses = new Set(matches.map((match) => match.status));
+  const status = STATUS_PRECEDENCE.find((candidate) => statuses.has(candidate)) ?? 'matched';
+  const hasError = matches.some((match) => match.status === 'failed');
+
+  return { status, hasError };
 }
 
 /**
@@ -84,25 +157,29 @@ function parseWebhookPayload(rawPayload: string): { payload: unknown | null; par
   }
 }
 
-function toRow(row: {
-  id: number;
-  eventType: string;
-  action: string | null;
-  deliveryId: string | null;
-  payload: string;
-  repositoryId: number;
-  repositoryOwner: string;
-  repositoryName: string;
-  installationId: number | null;
-  senderLogin: string | null;
-  prNumber: number | null;
-  issueNumber: number | null;
-  ref: string | null;
-  commitSha: string | null;
-  receivedAt: Date;
-  githubCreatedAt: Date | null;
-}): WebhookEventRow {
+function toRow(
+  row: {
+    id: number;
+    eventType: string;
+    action: string | null;
+    deliveryId: string | null;
+    payload: string;
+    repositoryId: number;
+    repositoryOwner: string;
+    repositoryName: string;
+    installationId: number | null;
+    senderLogin: string | null;
+    prNumber: number | null;
+    issueNumber: number | null;
+    ref: string | null;
+    commitSha: string | null;
+    receivedAt: Date;
+    githubCreatedAt: Date | null;
+  },
+  matches: WebhookEventListenerMatch[],
+): WebhookEventRow {
   const { payload, parseError } = parseWebhookPayload(row.payload);
+  const { status, hasError } = summarizeListenerProgress(matches);
   return {
     id: row.id,
     eventType: row.eventType,
@@ -122,7 +199,79 @@ function toRow(row: {
     rawPayload: row.payload,
     payload,
     payloadParseError: parseError,
+    listenerProgress: {
+      receivedOnly: matches.length === 0,
+      matchCount: matches.length,
+      matchedListenerNames: matches.map((match) => match.listenerName),
+      status,
+      hasError,
+      matches,
+    },
   };
+}
+
+/**
+ * Load event listener match/dispatch progress for a batch of webhook event
+ * ids, keyed by event id. Shared by every caller of {@link listWebhookEvents}
+ * so the global and repository-scoped pages never compute this differently.
+ *
+ * Scoped to `userId` -- `repository_event_listener` rows belong to the user
+ * who created them, and a repository can be added by more than one Tribunal
+ * user. Without this predicate, one user could see another user's listener
+ * names, errors, and run links for a repository they both happen to access.
+ */
+async function loadListenerProgressByEventId(
+  eventIds: number[],
+  userId: number,
+): Promise<Map<number, WebhookEventListenerMatch[]>> {
+  const progressByEventId = new Map<number, WebhookEventListenerMatch[]>();
+  if (eventIds.length === 0) return progressByEventId;
+
+  const rows = await db
+    .select({
+      webhookEventId: eventListenerDelivery.webhookEventId,
+      listenerId: eventListenerDelivery.listenerId,
+      listenerName: repositoryEventListener.name,
+      deliveryStatus: eventListenerDelivery.status,
+      runId: eventListenerDelivery.runId,
+      lastError: eventListenerDelivery.lastError,
+      runStatus: tribunalRun.status,
+    })
+    .from(eventListenerDelivery)
+    .innerJoin(
+      repositoryEventListener,
+      eq(eventListenerDelivery.listenerId, repositoryEventListener.id),
+    )
+    .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
+    .where(
+      and(
+        inArray(eventListenerDelivery.webhookEventId, eventIds),
+        eq(repositoryEventListener.userId, userId),
+      ),
+    )
+    // Deterministic order -- without it, `matchedListenerNames` (and the
+    // expanded-row list) can jitter between requests since Postgres makes no
+    // ordering guarantee for an unordered join.
+    .orderBy(repositoryEventListener.name);
+
+  for (const row of rows) {
+    const match: WebhookEventListenerMatch = {
+      listenerId: row.listenerId,
+      listenerName: row.listenerName,
+      deliveryStatus: row.deliveryStatus,
+      status: deriveEventListenerDisplayStatus(row.deliveryStatus, row.runStatus),
+      runId: row.runId,
+      lastError: row.lastError,
+    };
+    const existing = progressByEventId.get(row.webhookEventId);
+    if (existing) {
+      existing.push(match);
+    } else {
+      progressByEventId.set(row.webhookEventId, [match]);
+    }
+  }
+
+  return progressByEventId;
 }
 
 function clampPage(page: number | undefined): number {
@@ -187,11 +336,19 @@ function buildWhereClause(
  * bypasses the authorized-set check (the caller must still have separately
  * confirmed access to that repository, e.g. via `userCanAccessRepository`).
  *
+ * `userId` scopes the per-event listener progress (names, errors, run
+ * links) to listeners the caller owns -- see
+ * {@link loadListenerProgressByEventId}. A repository can be shared by more
+ * than one Tribunal user, and `webhookEvent` rows themselves are not
+ * per-user, so this predicate is required even though the events list
+ * itself is already bounded by `authorizedRepositoryIds`.
+ *
  * An empty `authorizedRepositoryIds` array always yields an empty result —
  * it never falls back to "no filter."
  */
 export async function listWebhookEvents(
   authorizedRepositoryIds: number[],
+  userId: number,
   filters: WebhookEventFilters = {},
   fixedRepositoryId?: number,
 ): Promise<WebhookEventListResult> {
@@ -246,8 +403,13 @@ export async function listWebhookEvents(
     .limit(perPage)
     .offset((page - 1) * perPage);
 
+  const progressByEventId = await loadListenerProgressByEventId(
+    rows.map((row) => row.id),
+    userId,
+  );
+
   return {
-    events: rows.map(toRow),
+    events: rows.map((row) => toRow(row, progressByEventId.get(row.id) ?? [])),
     page,
     perPage,
     totalCount,
@@ -300,6 +462,32 @@ export async function getWebhookEventFilterOptions(
     eventTypes: [...eventTypes].sort(),
     actions: [...actions].sort(),
   };
+}
+
+/**
+ * Sorted distinct actions observed per event type for one repository's
+ * received webhook events. Powers the repository events page's action
+ * choices: once a user picks an event type, offer only the actions actually
+ * observed for it, never a guessed or hand-maintained complete action set.
+ */
+export async function getObservedEventTypeActionMap(
+  repositoryId: number,
+): Promise<Record<string, string[]>> {
+  const rows = await db
+    .selectDistinct({ eventType: webhookEvent.eventType, action: webhookEvent.action })
+    .from(webhookEvent)
+    .where(eq(webhookEvent.repositoryId, repositoryId));
+
+  const map: Record<string, string[]> = {};
+  for (const row of rows) {
+    if (!row.action) continue;
+    (map[row.eventType] ??= []).push(row.action);
+  }
+  for (const eventType of Object.keys(map)) {
+    map[eventType] = [...new Set(map[eventType])].sort();
+  }
+
+  return map;
 }
 
 /**

@@ -8,9 +8,12 @@ export {
   isEventListenerOwnerInstallationActive,
   listEnabledListenersForRepositoryEventType,
   listEventListenersForRepository,
+  listEventListenersWithProgressForRepository,
   setEventListenerEnabled,
   updateEventListener,
   type CreateEventListenerInput,
+  type EventListenerLastDelivery,
+  type EventListenerWithProgress,
   type UpdateEventListenerInput,
 } from './event-listeners';
 export {
@@ -23,11 +26,13 @@ export {
   MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
   STALE_RUNNING_DELIVERY_TIMEOUT_MS,
   claimEventListenerDelivery,
+  deriveEventListenerDisplayStatus,
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
   markEventListenerDeliverySucceeded,
   type ClaimableEventListenerDelivery,
+  type EventListenerDisplayStatus,
 } from './event-listener-deliveries';
 export {
   getCostPerAgent,

@@ -36,7 +36,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
   const filters = parseWebhookEventFilters(url);
 
   const [eventsResult, filterOptions] = await Promise.all([
-    listWebhookEvents([repositoryId], filters, repositoryId),
+    listWebhookEvents([repositoryId], user.id, filters, repositoryId),
     getWebhookEventFilterOptions([repositoryId], repositoryId),
   ]);
 

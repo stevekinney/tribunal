@@ -4,9 +4,12 @@ import { createFactories, resetIdCounter } from '@tribunal/test/factories';
 import { eq } from '../../operators';
 import {
   agent,
+  eventListenerDelivery,
   githubInstallationRepository,
   repository as repositoryTable,
   repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
 } from '../../schema';
 import {
   createEventListener,
@@ -14,6 +17,7 @@ import {
   getEventListener,
   listEnabledListenersForRepositoryEventType,
   listEventListenersForRepository,
+  listEventListenersWithProgressForRepository,
   setEventListenerEnabled,
   updateEventListener,
 } from '../event-listeners';
@@ -521,5 +525,125 @@ describe('repository/agent delete behavior', () => {
 
     const [agentRow] = await testDatabase.db.select().from(agent).where(eq(agent.id, testAgent.id));
     expect(agentRow?.enabled).toBe(false);
+  });
+});
+
+describe('listEventListenersWithProgressForRepository', () => {
+  async function insertWebhookEvent(repositoryId: number) {
+    const [row] = await testDatabase.db
+      .insert(webhookEvent)
+      .values({
+        eventType: 'issues',
+        action: 'opened',
+        deliveryId: `delivery-${Math.random()}`,
+        payload: '{}',
+        repositoryId,
+      })
+      .returning();
+    return row;
+  }
+
+  it('returns an empty array when the repository has no listeners', async () => {
+    const { user, repository } = await createFixture();
+
+    const rows = await listEventListenersWithProgressForRepository(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  it('returns a listener with no delivery history as lastDelivery: null', async () => {
+    const { user, repository, testAgent } = await createFixture();
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Fresh listener',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+
+    const rows = await listEventListenersWithProgressForRepository(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.listener.id).toBe(listener.id);
+    expect(rows[0]?.agentSlug).toBe(testAgent.slug);
+    expect(rows[0]?.agentEnabled).toBe(true);
+    expect(rows[0]?.lastDelivery).toBeNull();
+  });
+
+  it('surfaces the most recent delivery and its display status', async () => {
+    const { user, repository, testAgent } = await createFixture();
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Has history',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+    const event = await insertWebhookEvent(repository.id);
+
+    const [older] = await testDatabase.db
+      .insert(eventListenerDelivery)
+      .values({ listenerId: listener.id, webhookEventId: event.id, status: 'abandoned' })
+      .returning();
+
+    // Older delivery, inserted first -- must not shadow the newer one below.
+    expect(older.status).toBe('abandoned');
+
+    const event2 = await insertWebhookEvent(repository.id);
+    const [run] = await testDatabase.db
+      .insert(tribunalRun)
+      .values({
+        id: 'run:test:1',
+        userId: user.id,
+        repositoryId: repository.id,
+        runKind: 'webhook_event_handler',
+        status: 'running',
+      })
+      .returning();
+    await testDatabase.db.insert(eventListenerDelivery).values({
+      listenerId: listener.id,
+      webhookEventId: event2.id,
+      status: 'succeeded',
+      runId: run.id,
+      matchedAt: new Date(Date.now() + 1000),
+    });
+
+    const rows = await listEventListenersWithProgressForRepository(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(rows[0]?.lastDelivery?.deliveryStatus).toBe('succeeded');
+    expect(rows[0]?.lastDelivery?.runStatus).toBe('running');
+    expect(rows[0]?.lastDelivery?.displayStatus).toBe('running');
+  });
+
+  it('reflects a disabled agent', async () => {
+    const { user, repository, testAgent } = await createFixture();
+    await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Agent later disabled',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+    await testDatabase.db.update(agent).set({ enabled: false }).where(eq(agent.id, testAgent.id));
+
+    const rows = await listEventListenersWithProgressForRepository(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(rows[0]?.agentEnabled).toBe(false);
   });
 });

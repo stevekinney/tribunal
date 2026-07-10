@@ -5,9 +5,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq } from '../operators';
+import { and, desc, eq, inArray } from '../operators';
 import type { Database } from '../connection';
 import { agent } from '../schema/agent';
+import { eventListenerDelivery } from '../schema/event-listener-delivery';
+import { tribunalRun } from '../schema/tribunal-run';
 import { githubInstallation } from '../schema/github-installation';
 import { githubInstallationRepository } from '../schema/github-installation-repository';
 import {
@@ -16,6 +18,10 @@ import {
   type RepositoryEventListener,
 } from '../schema/repository-event-listener';
 import { serializeEventListenerFilters, type EventListenerFilters } from './event-listener-filters';
+import {
+  deriveEventListenerDisplayStatus,
+  type EventListenerDisplayStatus,
+} from './event-listener-deliveries';
 
 export class EventListenerAgentOwnershipError extends Error {
   constructor(agentId: string) {
@@ -252,6 +258,98 @@ export async function listEnabledListenersForRepositoryEventType(
     );
 
   return rows.map((row) => row.listener);
+}
+
+/** The most recent matched delivery for a listener, shaped for display. */
+export interface EventListenerLastDelivery {
+  id: number;
+  matchedAt: Date;
+  deliveryStatus: string;
+  runId: string | null;
+  runStatus: string | null;
+  lastError: string | null;
+  /** See {@link deriveEventListenerDisplayStatus}. */
+  displayStatus: EventListenerDisplayStatus;
+}
+
+/** A listener plus enough agent and delivery-history context to render a row. */
+export interface EventListenerWithProgress {
+  listener: RepositoryEventListener;
+  agentSlug: string;
+  agentEnabled: boolean;
+  lastDelivery: EventListenerLastDelivery | null;
+}
+
+/**
+ * Listeners for a repository, each paired with its owning agent's slug and
+ * its most recent matched delivery (if any). Powers the repository events
+ * page's listener rows: name, event/action, agent, enabled state, last
+ * match, and last run status.
+ *
+ * Fetches the latest delivery per listener with a single `DISTINCT ON`
+ * query (ordered per-listener by `matched_at` descending), and constrains
+ * the agent lookup to exactly the agent ids referenced by these listeners --
+ * both batched rather than one round trip per listener/agent.
+ */
+export async function listEventListenersWithProgressForRepository(
+  database: Database,
+  userId: number,
+  repositoryId: number,
+): Promise<EventListenerWithProgress[]> {
+  const listeners = await listEventListenersForRepository(database, userId, repositoryId);
+  if (listeners.length === 0) return [];
+
+  const listenerIds = listeners.map((listener) => listener.id);
+  const agentIds = [...new Set(listeners.map((listener) => listener.agentId))];
+
+  const [agentRows, deliveryRows] = await Promise.all([
+    database
+      .select({ id: agent.id, slug: agent.slug, enabled: agent.enabled })
+      .from(agent)
+      .where(and(eq(agent.userId, userId), inArray(agent.id, agentIds))),
+    database
+      .selectDistinctOn([eventListenerDelivery.listenerId], {
+        listenerId: eventListenerDelivery.listenerId,
+        id: eventListenerDelivery.id,
+        matchedAt: eventListenerDelivery.matchedAt,
+        deliveryStatus: eventListenerDelivery.status,
+        runId: eventListenerDelivery.runId,
+        runStatus: tribunalRun.status,
+        lastError: eventListenerDelivery.lastError,
+      })
+      .from(eventListenerDelivery)
+      .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
+      .where(inArray(eventListenerDelivery.listenerId, listenerIds))
+      .orderBy(eventListenerDelivery.listenerId, desc(eventListenerDelivery.matchedAt)),
+  ]);
+
+  const agentById = new Map(agentRows.map((row) => [row.id, row]));
+  const lastDeliveryByListenerId = new Map(deliveryRows.map((row) => [row.listenerId, row]));
+
+  return listeners.map((listener) => {
+    const agentRow = agentById.get(listener.agentId);
+    const deliveryRow = lastDeliveryByListenerId.get(listener.id);
+
+    return {
+      listener,
+      agentSlug: agentRow?.slug ?? 'unknown-agent',
+      agentEnabled: agentRow?.enabled ?? false,
+      lastDelivery: deliveryRow
+        ? {
+            id: deliveryRow.id,
+            matchedAt: deliveryRow.matchedAt,
+            deliveryStatus: deliveryRow.deliveryStatus,
+            runId: deliveryRow.runId,
+            runStatus: deliveryRow.runStatus,
+            lastError: deliveryRow.lastError,
+            displayStatus: deriveEventListenerDisplayStatus(
+              deliveryRow.deliveryStatus,
+              deliveryRow.runStatus,
+            ),
+          }
+        : null,
+    };
+  });
 }
 
 /**

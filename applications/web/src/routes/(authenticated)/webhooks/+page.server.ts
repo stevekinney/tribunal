@@ -66,7 +66,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   const subscribedEventTypes = await getSubscribedEventTypesSafely();
 
   const [eventsResult, filterOptions] = await Promise.all([
-    listWebhookEvents(authorizedRepositoryIds, filters),
+    listWebhookEvents(authorizedRepositoryIds, user.id, filters),
     getWebhookEventFilterOptions(authorizedRepositoryIds, undefined, subscribedEventTypes),
   ]);
 

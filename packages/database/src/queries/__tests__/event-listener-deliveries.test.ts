@@ -7,6 +7,7 @@ import { createEventListener } from '../event-listeners';
 import {
   MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
   claimEventListenerDelivery,
+  deriveEventListenerDisplayStatus,
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
@@ -478,5 +479,32 @@ describe('listClaimableEventListenerDeliveries', () => {
     );
 
     expect(claimable.map((row) => row.delivery.id)).toEqual([ids[2]]);
+  });
+});
+
+describe('deriveEventListenerDisplayStatus', () => {
+  it('maps an unclaimed or claimed-but-undispatched delivery to matched', () => {
+    expect(deriveEventListenerDisplayStatus('pending', null)).toBe('matched');
+    expect(deriveEventListenerDisplayStatus('running', null)).toBe('matched');
+  });
+
+  it('maps a retryable, abandoned, or failed dispatch to failed', () => {
+    expect(deriveEventListenerDisplayStatus('retryable', null)).toBe('failed');
+    expect(deriveEventListenerDisplayStatus('abandoned', null)).toBe('failed');
+    expect(deriveEventListenerDisplayStatus('failed', null)).toBe('failed');
+  });
+
+  it('reflects the spawned run status once dispatch succeeds', () => {
+    expect(deriveEventListenerDisplayStatus('succeeded', 'queued')).toBe('queued');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'running')).toBe('running');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'posted')).toBe('succeeded');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'superseded')).toBe('succeeded');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'cancelled')).toBe('cancelled');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'failed')).toBe('failed');
+    expect(deriveEventListenerDisplayStatus('succeeded', 'quota_blocked')).toBe('failed');
+  });
+
+  it('defaults to queued for a succeeded dispatch with no resolvable run status', () => {
+    expect(deriveEventListenerDisplayStatus('succeeded', null)).toBe('queued');
   });
 });

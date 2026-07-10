@@ -1,11 +1,21 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import { createFactories } from '@tribunal/test/factories';
 import { runWithDatabase } from '$lib/server/database';
-import { repository, webhookEvent } from '@tribunal/database/schema';
 import {
+  agent,
+  eventListenerDelivery,
+  repository,
+  repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
+} from '@tribunal/database/schema';
+import {
+  getObservedEventTypeActionMap,
   getWebhookEventFilterOptions,
   listWebhookEvents,
   parseWebhookEventFilters,
+  summarizeListenerProgress,
 } from './webhook-events';
 
 describe('webhook-events server helper', () => {
@@ -83,7 +93,7 @@ describe('webhook-events server helper', () => {
         await createWebhookEvent({ repositoryId: allowed.id, eventType: 'push' });
         await createWebhookEvent({ repositoryId: forbidden.id, eventType: 'push' });
 
-        const result = await listWebhookEvents([allowed.id]);
+        const result = await listWebhookEvents([allowed.id], 0);
 
         expect(result.totalCount).toBe(1);
         expect(result.events).toHaveLength(1);
@@ -97,7 +107,7 @@ describe('webhook-events server helper', () => {
       await withTestDatabase(async () => {
         await createWebhookEvent({ repositoryId: repo.id, eventType: 'push' });
 
-        const result = await listWebhookEvents([]);
+        const result = await listWebhookEvents([], 0);
 
         expect(result).toEqual({ events: [], page: 1, perPage: 50, totalCount: 0 });
       });
@@ -112,7 +122,7 @@ describe('webhook-events server helper', () => {
         await createWebhookEvent({ repositoryId: repoB.id, eventType: 'push' });
 
         // Authorized for both, but the route fixes the query to repo A.
-        const result = await listWebhookEvents([repoA.id, repoB.id], {}, repoA.id);
+        const result = await listWebhookEvents([repoA.id, repoB.id], 0, {}, repoA.id);
 
         expect(result.totalCount).toBe(1);
         expect(result.events[0]?.repositoryId).toBe(repoA.id);
@@ -129,7 +139,7 @@ describe('webhook-events server helper', () => {
         // Caller is only authorized for repo A, but a fixed repositoryId of B is
         // requested (should never happen if the route checks access first, but
         // the helper must not trust it either).
-        const result = await listWebhookEvents([repoA.id], {}, repoB.id);
+        const result = await listWebhookEvents([repoA.id], 0, {}, repoB.id);
 
         expect(result.totalCount).toBe(0);
         expect(result.events).toHaveLength(0);
@@ -153,7 +163,7 @@ describe('webhook-events server helper', () => {
           receivedAt: new Date('2026-01-02T00:00:00Z'),
         });
 
-        const result = await listWebhookEvents([repo.id]);
+        const result = await listWebhookEvents([repo.id], 0);
 
         expect(result.events.map((e) => e.deliveryId)).toEqual(['newer', 'older']);
       });
@@ -181,28 +191,28 @@ describe('webhook-events server helper', () => {
           senderLogin: 'other-user',
         });
 
-        const byEventType = await listWebhookEvents([repo.id], { eventType: 'pull_request' });
+        const byEventType = await listWebhookEvents([repo.id], 0, { eventType: 'pull_request' });
         expect(byEventType.totalCount).toBe(1);
 
-        const byAction = await listWebhookEvents([repo.id], { action: 'closed' });
+        const byAction = await listWebhookEvents([repo.id], 0, { action: 'closed' });
         expect(byAction.totalCount).toBe(1);
         expect(byAction.events[0]?.deliveryId).toBe('no-match');
 
-        const byPrNumber = await listWebhookEvents([repo.id], { prNumber: 42 });
+        const byPrNumber = await listWebhookEvents([repo.id], 0, { prNumber: 42 });
         expect(byPrNumber.totalCount).toBe(1);
         expect(byPrNumber.events[0]?.deliveryId).toBe('match');
 
-        const byIssueNumber = await listWebhookEvents([repo.id], { issueNumber: 7 });
+        const byIssueNumber = await listWebhookEvents([repo.id], 0, { issueNumber: 7 });
         expect(byIssueNumber.totalCount).toBe(1);
         expect(byIssueNumber.events[0]?.deliveryId).toBe('no-match');
 
-        const bySender = await listWebhookEvents([repo.id], { senderLogin: 'octocat' });
+        const bySender = await listWebhookEvents([repo.id], 0, { senderLogin: 'octocat' });
         expect(bySender.totalCount).toBe(1);
 
-        const byRef = await listWebhookEvents([repo.id], { ref: 'refs/heads/feature' });
+        const byRef = await listWebhookEvents([repo.id], 0, { ref: 'refs/heads/feature' });
         expect(byRef.totalCount).toBe(1);
 
-        const byDeliveryId = await listWebhookEvents([repo.id], { deliveryId: 'match' });
+        const byDeliveryId = await listWebhookEvents([repo.id], 0, { deliveryId: 'match' });
         expect(byDeliveryId.totalCount).toBe(1);
         expect(byDeliveryId.events[0]?.deliveryId).toBe('match');
       });
@@ -221,11 +231,11 @@ describe('webhook-events server helper', () => {
           });
         }
 
-        const firstPage = await listWebhookEvents([repo.id], { page: 1, perPage: 2 });
+        const firstPage = await listWebhookEvents([repo.id], 0, { page: 1, perPage: 2 });
         expect(firstPage.totalCount).toBe(5);
         expect(firstPage.events).toHaveLength(2);
 
-        const secondPage = await listWebhookEvents([repo.id], { page: 2, perPage: 2 });
+        const secondPage = await listWebhookEvents([repo.id], 0, { page: 2, perPage: 2 });
         expect(secondPage.events).toHaveLength(2);
         expect(secondPage.events[0]?.deliveryId).not.toBe(firstPage.events[0]?.deliveryId);
       });
@@ -237,7 +247,7 @@ describe('webhook-events server helper', () => {
       await withTestDatabase(async () => {
         await createWebhookEvent({ repositoryId: repo.id, eventType: 'push' });
 
-        const result = await listWebhookEvents([repo.id], { page: 5, perPage: 50 });
+        const result = await listWebhookEvents([repo.id], 0, { page: 5, perPage: 50 });
 
         expect(result.totalCount).toBe(1);
         expect(result.page).toBe(1);
@@ -255,7 +265,7 @@ describe('webhook-events server helper', () => {
           payload: JSON.stringify({ ref: 'refs/heads/main' }),
         });
 
-        const result = await listWebhookEvents([repo.id]);
+        const result = await listWebhookEvents([repo.id], 0);
 
         expect(result.events[0]?.payload).toEqual({ ref: 'refs/heads/main' });
         expect(result.events[0]?.payloadParseError).toBe(false);
@@ -272,7 +282,7 @@ describe('webhook-events server helper', () => {
           payload: 'not valid json {{{',
         });
 
-        const result = await listWebhookEvents([repo.id]);
+        const result = await listWebhookEvents([repo.id], 0);
 
         expect(result.events[0]?.payload).toBeNull();
         expect(result.events[0]?.payloadParseError).toBe(true);
@@ -286,7 +296,7 @@ describe('webhook-events server helper', () => {
       await withTestDatabase(async () => {
         await createWebhookEvent({ repositoryId: repo.id, eventType: 'push' });
 
-        const result = await listWebhookEvents([repo.id]);
+        const result = await listWebhookEvents([repo.id], 0);
 
         expect(result.events[0]).toMatchObject({
           repositoryOwner: 'acme',
@@ -352,6 +362,322 @@ describe('webhook-events server helper', () => {
         // options are derived from stored rows, not filtered against a catalog.
         expect(options.eventTypes).toEqual(['a_totally_novel_event']);
       });
+    });
+  });
+
+  describe('getObservedEventTypeActionMap', () => {
+    it('groups distinct observed actions by event type, scoped to one repository', async () => {
+      const repoA = await createRepository({ id: 1, owner: 'acme', name: 'a' });
+      const repoB = await createRepository({ id: 2, owner: 'acme', name: 'b' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'opened' });
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'closed' });
+        await createWebhookEvent({ repositoryId: repoA.id, eventType: 'issues', action: 'opened' });
+        await createWebhookEvent({
+          repositoryId: repoA.id,
+          eventType: 'pull_request',
+          action: 'opened',
+        });
+        await createWebhookEvent({
+          repositoryId: repoB.id,
+          eventType: 'issues',
+          action: 'labeled',
+        });
+
+        const map = await getObservedEventTypeActionMap(repoA.id);
+
+        expect(map).toEqual({
+          issues: ['closed', 'opened'],
+          pull_request: ['opened'],
+        });
+      });
+    });
+
+    it('omits events with no action', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repo.id, eventType: 'push', action: null });
+
+        const map = await getObservedEventTypeActionMap(repo.id);
+
+        expect(map).toEqual({});
+      });
+    });
+  });
+
+  describe('listener progress', () => {
+    async function createUser() {
+      const factories = createFactories(testDb.db);
+      return factories.user.create();
+    }
+
+    async function insertAgentRow(userId: number) {
+      const unique = Math.random().toString(36).slice(2);
+      const [row] = await testDb.db
+        .insert(agent)
+        .values({
+          id: `agent_${unique}`,
+          userId,
+          slug: `agent-${unique}`,
+          description: 'Test agent',
+          body: 'Do the thing.',
+        })
+        .returning();
+      return row;
+    }
+
+    async function insertListener(input: { userId: number; repositoryId: number; name: string }) {
+      const agentRow = await insertAgentRow(input.userId);
+      const [row] = await testDb.db
+        .insert(repositoryEventListener)
+        .values({
+          id: `listener_${Math.random()}`,
+          userId: input.userId,
+          repositoryId: input.repositoryId,
+          name: input.name,
+          eventType: 'issues',
+          agentId: agentRow.id,
+        })
+        .returning();
+      return row;
+    }
+
+    it('shows no matches as received-only, never as an error', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repo.id, eventType: 'push' });
+
+        const result = await listWebhookEvents([repo.id], 0);
+
+        expect(result.events[0]?.listenerProgress).toEqual({
+          receivedOnly: true,
+          matchCount: 0,
+          matchedListenerNames: [],
+          status: 'received_only',
+          hasError: false,
+          matches: [],
+        });
+      });
+    });
+
+    it('shows one matched listener whose run is still queued', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listener = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Triage issues',
+        });
+        const [run] = await testDb.db
+          .insert(tribunalRun)
+          .values({
+            id: 'run:test:1',
+            userId: user.id,
+            repositoryId: repo.id,
+            runKind: 'webhook_event_handler',
+            status: 'queued',
+          })
+          .returning();
+        await testDb.db.insert(eventListenerDelivery).values({
+          listenerId: listener.id,
+          webhookEventId: event.id,
+          status: 'succeeded',
+          runId: run.id,
+        });
+
+        const result = await listWebhookEvents([repo.id], user.id);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.receivedOnly).toBe(false);
+        expect(progress?.matchCount).toBe(1);
+        expect(progress?.matchedListenerNames).toEqual(['Triage issues']);
+        expect(progress?.status).toBe('queued');
+        expect(progress?.hasError).toBe(false);
+        expect(progress?.matches[0]?.runId).toBe('run:test:1');
+      });
+    });
+
+    it('surfaces multiple matched listeners and prioritizes running work in the overall status', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listenerA = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Listener A',
+        });
+        const listenerB = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Listener B',
+        });
+        const [runningRun] = await testDb.db
+          .insert(tribunalRun)
+          .values({
+            id: 'run:test:running',
+            userId: user.id,
+            repositoryId: repo.id,
+            runKind: 'webhook_event_handler',
+            status: 'running',
+          })
+          .returning();
+        await testDb.db.insert(eventListenerDelivery).values([
+          {
+            listenerId: listenerA.id,
+            webhookEventId: event.id,
+            status: 'succeeded',
+            runId: runningRun.id,
+          },
+          {
+            listenerId: listenerB.id,
+            webhookEventId: event.id,
+            status: 'succeeded',
+            runId: null,
+          },
+        ]);
+
+        const result = await listWebhookEvents([repo.id], user.id);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.matchCount).toBe(2);
+        expect(progress?.matchedListenerNames).toEqual(
+          expect.arrayContaining(['Listener A', 'Listener B']),
+        );
+        // A run in progress is more operationally interesting than a
+        // dispatch whose run row could not be resolved (defaults to queued).
+        expect(progress?.status).toBe('running');
+      });
+    });
+
+    it('orders multiple matched listener names deterministically by name', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        // Insert in reverse-alphabetical order -- the returned order must
+        // not depend on insertion order or unordered join row order.
+        const listenerZ = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Z listener',
+        });
+        const listenerA = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'A listener',
+        });
+        await testDb.db.insert(eventListenerDelivery).values([
+          { listenerId: listenerZ.id, webhookEventId: event.id, status: 'pending' },
+          { listenerId: listenerA.id, webhookEventId: event.id, status: 'pending' },
+        ]);
+
+        const result = await listWebhookEvents([repo.id], user.id);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.matchedListenerNames).toEqual(['A listener', 'Z listener']);
+      });
+    });
+
+    it('surfaces a dispatch failure as an error, not as received-only', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const user = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listener = await insertListener({
+          userId: user.id,
+          repositoryId: repo.id,
+          name: 'Flaky listener',
+        });
+        await testDb.db.insert(eventListenerDelivery).values({
+          listenerId: listener.id,
+          webhookEventId: event.id,
+          status: 'abandoned',
+          lastError: 'Agent no longer exists',
+        });
+
+        const result = await listWebhookEvents([repo.id], user.id);
+        const progress = result.events[0]?.listenerProgress;
+
+        expect(progress?.status).toBe('failed');
+        expect(progress?.hasError).toBe(true);
+        expect(progress?.matches[0]?.lastError).toBe('Agent no longer exists');
+      });
+    });
+
+    it("never shows another user's listener progress for a repository they both can access", async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      const owner = await createUser();
+      const otherUser = await createUser();
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({ repositoryId: repo.id, eventType: 'issues' });
+        const listener = await insertListener({
+          userId: owner.id,
+          repositoryId: repo.id,
+          name: 'Owner-only listener',
+        });
+        await testDb.db.insert(eventListenerDelivery).values({
+          listenerId: listener.id,
+          webhookEventId: event.id,
+          status: 'abandoned',
+          lastError: 'Agent no longer exists',
+        });
+
+        // Both users are authorized for the same repository (e.g. both added
+        // it to Tribunal), but only `owner` created the listener.
+        const ownerResult = await listWebhookEvents([repo.id], owner.id);
+        expect(ownerResult.events[0]?.listenerProgress).toMatchObject({
+          receivedOnly: false,
+          matchCount: 1,
+          matchedListenerNames: ['Owner-only listener'],
+        });
+
+        const otherResult = await listWebhookEvents([repo.id], otherUser.id);
+        expect(otherResult.events[0]?.listenerProgress).toEqual({
+          receivedOnly: true,
+          matchCount: 0,
+          matchedListenerNames: [],
+          status: 'received_only',
+          hasError: false,
+          matches: [],
+        });
+      });
+    });
+  });
+
+  describe('summarizeListenerProgress', () => {
+    it('returns received_only for no matches', () => {
+      expect(summarizeListenerProgress([])).toEqual({ status: 'received_only', hasError: false });
+    });
+
+    it('flags hasError when any match failed, regardless of others', () => {
+      const result = summarizeListenerProgress([{ status: 'succeeded' }, { status: 'failed' }]);
+      expect(result).toEqual({ status: 'failed', hasError: true });
+    });
+
+    it('prefers running over queued or matched', () => {
+      const result = summarizeListenerProgress([{ status: 'matched' }, { status: 'running' }]);
+      expect(result.status).toBe('running');
+    });
+
+    it('only reports succeeded once nothing is pending, running, or failed', () => {
+      const result = summarizeListenerProgress([{ status: 'succeeded' }, { status: 'cancelled' }]);
+      expect(result.status).toBe('succeeded');
     });
   });
 

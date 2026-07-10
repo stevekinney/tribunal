@@ -32,6 +32,14 @@ function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow 
     rawPayload: '{"ok":true}',
     payload: { ok: true },
     payloadParseError: false,
+    listenerProgress: {
+      receivedOnly: true,
+      matchCount: 0,
+      matchedListenerNames: [],
+      status: 'received_only',
+      hasError: false,
+      matches: [],
+    },
     ...overrides,
   };
 }
@@ -111,6 +119,31 @@ describe('/webhooks page', () => {
         page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
       )
       .toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('No repositories added');
+  });
+
+  it('suppresses the events table and filters entirely during a load error, instead of a synthetic empty-events result', async () => {
+    // The server returns `loadError` alongside a synthetic empty `events`
+    // array when it could not determine repository/event state (GitHub
+    // outage). Rendering the filters form and the events table's own
+    // "No webhook events received" empty state would misleadingly imply we
+    // queried and found nothing, rather than never having queried at all.
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: true,
+        events: [],
+        totalCount: 0,
+        loadError: 'Could not reach GitHub to list your installations. Please try again.',
+      }),
+    });
+
+    await expect
+      .element(
+        page.getByText('Could not reach GitHub to list your installations.', { exact: false }),
+      )
+      .toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('No webhook events received');
+    expect(document.body.textContent).not.toContain('Apply filters');
   });
 
   it('shows a filtered-empty state when repositories exist but no events match', async () => {
@@ -153,6 +186,91 @@ describe('/webhooks page', () => {
     expect(detailText).toContain('99');
     expect(detailText).toContain('Related object');
     expect(detailText).toContain('GitHub timestamp');
+  });
+
+  it('shows a matched listener and its status badge, without a link to its run', async () => {
+    // `/runs/[runId]` only supports pull-request-review runs today, and a
+    // listener match's run is always a `webhook_event_handler` run --
+    // linking there would always 404. No link until the run inspector
+    // supports webhook runs.
+    render(WebhooksPage, {
+      data: createData({
+        events: [
+          createEvent({
+            listenerProgress: {
+              receivedOnly: false,
+              matchCount: 1,
+              matchedListenerNames: ['Triage issues'],
+              status: 'running',
+              hasError: false,
+              matches: [
+                {
+                  listenerId: 'listener_1',
+                  listenerName: 'Triage issues',
+                  deliveryStatus: 'succeeded',
+                  status: 'running',
+                  runId: 'run:webhook:1',
+                  lastError: null,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    });
+
+    await expect.element(page.getByText('Running')).toBeInTheDocument();
+    await expect.element(page.getByText('Triage issues')).toBeInTheDocument();
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+    expect(document.body.textContent).not.toContain('View run');
+  });
+
+  it('shows a dispatch error as a visible failure, and a delivery with no matches as received-only', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [
+          createEvent({
+            id: 2,
+            listenerProgress: {
+              receivedOnly: false,
+              matchCount: 1,
+              matchedListenerNames: ['Flaky listener'],
+              status: 'failed',
+              hasError: true,
+              matches: [
+                {
+                  listenerId: 'listener_2',
+                  listenerName: 'Flaky listener',
+                  deliveryStatus: 'abandoned',
+                  status: 'failed',
+                  runId: null,
+                  lastError: 'Agent no longer exists',
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    });
+
+    await expect.element(page.getByText('Failed')).toBeInTheDocument();
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+    await expect.element(page.getByText('Agent no longer exists')).toBeInTheDocument();
+  });
+
+  it('shows a delivery with no matches as received-only, not as an error', async () => {
+    render(WebhooksPage, { data: createData() });
+
+    await expect
+      .element(page.getByRole('cell', { name: 'Received' }).getByText('Received'))
+      .toBeInTheDocument();
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+    await expect
+      .element(page.getByText('No event listeners matched this delivery.'))
+      .toBeInTheDocument();
   });
 
   it('navigates to the next page, preserving other filters, when pagination is clicked', async () => {
