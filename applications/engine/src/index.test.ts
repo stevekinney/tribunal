@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEngineServerOptions,
   createReviewIntentKickScheduler,
+  createStartingEngineServerOptions,
   createStorageConfigurationFromEnvironment,
   parsePort,
   startSandboxReaper,
@@ -446,6 +447,47 @@ describe('createEngineServerOptions', () => {
       ok: false,
       error: 'agent_run_not_active',
     });
+  });
+});
+
+describe('createStartingEngineServerOptions', () => {
+  it('binds immediately on the configured Fly hostname while the runtime starts', async () => {
+    const server = createStartingEngineServerOptions(3001, 'control-token', '0.0.0.0');
+
+    expect(server.hostname).toBe('0.0.0.0');
+    const response = server.fetch(new Request('http://engine.test/health'));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      dependencies: [
+        { name: 'weft_database', ok: false, detail: 'engine runtime is starting' },
+        { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
+      ],
+    });
+  });
+
+  it('accepts an authenticated kick while the durable runtime starts', async () => {
+    const server = createStartingEngineServerOptions(3001, 'control-token');
+    const response = server.fetch(
+      new Request('http://engine.test/review-intents/kick', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ ok: true, started: false });
+  });
+
+  it('rejects unauthenticated kicks while the durable runtime starts', async () => {
+    const server = createStartingEngineServerOptions(3001, 'control-token');
+    const response = server.fetch(
+      new Request('http://engine.test/review-intents/kick', { method: 'POST' }),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'unauthorized' });
   });
 });
 
