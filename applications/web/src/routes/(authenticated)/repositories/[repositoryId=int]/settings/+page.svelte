@@ -22,8 +22,23 @@
     { label: 'Settings' },
   ]);
 
+  /**
+   * First-time setup (not watched, no saved settings) defaults the agent
+   * assignment to every enabled agent, mirroring the Add/toggle default on the
+   * repositories dashboard (`agentIdsForWatch`). Otherwise it reflects the
+   * repository's saved agent assignment. Without this, saving settings on a
+   * never-configured repository would submit an empty `agentIds` list and
+   * silently add the repository with no reviewers.
+   */
   let selectedAgentIds = $state.raw(
-    untrack(() => new Set(data.repository.review.agents.map((agent) => agent.id))),
+    untrack(
+      () =>
+        new Set(
+          !data.repository.review.watched && !data.repository.review.hasSavedSettings
+            ? data.agents.filter((agent) => agent.enabled).map((agent) => agent.id)
+            : data.repository.review.agents.map((agent) => agent.id),
+        ),
+    ),
   );
   let saving = $state(false);
 </script>
