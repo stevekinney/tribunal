@@ -178,8 +178,8 @@ describe('GitHub webhook route', () => {
     );
   });
 
-  it('claims ignored check suite events before resource cache invalidation', async () => {
-    expect.assertions(8);
+  it('matches/persists event listeners for an ignored check suite event, then drains, before resource cache invalidation gates the review-engine path', async () => {
+    expect.assertions(10);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     const checkSuitePayload = {
       action: 'requested',
@@ -227,7 +227,14 @@ describe('GitHub webhook route', () => {
     expect(claimWebhookDeliveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       invalidateGitHubResourceCacheForEventMock.mock.invocationCallOrder[0],
     );
-    expect(storeWebhookEventMock).not.toHaveBeenCalled();
+    // A configured listener for check_suite.requested (or any non-completed
+    // action) must still be matched/persisted even though this action is
+    // pre-database-ignored for the review-engine path below.
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(1);
+    expect(matchAndPersistEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
+    // ...and any matched delivery must still be drained before the ignored
+    // response is returned, not stranded until an unrelated webhook arrives.
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
     expect(handlePullRequestEventMock).not.toHaveBeenCalled();
     expect(dispatchPullRequestStateMock).not.toHaveBeenCalled();
   });
@@ -316,6 +323,24 @@ describe('GitHub webhook route', () => {
       'delivery-1',
       'pull_request',
     );
+  });
+
+  it('drains matched event listener deliveries before the review-engine 500 exit, not only on the success path', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
+      status: 500,
+    });
+
+    // storeWebhookEvent/matchAndPersistEventListenerDeliveries already ran
+    // before dispatch (see the "claims review-engine deliveries" test) --
+    // this asserts the drain that must follow them even though this request
+    // exits via error(500, ...) before reaching the success-path drain call.
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
   });
 
   it('retries a transient storeWebhookEvent failure in-process so listener matching is not silently skipped', async () => {

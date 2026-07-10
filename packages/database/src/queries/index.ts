@@ -5,6 +5,7 @@ export {
   deleteEventListener,
   EventListenerAgentOwnershipError,
   getEventListener,
+  isEventListenerOwnerInstallationActive,
   listEnabledListenersForRepositoryEventType,
   listEventListenersForRepository,
   setEventListenerEnabled,

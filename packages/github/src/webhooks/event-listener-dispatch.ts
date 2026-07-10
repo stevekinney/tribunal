@@ -23,6 +23,7 @@
 import { eq } from 'drizzle-orm';
 import {
   claimEventListenerDelivery,
+  isEventListenerOwnerInstallationActive,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
   markEventListenerDeliverySucceeded,
@@ -180,6 +181,21 @@ async function dispatchClaimedDelivery(
   if (!listener) throw new Error(`Event listener ${listenerId} no longer exists`);
   if (!listener.enabled) {
     throw new EventListenerDisabledError('Event listener was disabled before dispatch');
+  }
+
+  // A delivery can sit `pending`/`retryable` between matching (which already
+  // scoped candidates to an active installation) and this claim -- re-check
+  // here too, since the installation can be revoked or reinstalled by a
+  // different user in that window.
+  const ownerInstallationActive = await isEventListenerOwnerInstallationActive(
+    context.db,
+    listener.userId,
+    listener.repositoryId,
+  );
+  if (!ownerInstallationActive) {
+    throw new EventListenerDisabledError(
+      "Listener owner's installation access is no longer active",
+    );
   }
 
   const [delivery] = await context.db

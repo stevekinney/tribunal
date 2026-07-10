@@ -57,6 +57,15 @@ describe('serializeEventListenerFilters', () => {
     const json = serializeEventListenerFilters({ ref: 'refs/heads/main', prNumber: undefined });
     expect(JSON.parse(json)).toEqual({ ref: 'refs/heads/main' });
   });
+
+  it('rejects an unsupported key even when its value is null/undefined', () => {
+    expect(() => serializeEventListenerFilters({ expression: null })).toThrow(
+      InvalidEventListenerFiltersError,
+    );
+    expect(() => serializeEventListenerFilters({ expression: undefined })).toThrow(
+      InvalidEventListenerFiltersError,
+    );
+  });
 });
 
 describe('parseEventListenerFilters', () => {

@@ -184,15 +184,26 @@ export const POST: RequestHandler = async (event) => {
     }
   }
 
-  if (isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)) {
-    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
-    return json({ ok: true, ignored: true });
-  }
+  // Fire-and-forget, bounded drain of pending event listener deliveries for
+  // this repository. Defined once and called from every exit path that may
+  // have left newly-matched `pending` deliveries behind: the pre-database
+  // ignore return below, a review-engine dispatch failure before the 500
+  // response, and the normal success path. Never awaited -- a slow or
+  // failing drain must never block or fail the webhook HTTP response.
+  const scheduleDrain = () => {
+    if (!repositoryId) return;
+    void drainEventListenerDeliveries(githubContext, repositoryId).catch((e) => {
+      console.error('[webhook] Event listener delivery drain failed:', e);
+    });
+  };
 
   // 4. Store event if it has a repository, then match enabled event listeners
   // against it. Matching only inserts `pending` `event_listener_delivery`
   // rows -- claiming and running them happens later, outside this request
-  // (see step 9).
+  // (see the drain calls below). Runs *before* the pre-database-ignore check
+  // so a configured listener for, e.g., `check_run.created` still gets
+  // matched/persisted even though that action is otherwise not interesting
+  // to the review-engine path below.
   if (repository && deliveryId && eventType) {
     let storedEvent: Awaited<ReturnType<typeof storeWebhookEvent>> | undefined;
     // A transient failure here (e.g. a dropped database connection) is the
@@ -281,6 +292,14 @@ export const POST: RequestHandler = async (event) => {
     }
   }
 
+  if (isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    // Any listener matched above still needs to be drained -- this event is
+    // only "ignored" for the review-engine path, not for event listeners.
+    scheduleDrain();
+    return json({ ok: true, ignored: true });
+  }
+
   // 5. Build context for handlers
   // Note: Some event types (e.g., github_app_authorization) don't have installation or repository
   if (!deliveryId || !eventType) {
@@ -339,6 +358,10 @@ export const POST: RequestHandler = async (event) => {
       console.error('[webhook] Review intent dispatch failed:', e);
       // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
       const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      // Any listener matched above (before this error path) still has
+      // pending deliveries -- drain them now, since this request exits via
+      // `error(500, ...)` below and never reaches the success-path drain.
+      scheduleDrain();
       if (!claimReleased) {
         console.error('[webhook] Failed to release review-engine delivery claim:', {
           deliveryId,
@@ -373,18 +396,12 @@ export const POST: RequestHandler = async (event) => {
   // 9. PR state tracking (fire-and-forget)
   dispatchPRStateTracking(githubContext, eventType, action, data);
 
-  // 10. Drain pending event listener deliveries for this repository
-  // (fire-and-forget, bounded). This is the "no background worker" execution
-  // path: every delivery opportunistically re-drains any pending/retryable
-  // rows left over from an earlier failed or interrupted drain, so work
-  // never needs more than the next webhook for this repository to make
-  // progress. Never awaited -- a slow or failing drain must never block or
-  // fail the webhook HTTP response.
-  if (repositoryId) {
-    void drainEventListenerDeliveries(githubContext, repositoryId).catch((e) => {
-      console.error('[webhook] Event listener delivery drain failed:', e);
-    });
-  }
+  // 10. Drain pending event listener deliveries for this repository. This is
+  // the "no background worker" execution path: every delivery opportunistically
+  // re-drains any pending/retryable rows left over from an earlier failed or
+  // interrupted drain, so work never needs more than the next webhook for
+  // this repository to make progress.
+  scheduleDrain();
 
   return json({ ok: true });
 };

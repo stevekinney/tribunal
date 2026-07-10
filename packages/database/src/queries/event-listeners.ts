@@ -253,3 +253,41 @@ export async function listEnabledListenersForRepositoryEventType(
 
   return rows.map((row) => row.listener);
 }
+
+/**
+ * True if `userId` still has active installation access to `repositoryId`
+ * (an active `github_installation` row joined through an active
+ * `github_installation_repository` link, both owned by `userId`) -- the same
+ * ownership predicate `listEnabledListenersForRepositoryEventType` applies
+ * at match time, re-checkable independently at dispatch time. A delivery can
+ * sit `pending`/`retryable` for a while between matching and dispatch, and
+ * the installation can be revoked or reinstalled by a different user in that
+ * window; dispatch must not queue a run against access that no longer
+ * exists.
+ */
+export async function isEventListenerOwnerInstallationActive(
+  database: Database,
+  userId: number,
+  repositoryId: number,
+): Promise<boolean> {
+  const rows = await database
+    .select({ id: githubInstallation.id })
+    .from(githubInstallationRepository)
+    .innerJoin(
+      githubInstallation,
+      and(
+        eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+        eq(githubInstallation.userId, userId),
+      ),
+    )
+    .where(
+      and(
+        eq(githubInstallationRepository.repositoryId, repositoryId),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .limit(1);
+
+  return rows.length > 0;
+}
