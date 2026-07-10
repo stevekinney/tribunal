@@ -4,11 +4,13 @@ import { agent } from './agent';
 import { agentEvent } from './agent-event';
 import { agentRun } from './agent-run';
 import { costEvent } from './cost-event';
+import { eventListenerDelivery } from './event-listener-delivery';
 import { finding } from './finding';
 import { githubInstallation } from './github-installation';
 import { githubInstallationRepository } from './github-installation-repository';
 import { repository } from './repository';
 import { repositoryAgent } from './repository-agent';
+import { repositoryEventListener } from './repository-event-listener';
 import { repositoryReviewSettings } from './repository-review-settings';
 import { reviewIntent } from './review-intent';
 import { pullRequestReviewRun } from './pull-request-review-run';
@@ -17,6 +19,7 @@ import { user } from './user';
 import { userApiKey } from './user-api-key';
 import { userReviewSettings } from './user-review-settings';
 import { webhookEvent } from './webhook-event';
+import { webhookEventHandlerRun } from './webhook-event-handler-run';
 import { workflowRun } from './workflow-run';
 
 // ============================================================================
@@ -44,6 +47,7 @@ export const repositoryRelations = relations(repository, ({ many }) => ({
   reviewIntents: many(reviewIntent),
   costEvents: many(costEvent),
   assignedAgents: many(repositoryAgent),
+  eventListeners: many(repositoryEventListener),
 }));
 
 export const githubInstallationRelations = relations(githubInstallation, ({ one, many }) => ({
@@ -68,8 +72,61 @@ export const githubInstallationRepositoryRelations = relations(
   }),
 );
 
-export const webhookEventRelations = relations(webhookEvent, ({ one }) => ({
+export const webhookEventRelations = relations(webhookEvent, ({ one, many }) => ({
   repository: one(repository, { fields: [webhookEvent.repositoryId], references: [repository.id] }),
+  listenerDeliveries: many(eventListenerDelivery),
+}));
+
+export const repositoryEventListenerRelations = relations(
+  repositoryEventListener,
+  ({ one, many }) => ({
+    user: one(user, { fields: [repositoryEventListener.userId], references: [user.id] }),
+    repository: one(repository, {
+      fields: [repositoryEventListener.repositoryId],
+      references: [repository.id],
+    }),
+    agent: one(agent, { fields: [repositoryEventListener.agentId], references: [agent.id] }),
+    deliveries: many(eventListenerDelivery),
+  }),
+);
+
+export const eventListenerDeliveryRelations = relations(eventListenerDelivery, ({ one }) => ({
+  listener: one(repositoryEventListener, {
+    fields: [eventListenerDelivery.listenerId],
+    references: [repositoryEventListener.id],
+  }),
+  webhookEvent: one(webhookEvent, {
+    fields: [eventListenerDelivery.webhookEventId],
+    references: [webhookEvent.id],
+  }),
+  run: one(tribunalRun, {
+    fields: [eventListenerDelivery.runId],
+    references: [tribunalRun.id],
+  }),
+}));
+
+export const webhookEventHandlerRunRelations = relations(webhookEventHandlerRun, ({ one }) => ({
+  run: one(tribunalRun, {
+    fields: [webhookEventHandlerRun.runId],
+    references: [tribunalRun.id],
+  }),
+  user: one(user, { fields: [webhookEventHandlerRun.userId], references: [user.id] }),
+  repository: one(repository, {
+    fields: [webhookEventHandlerRun.repositoryId],
+    references: [repository.id],
+  }),
+  webhookEvent: one(webhookEvent, {
+    fields: [webhookEventHandlerRun.webhookEventId],
+    references: [webhookEvent.id],
+  }),
+  eventListener: one(repositoryEventListener, {
+    fields: [webhookEventHandlerRun.eventListenerId],
+    references: [repositoryEventListener.id],
+  }),
+  delivery: one(eventListenerDelivery, {
+    fields: [webhookEventHandlerRun.deliveryId],
+    references: [eventListenerDelivery.id],
+  }),
 }));
 
 export const workflowRunRelations = relations(workflowRun, ({ one }) => ({
@@ -84,6 +141,7 @@ export const agentRelations = relations(agent, ({ one, many }) => ({
   repositoryAssignments: many(repositoryAgent),
   runs: many(agentRun),
   costEvents: many(costEvent),
+  eventListeners: many(repositoryEventListener),
 }));
 
 export const repositoryAgentRelations = relations(repositoryAgent, ({ one }) => ({
@@ -114,8 +172,13 @@ export const tribunalRunRelations = relations(tribunalRun, ({ one, many }) => ({
     fields: [tribunalRun.id],
     references: [pullRequestReviewRun.runId],
   }),
+  webhookEventHandler: one(webhookEventHandlerRun, {
+    fields: [tribunalRun.id],
+    references: [webhookEventHandlerRun.runId],
+  }),
   agentRuns: many(agentRun),
   costEvents: many(costEvent),
+  listenerDeliveries: many(eventListenerDelivery),
 }));
 
 export const pullRequestReviewRunRelations = relations(pullRequestReviewRun, ({ one }) => ({

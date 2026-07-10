@@ -1,5 +1,35 @@
 export { getPRState } from './pr-state';
 export {
+  createEventListener,
+  createEventListenerId,
+  deleteEventListener,
+  EventListenerAgentOwnershipError,
+  getEventListener,
+  isEventListenerOwnerInstallationActive,
+  listEnabledListenersForRepositoryEventType,
+  listEventListenersForRepository,
+  setEventListenerEnabled,
+  updateEventListener,
+  type CreateEventListenerInput,
+  type UpdateEventListenerInput,
+} from './event-listeners';
+export {
+  InvalidEventListenerFiltersError,
+  parseEventListenerFilters,
+  serializeEventListenerFilters,
+  type EventListenerFilters,
+} from './event-listener-filters';
+export {
+  MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
+  STALE_RUNNING_DELIVERY_TIMEOUT_MS,
+  claimEventListenerDelivery,
+  insertPendingEventListenerDeliveries,
+  listClaimableEventListenerDeliveries,
+  markEventListenerDeliveryFailed,
+  markEventListenerDeliverySucceeded,
+  type ClaimableEventListenerDelivery,
+} from './event-listener-deliveries';
+export {
   getCostPerAgent,
   getCostPerAgentPerRepository,
   getCostPerPullRequest,

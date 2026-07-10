@@ -10,6 +10,8 @@ const releaseWebhookDeliveryClaimMock = vi.fn();
 const storeWebhookEventMock = vi.fn();
 const validateRequestMock = vi.fn();
 const verifySignatureMock = vi.fn();
+const matchAndPersistEventListenerDeliveriesMock = vi.fn();
+const drainEventListenerDeliveriesMock = vi.fn();
 
 vi.mock('$env/dynamic/private', () => ({
   env: { GITHUB_APP_WEBHOOK_SECRET: 'webhook-secret' },
@@ -39,6 +41,14 @@ vi.mock('@tribunal/github/webhooks/claim-delivery', () => ({
 
 vi.mock('@tribunal/github/webhooks/webhook-events', () => ({
   storeWebhookEvent: storeWebhookEventMock,
+}));
+
+vi.mock('@tribunal/github/webhooks/event-listener-matching', () => ({
+  matchAndPersistEventListenerDeliveries: matchAndPersistEventListenerDeliveriesMock,
+}));
+
+vi.mock('@tribunal/github/webhooks/event-listener-dispatch', () => ({
+  drainEventListenerDeliveries: drainEventListenerDeliveriesMock,
 }));
 
 vi.mock('github-webhook-schemas/registry', () => ({
@@ -132,9 +142,16 @@ describe('GitHub webhook route', () => {
     verifySignatureMock.mockResolvedValue(undefined);
     getRepositoryIdentityMock.mockReturnValue({ owner: 'lostgradient', repo: 'tribunal' });
     extractEventFieldsMock.mockReturnValue({ pullRequestNumber: 7, commitSha: 'aaa111' });
-    storeWebhookEventMock.mockResolvedValue(undefined);
+    storeWebhookEventMock.mockResolvedValue({ id: 999, eventType: 'pull_request' });
     handlePullRequestEventMock.mockResolvedValue(undefined);
     releaseWebhookDeliveryClaimMock.mockResolvedValue(true);
+    matchAndPersistEventListenerDeliveriesMock.mockResolvedValue([]);
+    drainEventListenerDeliveriesMock.mockResolvedValue({
+      attempted: 0,
+      dispatched: 0,
+      skippedDisabled: 0,
+      failed: 0,
+    });
   });
 
   it('claims review-engine deliveries before dispatch so redelivery cannot enqueue twice', async () => {
@@ -161,8 +178,8 @@ describe('GitHub webhook route', () => {
     );
   });
 
-  it('claims ignored check suite events before resource cache invalidation', async () => {
-    expect.assertions(8);
+  it('matches/persists event listeners for an ignored check suite event, then drains, before resource cache invalidation gates the review-engine path', async () => {
+    expect.assertions(10);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     const checkSuitePayload = {
       action: 'requested',
@@ -210,7 +227,14 @@ describe('GitHub webhook route', () => {
     expect(claimWebhookDeliveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       invalidateGitHubResourceCacheForEventMock.mock.invocationCallOrder[0],
     );
-    expect(storeWebhookEventMock).not.toHaveBeenCalled();
+    // A configured listener for check_suite.requested (or any non-completed
+    // action) must still be matched/persisted even though this action is
+    // pre-database-ignored for the review-engine path below.
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(1);
+    expect(matchAndPersistEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
+    // ...and any matched delivery must still be drained before the ignored
+    // response is returned, not stranded until an unrelated webhook arrives.
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
     expect(handlePullRequestEventMock).not.toHaveBeenCalled();
     expect(dispatchPullRequestStateMock).not.toHaveBeenCalled();
   });
@@ -299,5 +323,56 @@ describe('GitHub webhook route', () => {
       'delivery-1',
       'pull_request',
     );
+  });
+
+  it('drains matched event listener deliveries before the review-engine 500 exit, not only on the success path', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
+      status: 500,
+    });
+
+    // storeWebhookEvent/matchAndPersistEventListenerDeliveries already ran
+    // before dispatch (see the "claims review-engine deliveries" test) --
+    // this asserts the drain that must follow them even though this request
+    // exits via error(500, ...) before reaching the success-path drain call.
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
+  });
+
+  it('retries a transient storeWebhookEvent failure in-process so listener matching is not silently skipped', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    storeWebhookEventMock
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce({ id: 999, eventType: 'pull_request' });
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    const response = await POST(createEvent() as Parameters<typeof POST>[0]);
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(2);
+    expect(matchAndPersistEventListenerDeliveriesMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      { id: 999, eventType: 'pull_request' },
+    );
+  });
+
+  it('gives up on storeWebhookEvent after exhausting retries and logs, without failing the response', async () => {
+    expect.assertions(3);
+    claimWebhookDeliveryMock.mockResolvedValueOnce(true);
+    storeWebhookEventMock.mockRejectedValue(new Error('database unavailable'));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
+
+    const response = await POST(createEvent() as Parameters<typeof POST>[0]);
+
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(storeWebhookEventMock).toHaveBeenCalledTimes(3);
+    expect(matchAndPersistEventListenerDeliveriesMock).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });

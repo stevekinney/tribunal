@@ -316,6 +316,20 @@
       "when": 1783632413965,
       "tag": "0044_merge-composite-guards",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1783633729527,
+      "tag": "0045_nappy_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1783637745929,
+      "tag": "0046_good_moondragon",
+      "breakpoints": true
     }
   ]
 }
