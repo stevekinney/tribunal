@@ -29,9 +29,14 @@ export async function invalidateGitHubResourceCacheForEvent(
   data: WebhookPayload,
 ): Promise<void> {
   try {
-    const repository = data.repository as { owner: { login: string }; name: string } | undefined;
+    const repository = data.repository as
+      | { owner: { login?: string; name?: string }; name: string }
+      | undefined;
 
-    const owner = repository?.owner?.login;
+    // Fall back to owner.name when owner.login is absent, mirroring the
+    // pattern used in pr-state-dispatch.ts and extract.ts so push deliveries
+    // whose owner is only exposed via `name` still invalidate their cache.
+    const owner = repository?.owner?.login ?? repository?.owner?.name;
     const repo = repository?.name;
 
     switch (eventType) {

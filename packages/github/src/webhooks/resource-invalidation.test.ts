@@ -488,6 +488,25 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       expect(context.cache.deleteCache).not.toHaveBeenCalled();
     });
+
+    it('falls back to owner.name when owner.login is absent', async () => {
+      const data = makePayload({
+        ref: 'refs/heads/main',
+        after: 'newsha123',
+        repository: {
+          id: 12345,
+          owner: { name: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+        },
+      });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'push', null, data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
