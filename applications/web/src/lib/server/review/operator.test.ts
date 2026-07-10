@@ -9,10 +9,11 @@ import {
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestReviewRun,
   repository,
   repositoryAgent,
   repositoryReviewSettings,
-  reviewRun,
+  tribunalRun,
   user,
   userReviewSettings,
 } from '@tribunal/database/schema';
@@ -66,6 +67,45 @@ describe('review operator server helpers', () => {
 
   function withTestDatabase<T>(operation: () => Promise<T>): Promise<T> {
     return runWithDatabase(testDb.db as never, operation);
+  }
+
+  async function insertReviewRun(input: {
+    id: string;
+    userId: number;
+    repositoryId: number;
+    prNumber: number;
+    headSha: string;
+    prevHeadSha?: string | null;
+    trigger: string;
+    status?: string;
+    startedAt?: Date;
+  }) {
+    await testDb.db.insert(tribunalRun).values({
+      id: input.id,
+      userId: input.userId,
+      repositoryId: input.repositoryId,
+      runKind: 'pull_request_review',
+      status: input.status ?? 'queued',
+      startedAt: input.startedAt,
+    });
+    await testDb.db.insert(pullRequestReviewRun).values({
+      runId: input.id,
+      userId: input.userId,
+      repositoryId: input.repositoryId,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
+      prevHeadSha: input.prevHeadSha ?? null,
+      trigger: input.trigger,
+    });
+  }
+
+  async function selectReviewRun(id: string) {
+    const [row] = await testDb.db
+      .select({ run: tribunalRun, review: pullRequestReviewRun })
+      .from(tribunalRun)
+      .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+      .where(eq(tribunalRun.id, id));
+    return row === undefined ? undefined : { ...row.run, ...row.review, id: row.run.id };
   }
 
   async function seedRepositoryOwnership() {
@@ -420,7 +460,7 @@ describe('review operator server helpers', () => {
 
   it('scopes run inspection and stop control to the owning user', async () => {
     const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -433,7 +473,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_1',
       userId: owner.id,
-      reviewRunId: 'run_1',
+      runId: 'run_1',
       agentId: reviewAgent.id,
       status: 'running',
     });
@@ -460,8 +500,8 @@ describe('review operator server helpers', () => {
     });
 
     await withTestDatabase(() => stopRun(owner.id, 'run_1'));
-    const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
-    expect(stoppedRun.status).toBe('cancelled');
+    const stoppedRun = await selectReviewRun('run_1');
+    expect(stoppedRun?.status).toBe('cancelled');
     const [stoppedAgentRun] = await testDb.db
       .select()
       .from(agentRun)
@@ -469,9 +509,41 @@ describe('review operator server helpers', () => {
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
   });
 
+  it('reports a clear error for run kinds without an inspector view instead of a false 404', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+    await testDb.db.insert(tribunalRun).values({
+      id: 'run_webhook_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      runKind: 'webhook_event_handler',
+      status: 'queued',
+    });
+
+    // The run exists and is owned by `owner`, so this must not be reported
+    // as a plain "not found" -- that would be indistinguishable from a truly
+    // missing/nonexistent run id.
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({
+      status: 404,
+      body: { message: 'This run kind does not have an inspector view yet.' },
+    });
+
+    // Ownership is still checked before revealing anything about the run,
+    // including its kind.
+    await expect(
+      withTestDatabase(() => getRunInspector(otherUser.id, 'run_webhook_1')),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // A genuinely nonexistent run id still reports plain "not found".
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_does_not_exist')),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });
+  });
+
   it('streams only new agent events and sends an idle keepalive', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -484,7 +556,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_1',
       userId: owner.id,
-      reviewRunId: 'run_1',
+      runId: 'run_1',
       agentId: reviewAgent.id,
       status: 'running',
     });
@@ -526,7 +598,7 @@ describe('review operator server helpers', () => {
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -549,14 +621,14 @@ describe('review operator server helpers', () => {
       {
         id: 'agent_run_security',
         userId: owner.id,
-        reviewRunId: 'run_1',
+        runId: 'run_1',
         agentId: reviewAgent.id,
         status: 'running',
       },
       {
         id: 'agent_run_performance',
         userId: owner.id,
-        reviewRunId: 'run_1',
+        runId: 'run_1',
         agentId: 'agent_performance',
         status: 'running',
       },
@@ -584,7 +656,7 @@ describe('review operator server helpers', () => {
 
   it('returns not found when an owned run does not contain the requested agent run', async () => {
     const { owner } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -602,7 +674,7 @@ describe('review operator server helpers', () => {
 
   it('returns run inspector findings in deterministic order', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_findings',
       userId: owner.id,
       repositoryId: 9001,
@@ -615,7 +687,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_findings',
       userId: owner.id,
-      reviewRunId: 'run_findings',
+      runId: 'run_findings',
       agentId: reviewAgent.id,
       status: 'succeeded',
     });
@@ -660,29 +732,27 @@ describe('review operator server helpers', () => {
 
   it('links a superseded run to the replacement run derived from the previous head', async () => {
     const { owner } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values([
-      {
-        id: 'run_superseded',
-        userId: owner.id,
-        repositoryId: 9001,
-        prNumber: 12,
-        headSha: 'abc123',
-        trigger: 'opened',
-        status: 'superseded',
-        startedAt: new Date('2026-06-17T12:00:00Z'),
-      },
-      {
-        id: 'run_replacement',
-        userId: owner.id,
-        repositoryId: 9001,
-        prNumber: 12,
-        headSha: 'def456',
-        prevHeadSha: 'abc123',
-        trigger: 'synchronize',
-        status: 'running',
-        startedAt: new Date('2026-06-17T12:05:00Z'),
-      },
-    ]);
+    await insertReviewRun({
+      id: 'run_superseded',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'superseded',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await insertReviewRun({
+      id: 'run_replacement',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'def456',
+      prevHeadSha: 'abc123',
+      trigger: 'synchronize',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:05:00Z'),
+    });
 
     const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_superseded'));
 
@@ -694,7 +764,7 @@ describe('review operator server helpers', () => {
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -707,7 +777,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_1',
       userId: owner.id,
-      reviewRunId: 'run_1',
+      runId: 'run_1',
       agentId: reviewAgent.id,
       status: 'running',
     });
@@ -729,7 +799,7 @@ describe('review operator server helpers', () => {
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 503 }));
     const warnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_1',
       userId: owner.id,
       repositoryId: 9001,
@@ -742,7 +812,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_1',
       userId: owner.id,
-      reviewRunId: 'run_1',
+      runId: 'run_1',
       agentId: reviewAgent.id,
       status: 'running',
     });
@@ -751,14 +821,14 @@ describe('review operator server helpers', () => {
       ok: true,
     });
 
-    const [stoppedRun] = await testDb.db.select().from(reviewRun).where(eq(reviewRun.id, 'run_1'));
-    expect(stoppedRun.status).toBe('cancelled');
+    const stoppedRun = await selectReviewRun('run_1');
+    expect(stoppedRun?.status).toBe('cancelled');
     expect(warnMock).toHaveBeenCalledWith('Engine stop signal failed with status 503.');
   });
 
   it('rolls up estimated costs and cache-token splits', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
-    await testDb.db.insert(reviewRun).values({
+    await insertReviewRun({
       id: 'run_cost',
       userId: owner.id,
       repositoryId: 9001,
@@ -770,7 +840,7 @@ describe('review operator server helpers', () => {
     await testDb.db.insert(agentRun).values({
       id: 'agent_run_cost',
       userId: owner.id,
-      reviewRunId: 'run_cost',
+      runId: 'run_cost',
       agentId: reviewAgent.id,
       status: 'succeeded',
     });

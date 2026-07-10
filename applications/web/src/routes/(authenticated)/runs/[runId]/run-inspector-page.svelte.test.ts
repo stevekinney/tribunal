@@ -24,6 +24,8 @@ const data = {
   user,
   run: {
     id: 'run_1',
+    runId: 'run_1',
+    runKind: 'pull_request_review' as const,
     userId: 1,
     repositoryId: 9001,
     prNumber: 12,
@@ -48,7 +50,7 @@ const data = {
       {
         id: 'agent_run_1',
         userId: 1,
-        reviewRunId: 'run_1',
+        runId: 'run_1',
         agentId: 'agent_security',
         role: 'specialist',
         modelUsed: 'sonnet',

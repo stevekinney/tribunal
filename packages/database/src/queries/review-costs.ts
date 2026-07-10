@@ -1,6 +1,6 @@
 import { and, asc, eq, gte, lt, sql } from '../operators';
 import type { Database } from '../connection';
-import { costEvent, reviewRun } from '../schema';
+import { costEvent, pullRequestReviewRun } from '../schema';
 
 export type CostEventSource = 'estimate' | 'reconciled';
 
@@ -81,20 +81,20 @@ export async function getCostPerPullRequest(
 ): Promise<PullRequestCostRollup[]> {
   let query = database
     .select({
-      repositoryId: reviewRun.repositoryId,
-      prNumber: reviewRun.prNumber,
+      repositoryId: pullRequestReviewRun.repositoryId,
+      prNumber: pullRequestReviewRun.prNumber,
       amountUsd: amountSql,
     })
     .from(costEvent)
-    .leftJoin(reviewRun, eq(costEvent.reviewRunId, reviewRun.id))
+    .leftJoin(pullRequestReviewRun, eq(costEvent.reviewRunId, pullRequestReviewRun.runId))
     .$dynamic();
 
   const where = rollupWhere(options);
   if (where) query = query.where(where);
 
   const rows = await query
-    .groupBy(reviewRun.repositoryId, reviewRun.prNumber)
-    .orderBy(asc(reviewRun.repositoryId), asc(reviewRun.prNumber));
+    .groupBy(pullRequestReviewRun.repositoryId, pullRequestReviewRun.prNumber)
+    .orderBy(asc(pullRequestReviewRun.repositoryId), asc(pullRequestReviewRun.prNumber));
   return rows.map((row) => ({
     repositoryId: row.repositoryId,
     prNumber: row.prNumber,

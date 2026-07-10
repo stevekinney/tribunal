@@ -10,12 +10,13 @@ import {
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestReviewRun,
   pullRequestState,
   repository,
   repositoryAgent,
   repositoryReviewSettings,
   reviewIntent,
-  reviewRun,
+  tribunalRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
@@ -1122,7 +1123,7 @@ describe('database review workflow state port', () => {
         },
       }),
     ]);
-    await expect(testDatabase.db.select().from(reviewRun)).resolves.toHaveLength(1);
+    await expect(selectReviewRuns()).resolves.toHaveLength(1);
     await expect(testDatabase.db.select().from(agentRun)).resolves.toHaveLength(1);
     await expect(testDatabase.db.select().from(finding)).resolves.toEqual([
       expect.objectContaining({
@@ -1219,7 +1220,7 @@ describe('database review workflow state port', () => {
     });
 
     await port.upsertReviewRun({ ...run, status: 'failed', commentsPosted: 0 });
-    await expect(testDatabase.db.select().from(reviewRun)).resolves.toEqual([
+    await expect(selectReviewRuns()).resolves.toEqual([
       expect.objectContaining({
         commentsPosted: 0,
         reviewPostClaimedAt: new Date('2026-06-17T12:08:00.000Z'),
@@ -1238,7 +1239,7 @@ describe('database review workflow state port', () => {
     ).resolves.toEqual({ status: 'already_posted', commentsPosted: 2 });
 
     await port.upsertReviewRun({ ...run, status: 'failed', commentsPosted: 0 });
-    await expect(testDatabase.db.select().from(reviewRun)).resolves.toEqual([
+    await expect(selectReviewRuns()).resolves.toEqual([
       expect.objectContaining({
         commentsPosted: 2,
         status: 'posted',
@@ -1268,12 +1269,7 @@ describe('database review workflow state port', () => {
       commentsPosted: 0,
       error: 'stale failure',
     });
-    await expect(
-      testDatabase.db
-        .select()
-        .from(reviewRun)
-        .where(eq(reviewRun.id, 'run:42:7:bbb222:synchronize')),
-    ).resolves.toEqual([
+    await expect(selectReviewRuns('run:42:7:bbb222:synchronize')).resolves.toEqual([
       expect.objectContaining({
         commentsPosted: 0,
         status: 'posted',
@@ -1303,9 +1299,7 @@ describe('database review workflow state port', () => {
       commentsPosted: 1,
       finishedAt: new Date('2026-06-17T12:12:00.000Z'),
     });
-    await expect(
-      testDatabase.db.select().from(reviewRun).where(eq(reviewRun.id, 'run:42:7:ccc333:opened')),
-    ).resolves.toEqual([
+    await expect(selectReviewRuns('run:42:7:ccc333:opened')).resolves.toEqual([
       expect.objectContaining({
         commentsPosted: 1,
         status: 'cancelled',
@@ -1834,6 +1828,22 @@ async function createRepositoryInstallation() {
     .where(eq(githubInstallation.installationId, installation.installationId));
 
   return { repository: activeRepository!, installation: activeInstallation! };
+}
+
+/**
+ * Reads the merged parent (`tribunal_run`) + child (`pull_request_review_run`)
+ * row shape the legacy `review_run` table used to expose, for assertions that
+ * predate the schema split.
+ */
+async function selectReviewRuns(runId?: string) {
+  let query = testDatabase.db
+    .select({ run: tribunalRun, review: pullRequestReviewRun })
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .$dynamic();
+  if (runId !== undefined) query = query.where(eq(tribunalRun.id, runId));
+  const rows = await query;
+  return rows.map(({ run, review }) => ({ ...run, ...review, id: run.id }));
 }
 
 async function createRunnableReviewIntentFixture() {

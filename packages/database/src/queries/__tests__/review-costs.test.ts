@@ -8,10 +8,11 @@ import {
   agentRun,
   costEvent,
   finding,
+  pullRequestReviewRun,
   repositoryAgent,
   repositoryReviewSettings,
   reviewIntent,
-  reviewRun,
+  tribunalRun,
   userReviewSettings,
 } from '../../schema';
 import {
@@ -38,6 +39,36 @@ beforeEach(async () => {
   await testDatabase.reset();
   resetIdCounter();
 });
+
+async function insertReviewRun(input: {
+  id: string;
+  userId: number;
+  repositoryId: number;
+  prNumber: number;
+  headSha: string;
+  trigger: string;
+  status?: string;
+}) {
+  const [run] = await testDatabase.db
+    .insert(tribunalRun)
+    .values({
+      id: input.id,
+      userId: input.userId,
+      repositoryId: input.repositoryId,
+      runKind: 'pull_request_review',
+      status: input.status ?? 'queued',
+    })
+    .returning();
+  await testDatabase.db.insert(pullRequestReviewRun).values({
+    runId: input.id,
+    userId: input.userId,
+    repositoryId: input.repositoryId,
+    prNumber: input.prNumber,
+    headSha: input.headSha,
+    trigger: input.trigger,
+  });
+  return run;
+}
 
 async function createReviewFixture() {
   const factories = createFactories(testDatabase.db);
@@ -69,38 +100,30 @@ async function createReviewFixture() {
     })
     .returning()
     .then(([row]) => row);
-  const firstRun = await testDatabase.db
-    .insert(reviewRun)
-    .values({
-      id: 'run_1',
-      userId: user.id,
-      repositoryId: repository.id,
-      prNumber: 12,
-      headSha: 'abc',
-      trigger: 'opened',
-      status: 'posted',
-    })
-    .returning()
-    .then(([row]) => row);
-  const secondRun = await testDatabase.db
-    .insert(reviewRun)
-    .values({
-      id: 'run_2',
-      userId: user.id,
-      repositoryId: secondaryRepository.id,
-      prNumber: 13,
-      headSha: 'def',
-      trigger: 'synchronize',
-      status: 'posted',
-    })
-    .returning()
-    .then(([row]) => row);
+  const firstRun = await insertReviewRun({
+    id: 'run_1',
+    userId: user.id,
+    repositoryId: repository.id,
+    prNumber: 12,
+    headSha: 'abc',
+    trigger: 'opened',
+    status: 'posted',
+  });
+  const secondRun = await insertReviewRun({
+    id: 'run_2',
+    userId: user.id,
+    repositoryId: secondaryRepository.id,
+    prNumber: 13,
+    headSha: 'def',
+    trigger: 'synchronize',
+    status: 'posted',
+  });
   const firstAgentRun = await testDatabase.db
     .insert(agentRun)
     .values({
       id: 'arun_1',
       userId: user.id,
-      reviewRunId: firstRun.id,
+      runId: firstRun.id,
       agentId: firstAgent.id,
       status: 'succeeded',
     })
@@ -111,7 +134,7 @@ async function createReviewFixture() {
     .values({
       id: 'arun_2',
       userId: user.id,
-      reviewRunId: firstRun.id,
+      runId: firstRun.id,
       agentId: secondAgent.id,
       status: 'succeeded',
     })
@@ -122,7 +145,7 @@ async function createReviewFixture() {
     .values({
       id: 'arun_3',
       userId: user.id,
-      reviewRunId: secondRun.id,
+      runId: secondRun.id,
       agentId: firstAgent.id,
       status: 'succeeded',
     })
@@ -200,7 +223,8 @@ describe('review contract schema', () => {
       'repository_agent',
       'repository_review_settings',
       'user_review_settings',
-      'review_run',
+      'tribunal_run',
+      'pull_request_review_run',
       'agent_run',
       'finding',
       'agent_event',
@@ -221,8 +245,8 @@ describe('review contract schema', () => {
       'cost_event_review_run_idx',
       'cost_event_repository_agent_idx',
       'cost_event_source_idx',
-      'review_run_repository_pr_status_idx',
-      'agent_run_review_run_idx',
+      'pull_request_review_run_repository_pr_idx',
+      'agent_run_run_idx',
       'finding_agent_run_idx',
       'agent_event_agent_run_idx',
       'review_intent_unprocessed_claimed_idx',
@@ -257,9 +281,15 @@ describe('review contract schema', () => {
       }),
     ).rejects.toThrow();
 
+    await testDatabase.db.insert(tribunalRun).values({
+      id: 'run_duplicate',
+      userId: user.id,
+      repositoryId: repository.id,
+      runKind: 'pull_request_review',
+    });
     await expect(
-      testDatabase.db.insert(reviewRun).values({
-        id: 'run_duplicate',
+      testDatabase.db.insert(pullRequestReviewRun).values({
+        runId: 'run_duplicate',
         userId: user.id,
         repositoryId: repository.id,
         prNumber: 12,
@@ -272,7 +302,7 @@ describe('review contract schema', () => {
       testDatabase.db.insert(agentRun).values({
         id: 'arun_duplicate',
         userId: user.id,
-        reviewRunId: 'run_1',
+        runId: 'run_1',
         agentId: firstAgent.id,
       }),
     ).rejects.toThrow();
@@ -456,25 +486,21 @@ describe('review cost rollups', () => {
       })
       .returning()
       .then(([row]) => row);
-    const otherRun = await testDatabase.db
-      .insert(reviewRun)
-      .values({
-        id: 'run_other',
-        userId: otherUser.id,
-        repositoryId: repository.id,
-        prNumber: 12,
-        headSha: 'abc-other',
-        trigger: 'opened',
-        status: 'posted',
-      })
-      .returning()
-      .then(([row]) => row);
+    const otherRun = await insertReviewRun({
+      id: 'run_other',
+      userId: otherUser.id,
+      repositoryId: repository.id,
+      prNumber: 12,
+      headSha: 'abc-other',
+      trigger: 'opened',
+      status: 'posted',
+    });
     const otherAgentRun = await testDatabase.db
       .insert(agentRun)
       .values({
         id: 'arun_other',
         userId: otherUser.id,
-        reviewRunId: otherRun.id,
+        runId: otherRun.id,
         agentId: otherAgent.id,
         status: 'succeeded',
       })

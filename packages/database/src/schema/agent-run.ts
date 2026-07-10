@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { agent } from './agent';
-import { reviewRun } from './review-run';
+import { tribunalRun } from './tribunal-run';
 import { user } from './user';
 
 export const agentRun = pgTable(
@@ -20,17 +20,17 @@ export const agentRun = pgTable(
     userId: integer('user_id')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
-    reviewRunId: text('review_run_id')
+    runId: text('run_id')
       .notNull()
-      .references(() => reviewRun.id, { onDelete: 'cascade' }),
+      .references(() => tribunalRun.id, { onDelete: 'cascade' }),
     // Nullable: triage and verifier runs are system roles with no user-configured
     // `agent` row. Specialist runs always reference a real agent.
     agentId: text('agent_id').references(() => agent.id, { onDelete: 'cascade' }),
     // Discriminates the pipeline stage this run belongs to. Verifiers run one
-    // per candidate finding (not one per review run), so their `id` and this
-    // `(reviewRunId, agentId)` pair rely on `agentId` being NULL — Postgres
+    // per candidate finding (not one per run), so their `id` and this
+    // `(runId, agentId)` pair rely on `agentId` being NULL — Postgres
     // treats NULLs as distinct in the unique index below, so many verifier
-    // rows can share a review run without colliding.
+    // rows can share a run without colliding.
     role: text('role').notNull().default('specialist'),
     modelUsed: text('model_used'),
     effortUsed: text('effort_used'),
@@ -46,8 +46,8 @@ export const agentRun = pgTable(
     error: text('error'),
   },
   (table) => [
-    uniqueIndex('agent_run_review_run_agent_idx').on(table.reviewRunId, table.agentId),
-    index('agent_run_review_run_idx').on(table.reviewRunId),
+    uniqueIndex('agent_run_run_agent_idx').on(table.runId, table.agentId),
+    index('agent_run_run_idx').on(table.runId),
     index('agent_run_user_idx').on(table.userId),
     index('agent_run_agent_idx').on(table.agentId),
     check(

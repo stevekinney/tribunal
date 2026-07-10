@@ -19,6 +19,8 @@ const data = {
   runs: [
     {
       id: 'run_1',
+      runId: 'run_1',
+      runKind: 'pull_request_review' as const,
       userId: 1,
       repositoryId: 9001,
       prNumber: 12,
@@ -41,6 +43,8 @@ const data = {
     },
     {
       id: 'run_2',
+      runId: 'run_2',
+      runKind: 'pull_request_review' as const,
       userId: 1,
       repositoryId: 9001,
       prNumber: 13,
@@ -63,6 +67,8 @@ const data = {
     },
     {
       id: 'run_3',
+      runId: 'run_3',
+      runKind: 'pull_request_review' as const,
       userId: 1,
       repositoryId: 9001,
       prNumber: 14,
@@ -85,6 +91,8 @@ const data = {
     },
     {
       id: 'run_4',
+      runId: 'run_4',
+      runKind: 'pull_request_review' as const,
       userId: 1,
       repositoryId: 9001,
       prNumber: 15,

@@ -8,10 +8,11 @@ import {
   finding,
   githubInstallation,
   githubInstallationRepository,
+  pullRequestReviewRun,
   repository,
   repositoryAgent,
   repositoryReviewSettings,
-  reviewRun,
+  tribunalRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { agentSpecSchema, agentModelSchema, effortSchema } from '@tribunal/review-core/schemas';
@@ -168,10 +169,16 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
         ),
       ),
     db
-      .select()
-      .from(reviewRun)
-      .where(and(eq(reviewRun.userId, userId), inArray(reviewRun.repositoryId, repositoryIds)))
-      .orderBy(desc(reviewRun.startedAt)),
+      .select({ repositoryId: pullRequestReviewRun.repositoryId, status: tribunalRun.status })
+      .from(tribunalRun)
+      .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+      .where(
+        and(
+          eq(tribunalRun.userId, userId),
+          inArray(pullRequestReviewRun.repositoryId, repositoryIds),
+        ),
+      )
+      .orderBy(desc(tribunalRun.startedAt)),
     db
       .select()
       .from(costEvent)
@@ -405,18 +412,22 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
 export async function getRunsOverview(userId: number) {
   const rows = await db
     .select({
-      run: reviewRun,
+      run: tribunalRun,
+      review: pullRequestReviewRun,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
     })
-    .from(reviewRun)
-    .innerJoin(repository, eq(repository.id, reviewRun.repositoryId))
-    .where(eq(reviewRun.userId, userId))
-    .orderBy(desc(reviewRun.startedAt))
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .innerJoin(repository, eq(repository.id, tribunalRun.repositoryId))
+    .where(eq(tribunalRun.userId, userId))
+    .orderBy(desc(tribunalRun.startedAt))
     .limit(50);
 
   return rows.map((row) => ({
     ...row.run,
+    ...row.review,
+    id: row.run.id,
     repositoryOwner: row.repositoryOwner,
     repositoryName: row.repositoryName,
   }));
@@ -425,16 +436,33 @@ export async function getRunsOverview(userId: number) {
 export async function getRunInspector(userId: number, runId: string) {
   const [runRow] = await db
     .select({
-      run: reviewRun,
+      run: tribunalRun,
+      review: pullRequestReviewRun,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
     })
-    .from(reviewRun)
-    .innerJoin(repository, eq(repository.id, reviewRun.repositoryId))
-    .where(eq(reviewRun.id, runId))
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .innerJoin(repository, eq(repository.id, tribunalRun.repositoryId))
+    .where(eq(tribunalRun.id, runId))
     .limit(1);
 
-  if (!runRow) error(404, 'Run not found.');
+  if (!runRow) {
+    // The inner join above only matches `pull_request_review` runs. A run
+    // that exists but has no `pull_request_review_run` child (e.g. a
+    // `webhook_event_handler` run) falls through here rather than the
+    // `pull_request_review_run` join failing to find a row for a genuinely
+    // missing run. Distinguish those cases explicitly instead of returning a
+    // misleading "not found" for a run the caller does own.
+    const [baseRun] = await db
+      .select({ userId: tribunalRun.userId, runKind: tribunalRun.runKind })
+      .from(tribunalRun)
+      .where(eq(tribunalRun.id, runId))
+      .limit(1);
+    if (!baseRun) error(404, 'Run not found.');
+    if (baseRun.userId !== userId) error(403, 'You do not have access to this run.');
+    error(404, 'This run kind does not have an inspector view yet.');
+  }
   if (runRow.run.userId !== userId) error(403, 'You do not have access to this run.');
 
   const [agentRows, findingRows] = await Promise.all([
@@ -446,13 +474,13 @@ export async function getRunInspector(userId: number, runId: string) {
       })
       .from(agentRun)
       .innerJoin(agent, eq(agent.id, agentRun.agentId))
-      .where(and(eq(agentRun.userId, userId), eq(agentRun.reviewRunId, runId)))
+      .where(and(eq(agentRun.userId, userId), eq(agentRun.runId, runId)))
       .orderBy(agent.slug),
     db
       .select({ finding })
       .from(finding)
       .innerJoin(agentRun, eq(agentRun.id, finding.agentRunId))
-      .where(and(eq(finding.userId, userId), eq(agentRun.reviewRunId, runId)))
+      .where(and(eq(finding.userId, userId), eq(agentRun.runId, runId)))
       .orderBy(
         finding.agentRunId,
         finding.path,
@@ -473,7 +501,7 @@ export async function getRunInspector(userId: number, runId: string) {
           .where(inArray(agentEvent.agentRunId, agentRunIds))
           .orderBy(agentEvent.agentRunId, agentEvent.seq);
 
-  const replacementRun = await getReplacementRun(userId, runRow.run);
+  const replacementRun = await getReplacementRun(userId, runRow.run, runRow.review);
 
   const findingsByAgentRun = new Map<string, typeof findingRows>();
   for (const row of findingRows) {
@@ -491,6 +519,8 @@ export async function getRunInspector(userId: number, runId: string) {
 
   return {
     ...runRow.run,
+    ...runRow.review,
+    id: runRow.run.id,
     repositoryOwner: runRow.repositoryOwner,
     repositoryName: runRow.repositoryName,
     replacementRunId: replacementRun?.id ?? null,
@@ -598,8 +628,8 @@ async function getLatestRunAgentEventId(userId: number, runId: string): Promise<
     .select({ latestEventId: sql<number>`coalesce(max(${agentEvent.id}), 0)` })
     .from(agentEvent)
     .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
-    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
-    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .innerJoin(tribunalRun, eq(tribunalRun.id, agentRun.runId))
+    .where(and(eq(tribunalRun.userId, userId), eq(tribunalRun.id, runId)))
     .limit(1);
 
   return Number(row?.latestEventId ?? 0);
@@ -607,9 +637,9 @@ async function getLatestRunAgentEventId(userId: number, runId: string): Promise<
 
 async function requireRunAccess(userId: number, runId: string) {
   const [row] = await db
-    .select({ userId: reviewRun.userId })
-    .from(reviewRun)
-    .where(eq(reviewRun.id, runId))
+    .select({ userId: tribunalRun.userId })
+    .from(tribunalRun)
+    .where(eq(tribunalRun.id, runId))
     .limit(1);
 
   if (!row) error(404, 'Run not found.');
@@ -633,11 +663,11 @@ async function listRunAgentEvents(
     })
     .from(agentEvent)
     .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
-    .innerJoin(reviewRun, eq(reviewRun.id, agentRun.reviewRunId))
+    .innerJoin(tribunalRun, eq(tribunalRun.id, agentRun.runId))
     .where(
       and(
-        eq(reviewRun.userId, userId),
-        eq(reviewRun.id, runId),
+        eq(tribunalRun.userId, userId),
+        eq(tribunalRun.id, runId),
         sql`${agentEvent.id} > ${afterEventId}`,
       ),
     )
@@ -649,22 +679,24 @@ async function listRunAgentEvents(
 
 async function getReplacementRun(
   userId: number,
-  run: typeof reviewRun.$inferSelect,
+  run: typeof tribunalRun.$inferSelect,
+  review: typeof pullRequestReviewRun.$inferSelect,
 ): Promise<{ id: string } | undefined> {
   if (run.status !== 'superseded') return undefined;
 
   const [replacementRun] = await db
-    .select({ id: reviewRun.id })
-    .from(reviewRun)
+    .select({ id: tribunalRun.id })
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
     .where(
       and(
-        eq(reviewRun.userId, userId),
-        eq(reviewRun.repositoryId, run.repositoryId),
-        eq(reviewRun.prNumber, run.prNumber),
-        eq(reviewRun.prevHeadSha, run.headSha),
+        eq(tribunalRun.userId, userId),
+        eq(pullRequestReviewRun.repositoryId, review.repositoryId),
+        eq(pullRequestReviewRun.prNumber, review.prNumber),
+        eq(pullRequestReviewRun.prevHeadSha, review.headSha),
       ),
     )
-    .orderBy(asc(reviewRun.startedAt), asc(reviewRun.id))
+    .orderBy(asc(tribunalRun.startedAt), asc(tribunalRun.id))
     .limit(1);
 
   return replacementRun;
@@ -672,9 +704,9 @@ async function getReplacementRun(
 
 export async function stopRun(userId: number, runId: string) {
   const [existingRun] = await db
-    .select({ id: reviewRun.id })
-    .from(reviewRun)
-    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .select({ id: tribunalRun.id })
+    .from(tribunalRun)
+    .where(and(eq(tribunalRun.userId, userId), eq(tribunalRun.id, runId)))
     .limit(1);
 
   if (!existingRun) error(403, 'You do not have access to this run.');
@@ -682,21 +714,21 @@ export async function stopRun(userId: number, runId: string) {
   const stoppedAt = new Date();
   await db.execute(sql`
     WITH stopped_run AS (
-      UPDATE ${reviewRun}
+      UPDATE ${tribunalRun}
       SET
         "status" = 'cancelled',
         "finished_at" = ${stoppedAt},
         "error" = 'Stopped by operator.'
-      WHERE ${reviewRun.userId} = ${userId}
-        AND ${reviewRun.id} = ${runId}
-      RETURNING ${reviewRun.id} AS id
+      WHERE ${tribunalRun.userId} = ${userId}
+        AND ${tribunalRun.id} = ${runId}
+      RETURNING ${tribunalRun.id} AS id
     )
     UPDATE ${agentRun}
     SET
       "status" = 'cancelled',
       "stopped_reason" = 'timeout'
     WHERE ${agentRun.userId} = ${userId}
-      AND ${agentRun.reviewRunId} IN (SELECT id FROM stopped_run)
+      AND ${agentRun.runId} IN (SELECT id FROM stopped_run)
   `);
 
   await signalEngineStop(runId);
@@ -706,9 +738,9 @@ export async function stopRun(userId: number, runId: string) {
 
 export async function stopAgent(userId: number, runId: string, agentId: string) {
   const [existingRun] = await db
-    .select({ id: reviewRun.id })
-    .from(reviewRun)
-    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.id, runId)))
+    .select({ id: tribunalRun.id })
+    .from(tribunalRun)
+    .where(and(eq(tribunalRun.userId, userId), eq(tribunalRun.id, runId)))
     .limit(1);
 
   if (!existingRun) error(403, 'You do not have access to this run.');
@@ -720,11 +752,7 @@ export async function stopAgent(userId: number, runId: string, agentId: string) 
       stoppedReason: 'timeout',
     })
     .where(
-      and(
-        eq(agentRun.userId, userId),
-        eq(agentRun.reviewRunId, runId),
-        eq(agentRun.agentId, agentId),
-      ),
+      and(eq(agentRun.userId, userId), eq(agentRun.runId, runId), eq(agentRun.agentId, agentId)),
     )
     .returning({ id: agentRun.id });
 

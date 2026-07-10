@@ -288,17 +288,20 @@ describe('repository pull requests page load (E2E test mode)', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockDbSelect.mockReturnValue({
       from: () => ({
-        where: () => ({
-          orderBy: () =>
-            Promise.resolve([
-              {
-                prNumber: 7,
-                headSha: 'abc123',
-                status: 'posted',
-                startedAt: new Date('2024-01-01T00:00:00Z'),
-                finishedAt: new Date('2024-01-02T00:00:00Z'),
-              },
-            ]),
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                {
+                  run: {
+                    status: 'posted',
+                    startedAt: new Date('2024-01-01T00:00:00Z'),
+                    finishedAt: new Date('2024-01-02T00:00:00Z'),
+                  },
+                  review: { prNumber: 7, headSha: 'abc123' },
+                },
+              ]),
+          }),
         }),
       }),
     });
@@ -322,7 +325,9 @@ describe('repository pull requests page load (E2E test mode)', () => {
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockDbSelect.mockReturnValue({
-      from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      from: () => ({
+        innerJoin: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      }),
     });
 
     await runLoad();
@@ -337,24 +342,28 @@ describe('repository pull requests page load (E2E test mode)', () => {
     mockParsePullRequestFilters.mockReturnValue({ ...defaultFilters, page: 1, perPage: 1 });
     mockDbSelect.mockReturnValue({
       from: () => ({
-        where: () => ({
-          orderBy: () =>
-            Promise.resolve([
-              {
-                prNumber: 2,
-                headSha: 'sha2',
-                status: 'posted',
-                startedAt: new Date('2024-01-02T00:00:00Z'),
-                finishedAt: new Date('2024-01-02T00:00:00Z'),
-              },
-              {
-                prNumber: 1,
-                headSha: 'sha1',
-                status: 'posted',
-                startedAt: new Date('2024-01-01T00:00:00Z'),
-                finishedAt: new Date('2024-01-01T00:00:00Z'),
-              },
-            ]),
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                {
+                  run: {
+                    status: 'posted',
+                    startedAt: new Date('2024-01-02T00:00:00Z'),
+                    finishedAt: new Date('2024-01-02T00:00:00Z'),
+                  },
+                  review: { prNumber: 2, headSha: 'sha2' },
+                },
+                {
+                  run: {
+                    status: 'posted',
+                    startedAt: new Date('2024-01-01T00:00:00Z'),
+                    finishedAt: new Date('2024-01-01T00:00:00Z'),
+                  },
+                  review: { prNumber: 1, headSha: 'sha1' },
+                },
+              ]),
+          }),
         }),
       }),
     });
@@ -377,17 +386,20 @@ describe('repository pull requests page load (E2E test mode)', () => {
     mockParsePullRequestFilters.mockReturnValue({ ...defaultFilters, state: 'closed' });
     mockDbSelect.mockReturnValue({
       from: () => ({
-        where: () => ({
-          orderBy: () =>
-            Promise.resolve([
-              {
-                prNumber: 1,
-                headSha: 'sha1',
-                status: 'posted',
-                startedAt: new Date('2024-01-01T00:00:00Z'),
-                finishedAt: new Date('2024-01-01T00:00:00Z'),
-              },
-            ]),
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                {
+                  run: {
+                    status: 'posted',
+                    startedAt: new Date('2024-01-01T00:00:00Z'),
+                    finishedAt: new Date('2024-01-01T00:00:00Z'),
+                  },
+                  review: { prNumber: 1, headSha: 'sha1' },
+                },
+              ]),
+          }),
         }),
       }),
     });

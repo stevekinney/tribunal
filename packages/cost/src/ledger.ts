@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '@tribunal/database';
 import { and, eq, sql } from '@tribunal/database/operators';
-import { costEvent, reviewRun, userReviewSettings } from '@tribunal/database/schema';
+import { costEvent, tribunalRun, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
 import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
 import {
@@ -119,14 +119,14 @@ export async function reconcile(
 ): Promise<void> {
   const [target] = await database
     .select({
-      reviewRunId: reviewRun.id,
-      userId: reviewRun.userId,
-      repositoryId: reviewRun.repositoryId,
-      startedAt: reviewRun.startedAt,
-      finishedAt: reviewRun.finishedAt,
+      reviewRunId: tribunalRun.id,
+      userId: tribunalRun.userId,
+      repositoryId: tribunalRun.repositoryId,
+      startedAt: tribunalRun.startedAt,
+      finishedAt: tribunalRun.finishedAt,
     })
-    .from(reviewRun)
-    .where(eq(reviewRun.id, reviewRunId));
+    .from(tribunalRun)
+    .where(eq(tribunalRun.id, reviewRunId));
 
   if (target === undefined) {
     throw new Error(`Review run ${reviewRunId} was not found for cost reconciliation.`);

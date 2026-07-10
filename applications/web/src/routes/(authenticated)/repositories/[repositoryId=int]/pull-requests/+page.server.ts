@@ -1,7 +1,7 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { and, desc, eq } from 'drizzle-orm';
-import { reviewRun } from '@tribunal/database/schema';
+import { pullRequestReviewRun, tribunalRun } from '@tribunal/database/schema';
 import {
   getRepositoryById,
   getInstallationForRepository,
@@ -75,28 +75,31 @@ async function listE2EPullRequests(
   filters: PullRequestFilterOptions,
 ): Promise<{ pullRequests: E2EPullRequest[]; hasNextPage: boolean }> {
   const rows = await db
-    .select()
-    .from(reviewRun)
-    .where(and(eq(reviewRun.userId, userId), eq(reviewRun.repositoryId, repository.id)))
-    .orderBy(desc(reviewRun.startedAt), desc(reviewRun.id));
+    .select({ run: tribunalRun, review: pullRequestReviewRun })
+    .from(tribunalRun)
+    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .where(
+      and(eq(tribunalRun.userId, userId), eq(pullRequestReviewRun.repositoryId, repository.id)),
+    )
+    .orderBy(desc(tribunalRun.startedAt), desc(tribunalRun.id));
 
   const seenPullRequestNumbers = new Set<number>();
   let synthesized = rows
-    .filter((run) => {
-      if (seenPullRequestNumbers.has(run.prNumber)) return false;
-      seenPullRequestNumbers.add(run.prNumber);
+    .filter(({ review }) => {
+      if (seenPullRequestNumbers.has(review.prNumber)) return false;
+      seenPullRequestNumbers.add(review.prNumber);
       return true;
     })
     .map(
-      (run): E2EPullRequest => ({
-        number: run.prNumber,
-        title: `E2E pull request #${run.prNumber}`,
+      ({ run, review }): E2EPullRequest => ({
+        number: review.prNumber,
+        title: `E2E pull request #${review.prNumber}`,
         state: 'open',
         draft: false,
         mergedAt: null,
-        htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${run.prNumber}`,
-        headRef: `e2e/pr-${run.prNumber}`,
-        headSha: run.headSha,
+        htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${review.prNumber}`,
+        headRef: `e2e/pr-${review.prNumber}`,
+        headSha: review.headSha,
         baseRef: 'main',
         updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
         author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },

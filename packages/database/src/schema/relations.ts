@@ -11,7 +11,8 @@ import { repository } from './repository';
 import { repositoryAgent } from './repository-agent';
 import { repositoryReviewSettings } from './repository-review-settings';
 import { reviewIntent } from './review-intent';
-import { reviewRun } from './review-run';
+import { pullRequestReviewRun } from './pull-request-review-run';
+import { tribunalRun } from './tribunal-run';
 import { user } from './user';
 import { userApiKey } from './user-api-key';
 import { userReviewSettings } from './user-review-settings';
@@ -29,7 +30,7 @@ export const userRelations = relations(user, ({ many }) => ({
   githubInstallations: many(githubInstallation),
   repositoryAssignments: many(repositoryAgent),
   repositoryReviewSettings: many(repositoryReviewSettings),
-  reviewRuns: many(reviewRun),
+  runs: many(tribunalRun),
 }));
 
 export const userApiKeyRelations = relations(userApiKey, ({ one }) => ({
@@ -39,7 +40,7 @@ export const userApiKeyRelations = relations(userApiKey, ({ one }) => ({
 export const repositoryRelations = relations(repository, ({ many }) => ({
   webhookEvents: many(webhookEvent),
   installationLinks: many(githubInstallationRepository),
-  reviewRuns: many(reviewRun),
+  runs: many(tribunalRun),
   reviewIntents: many(reviewIntent),
   costEvents: many(costEvent),
   assignedAgents: many(repositoryAgent),
@@ -106,16 +107,29 @@ export const userReviewSettingsRelations = relations(userReviewSettings, ({ one 
   user: one(user, { fields: [userReviewSettings.userId], references: [user.id] }),
 }));
 
-export const reviewRunRelations = relations(reviewRun, ({ one, many }) => ({
-  user: one(user, { fields: [reviewRun.userId], references: [user.id] }),
-  repository: one(repository, { fields: [reviewRun.repositoryId], references: [repository.id] }),
+export const tribunalRunRelations = relations(tribunalRun, ({ one, many }) => ({
+  user: one(user, { fields: [tribunalRun.userId], references: [user.id] }),
+  repository: one(repository, { fields: [tribunalRun.repositoryId], references: [repository.id] }),
+  pullRequestReview: one(pullRequestReviewRun, {
+    fields: [tribunalRun.id],
+    references: [pullRequestReviewRun.runId],
+  }),
   agentRuns: many(agentRun),
   costEvents: many(costEvent),
 }));
 
+export const pullRequestReviewRunRelations = relations(pullRequestReviewRun, ({ one }) => ({
+  run: one(tribunalRun, { fields: [pullRequestReviewRun.runId], references: [tribunalRun.id] }),
+  user: one(user, { fields: [pullRequestReviewRun.userId], references: [user.id] }),
+  repository: one(repository, {
+    fields: [pullRequestReviewRun.repositoryId],
+    references: [repository.id],
+  }),
+}));
+
 export const agentRunRelations = relations(agentRun, ({ one, many }) => ({
   user: one(user, { fields: [agentRun.userId], references: [user.id] }),
-  reviewRun: one(reviewRun, { fields: [agentRun.reviewRunId], references: [reviewRun.id] }),
+  run: one(tribunalRun, { fields: [agentRun.runId], references: [tribunalRun.id] }),
   agent: one(agent, { fields: [agentRun.agentId], references: [agent.id] }),
   findings: many(finding),
   events: many(agentEvent),
@@ -143,7 +157,7 @@ export const reviewIntentRelations = relations(reviewIntent, ({ one }) => ({
 export const costEventRelations = relations(costEvent, ({ one }) => ({
   user: one(user, { fields: [costEvent.userId], references: [user.id] }),
   repository: one(repository, { fields: [costEvent.repositoryId], references: [repository.id] }),
-  reviewRun: one(reviewRun, { fields: [costEvent.reviewRunId], references: [reviewRun.id] }),
+  run: one(tribunalRun, { fields: [costEvent.reviewRunId], references: [tribunalRun.id] }),
   agentRun: one(agentRun, { fields: [costEvent.agentRunId], references: [agentRun.id] }),
   agent: one(agent, { fields: [costEvent.agentId], references: [agent.id] }),
 }));
