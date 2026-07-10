@@ -70,16 +70,12 @@ export function createStartingEngineServerOptions(port: number, hostname?: strin
     fetch(request: Request) {
       const url = new URL(request.url);
       if (url.pathname === '/health') {
-        return Response.json(
-          {
-            ok: false,
-            dependencies: [
-              { name: 'weft_database', ok: false, detail: 'engine runtime is starting' },
-              { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
-            ],
-          },
-          { status: 503 },
-        );
+        return createHealthResponse({
+          dependencies: [
+            { name: 'weft_database', ok: false, detail: 'engine runtime is starting' },
+            { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
+          ],
+        });
       }
       return Response.json({ ok: false, error: 'engine_starting' }, { status: 503 });
     },
