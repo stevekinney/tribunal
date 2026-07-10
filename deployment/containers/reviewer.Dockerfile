@@ -9,7 +9,11 @@ COPY runner/package.json ./runner/package.json
 COPY packages ./packages
 COPY scripts/package.json ./scripts/package.json
 COPY scripts/install-git-hooks.ts ./scripts/install-git-hooks.ts
-RUN bun install --frozen-lockfile
+# Filtered install: this stage only builds @tribunal/review-core and
+# @tribunal/agents. Installing the full workspace (web/engine dev graphs)
+# exceeds the 1024 MB RAM cap of the Tensorlake builder sandbox that
+# rebuilds this Dockerfile at publish time.
+RUN bun install --frozen-lockfile --filter tribunal --filter @tribunal/review-core --filter @tribunal/agents
 RUN bun run --cwd packages/review-core build
 RUN bun run --cwd packages/agents build
 
