@@ -452,7 +452,7 @@ describe('createEngineServerOptions', () => {
 
 describe('createStartingEngineServerOptions', () => {
   it('binds immediately on the configured Fly hostname while the runtime starts', async () => {
-    const server = createStartingEngineServerOptions(3001, '0.0.0.0');
+    const server = createStartingEngineServerOptions(3001, 'control-token', '0.0.0.0');
 
     expect(server.hostname).toBe('0.0.0.0');
     const response = server.fetch(new Request('http://engine.test/health'));
@@ -468,7 +468,7 @@ describe('createStartingEngineServerOptions', () => {
   });
 
   it('defers authenticated kicks until the runtime owns the singleton lock', async () => {
-    const server = createStartingEngineServerOptions(3001);
+    const server = createStartingEngineServerOptions(3001, 'control-token');
     const response = server.fetch(
       new Request('http://engine.test/review-intents/kick', {
         method: 'POST',
@@ -478,6 +478,16 @@ describe('createStartingEngineServerOptions', () => {
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_starting' });
+  });
+
+  it('rejects unauthenticated control requests while the runtime starts', async () => {
+    const server = createStartingEngineServerOptions(3001, 'control-token');
+    const response = server.fetch(
+      new Request('http://engine.test/review-intents/kick', { method: 'POST' }),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'unauthorized' });
   });
 });
 

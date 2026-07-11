@@ -24,7 +24,11 @@ if (import.meta.main) {
   const storageConfiguration = createStorageConfigurationFromEnvironment(environment);
 
   const server = Bun.serve(
-    createStartingEngineServerOptions(port, environment.TRIBUNAL_ENGINE_BIND_HOST),
+    createStartingEngineServerOptions(
+      port,
+      environment.TRIBUNAL_ENGINE_CONTROL_TOKEN,
+      environment.TRIBUNAL_ENGINE_BIND_HOST,
+    ),
   );
   console.log(`[engine] listening on ${server.hostname}:${server.port}; starting runtime`);
 
@@ -63,7 +67,11 @@ if (import.meta.main) {
   console.log('[engine] runtime ready');
 }
 
-export function createStartingEngineServerOptions(port: number, hostname?: string) {
+export function createStartingEngineServerOptions(
+  port: number,
+  controlToken: string,
+  hostname?: string,
+) {
   return {
     port,
     ...(hostname === undefined ? {} : { hostname }),
@@ -76,6 +84,9 @@ export function createStartingEngineServerOptions(port: number, hostname?: strin
             { name: 'singleton_lock', ok: false, detail: 'engine runtime is starting' },
           ],
         });
+      }
+      if (!hasValidControlToken(request, controlToken)) {
+        return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
       }
       return Response.json({ ok: false, error: 'engine_starting' }, { status: 503 });
     },
