@@ -85,11 +85,8 @@ export function createStartingEngineServerOptions(
           ],
         });
       }
-      if (url.pathname === '/review-intents/kick' && request.method === 'POST') {
-        if (!hasValidControlToken(request, controlToken)) {
-          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-        }
-        return Response.json({ ok: true, started: false }, { status: 202 });
+      if (!hasValidControlToken(request, controlToken)) {
+        return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
       }
       return Response.json({ ok: false, error: 'engine_starting' }, { status: 503 });
     },

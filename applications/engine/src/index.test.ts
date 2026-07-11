@@ -467,7 +467,7 @@ describe('createStartingEngineServerOptions', () => {
     });
   });
 
-  it('accepts an authenticated kick while the durable runtime starts', async () => {
+  it('defers authenticated kicks until the runtime owns the singleton lock', async () => {
     const server = createStartingEngineServerOptions(3001, 'control-token');
     const response = server.fetch(
       new Request('http://engine.test/review-intents/kick', {
@@ -476,11 +476,11 @@ describe('createStartingEngineServerOptions', () => {
       }),
     );
 
-    expect(response.status).toBe(202);
-    await expect(response.json()).resolves.toEqual({ ok: true, started: false });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_starting' });
   });
 
-  it('rejects unauthenticated kicks while the durable runtime starts', async () => {
+  it('rejects unauthenticated control requests while the runtime starts', async () => {
     const server = createStartingEngineServerOptions(3001, 'control-token');
     const response = server.fetch(
       new Request('http://engine.test/review-intents/kick', { method: 'POST' }),
