@@ -5,9 +5,8 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
+  import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import { Input } from '@lostgradient/cinder/input';
-  import { Modal } from '@lostgradient/cinder/modal';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import {
@@ -30,17 +29,7 @@
   const eventsPath = $derived(`/repositories/${data.repository.id}/events`);
 
   let deleteTarget = $state<{ id: string; name: string } | null>(null);
-  // Cinder's ConfirmDialog (0.9.0) has no typed-confirmation primitive --
-  // see the upstream ticket filed while addressing this -- so this
-  // destructive delete is composed directly from Modal + Input + Button per
-  // .claude/rules/component-library.md ("Destructive actions: require
-  // explicit typed confirmation, case-insensitive comparison, disabled
-  // button until confirmed, autocomplete='off'").
-  let deleteConfirmationText = $state('');
-  const deleteConfirmed = $derived(
-    deleteTarget !== null &&
-      deleteConfirmationText.trim().toLowerCase() === deleteTarget.name.trim().toLowerCase(),
-  );
+  let confirmDeleteOpen = $state(false);
 
   function formatMatchedAt(value: Date | string | null | undefined): string {
     if (!value) return 'Never';
@@ -55,8 +44,8 @@
   }
 
   function closeDeleteDialog(): void {
+    confirmDeleteOpen = false;
     deleteTarget = null;
-    deleteConfirmationText = '';
   }
 
   function submitDeleteForm(listenerId: string): void {
@@ -188,8 +177,10 @@
                     <Button
                       variant="danger"
                       size="sm"
-                      onclick={() =>
-                        (deleteTarget = { id: row.listener.id, name: row.listener.name })}
+                      onclick={() => {
+                        deleteTarget = { id: row.listener.id, name: row.listener.name };
+                        confirmDeleteOpen = true;
+                      }}
                     >
                       {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
                       <span class="cinder-sr-only">Delete {row.listener.name}</span>
@@ -211,44 +202,18 @@
     </Card>
   {/if}
 
-  <Modal
-    open={deleteTarget !== null}
+  <ConfirmDialog
+    bind:open={confirmDeleteOpen}
     title="Delete event listener"
-    role="alertdialog"
-    describedById="delete-listener-description"
-    dismissOnBackdropClick={false}
-    dismissOnEscape={false}
-    showCloseButton={false}
-    ondismiss={closeDeleteDialog}
-  >
-    {#if deleteTarget}
-      <p id="delete-listener-description">
-        Deleting this listener does not affect runs it has already spawned. Type <strong
-          >{deleteTarget.name}</strong
-        > to confirm.
-      </p>
-      <Input
-        id="delete-listener-confirmation"
-        label={`Type "${deleteTarget.name}" to confirm`}
-        hideLabel
-        bind:value={deleteConfirmationText}
-        placeholder={deleteTarget.name}
-        autocomplete="off"
-      />
-    {/if}
-    {#snippet footer()}
-      <Button variant="secondary" autofocus onclick={closeDeleteDialog}>Cancel</Button>
-      <Button
-        variant="danger"
-        disabled={!deleteConfirmed}
-        onclick={() => {
-          if (deleteTarget) submitDeleteForm(deleteTarget.id);
-        }}
-      >
-        Delete
-      </Button>
-    {/snippet}
-  </Modal>
+    description="Deleting this listener does not affect runs it has already spawned."
+    confirmLabel="Delete"
+    destructive
+    typeToConfirm={deleteTarget?.name}
+    onconfirm={() => {
+      if (deleteTarget) submitDeleteForm(deleteTarget.id);
+    }}
+    oncancel={closeDeleteDialog}
+  />
 </Page>
 
 <style>
