@@ -211,6 +211,23 @@ describe('/repositories/[repositoryId]/issues page', () => {
     );
   });
 
+  it('uses the Cinder input for assignee filtering and applies the value on Enter', async () => {
+    render(IssuesPage, { data: baseData });
+
+    const assigneeInput = browserPage.getByLabelText('Assignee');
+    await expect.element(assigneeInput).toHaveClass(/cinder-input/);
+    await assigneeInput.fill('hubot');
+    assigneeInput
+      .element()
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    expect(mocks.goto).toHaveBeenCalledWith(expect.stringContaining('issue_assignee=hubot'), {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: true,
+    });
+  });
+
   it('preserves an in-flight filter change when a second filter changes before the first navigation lands', async () => {
     // goto() is mocked and never resolves here, simulating the window while
     // a real navigation is still loading (during which $app/state's

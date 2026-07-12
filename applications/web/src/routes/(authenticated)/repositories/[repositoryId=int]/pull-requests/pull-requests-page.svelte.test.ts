@@ -251,6 +251,8 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
     });
 
     const baseBranchInput = browserPage.getByLabelText('Base branch');
+    await expect.element(baseBranchInput).toHaveClass(/cinder-input/);
+    await expect.element(browserPage.getByLabelText('Head branch')).toHaveClass(/cinder-input/);
     await baseBranchInput.fill('release');
     await browserPage.getByLabelText('Head branch').click();
 

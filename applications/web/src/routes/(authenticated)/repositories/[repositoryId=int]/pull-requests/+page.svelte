@@ -9,6 +9,7 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { FacetedFilterBar } from '@lostgradient/cinder/faceted-filter-bar';
+  import { Input } from '@lostgradient/cinder/input';
   import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/faceted-filter-bar';
   import { Pagination } from '@lostgradient/cinder/pagination';
   import {
@@ -237,16 +238,13 @@
   value: string;
   onchange: (value: string) => void;
 })}
-  <label class="branch-filter">
-    <span class="branch-filter-label">Base branch</span>
-    <input
-      type="text"
-      class="branch-input"
-      placeholder="main"
-      value={value ?? ''}
-      onchange={(event) => onchange(event.currentTarget.value)}
-    />
-  </label>
+  <Input
+    id="pull-request-base-branch-filter"
+    label="Base branch"
+    placeholder="main"
+    value={value ?? ''}
+    onchange={(event) => onchange(event.currentTarget.value)}
+  />
 {/snippet}
 
 {#snippet headBranchControl({
@@ -256,16 +254,13 @@
   value: string;
   onchange: (value: string) => void;
 })}
-  <label class="branch-filter">
-    <span class="branch-filter-label">Head branch</span>
-    <input
-      type="text"
-      class="branch-input"
-      placeholder="owner:branch"
-      value={value ?? ''}
-      onchange={(event) => onchange(event.currentTarget.value)}
-    />
-  </label>
+  <Input
+    id="pull-request-head-branch-filter"
+    label="Head branch"
+    placeholder="owner:branch"
+    value={value ?? ''}
+    onchange={(event) => onchange(event.currentTarget.value)}
+  />
 {/snippet}
 
 {#snippet pageActions()}
@@ -385,29 +380,6 @@
 </Page>
 
 <style>
-  .branch-filter {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .branch-filter-label {
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-    color: var(--text);
-  }
-
-  .branch-input {
-    height: var(--cinder-control-height-sm, 2rem);
-    padding-inline: var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    font-size: var(--text-sm);
-    min-width: 8rem;
-  }
-
   .pull-request-list {
     display: flex;
     flex-direction: column;
