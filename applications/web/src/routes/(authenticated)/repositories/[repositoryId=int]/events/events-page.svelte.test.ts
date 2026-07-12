@@ -165,8 +165,8 @@ describe('/repositories/[repositoryId]/events page', () => {
     await confirmationInput.fill('not the right name');
     await expect.element(deleteButton).toBeDisabled();
 
-    // Case-insensitive match per .claude/rules/component-library.md.
-    await confirmationInput.fill('TRIAGE ISSUES');
+    // Trimmed, case-insensitive match per .claude/rules/component-library.md.
+    await confirmationInput.fill('  TRIAGE ISSUES  ');
     await expect.element(deleteButton).toBeEnabled();
   });
 
