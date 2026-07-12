@@ -204,6 +204,9 @@
                               {#if match.lastError}
                                 <Alert variant="danger">{match.lastError}</Alert>
                               {/if}
+                              {#if match.runId}
+                                <Link href={`/runs/${match.runId}`}>View run</Link>
+                              {/if}
                             </li>
                           {/each}
                         </ul>

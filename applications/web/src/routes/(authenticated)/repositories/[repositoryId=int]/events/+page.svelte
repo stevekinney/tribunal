@@ -161,6 +161,11 @@
                     >
                       {eventListenerStatusLabel(row.lastDelivery.displayStatus)}
                     </Badge>
+                    {#if row.lastDelivery.runId}
+                      <Button href={`/runs/${row.lastDelivery.runId}`} variant="ghost" size="xs">
+                        View run
+                      </Button>
+                    {/if}
                   {:else}
                     <span class="no-runs">No runs yet</span>
                   {/if}

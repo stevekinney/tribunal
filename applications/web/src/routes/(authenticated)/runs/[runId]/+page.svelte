@@ -46,12 +46,19 @@
     run.replacementRunId === null ? null : `/runs/${run.replacementRunId}`,
   );
   const checkRunHref = $derived(
-    run.checkRunId === null
+    run.runKind !== 'pull_request_review' || run.checkRunId === null
       ? null
       : `https://github.com/${run.repositoryOwner}/${run.repositoryName}/runs/${run.checkRunId}`,
   );
   const prHref = $derived(
-    `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}`,
+    run.runKind === 'pull_request_review'
+      ? `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}`
+      : null,
+  );
+  const runSubtitle = $derived(
+    run.runKind === 'pull_request_review'
+      ? `${run.repositoryOwner}/${run.repositoryName} · PR #${run.prNumber}`
+      : `${run.repositoryOwner}/${run.repositoryName} · ${run.eventType}${run.action ? ` / ${run.action}` : ''}`,
   );
   const totalFindings = $derived(
     run.agentRuns.reduce((sum, agentRun) => sum + agentRun.findings.length, 0),
@@ -108,6 +115,7 @@
   }
 
   function githubCommentHref(commentId: number): string {
+    if (run.runKind !== 'pull_request_review') return '';
     return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
   }
 
@@ -227,15 +235,23 @@
 
 <Page
   title={`Run ${run.id}`}
-  subtitle={`${run.repositoryOwner}/${run.repositoryName} · PR #${run.prNumber}`}
+  subtitle={runSubtitle}
   breadcrumbs={[{ label: 'Runs', href: '/runs' }, { label: `Run ${run.id}` }]}
 >
   {#snippet actions()}
     <div class="page-actions">
-      <Button href={prHref} variant="secondary" size="sm" target="_blank" rel="noopener noreferrer">
-        Open PR
-        {#snippet trailingIcon()}<ExternalLink size={14} aria-hidden="true" />{/snippet}
-      </Button>
+      {#if prHref}
+        <Button
+          href={prHref}
+          variant="secondary"
+          size="sm"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open PR
+          {#snippet trailingIcon()}<ExternalLink size={14} aria-hidden="true" />{/snippet}
+        </Button>
+      {/if}
       <form method="POST" action={`/api/review/runs/${run.id}/stop`}>
         <Button type="submit" variant="danger" size="sm" disabled={!canStopRun}>
           Stop run
@@ -285,13 +301,18 @@
     </Card>
     <Card padding="none">
       <div class="stat">
-        <span class="stat-label">Check run</span>
-        {#if checkRunHref}
-          <span class="stat-check-link">
-            <Link href={checkRunHref} external>Open GitHub Check Run</Link>
-          </span>
+        {#if run.runKind === 'pull_request_review'}
+          <span class="stat-label">Check run</span>
+          {#if checkRunHref}
+            <span class="stat-check-link">
+              <Link href={checkRunHref} external>Open GitHub Check Run</Link>
+            </span>
+          {:else}
+            <span class="stat-dash">—</span>
+          {/if}
         {:else}
-          <span class="stat-dash">—</span>
+          <span class="stat-label">Webhook event</span>
+          <span class="stat-value">#{run.webhookEventId}</span>
         {/if}
       </div>
     </Card>
@@ -369,7 +390,7 @@
                       <code class="finding-path">
                         {finding.path}{finding.startLine != null ? `:${finding.startLine}` : ''}
                       </code>
-                      {#if finding.githubCommentId}
+                      {#if finding.githubCommentId && run.runKind === 'pull_request_review'}
                         <Link href={githubCommentHref(finding.githubCommentId)} external>
                           GitHub comment
                         </Link>

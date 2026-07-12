@@ -14,6 +14,7 @@ import {
   repositoryReviewSettings,
   tribunalRun,
   userReviewSettings,
+  webhookEventHandlerRun,
 } from '@tribunal/database/schema';
 import { agentSpecSchema, agentModelSchema, effortSchema } from '@tribunal/review-core/schemas';
 import { db } from '$lib/server/database';
@@ -438,32 +439,25 @@ export async function getRunInspector(userId: number, runId: string) {
     .select({
       run: tribunalRun,
       review: pullRequestReviewRun,
+      webhookEventHandler: webhookEventHandlerRun,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
     })
     .from(tribunalRun)
-    .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .leftJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+    .leftJoin(webhookEventHandlerRun, eq(webhookEventHandlerRun.runId, tribunalRun.id))
     .innerJoin(repository, eq(repository.id, tribunalRun.repositoryId))
     .where(eq(tribunalRun.id, runId))
     .limit(1);
 
-  if (!runRow) {
-    // The inner join above only matches `pull_request_review` runs. A run
-    // that exists but has no `pull_request_review_run` child (e.g. a
-    // `webhook_event_handler` run) falls through here rather than the
-    // `pull_request_review_run` join failing to find a row for a genuinely
-    // missing run. Distinguish those cases explicitly instead of returning a
-    // misleading "not found" for a run the caller does own.
-    const [baseRun] = await db
-      .select({ userId: tribunalRun.userId, runKind: tribunalRun.runKind })
-      .from(tribunalRun)
-      .where(eq(tribunalRun.id, runId))
-      .limit(1);
-    if (!baseRun) error(404, 'Run not found.');
-    if (baseRun.userId !== userId) error(403, 'You do not have access to this run.');
-    error(404, 'This run kind does not have an inspector view yet.');
-  }
+  if (!runRow) error(404, 'Run not found.');
   if (runRow.run.userId !== userId) error(403, 'You do not have access to this run.');
+  if (runRow.run.runKind === 'pull_request_review' && !runRow.review) {
+    error(404, 'Run details not found.');
+  }
+  if (runRow.run.runKind === 'webhook_event_handler' && !runRow.webhookEventHandler) {
+    error(404, 'Run details not found.');
+  }
 
   const [agentRows, findingRows] = await Promise.all([
     db
@@ -501,7 +495,9 @@ export async function getRunInspector(userId: number, runId: string) {
           .where(inArray(agentEvent.agentRunId, agentRunIds))
           .orderBy(agentEvent.agentRunId, agentEvent.seq);
 
-  const replacementRun = await getReplacementRun(userId, runRow.run, runRow.review);
+  const replacementRun = runRow.review
+    ? await getReplacementRun(userId, runRow.run, runRow.review)
+    : null;
 
   const findingsByAgentRun = new Map<string, typeof findingRows>();
   for (const row of findingRows) {
@@ -517,9 +513,8 @@ export async function getRunInspector(userId: number, runId: string) {
     eventsByAgentRun.set(event.agentRunId, rows);
   }
 
-  return {
+  const sharedRun = {
     ...runRow.run,
-    ...runRow.review,
     id: runRow.run.id,
     repositoryOwner: runRow.repositoryOwner,
     repositoryName: runRow.repositoryName,
@@ -531,6 +526,26 @@ export async function getRunInspector(userId: number, runId: string) {
       events: eventsByAgentRun.get(row.agentRun.id) ?? [],
       findings: (findingsByAgentRun.get(row.agentRun.id) ?? []).map((entry) => entry.finding),
     })),
+  };
+
+  if (runRow.run.runKind === 'webhook_event_handler') {
+    const webhookEventHandler = runRow.webhookEventHandler;
+    if (!webhookEventHandler) error(404, 'Run details not found.');
+    return {
+      ...sharedRun,
+      ...webhookEventHandler,
+      id: runRow.run.id,
+      runKind: 'webhook_event_handler' as const,
+    };
+  }
+
+  const review = runRow.review;
+  if (!review) error(404, 'Run details not found.');
+  return {
+    ...sharedRun,
+    ...review,
+    id: runRow.run.id,
+    runKind: 'pull_request_review' as const,
   };
 }
 
