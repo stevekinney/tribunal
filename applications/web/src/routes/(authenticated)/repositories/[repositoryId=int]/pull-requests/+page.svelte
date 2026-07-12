@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Page from '$lib/components/page.svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -124,6 +125,15 @@
     return applied;
   });
 
+  // Keep rapid, back-to-back filter changes additive while $app/state waits
+  // for the preceding navigation to land and update page.url.
+  let pendingNavigationTarget: URL | undefined = $state();
+
+  $effect(() => {
+    void page.url;
+    pendingNavigationTarget = undefined;
+  });
+
   /**
    * Navigate to the same page with updated filter query params, resetting
    * pagination to page 1 whenever a filter (not the page itself) changes.
@@ -132,7 +142,7 @@
     next: Record<string, string | undefined>,
     options?: { resetPage?: boolean },
   ): void {
-    const url = new URL(page.url);
+    const url = new URL(untrack(() => pendingNavigationTarget) ?? page.url);
     for (const [key, value] of Object.entries(next)) {
       if (value) {
         url.searchParams.set(key, value);
@@ -143,10 +153,12 @@
     if (options?.resetPage !== false) {
       url.searchParams.set('pr_page', '1');
     }
+    pendingNavigationTarget = url;
     goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true, invalidateAll: true });
   }
 
   function handleClearAll(): void {
+    pendingNavigationTarget = undefined;
     goto(page.url.pathname, { keepFocus: true, noScroll: true, invalidateAll: true });
   }
 
@@ -231,7 +243,7 @@
       type="text"
       class="branch-input"
       placeholder="main"
-      {value}
+      value={value ?? ''}
       onchange={(event) => onchange(event.currentTarget.value)}
     />
   </label>
@@ -250,7 +262,7 @@
       type="text"
       class="branch-input"
       placeholder="owner:branch"
-      {value}
+      value={value ?? ''}
       onchange={(event) => onchange(event.currentTarget.value)}
     />
   </label>

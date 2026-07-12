@@ -233,6 +233,18 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
     });
   });
 
+  it('preserves an in-flight facet change when another facet changes', async () => {
+    render(PullRequestsPage, { data: baseData });
+
+    await browserPage.getByLabelText('State').selectOptions('closed');
+    await browserPage.getByLabelText('Sort').selectOptions('created');
+
+    const secondNavigationTarget = mocks.goto.mock.calls.at(-1)?.[0];
+    expect(secondNavigationTarget).toContain('pr_state=closed');
+    expect(secondNavigationTarget).toContain('pr_sort=created');
+    expect(secondNavigationTarget).toContain('pr_page=1');
+  });
+
   it('navigates with a branch filter and resets to page 1', async () => {
     render(PullRequestsPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
