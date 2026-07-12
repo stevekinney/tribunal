@@ -223,7 +223,9 @@ describe('/webhooks page', () => {
     await expect.element(page.getByText('Triage issues')).toBeInTheDocument();
 
     await page.getByRole('button', { name: /Show details/ }).click();
-    expect(document.body.textContent).not.toContain('View run');
+    await expect
+      .element(page.getByRole('link', { name: 'View run' }))
+      .toHaveAttribute('href', '/runs/run:webhook:1');
   });
 
   it('shows a dispatch error as a visible failure, and a delivery with no matches as received-only', async () => {

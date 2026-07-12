@@ -16,6 +16,8 @@ import {
   tribunalRun,
   user,
   userReviewSettings,
+  webhookEvent,
+  webhookEventHandlerRun,
 } from '@tribunal/database/schema';
 import { eq } from 'drizzle-orm';
 import {
@@ -509,8 +511,17 @@ describe('review operator server helpers', () => {
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
   });
 
-  it('reports a clear error for run kinds without an inspector view instead of a false 404', async () => {
-    const { owner, otherUser } = await seedRepositoryOwnership();
+  it('inspects webhook event handler runs while preserving ownership checks', async () => {
+    const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
+    const [storedWebhookEvent] = await testDb.db
+      .insert(webhookEvent)
+      .values({
+        repositoryId: 9001,
+        eventType: 'issues',
+        action: 'opened',
+        payload: '{}',
+      })
+      .returning({ id: webhookEvent.id });
     await testDb.db.insert(tribunalRun).values({
       id: 'run_webhook_1',
       userId: owner.id,
@@ -518,24 +529,38 @@ describe('review operator server helpers', () => {
       runKind: 'webhook_event_handler',
       status: 'queued',
     });
-
-    // The run exists and is owned by `owner`, so this must not be reported
-    // as a plain "not found" -- that would be indistinguishable from a truly
-    // missing/nonexistent run id.
-    await expect(
-      withTestDatabase(() => getRunInspector(owner.id, 'run_webhook_1')),
-    ).rejects.toMatchObject({
-      status: 404,
-      body: { message: 'This run kind does not have an inspector view yet.' },
+    await testDb.db.insert(webhookEventHandlerRun).values({
+      runId: 'run_webhook_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      webhookEventId: storedWebhookEvent.id,
+      eventType: 'issues',
+      action: 'opened',
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_webhook_1',
+      userId: owner.id,
+      runId: 'run_webhook_1',
+      agentId: reviewAgent.id,
+      status: 'queued',
     });
 
-    // Ownership is still checked before revealing anything about the run,
-    // including its kind.
+    const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_webhook_1'));
+    expect(inspected).toMatchObject({
+      id: 'run_webhook_1',
+      runKind: 'webhook_event_handler',
+      webhookEventId: storedWebhookEvent.id,
+      eventType: 'issues',
+      action: 'opened',
+      repositoryOwner: 'lost-gradient',
+      repositoryName: 'tribunal',
+    });
+    expect(inspected.agentRuns).toHaveLength(1);
+
     await expect(
       withTestDatabase(() => getRunInspector(otherUser.id, 'run_webhook_1')),
     ).rejects.toMatchObject({ status: 403 });
 
-    // A genuinely nonexistent run id still reports plain "not found".
     await expect(
       withTestDatabase(() => getRunInspector(owner.id, 'run_does_not_exist')),
     ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });

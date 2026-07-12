@@ -147,6 +147,43 @@ describe('/runs/[runId] page', () => {
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');
   });
 
+  it('renders webhook event handler context without pull request controls', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          id: 'run_webhook_1',
+          runId: 'run_webhook_1',
+          runKind: 'webhook_event_handler',
+          userId: 1,
+          repositoryId: 9001,
+          webhookEventId: 42,
+          eventListenerId: 'listener_1',
+          deliveryId: 7,
+          eventType: 'issues',
+          action: 'opened',
+          status: 'queued',
+          workflowId: null,
+          sandboxId: null,
+          costEstimateUsd: '0',
+          startedAt: new Date('2026-06-17T12:00:00Z'),
+          finishedAt: null,
+          error: null,
+          repositoryOwner: 'lost-gradient',
+          repositoryName: 'tribunal',
+          replacementRunId: null,
+          agentRuns: [],
+        },
+      },
+    });
+
+    await expect.element(page.getByText('lost-gradient/tribunal · issues / opened')).toBeVisible();
+    await expect.element(page.getByText('Webhook event')).toBeVisible();
+    await expect.element(page.getByText('#42')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Open PR' })).not.toBeInTheDocument();
+  });
+
   it('streams run updates through agent_event transport state', async () => {
     let fallbackRefresh: TimerHandler | undefined;
     const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation((handler) => {
