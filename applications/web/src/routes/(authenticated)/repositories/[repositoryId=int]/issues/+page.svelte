@@ -12,6 +12,7 @@
   import { Table } from '@lostgradient/cinder/table';
   import { Pagination } from '@lostgradient/cinder/pagination';
   import { FacetedFilterBar } from '@lostgradient/cinder/faceted-filter-bar';
+  import { Input } from '@lostgradient/cinder/input';
   import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/faceted-filter-bar';
   import CircleDot from 'lucide-svelte/icons/circle-dot';
 
@@ -228,11 +229,11 @@
   value: string;
   onchange: (value: string) => void;
 })}
-  <input
-    type="text"
-    class="assignee-input"
+  <Input
+    id="issue-assignee-filter"
+    label="Assignee"
+    hideLabel
     placeholder="Assignee username"
-    aria-label="Assignee"
     value={value ?? ''}
     onchange={(event) => onchange(event.currentTarget.value)}
     onkeydown={(event) => {
@@ -361,17 +362,6 @@
 </Page>
 
 <style>
-  .assignee-input {
-    height: var(--cinder-control-height-sm, 2rem);
-    padding-inline: var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text);
-    font-size: var(--text-sm);
-    min-width: 10rem;
-  }
-
   .issue-title-cell {
     display: flex;
     flex-direction: column;
