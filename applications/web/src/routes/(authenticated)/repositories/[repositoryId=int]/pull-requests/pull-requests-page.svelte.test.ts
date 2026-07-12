@@ -204,6 +204,9 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
   it('does not show label, assignee, creator, mentioned, or free-text filter controls', async () => {
     render(PullRequestsPage, { data: { ...baseData, pullRequests: [samplePullRequest] } });
 
+    await expect
+      .element(browserPage.getByRole('search', { name: 'Pull request filters' }))
+      .toBeVisible();
     await expect.element(browserPage.getByLabelText('State')).toBeVisible();
     expect(browserPage.getByLabelText('Label').elements().length).toBe(0);
     expect(browserPage.getByLabelText('Assignee').elements().length).toBe(0);
@@ -223,10 +226,51 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
       expect.stringContaining('pr_state=closed'),
       expect.objectContaining({ invalidateAll: true }),
     );
+    expect(mocks.goto).toHaveBeenCalledWith(expect.stringContaining('pr_page=1'), {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: true,
+    });
+  });
+
+  it('navigates with a branch filter and resets to page 1', async () => {
+    render(PullRequestsPage, {
+      data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
+    });
+
+    const baseBranchInput = browserPage.getByLabelText('Base branch');
+    await baseBranchInput.fill('release');
+    await browserPage.getByLabelText('Head branch').click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(expect.stringContaining('pr_base=release'), {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: true,
+    });
     expect(mocks.goto).toHaveBeenCalledWith(
       expect.stringContaining('pr_page=1'),
       expect.anything(),
     );
+  });
+
+  it('clears all filters back to the pull request route', async () => {
+    mocks.svelteKitPage.url = new URL(
+      'http://localhost/repositories/1/pull-requests?pr_state=closed&pr_base=main',
+    );
+    render(PullRequestsPage, {
+      data: {
+        ...baseData,
+        filters: { ...baseData.filters, state: 'closed', base: 'main' },
+      },
+    });
+
+    await browserPage.getByRole('button', { name: 'Clear all filters' }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith('/repositories/1/pull-requests', {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: true,
+    });
   });
 
   it('preserves the base branch filter when changing the sort order', async () => {

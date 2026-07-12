@@ -7,8 +7,9 @@
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
+  import { FacetedFilterBar } from '@lostgradient/cinder/faceted-filter-bar';
+  import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/faceted-filter-bar';
   import { Pagination } from '@lostgradient/cinder/pagination';
-  import { Select } from '@lostgradient/cinder/select';
   import {
     GitPullRequest,
     GitMerge,
@@ -47,29 +48,81 @@
         : `Showing ${data.pullRequests.length} open ${data.pullRequests.length === 1 ? 'pull request' : 'pull requests'}`,
   );
 
-  const stateOptions = [
-    { value: 'open', label: 'Open' },
-    { value: 'closed', label: 'Closed' },
-    { value: 'all', label: 'All' },
-  ] as const;
-
-  const sortOptions = [
-    { value: 'updated', label: 'Updated' },
-    { value: 'created', label: 'Created' },
-    { value: 'popularity', label: 'Popularity' },
-    { value: 'long-running', label: 'Long-running' },
-  ] as const;
-
-  const directionOptions = [
-    { value: 'desc', label: 'Descending' },
-    { value: 'asc', label: 'Ascending' },
-  ] as const;
-
-  const perPageOptions: { value: string; label: string }[] = [
-    { value: '30', label: '30 per page' },
-    { value: '50', label: '50 per page' },
-    { value: '100', label: '100 per page' },
+  const facets: FacetDefinition[] = [
+    {
+      type: 'select',
+      key: 'pr_state',
+      label: 'State',
+      placeholder: 'Open',
+      options: [
+        { value: 'open', label: 'Open' },
+        { value: 'closed', label: 'Closed' },
+        { value: 'all', label: 'All' },
+      ],
+    },
+    {
+      type: 'select',
+      key: 'pr_sort',
+      label: 'Sort',
+      placeholder: 'Updated',
+      options: [
+        { value: 'updated', label: 'Updated' },
+        { value: 'created', label: 'Created' },
+        { value: 'popularity', label: 'Popularity' },
+        { value: 'long-running', label: 'Long-running' },
+      ],
+    },
+    {
+      type: 'select',
+      key: 'pr_direction',
+      label: 'Direction',
+      placeholder: 'Descending',
+      options: [
+        { value: 'desc', label: 'Descending' },
+        { value: 'asc', label: 'Ascending' },
+      ],
+    },
+    { type: 'custom', key: 'pr_base', label: 'Base branch', control: baseBranchControl },
+    { type: 'custom', key: 'pr_head', label: 'Head branch', control: headBranchControl },
+    {
+      type: 'select',
+      key: 'pr_per_page',
+      label: 'Page size',
+      placeholder: '30 per page',
+      options: [
+        { value: '30', label: '30 per page' },
+        { value: '50', label: '50 per page' },
+        { value: '100', label: '100 per page' },
+      ],
+    },
   ];
+
+  const appliedFilters = $derived.by(() => {
+    const applied: AppliedFilter[] = [];
+    if (data.filters.state !== DEFAULT_FILTERS.state) {
+      applied.push({ key: 'pr_state', value: data.filters.state, label: 'State' });
+    }
+    if (data.filters.sort !== DEFAULT_FILTERS.sort) {
+      applied.push({ key: 'pr_sort', value: data.filters.sort, label: 'Sort' });
+    }
+    if (data.filters.direction !== DEFAULT_FILTERS.direction) {
+      applied.push({ key: 'pr_direction', value: data.filters.direction, label: 'Direction' });
+    }
+    if (data.filters.base) {
+      applied.push({ key: 'pr_base', value: data.filters.base, label: 'Base branch' });
+    }
+    if (data.filters.head) {
+      applied.push({ key: 'pr_head', value: data.filters.head, label: 'Head branch' });
+    }
+    if (data.filters.perPage !== DEFAULT_FILTERS.perPage) {
+      applied.push({
+        key: 'pr_per_page',
+        value: String(data.filters.perPage),
+        label: 'Page size',
+      });
+    }
+    return applied;
+  });
 
   /**
    * Navigate to the same page with updated filter query params, resetting
@@ -95,6 +148,14 @@
 
   function handleClearAll(): void {
     goto(page.url.pathname, { keepFocus: true, noScroll: true, invalidateAll: true });
+  }
+
+  function handleFacetChange(key: string, value: string): void {
+    updateFilters({ [key]: value || undefined });
+  }
+
+  function handleFilterRemove(key: string): void {
+    updateFilters({ [key]: undefined });
   }
 
   let currentPage = $derived(data.filters.page);
@@ -157,6 +218,44 @@
   }
 </script>
 
+{#snippet baseBranchControl({
+  value,
+  onchange,
+}: {
+  value: string;
+  onchange: (value: string) => void;
+})}
+  <label class="branch-filter">
+    <span class="branch-filter-label">Base branch</span>
+    <input
+      type="text"
+      class="branch-input"
+      placeholder="main"
+      {value}
+      onchange={(event) => onchange(event.currentTarget.value)}
+    />
+  </label>
+{/snippet}
+
+{#snippet headBranchControl({
+  value,
+  onchange,
+}: {
+  value: string;
+  onchange: (value: string) => void;
+})}
+  <label class="branch-filter">
+    <span class="branch-filter-label">Head branch</span>
+    <input
+      type="text"
+      class="branch-input"
+      placeholder="owner:branch"
+      {value}
+      onchange={(event) => onchange(event.currentTarget.value)}
+    />
+  </label>
+{/snippet}
+
 {#snippet pageActions()}
   <Link href={`/repositories/${data.repository.id}/issues`}>Issues</Link>
   <Button href={`/repositories/${data.repository.id}/events`} variant="secondary" size="sm">
@@ -174,63 +273,15 @@
 {/snippet}
 
 <Page title="Pull requests" {subtitle} {breadcrumbs} actions={pageActions}>
-  <div class="pull-request-filters" role="search" aria-label="Pull request filters">
-    <Select
-      id="pr-filter-state"
-      label="State"
-      value={data.filters.state}
-      options={stateOptions}
-      onchange={(event: Event) =>
-        updateFilters({ pr_state: (event.currentTarget as HTMLSelectElement).value })}
-    />
-    <Select
-      id="pr-filter-sort"
-      label="Sort"
-      value={data.filters.sort}
-      options={sortOptions}
-      onchange={(event: Event) =>
-        updateFilters({ pr_sort: (event.currentTarget as HTMLSelectElement).value })}
-    />
-    <Select
-      id="pr-filter-direction"
-      label="Direction"
-      value={data.filters.direction}
-      options={directionOptions}
-      onchange={(event: Event) =>
-        updateFilters({ pr_direction: (event.currentTarget as HTMLSelectElement).value })}
-    />
-    <label class="branch-filter">
-      <span class="branch-filter-label">Base branch</span>
-      <input
-        type="text"
-        class="branch-input"
-        placeholder="main"
-        value={data.filters.base ?? ''}
-        onchange={(event) => updateFilters({ pr_base: event.currentTarget.value || undefined })}
-      />
-    </label>
-    <label class="branch-filter">
-      <span class="branch-filter-label">Head branch</span>
-      <input
-        type="text"
-        class="branch-input"
-        placeholder="owner:branch"
-        value={data.filters.head ?? ''}
-        onchange={(event) => updateFilters({ pr_head: event.currentTarget.value || undefined })}
-      />
-    </label>
-    <Select
-      id="pr-filter-per-page"
-      label="Page size"
-      value={String(data.filters.perPage)}
-      options={perPageOptions}
-      onchange={(event: Event) =>
-        updateFilters({ pr_per_page: (event.currentTarget as HTMLSelectElement).value })}
-    />
-    {#if isFiltered}
-      <Button variant="secondary" size="sm" onclick={handleClearAll}>Clear filters</Button>
-    {/if}
-  </div>
+  <FacetedFilterBar
+    aria-label="Pull request filters"
+    showSearch={false}
+    {facets}
+    {appliedFilters}
+    onfacetchange={handleFacetChange}
+    onfilterremove={handleFilterRemove}
+    onclearall={handleClearAll}
+  />
 
   {#if data.pullRequests.length === 0}
     <Card padding="none">
@@ -322,14 +373,6 @@
 </Page>
 
 <style>
-  .pull-request-filters {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: var(--space-3);
-    margin-bottom: var(--space-4);
-  }
-
   .branch-filter {
     display: flex;
     flex-direction: column;
