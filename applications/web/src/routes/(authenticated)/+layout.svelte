@@ -147,8 +147,11 @@
 </div>
 
 <style>
-  :global(.app-sidebar:not(.cinder-sidebar--mobile)) {
-    inline-size: 13.5rem;
+  /* Keep this aligned with Cinder Sidebar's desktop breakpoint. */
+  @media (min-width: 48rem) {
+    :global(.app-sidebar) {
+      inline-size: 13.5rem;
+    }
   }
 
   /* ============================================================
