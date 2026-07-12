@@ -139,13 +139,13 @@ describe('/repositories/[repositoryId]/events page', () => {
     });
 
     await expect
-      .element(page.getByRole('alertdialog', { name: 'Delete event listener' }))
+      .element(page.getByRole('dialog', { name: 'Delete event listener' }))
       .not.toBeInTheDocument();
 
     await page.getByRole('button', { name: 'Delete Triage issues' }).click();
 
     await expect
-      .element(page.getByRole('alertdialog', { name: 'Delete event listener' }))
+      .element(page.getByRole('dialog', { name: 'Delete event listener' }))
       .toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
   });
