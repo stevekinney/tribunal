@@ -28,7 +28,7 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page).toHaveURL(`/repositories/${session.repository.id}/settings`);
   await expect(page.getByRole('heading', { name: 'Repository settings' })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Ignore globs' })).toBeVisible();
-  await expect(page.getByRole('switch', { name: 'Remove security-review' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Remove security-review' })).toBeChecked();
 
   await page.goto('/agents');
   await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();

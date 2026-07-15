@@ -156,12 +156,12 @@ describe('/repositories/[repositoryId]/settings page', () => {
       .toHaveAttribute('href', '/agents/agent_2');
   });
 
-  it('renders enabled assigned agents as a checked, togglable switch', async () => {
+  it('renders enabled assigned agents as a checked checkbox', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const toggle = page.getByRole('switch', { name: 'Remove security' });
-    await expect.element(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect.element(toggle).not.toHaveAttribute('aria-disabled', 'true');
+    const checkbox = page.getByRole('checkbox', { name: 'Remove security' });
+    await expect.element(checkbox).toBeChecked();
+    await expect.element(checkbox).not.toBeDisabled();
   });
 
   it('keeps disabled assigned agents visible and removable', async () => {
@@ -180,26 +180,26 @@ describe('/repositories/[repositoryId]/settings page', () => {
       params: { repositoryId: '101' },
     });
 
-    const toggle = page.getByRole('switch', { name: 'Remove documentation' });
-    await expect.element(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect.element(toggle).not.toBeDisabled();
+    const checkbox = page.getByRole('checkbox', { name: 'Remove documentation' });
+    await expect.element(checkbox).toBeChecked();
+    await expect.element(checkbox).not.toBeDisabled();
     await expect
       .element(page.getByText('Disabled; turn off to remove it from this repository.'))
       .toBeVisible();
   });
 
-  it('renders enabled unassigned agents as an unchecked, togglable switch', async () => {
+  it('renders enabled unassigned agents as an unchecked checkbox', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const toggle = page.getByRole('switch', { name: 'Add performance' });
-    await expect.element(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect.element(toggle).not.toBeDisabled();
+    const checkbox = page.getByRole('checkbox', { name: 'Add performance' });
+    await expect.element(checkbox).not.toBeChecked();
+    await expect.element(checkbox).not.toBeDisabled();
   });
 
   it('toggling an enabled unassigned agent on adds its id to the submitted agentIds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    await page.getByRole('switch', { name: 'Add performance' }).click();
+    await page.getByRole('checkbox', { name: 'Add performance' }).click();
     await page.getByRole('button', { name: 'Save settings' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
@@ -212,14 +212,14 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('toggling an enabled assigned agent off removes its id from the submitted agentIds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    await page.getByRole('switch', { name: 'Remove security' }).click();
+    await page.getByRole('checkbox', { name: 'Remove security' }).click();
     await page.getByRole('button', { name: 'Save settings' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual([]);
   });
 
-  it('disables the toggle for a disabled unassigned agent with helper text', async () => {
+  it('disables the checkbox for a disabled unassigned agent with helper text', async () => {
     render(SettingsPage, {
       data: {
         ...baseData,
@@ -229,8 +229,8 @@ describe('/repositories/[repositoryId]/settings page', () => {
       params: { repositoryId: '101' },
     });
 
-    const toggle = page.getByRole('switch', { name: 'Add style' });
-    await expect.element(toggle).toBeDisabled();
+    const checkbox = page.getByRole('checkbox', { name: 'Add style' });
+    await expect.element(checkbox).toBeDisabled();
     await expect
       .element(page.getByText('Disabled agents cannot be assigned until re-enabled.'))
       .toBeVisible();
@@ -306,22 +306,22 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it('disables agent toggles while a save is in flight so pending edits cannot race the request', async () => {
+  it('disables agent checkboxes while a save is in flight so pending edits cannot race the request', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const toggle = page.getByRole('switch', { name: 'Remove security' });
-    await expect.element(toggle).not.toBeDisabled();
+    const checkbox = page.getByRole('checkbox', { name: 'Remove security' });
+    await expect.element(checkbox).not.toBeDisabled();
 
     await page.getByRole('button', { name: 'Save settings' }).click();
 
-    await expect.element(toggle).toBeDisabled();
+    await expect.element(checkbox).toBeDisabled();
 
     await enhancedFormTesting.onSubmitted?.({
       result: { type: 'success', status: 200, data: { success: true } },
       update: vi.fn(),
     });
 
-    await expect.element(toggle).not.toBeDisabled();
+    await expect.element(checkbox).not.toBeDisabled();
   });
 
   it('disables the ignore-globs tag input while a save is in flight so pending edits cannot race the request', async () => {

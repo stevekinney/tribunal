@@ -61,4 +61,49 @@ describe('event-listener-form', () => {
 
     await expect.element(page.getByLabelText('Action')).toHaveValue('archaic_action');
   });
+
+  it('uses a checkbox for the deferred enabled value', async () => {
+    render(EventListenerForm, {
+      mode: 'new',
+      listener: null,
+      listenerFilters: {},
+      agents,
+      eventTypeOptions,
+      actionsByEventType,
+      form: null,
+      cancelHref: '/repositories/42/events',
+    });
+
+    const enabledCheckbox = page.getByRole('checkbox', { name: 'Enabled' });
+    await expect.element(enabledCheckbox).toBeChecked();
+    await expect.element(enabledCheckbox).toHaveAttribute('name', 'enabled');
+  });
+
+  it('uses a checkbox for invalid-filter acknowledgement and preserves explicit false submission', async () => {
+    const { container } = render(EventListenerForm, {
+      mode: 'edit',
+      listener: null,
+      listenerFilters: {},
+      listenerFiltersInvalid: true,
+      agents,
+      eventTypeOptions,
+      actionsByEventType,
+      form: null,
+      cancelHref: '/repositories/42/events',
+    });
+
+    const acknowledgement = page.getByRole('checkbox', {
+      name: 'I understand this replaces the invalid filters below.',
+    });
+    await expect.element(acknowledgement).not.toBeChecked();
+    expect(
+      container.querySelector<HTMLInputElement>('input[name="acknowledgeFiltersReset"]')?.value,
+    ).toBe('false');
+
+    await acknowledgement.click();
+
+    expect(
+      container.querySelector<HTMLInputElement>('input[name="acknowledgeFiltersReset"]')?.value,
+    ).toBe('true');
+  });
 });

@@ -6,10 +6,10 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
+  import { Checkbox } from '@lostgradient/cinder/checkbox';
   import { FormField } from '@lostgradient/cinder/form-field';
   import { Link } from '@lostgradient/cinder/link';
   import { TagInput } from '@lostgradient/cinder/tag-input';
-  import { Toggle } from '@lostgradient/cinder/toggle';
   import Save from 'lucide-svelte/icons/save';
   import type { PageProps } from './$types';
 
@@ -62,7 +62,7 @@
           // in place with the error alert rendered from `form?.error`.
           if (result.type === 'error') return;
           // Never reset the form: TagInput's committed tags and each agent's
-          // Toggle checked state are local component state that must reflect
+          // Checkbox checked state is local component state that must reflect
           // exactly what was just submitted, not the values captured at mount.
           await update({ reset: false });
         } finally {
@@ -120,13 +120,12 @@
                   {/if}
                 </p>
               {/if}
-              <Toggle
+              <Checkbox
                 id="repository-agent-{agent.id}"
                 name="agentIds"
                 value={agent.id}
                 checked={selected}
-                label={selected ? `Remove ${agent.slug}` : `Add ${agent.slug}`}
-                hideLabel
+                aria-label={selected ? `Remove ${agent.slug}` : `Add ${agent.slug}`}
                 disabled={!canToggle || saving}
                 onValueChange={(next) => {
                   const nextSelectedAgentIds = new Set(selectedAgentIds);
