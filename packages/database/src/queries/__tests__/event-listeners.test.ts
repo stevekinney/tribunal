@@ -316,6 +316,51 @@ describe('deleteEventListener', () => {
     const found = await getEventListener(testDatabase.db, user.id, repository.id, listener.id);
     expect(found).not.toBeNull();
   });
+
+  it('preserves delivery history with immutable listener details', async () => {
+    const { user, repository, testAgent } = await createFixture();
+    const listener = await createEventListener(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      name: 'Keep my history',
+      eventType: 'issues',
+      agentId: testAgent.id,
+    });
+    const [event] = await testDatabase.db
+      .insert(webhookEvent)
+      .values({
+        eventType: 'issues',
+        action: 'opened',
+        deliveryId: 'delivery-preserved-history',
+        payload: '{}',
+        repositoryId: repository.id,
+      })
+      .returning();
+    const [delivery] = await testDatabase.db
+      .insert(eventListenerDelivery)
+      .values({
+        listenerId: listener.id,
+        listenerUserId: user.id,
+        listenerName: listener.name,
+        webhookEventId: event.id,
+        status: 'succeeded',
+      })
+      .returning();
+
+    const deleted = await deleteEventListener(testDatabase.db, user.id, repository.id, listener.id);
+    const [preservedDelivery] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, delivery.id));
+
+    expect(deleted).toBe(true);
+    expect(preservedDelivery).toMatchObject({
+      listenerId: null,
+      listenerUserId: user.id,
+      listenerName: 'Keep my history',
+      status: 'succeeded',
+    });
+  });
 });
 
 describe('listEventListenersForRepository', () => {
@@ -591,7 +636,13 @@ describe('listEventListenersWithProgressForRepository', () => {
 
     const [older] = await testDatabase.db
       .insert(eventListenerDelivery)
-      .values({ listenerId: listener.id, webhookEventId: event.id, status: 'abandoned' })
+      .values({
+        listenerId: listener.id,
+        listenerUserId: user.id,
+        listenerName: listener.name,
+        webhookEventId: event.id,
+        status: 'abandoned',
+      })
       .returning();
 
     // Older delivery, inserted first -- must not shadow the newer one below.
@@ -610,6 +661,8 @@ describe('listEventListenersWithProgressForRepository', () => {
       .returning();
     await testDatabase.db.insert(eventListenerDelivery).values({
       listenerId: listener.id,
+      listenerUserId: user.id,
+      listenerName: listener.name,
       webhookEventId: event2.id,
       status: 'succeeded',
       runId: run.id,

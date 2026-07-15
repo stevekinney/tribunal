@@ -205,8 +205,10 @@ describe('/webhooks page', () => {
               hasError: false,
               matches: [
                 {
+                  deliveryId: 1,
                   listenerId: 'listener_1',
                   listenerName: 'Triage issues',
+                  listenerDeleted: false,
                   deliveryStatus: 'succeeded',
                   status: 'running',
                   runId: 'run:webhook:1',
@@ -242,8 +244,10 @@ describe('/webhooks page', () => {
               hasError: true,
               matches: [
                 {
+                  deliveryId: 2,
                   listenerId: 'listener_2',
                   listenerName: 'Flaky listener',
+                  listenerDeleted: false,
                   deliveryStatus: 'abandoned',
                   status: 'failed',
                   runId: null,
@@ -272,6 +276,42 @@ describe('/webhooks page', () => {
     await page.getByRole('button', { name: /Show details/ }).click();
     await expect
       .element(page.getByText('No event listeners matched this delivery.'))
+      .toBeInTheDocument();
+  });
+
+  it('labels preserved history for a deleted listener', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [
+          createEvent({
+            listenerProgress: {
+              receivedOnly: false,
+              matchCount: 1,
+              matchedListenerNames: ['Former listener'],
+              status: 'cancelled',
+              hasError: false,
+              matches: [
+                {
+                  deliveryId: 3,
+                  listenerId: null,
+                  listenerName: 'Former listener',
+                  listenerDeleted: true,
+                  deliveryStatus: 'pending',
+                  status: 'cancelled',
+                  runId: null,
+                  lastError: null,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    });
+
+    await expect.element(page.getByText('Cancelled')).toBeInTheDocument();
+    await page.getByRole('button', { name: /Show details/ }).click();
+    await expect
+      .element(page.getByText('Former listener (deleted)', { exact: true }))
       .toBeInTheDocument();
   });
 

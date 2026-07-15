@@ -83,7 +83,7 @@ async function createFixture() {
 
 describe('insertPendingEventListenerDeliveries', () => {
   it('inserts a pending row per matched listener', async () => {
-    const { listener, event } = await createFixture();
+    const { user, listener, event } = await createFixture();
 
     const inserted = await insertPendingEventListenerDeliveries(
       testDatabase.db,
@@ -94,6 +94,8 @@ describe('insertPendingEventListenerDeliveries', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0]?.status).toBe('pending');
     expect(inserted[0]?.listenerId).toBe(listener.id);
+    expect(inserted[0]?.listenerUserId).toBe(user.id);
+    expect(inserted[0]?.listenerName).toBe(listener.name);
     expect(inserted[0]?.webhookEventId).toBe(event.id);
     expect(inserted[0]?.attemptCount).toBe(0);
   });
@@ -486,6 +488,12 @@ describe('deriveEventListenerDisplayStatus', () => {
   it('maps an unclaimed or claimed-but-undispatched delivery to matched', () => {
     expect(deriveEventListenerDisplayStatus('pending', null)).toBe('matched');
     expect(deriveEventListenerDisplayStatus('running', null)).toBe('matched');
+  });
+
+  it('maps undispatched work for a deleted listener to cancelled', () => {
+    expect(deriveEventListenerDisplayStatus('pending', null, true)).toBe('cancelled');
+    expect(deriveEventListenerDisplayStatus('running', null, true)).toBe('cancelled');
+    expect(deriveEventListenerDisplayStatus('retryable', null, true)).toBe('cancelled');
   });
 
   it('maps a retryable, abandoned, or failed dispatch to failed', () => {

@@ -15,11 +15,40 @@ export interface EphemeralBranch {
   cleanup: () => Promise<void>;
 }
 
+interface ProjectBranch {
+  id: string;
+  name: string;
+  primary?: boolean;
+}
+
+/** Select an explicit branch, or the project's current primary branch by default. */
+export function selectParentBranch(
+  branches: ProjectBranch[],
+  requestedBranch?: string,
+): ProjectBranch {
+  if (requestedBranch?.startsWith('br-')) {
+    return { id: requestedBranch, name: requestedBranch, primary: false };
+  }
+
+  const branch = requestedBranch
+    ? branches.find(({ name }) => name === requestedBranch)
+    : branches.find(({ primary }) => primary);
+
+  if (!branch) {
+    if (requestedBranch) {
+      throw new Error(`Parent branch "${requestedBranch}" not found`);
+    }
+    throw new Error('Primary branch not found');
+  }
+
+  return branch;
+}
+
 /**
  * Create an ephemeral Neon branch for migration testing.
  *
  * @param projectId - Neon project ID
- * @param parentBranch - Parent branch name or ID (defaults to 'main')
+ * @param parentBranch - Parent branch name or ID (defaults to the project's primary branch)
  * @param namePrefix - Branch name prefix (defaults to 'ci-migration-test')
  * @returns EphemeralBranch with connection URI and cleanup function
  *
@@ -36,7 +65,7 @@ export interface EphemeralBranch {
  */
 export async function createEphemeralBranch(
   projectId: string,
-  parentBranch: string = process.env.NEON_PARENT_BRANCH || 'main',
+  parentBranch: string | undefined = process.env.NEON_PARENT_BRANCH,
   namePrefix: string = 'ci-migration-test',
 ): Promise<EphemeralBranch> {
   const apiKey = process.env.NEON_API_KEY;
@@ -48,30 +77,21 @@ export async function createEphemeralBranch(
     apiKey,
   });
 
-  // Resolve parent branch ID: accept either an ID (br-...) or a branch name
-  const parentBranchId = parentBranch.startsWith('br-')
-    ? parentBranch
-    : await (async () => {
-        const branchesResponse = await client.listProjectBranches({ projectId });
-        const match = branchesResponse.data.branches.find((branch) => branch.name === parentBranch);
-        if (!match) {
-          throw new Error(`Parent branch "${parentBranch}" not found for project ${projectId}`);
-        }
-        return match.id;
-      })();
+  const branchesResponse = await client.listProjectBranches({ projectId });
+  const selectedParentBranch = selectParentBranch(branchesResponse.data.branches, parentBranch);
 
   // Create branch with timestamp for traceability
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const branchName = `${namePrefix}-${timestamp}`;
 
   console.log(
-    `Creating ephemeral branch: ${branchName} from parent: ${parentBranch} (id: ${parentBranchId})`,
+    `Creating ephemeral branch: ${branchName} from parent: ${selectedParentBranch.name} (id: ${selectedParentBranch.id})`,
   );
 
   const createResponse = await client.createProjectBranch(projectId, {
     branch: {
       name: branchName,
-      parent_id: parentBranchId,
+      parent_id: selectedParentBranch.id,
     },
     endpoints: [
       {

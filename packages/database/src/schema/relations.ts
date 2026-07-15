@@ -95,6 +95,10 @@ export const eventListenerDeliveryRelations = relations(eventListenerDelivery, (
     fields: [eventListenerDelivery.listenerId],
     references: [repositoryEventListener.id],
   }),
+  listenerUser: one(user, {
+    fields: [eventListenerDelivery.listenerUserId],
+    references: [user.id],
+  }),
   webhookEvent: one(webhookEvent, {
     fields: [eventListenerDelivery.webhookEventId],
     references: [webhookEvent.id],

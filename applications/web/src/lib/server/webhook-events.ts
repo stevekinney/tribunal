@@ -15,7 +15,6 @@ import { db } from '$lib/server/database';
 import {
   eventListenerDelivery,
   repository,
-  repositoryEventListener,
   tribunalRun,
   webhookEvent,
 } from '@tribunal/database/schema';
@@ -85,8 +84,10 @@ export interface WebhookEventListResult {
 
 /** One event listener that matched a webhook event, and its dispatch/run progress. */
 export interface WebhookEventListenerMatch {
-  listenerId: string;
+  deliveryId: number;
+  listenerId: string | null;
   listenerName: string;
+  listenerDeleted: boolean;
   /** `event_listener_delivery.status`: pending | running | succeeded | failed | retryable | abandoned. */
   deliveryStatus: string;
   /** Small shared display vocabulary -- see {@link deriveEventListenerDisplayStatus}. */
@@ -229,37 +230,40 @@ async function loadListenerProgressByEventId(
 
   const rows = await db
     .select({
+      deliveryId: eventListenerDelivery.id,
       webhookEventId: eventListenerDelivery.webhookEventId,
       listenerId: eventListenerDelivery.listenerId,
-      listenerName: repositoryEventListener.name,
+      listenerName: eventListenerDelivery.listenerName,
       deliveryStatus: eventListenerDelivery.status,
       runId: eventListenerDelivery.runId,
       lastError: eventListenerDelivery.lastError,
       runStatus: tribunalRun.status,
     })
     .from(eventListenerDelivery)
-    .innerJoin(
-      repositoryEventListener,
-      eq(eventListenerDelivery.listenerId, repositoryEventListener.id),
-    )
     .leftJoin(tribunalRun, eq(eventListenerDelivery.runId, tribunalRun.id))
     .where(
       and(
         inArray(eventListenerDelivery.webhookEventId, eventIds),
-        eq(repositoryEventListener.userId, userId),
+        eq(eventListenerDelivery.listenerUserId, userId),
       ),
     )
     // Deterministic order -- without it, `matchedListenerNames` (and the
     // expanded-row list) can jitter between requests since Postgres makes no
     // ordering guarantee for an unordered join.
-    .orderBy(repositoryEventListener.name);
+    .orderBy(eventListenerDelivery.listenerName, eventListenerDelivery.id);
 
   for (const row of rows) {
     const match: WebhookEventListenerMatch = {
+      deliveryId: row.deliveryId,
       listenerId: row.listenerId,
       listenerName: row.listenerName,
+      listenerDeleted: row.listenerId === null,
       deliveryStatus: row.deliveryStatus,
-      status: deriveEventListenerDisplayStatus(row.deliveryStatus, row.runStatus),
+      status: deriveEventListenerDisplayStatus(
+        row.deliveryStatus,
+        row.runStatus,
+        row.listenerId === null,
+      ),
       runId: row.runId,
       lastError: row.lastError,
     };

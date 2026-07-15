@@ -193,10 +193,14 @@
                         </p>
                       {:else}
                         <ul class="listener-match-list">
-                          {#each event.listenerProgress.matches as match (match.listenerId)}
+                          {#each event.listenerProgress.matches as match (match.deliveryId)}
                             <li>
                               <div class="listener-match-header">
-                                <span class="listener-match-name">{match.listenerName}</span>
+                                <span class="listener-match-name">
+                                  {match.listenerDeleted
+                                    ? `${match.listenerName} (deleted)`
+                                    : match.listenerName}
+                                </span>
                                 <Badge size="sm" variant={progressVariant(match.status)}>
                                   {progressLabel(match.status)}
                                 </Badge>
