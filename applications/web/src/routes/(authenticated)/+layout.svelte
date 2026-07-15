@@ -42,6 +42,19 @@
   // → desktop default) keeps it reactive across resizes; we re-sync only when the
   // breakpoint is actually crossed so a manual toggle within a breakpoint sticks.
   const isNarrowViewport = new MediaQuery(SIDEBAR_MOBILE_MEDIA_QUERY, false);
+  const mobileLayoutStyles = `
+    #authenticated-shell {
+      flex-direction: column;
+    }
+
+    #authenticated-shell > .mobile-topbar {
+      display: flex;
+    }
+
+    #authenticated-shell .app-sidebar {
+      inline-size: auto;
+    }
+  `;
   let collapsed = $state(isNarrowViewport.current);
   let lastNarrow = isNarrowViewport.current;
   $effect(() => {
@@ -52,9 +65,15 @@
   });
 </script>
 
+<svelte:head>
+  <svelte:element this={'style'} media={SIDEBAR_MOBILE_MEDIA_QUERY}
+    >{mobileLayoutStyles}</svelte:element
+  >
+</svelte:head>
+
 <SkipLinks />
 
-<div class="app-layout" data-mobile={isNarrowViewport.current}>
+<div id="authenticated-shell" class="app-layout">
   <!--
     Mobile top bar: shown only on narrow viewports where the Sidebar renders as
     a Drawer overlay. The hamburger button opens the drawer by setting
@@ -148,7 +167,7 @@
 </div>
 
 <style>
-  .app-layout[data-mobile='false'] :global(.app-sidebar) {
+  .app-layout :global(.app-sidebar) {
     inline-size: 13.5rem;
   }
 
@@ -184,17 +203,6 @@
 
   .mobile-topbar {
     display: none;
-  }
-
-  /* On narrow viewports the Sidebar renders as a Drawer overlay.
-   * Flip the page shell to a column and show the top bar.
-   * height: 100vh + overflow: hidden carry over — topbar at top, main scrolls. */
-  .app-layout[data-mobile='true'] {
-    flex-direction: column;
-  }
-
-  .app-layout[data-mobile='true'] .mobile-topbar {
-    display: flex;
     align-items: center;
     gap: var(--space-3);
     padding-block: var(--space-3);

@@ -8,9 +8,10 @@ const layout = readFileSync(resolve(directory, './+layout.svelte'), 'utf-8');
 
 describe('authenticated layout sidebar styles', () => {
   it("uses Cinder's public mobile media query contract for layout state", () => {
-    expect(layout).toContain('SIDEBAR_MOBILE_MEDIA_QUERY');
-    expect(layout).toContain('new MediaQuery(SIDEBAR_MOBILE_MEDIA_QUERY, false)');
-    expect(layout).toContain('data-mobile={isNarrowViewport.current}');
+    expect(layout).toMatch(/new MediaQuery\(\s*SIDEBAR_MOBILE_MEDIA_QUERY,\s*false\s*\)/);
+    expect(layout).toMatch(
+      /<svelte:element\s+this={'style'}\s+media={SIDEBAR_MOBILE_MEDIA_QUERY}\s*>/,
+    );
     expect(layout).not.toContain('47.99rem');
     expect(layout).not.toContain('48rem');
     expect(layout).not.toContain('cinder-sidebar--mobile');
