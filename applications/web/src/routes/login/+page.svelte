@@ -58,9 +58,8 @@
       <Steps steps={loginSteps} currentStep={0} orientation="vertical" label="Onboarding steps" />
 
       <p class="trust-line">
-        Tribunal requests read access to issues and repository metadata, plus write access to
-        checks, code, code quality, merge queues, pull requests, repository hooks, projects, and
-        workflows.
+        Tribunal requests read access to Issues and Metadata, plus write access to Checks, Code
+        quality, Contents, Merge queues, Projects, Pull requests, Webhooks, and Workflows.
       </p>
     </aside>
 
