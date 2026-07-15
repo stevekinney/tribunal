@@ -10,8 +10,8 @@
  * Loop shape (ported from depict's Temporal installationSyncWorkflow):
  *   1. Sleep 15 s (debounce — lets rapid signals accumulate).
  *   2. Run the sync activity (refreshInstallationRepositories).
- *   3. Non-blocking race: did another sync_requested arrive during the sleep
- *      or sync? If yes, loop for another sync. If no, return.
+ *   3. Bounded handoff race: did another sync_requested arrive during the
+ *      sleep, sync, or completion handoff? If yes, loop. If no, return.
  *
  * continueAsNew is DROPPED intentionally. Weft's checkpoint model bounds
  * history per run; the workflow terminates naturally when the signal buffer
@@ -76,6 +76,12 @@ const syncRequestedSignal = signal<SyncRequestedPayload>('sync_requested');
 
 /** Leading-sleep debounce window. Matches depict's DEBOUNCE_MS=15000. */
 const DEBOUNCE_DURATION = '15s';
+
+/**
+ * Keeps the workflow signalable briefly while handing off to completion.
+ * Weft #693 tracks making this signal-versus-terminal boundary atomic.
+ */
+const DRAIN_DURATION = '1s';
 
 // ============================================================================
 // ACTIVITY DEFINITIONS
@@ -398,16 +404,19 @@ export const installationSyncWorkflow = workflow({
         return;
       }
 
-      // Did another sync_requested arrive while we were syncing? Weft 0.10
-      // checks the durable signal buffer before allowing a literal zero-duration
-      // sleep to win, so this is non-blocking without dropping buffered signals.
+      // Drain signals buffered during the sync and keep the waiter live briefly
+      // while handing off to completion. Weft 0.10 guarantees buffered signals
+      // beat an expired timer, but a zero sleep would still leave a window where
+      // startOrSignal targets this live run after the empty-buffer decision and
+      // before terminal state commits. The bounded wait narrows that upstream
+      // atomicity gap until Weft #693 lands.
       const drainResult = yield* ctx.race([
         ctx.waitForSignal('sync_requested'),
-        ctx.sleep(0),
+        ctx.sleep(DRAIN_DURATION),
       ] as const);
 
       if (drainResult === undefined) {
-        // No buffered signal is waiting; exit immediately.
+        // No signal arrived during the bounded handoff; complete the run.
         ctx.log?.info('installation-sync: no pending signals, workflow complete', {
           installationId,
         });
