@@ -1,6 +1,6 @@
 import { page } from 'vitest/browser';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from 'vitest-browser-svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render } from 'vitest-browser-svelte';
 import UserMenu from './user-menu.svelte';
 
 const TEST_USER = { username: 'testuser', avatarUrl: null };
@@ -8,6 +8,10 @@ const TEST_USER = { username: 'testuser', avatarUrl: null };
 describe('UserMenu', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it('renders the user avatar trigger button', async () => {
@@ -26,9 +30,13 @@ describe('UserMenu', () => {
     const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
     await expect.element(signOutItem).toBeInTheDocument();
 
-    // Spy on form submission
-    const submitSpy = vi.fn((e: Event) => e.preventDefault());
     const form = document.querySelector<HTMLFormElement>('form[action="/logout"]')!;
+    expect(form.id).toBe('test-menu-logout-form');
+    expect(form.method).toBe('post');
+    await expect.element(signOutItem).toHaveAttribute('type', 'submit');
+    await expect.element(signOutItem).toHaveAttribute('form', form.id);
+
+    const submitSpy = vi.fn((e: Event) => e.preventDefault());
     form.addEventListener('submit', submitSpy);
 
     await signOutItem.click();
