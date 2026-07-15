@@ -6,7 +6,7 @@
  * stubbed via vi.mock so no Octokit / DB access occurs.
  *
  * Each test maps to a specific fix described in the workflow source:
- *   FIX 1 — kind discriminant drives close/event branching
+ *   FIX 1 — keyed race identity drives close/event branching
  *   FIX 2 — analysisGeneration is threaded into every activity call
  *   FIX 3 — supersede re-enters debounce, not phase (A)
  *   FIX 4 — analysisCount incremented only after successful yield*
@@ -56,10 +56,9 @@ const BASE_INPUT = {
 
 const WORKFLOW_ID = 'pull-request-orchestrator:42:7';
 
-/** Minimal pull_request_event payload with required discriminant. */
+/** Minimal pull_request_event payload. */
 function makeEvent(overrides: Record<string, unknown> = {}) {
   return {
-    kind: 'event' as const,
     workspaceId: BASE_INPUT.workspaceId,
     repositoryId: BASE_INPUT.repositoryId,
     prNumber: BASE_INPUT.prNumber,
@@ -71,9 +70,9 @@ function makeEvent(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** pull_request_closed payload with required discriminant. */
+/** pull_request_closed payload. */
 function makeClose(merged: boolean, actorLogin?: string) {
-  return { kind: 'closed' as const, merged, actorLogin };
+  return { merged, actorLogin };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -197,11 +196,10 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
   /**
    * FIX 1 + close-terminates-loop.
    *
-   * A pull_request_closed signal (kind:'closed') sent to a running orchestrator
+   * A pull_request_closed signal sent to a running orchestrator
    * must drive it to a terminal result with completionReason 'pr_closed' or
-   * 'pr_merged'. This test would fail if the kind discriminant were missing or
-   * broken — the close branch would never win the race and the workflow would
-   * park indefinitely.
+   * 'pr_merged'. This test proves the keyed race identifies the close branch
+   * without requiring a workflow-specific discriminant in the payload.
    */
   it('terminates with pr_closed reason when a closed signal (merged:false) is received', async () => {
     // Start the workflow and deliver an initial event so it's running.
@@ -231,7 +229,7 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
   /**
    * FIX 1 — debounce parks, not instant analysis.
    *
-   * A pull_request_event (kind:'event') must NOT drive the workflow to completion
+   * A pull_request_event must NOT drive the workflow to completion
    * immediately — the workflow should park in the debounce phase (waiting for the
    * 30s timer or a superseding event). Asserting that the run is still 'running'
    * shortly after start proves the debounce is in effect rather than the workflow
@@ -259,7 +257,7 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
    * FIX 1 — merged:true close produces 'pr_merged'; merged:false → 'pr_closed'.
    *
    * The completionReason is derived from closedPayload.merged. This tests both
-   * discriminant branches to ensure neither is hardcoded.
+   * keyed close-branch outcomes to ensure neither is hardcoded.
    */
   it('terminates with pr_merged reason when a closed signal (merged:true) is received', async () => {
     await startOrSignalEvent();
