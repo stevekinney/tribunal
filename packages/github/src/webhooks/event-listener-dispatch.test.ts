@@ -13,6 +13,7 @@ import {
 import {
   STALE_RUNNING_DELIVERY_TIMEOUT_MS,
   createEventListener,
+  deriveEventListenerDisplayStatus,
   insertPendingEventListenerDeliveries,
 } from '@tribunal/database/queries';
 import type { GithubServiceContext } from '../context.js';
@@ -211,8 +212,8 @@ describe('drainEventListenerDeliveries', () => {
     expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
   });
 
-  it('deleting the agent cascades away the listener and delivery entirely -- nothing left to claim', async () => {
-    const { repository, testAgent } = await createFixture();
+  it('deleting the agent preserves the listener delivery history without dispatching it', async () => {
+    const { repository, testAgent, pending, user } = await createFixture();
     await testContext.db.delete(agent).where(eq(agent.id, testAgent.id));
 
     const context = createGithubContext(testContext);
@@ -220,8 +221,17 @@ describe('drainEventListenerDeliveries', () => {
 
     expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
 
-    const remainingDeliveries = await testContext.db.select().from(eventListenerDelivery);
-    expect(remainingDeliveries).toHaveLength(0);
+    const [remainingDelivery] = await testContext.db.select().from(eventListenerDelivery);
+    expect(remainingDelivery).toMatchObject({
+      id: pending.id,
+      listenerId: null,
+      listenerUserId: user.id,
+      listenerName: 'Listener',
+      status: 'pending',
+    });
+    expect(deriveEventListenerDisplayStatus(remainingDelivery!.status, null, true)).toBe(
+      'cancelled',
+    );
   });
 
   it('reconciles a retry after a partial write without erroring or duplicating: the run/agent_run rows from a crashed first attempt already exist and are simply left in place', async () => {

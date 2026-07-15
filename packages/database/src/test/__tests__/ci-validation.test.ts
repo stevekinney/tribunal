@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectParentBranch } from '../neon-branch';
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +22,41 @@ async function readRepositoryFile(...segments: string[]): Promise<string> {
 }
 
 describe('CI workflow validation', () => {
+  describe('Neon migration parent branch selection', () => {
+    const branches = [
+      { id: 'br-preview', name: 'preview/pr-143', primary: false },
+      { id: 'br-production', name: 'production', primary: true },
+    ];
+
+    it('uses the project primary branch by default', () => {
+      expect(selectParentBranch(branches)).toEqual(branches[1]);
+    });
+
+    it('uses an explicitly configured branch name', () => {
+      expect(selectParentBranch(branches, 'preview/pr-143')).toEqual(branches[0]);
+    });
+
+    it('accepts an explicitly configured branch identifier', () => {
+      expect(selectParentBranch(branches, 'br-manual')).toEqual({
+        id: 'br-manual',
+        name: 'br-manual',
+        primary: false,
+      });
+    });
+
+    it('rejects a missing configured branch', () => {
+      expect(() => selectParentBranch(branches, 'missing')).toThrow(
+        'Parent branch "missing" not found',
+      );
+    });
+
+    it('rejects projects without a primary branch when no branch is configured', () => {
+      expect(() =>
+        selectParentBranch(branches.map((branch) => ({ ...branch, primary: false }))),
+      ).toThrow('Primary branch not found');
+    });
+  });
+
   describe('production deploy workflow', () => {
     it('records reviewer build context and image sizes in the step summary', async () => {
       const workflow = await readRepositoryFile('.github/workflows/deploy-production.yml');

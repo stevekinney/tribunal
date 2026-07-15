@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories } from '@tribunal/test/factories';
+import { eq } from '@tribunal/database/operators';
 import { runWithDatabase } from '$lib/server/database';
 import {
   agent,
@@ -487,6 +488,8 @@ describe('webhook-events server helper', () => {
           .returning();
         await testDb.db.insert(eventListenerDelivery).values({
           listenerId: listener.id,
+          listenerUserId: user.id,
+          listenerName: listener.name,
           webhookEventId: event.id,
           status: 'succeeded',
           runId: run.id,
@@ -534,12 +537,16 @@ describe('webhook-events server helper', () => {
         await testDb.db.insert(eventListenerDelivery).values([
           {
             listenerId: listenerA.id,
+            listenerUserId: user.id,
+            listenerName: listenerA.name,
             webhookEventId: event.id,
             status: 'succeeded',
             runId: runningRun.id,
           },
           {
             listenerId: listenerB.id,
+            listenerUserId: user.id,
+            listenerName: listenerB.name,
             webhookEventId: event.id,
             status: 'succeeded',
             runId: null,
@@ -579,8 +586,20 @@ describe('webhook-events server helper', () => {
           name: 'A listener',
         });
         await testDb.db.insert(eventListenerDelivery).values([
-          { listenerId: listenerZ.id, webhookEventId: event.id, status: 'pending' },
-          { listenerId: listenerA.id, webhookEventId: event.id, status: 'pending' },
+          {
+            listenerId: listenerZ.id,
+            listenerUserId: user.id,
+            listenerName: listenerZ.name,
+            webhookEventId: event.id,
+            status: 'pending',
+          },
+          {
+            listenerId: listenerA.id,
+            listenerUserId: user.id,
+            listenerName: listenerA.name,
+            webhookEventId: event.id,
+            status: 'pending',
+          },
         ]);
 
         const result = await listWebhookEvents([repo.id], user.id);
@@ -604,6 +623,8 @@ describe('webhook-events server helper', () => {
         });
         await testDb.db.insert(eventListenerDelivery).values({
           listenerId: listener.id,
+          listenerUserId: user.id,
+          listenerName: listener.name,
           webhookEventId: event.id,
           status: 'abandoned',
           lastError: 'Agent no longer exists',
@@ -633,10 +654,14 @@ describe('webhook-events server helper', () => {
         });
         await testDb.db.insert(eventListenerDelivery).values({
           listenerId: listener.id,
+          listenerUserId: owner.id,
+          listenerName: listener.name,
           webhookEventId: event.id,
-          status: 'abandoned',
-          lastError: 'Agent no longer exists',
+          status: 'pending',
         });
+        await testDb.db
+          .delete(repositoryEventListener)
+          .where(eq(repositoryEventListener.id, listener.id));
 
         // Both users are authorized for the same repository (e.g. both added
         // it to Tribunal), but only `owner` created the listener.
@@ -645,6 +670,16 @@ describe('webhook-events server helper', () => {
           receivedOnly: false,
           matchCount: 1,
           matchedListenerNames: ['Owner-only listener'],
+          status: 'cancelled',
+          hasError: false,
+          matches: [
+            {
+              listenerId: null,
+              listenerName: 'Owner-only listener',
+              listenerDeleted: true,
+              status: 'cancelled',
+            },
+          ],
         });
 
         const otherResult = await listWebhookEvents([repo.id], otherUser.id);

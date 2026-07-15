@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import { repositoryEventListener } from './repository-event-listener';
 import { tribunalRun } from './tribunal-run';
+import { user } from './user';
 import { webhookEvent } from './webhook-event';
 
 /**
@@ -14,18 +15,27 @@ import { webhookEvent } from './webhook-event';
  * so a dispatch failure never touches the original GitHub delivery claim or
  * the webhook HTTP response.
  *
+ * Listener identity is snapshotted at match time so delivery history remains
+ * attributable and user-scoped after the listener is deleted. The live
+ * `listener_id` reference becomes null on deletion while the immutable owner
+ * and name snapshots remain available to historical views.
+ *
  * The unique `(listener_id, webhook_event_id)` constraint is the redelivery
- * guard: a redelivered webhook that matches the same listener against the
- * same (already-persisted) `webhook_event` row hits a conflict, not a
- * duplicate row.
+ * guard while the listener exists: a redelivered webhook that matches the
+ * same listener against the same (already-persisted) `webhook_event` row hits
+ * a conflict, not a duplicate row.
  */
 export const eventListenerDelivery = pgTable(
   'event_listener_delivery',
   {
     id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
-    listenerId: text('listener_id')
+    listenerId: text('listener_id').references(() => repositoryEventListener.id, {
+      onDelete: 'set null',
+    }),
+    listenerUserId: integer('listener_user_id')
       .notNull()
-      .references(() => repositoryEventListener.id, { onDelete: 'cascade' }),
+      .references(() => user.id, { onDelete: 'cascade' }),
+    listenerName: text('listener_name').notNull(),
     webhookEventId: integer('webhook_event_id')
       .notNull()
       .references(() => webhookEvent.id, { onDelete: 'cascade' }),
@@ -47,6 +57,7 @@ export const eventListenerDelivery = pgTable(
       table.webhookEventId,
     ),
     index('event_listener_delivery_run_idx').on(table.runId),
+    index('event_listener_delivery_listener_user_idx').on(table.listenerUserId),
     index('event_listener_delivery_status_idx').on(table.status),
     index('event_listener_delivery_listener_status_idx').on(table.listenerId, table.status),
     index('event_listener_delivery_webhook_event_idx').on(table.webhookEventId),
@@ -55,6 +66,10 @@ export const eventListenerDelivery = pgTable(
       sql`${table.status} IN ('pending','running','succeeded','failed','retryable','abandoned')`,
     ),
     check('event_listener_delivery_attempt_count_check', sql`${table.attemptCount} >= 0`),
+    check(
+      'event_listener_delivery_listener_name_not_blank_check',
+      sql`length(trim(${table.listenerName})) > 0`,
+    ),
   ],
 );
 

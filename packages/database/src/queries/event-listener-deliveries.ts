@@ -51,10 +51,13 @@ function claimableStatusCondition(now: Date, staleTimeoutMs: number) {
 
 /**
  * Insert `pending` delivery rows for every matched listener against a
- * webhook event. Uses `onConflictDoNothing` on the `(listener_id,
- * webhook_event_id)` unique constraint so a redelivered webhook that matches
- * the same listener against the same event never creates duplicate work --
- * the conflicting insert is silently skipped, not retried or errored.
+ * webhook event. The `INSERT ... SELECT` snapshots each listener's owner and
+ * name in the same statement, so a concurrent listener deletion either
+ * leaves a complete historical row or inserts nothing. Uses
+ * `onConflictDoNothing` on the `(listener_id, webhook_event_id)` unique
+ * constraint so a redelivered webhook that matches the same listener against
+ * the same event never creates duplicate work -- the conflicting insert is
+ * silently skipped, not retried or errored.
  *
  * Returns only the rows actually inserted (i.e. newly matched work), not
  * rows skipped by the conflict.
@@ -66,16 +69,47 @@ export async function insertPendingEventListenerDeliveries(
 ): Promise<EventListenerDelivery[]> {
   if (listenerIds.length === 0) return [];
 
-  return database
-    .insert(eventListenerDelivery)
-    .values(
-      listenerIds.map((listenerId) => ({
-        listenerId,
-        webhookEventId,
-      })),
+  const result = await database.execute(sql`
+    INSERT INTO ${eventListenerDelivery} (
+      "listener_id",
+      "listener_user_id",
+      "listener_name",
+      "webhook_event_id"
     )
-    .onConflictDoNothing()
-    .returning();
+    SELECT
+      ${repositoryEventListener.id},
+      ${repositoryEventListener.userId},
+      ${repositoryEventListener.name},
+      ${webhookEventId}
+    FROM ${repositoryEventListener}
+    WHERE ${inArray(repositoryEventListener.id, listenerIds)}
+    ON CONFLICT ("listener_id", "webhook_event_id")
+      DO NOTHING
+    RETURNING
+      ${eventListenerDelivery.id} AS "id",
+      ${eventListenerDelivery.listenerId} AS "listenerId",
+      ${eventListenerDelivery.listenerUserId} AS "listenerUserId",
+      ${eventListenerDelivery.listenerName} AS "listenerName",
+      ${eventListenerDelivery.webhookEventId} AS "webhookEventId",
+      ${eventListenerDelivery.runId} AS "runId",
+      ${eventListenerDelivery.status} AS "status",
+      ${eventListenerDelivery.attemptCount} AS "attemptCount",
+      ${eventListenerDelivery.matchedAt} AS "matchedAt",
+      ${eventListenerDelivery.claimedAt} AS "claimedAt",
+      ${eventListenerDelivery.startedAt} AS "startedAt",
+      ${eventListenerDelivery.finishedAt} AS "finishedAt",
+      ${eventListenerDelivery.lastError} AS "lastError"
+  `);
+
+  return getRows<EventListenerDelivery>(result);
+}
+
+function getRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
 }
 
 /**
@@ -245,7 +279,18 @@ export type EventListenerDisplayStatus =
 export function deriveEventListenerDisplayStatus(
   deliveryStatus: string,
   runStatus: string | null,
+  listenerDeleted = false,
 ): EventListenerDisplayStatus {
+  if (
+    listenerDeleted &&
+    (deliveryStatus === 'pending' || deliveryStatus === 'running' || deliveryStatus === 'retryable')
+  ) {
+    // Deleting a listener cancels work that has not durably created a run.
+    // The preserved delivery row remains an audit record, but its nullable
+    // listener reference keeps it out of the claim query so it cannot run.
+    return 'cancelled';
+  }
+
   if (deliveryStatus === 'pending' || deliveryStatus === 'running') {
     // Matched, but dispatch has not yet durably created a run (still
     // pending, or a claim is in flight).
