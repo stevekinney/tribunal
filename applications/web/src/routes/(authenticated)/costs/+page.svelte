@@ -54,20 +54,20 @@
 
 <Page title="Costs" subtitle="Estimated and reconciled review spend">
   {#snippet actions()}
-    <nav class="source-toggle" aria-label="Cost source">
-      <a
-        href="/costs?source=estimate"
-        class="source-option"
-        data-active={data.costs.source === 'estimate'}
-        aria-current={data.costs.source === 'estimate' ? 'page' : undefined}>Estimate</a
-      >
-      <a
-        href="/costs?source=reconciled"
-        class="source-option"
-        data-active={data.costs.source === 'reconciled'}
-        aria-current={data.costs.source === 'reconciled' ? 'page' : undefined}>Reconciled</a
-      >
-    </nav>
+    <SegmentedControl
+      id="cost-source"
+      label="Cost source"
+      hideLabel
+      density="toolbar"
+      variant="navigation"
+    >
+      <Segment href="/costs?source=estimate" current={data.costs.source === 'estimate'}>
+        Estimate
+      </Segment>
+      <Segment href="/costs?source=reconciled" current={data.costs.source === 'reconciled'}>
+        Reconciled
+      </Segment>
+    </SegmentedControl>
   {/snippet}
 
   <div class="stats-grid">
@@ -158,37 +158,6 @@
 </Page>
 
 <style>
-  /* Source toggle */
-  .source-toggle {
-    display: inline-flex;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-  }
-
-  .source-option {
-    display: inline-flex;
-    align-items: center;
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-    text-decoration: none;
-    transition:
-      background 0.1s,
-      color 0.1s;
-  }
-
-  .source-option:hover {
-    color: var(--text);
-    background: var(--surface-overlay);
-  }
-
-  .source-option[aria-current='page'] {
-    background: var(--surface-overlay);
-    color: var(--text);
-    font-weight: var(--font-medium);
-  }
-
   /* Stats grid */
   .stats-grid {
     display: grid;
