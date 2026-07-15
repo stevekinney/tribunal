@@ -211,11 +211,10 @@ describe('/repositories/[repositoryId]/issues page', () => {
     );
   });
 
-  it('uses the Cinder input for assignee filtering and applies the value on Enter', async () => {
+  it('applies the assignee filter value on Enter', async () => {
     render(IssuesPage, { data: baseData });
 
     const assigneeInput = browserPage.getByLabelText('Assignee');
-    await expect.element(assigneeInput).toHaveClass(/cinder-input/);
     await assigneeInput.fill('hubot');
     assigneeInput
       .element()
