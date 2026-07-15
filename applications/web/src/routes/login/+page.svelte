@@ -58,7 +58,9 @@
       <Steps steps={loginSteps} currentStep={0} orientation="vertical" label="Onboarding steps" />
 
       <p class="trust-line">
-        Tribunal requests read access to code and write access to pull request comments only.
+        Tribunal requests read access to issues and repository metadata, plus write access to
+        checks, code, code quality, merge queues, pull requests, repository hooks, projects, and
+        workflows.
       </p>
     </aside>
 
