@@ -70,33 +70,12 @@ type SyncRequestedPayload = EnqueueInstallationSyncOptions;
 
 const syncRequestedSignal = signal<SyncRequestedPayload>('sync_requested');
 
-/**
- * True when a race winner is a sync_requested payload (a non-null object with a
- * numeric installationId) rather than the sleep-branch result (undefined).
- * Structural so it does not rely on an `=== undefined` check alone.
- */
-function isSyncRequestedPayload(value: unknown): value is SyncRequestedPayload {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { installationId?: unknown }).installationId === 'number'
-  );
-}
-
 // ============================================================================
 // DEBOUNCE CONSTANTS
 // ============================================================================
 
 /** Leading-sleep debounce window. Matches depict's DEBOUNCE_MS=15000. */
 const DEBOUNCE_DURATION = '15s';
-
-/**
- * Bounded window for the post-sync drain race. Long enough that a genuinely
- * buffered sync_requested signal reliably wins the race against the timer
- * (closing the sleep(0) lost-signal window), short enough that an empty buffer
- * only delays workflow completion briefly.
- */
-const DRAIN_DURATION = '1s';
 
 // ============================================================================
 // ACTIVITY DEFINITIONS
@@ -419,32 +398,16 @@ export const installationSyncWorkflow = workflow({
         return;
       }
 
-      // Did another sync_requested arrive while we were syncing? Race the
-      // signal against a SHORT bounded sleep (not sleep(0)).
-      //
-      // Why not sleep(0): ctx.sleep(0) is a real setTimeout(0) timer, while
-      // ctx.waitForSignal is a durable-storage read. With a zero timer the read
-      // can land on a later event-loop tick than the timer callback, so the
-      // timer wins even when a signal IS buffered — silently dropping the sync.
-      // A bounded window (DRAIN_DURATION) guarantees a genuinely-buffered signal
-      // wins the race; the only cost is up to that window of tail latency before
-      // the workflow exits when the buffer is truly empty.
-      //
-      // Note: ctx.race branches are WorkflowOperations (generators), not
-      // Promises — they cannot be wrapped with .then(). The winner is the raw
-      // branch value: a sync_requested payload (a non-null object) or the sleep
-      // result (undefined). We discriminate on object shape, not on an
-      // `=== undefined` check alone, so the guard is robust.
-      // weft#456: race accepts ctx.sleep + ctx.waitForSignal branches.
+      // Did another sync_requested arrive while we were syncing? Weft 0.10
+      // checks the durable signal buffer before allowing a literal zero-duration
+      // sleep to win, so this is non-blocking without dropping buffered signals.
       const drainResult = yield* ctx.race([
         ctx.waitForSignal('sync_requested'),
-        ctx.sleep(DRAIN_DURATION),
+        ctx.sleep(0),
       ] as const);
 
-      const drainedSignal = isSyncRequestedPayload(drainResult) ? drainResult : undefined;
-
-      if (!drainedSignal) {
-        // No signal arrived within the drain window — the buffer is empty; exit.
+      if (drainResult === undefined) {
+        // No buffered signal is waiting; exit immediately.
         ctx.log?.info('installation-sync: no pending signals, workflow complete', {
           installationId,
         });
@@ -454,7 +417,7 @@ export const installationSyncWorkflow = workflow({
       // A sync_requested signal arrived — loop for another sync pass.
       ctx.log?.info('installation-sync: new signal received, looping', {
         installationId,
-        reason: drainedSignal.reason,
+        reason: drainResult.reason,
       });
 
       // Short debounce between back-to-back syncs so a burst of signals
