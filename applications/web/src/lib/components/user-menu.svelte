@@ -24,7 +24,7 @@
   const logoutFormId = $derived(`${id}-logout-form`);
 </script>
 
-<form id={logoutFormId} method="POST" action="/logout"></form>
+<form id={logoutFormId} method="POST" action="/logout" hidden></form>
 <Dropdown {id} class={className} placement={dropdownPlacement}>
   <Dropdown.Trigger aria-label="User menu" showCaret={false}>
     <Avatar src={user.avatarUrl ?? undefined} alt={user.username} name={user.username} size="sm" />

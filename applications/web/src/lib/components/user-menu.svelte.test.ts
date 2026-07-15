@@ -33,6 +33,7 @@ describe('UserMenu', () => {
     const form = document.querySelector<HTMLFormElement>('form[action="/logout"]')!;
     expect(form.id).toBe('test-menu-logout-form');
     expect(form.method).toBe('post');
+    expect(form.hidden).toBe(true);
     await expect.element(signOutItem).toHaveAttribute('type', 'submit');
     await expect.element(signOutItem).toHaveAttribute('form', form.id);
 
