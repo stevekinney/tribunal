@@ -300,6 +300,13 @@ describe('installation-sync workflow (e2e, real engine)', () => {
   });
 
   it('loops when a signal arrives during the completion-handoff drain', async () => {
+    const { promise: firstSyncCompleted, resolve: markFirstSyncCompleted } =
+      Promise.withResolvers<void>();
+    mockRefresh.mockImplementationOnce(async () => {
+      markFirstSyncCompleted();
+      return { repositoryCount: 3, deactivatedRepositoryCount: 0 };
+    });
+
     const testEngine = createEngine();
 
     const handle = await testEngine.start('installation-sync', syncInput(), {
@@ -307,6 +314,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     });
 
     await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await firstSyncCompleted;
     await yieldToPortableEventLoop();
 
     // The first sync has finished, but the workflow remains signalable during
