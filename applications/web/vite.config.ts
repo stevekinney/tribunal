@@ -50,6 +50,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
+      '@lostgradient/cinder/meter',
       'lucide-svelte/icons/pencil',
       'lucide-svelte/icons/plus',
       'lucide-svelte/icons/trash-2',

@@ -50,11 +50,52 @@ describe('/costs page', () => {
     await expect.element(estimateLink).toHaveAttribute('aria-current', 'page');
     await expect.element(reconciledLink).toHaveAttribute('href', '/costs?source=reconciled');
     await expect.element(reconciledLink).not.toHaveAttribute('aria-current');
+    const dailySpendMeter = page.getByRole('meter', { name: "Today's spend vs daily cap" });
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemin', '0');
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemax', '10');
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuenow', '2.5');
+    await expect
+      .element(dailySpendMeter)
+      .toHaveAttribute('aria-valuetext', '$2.50 of $10.00 daily cap');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
     await expect.element(page.getByText('Repository')).toBeInTheDocument();
     await expect.element(page.getByText('Agent')).toBeInTheDocument();
     await expect.element(page.getByText('Pull request')).toBeInTheDocument();
     await expect.element(page.getByText('By Agent per Repository')).not.toBeInTheDocument();
     await expect.element(page.getByText('Read tokens: 25')).toBeInTheDocument();
+  });
+
+  it('renders a zero daily cap as reached without exposing an invalid meter range', async () => {
+    render(CostsPage, {
+      data: {
+        ...data,
+        costs: { ...data.costs, dailyCostCapUsd: 0 },
+      },
+      params: {},
+      form: null,
+    });
+
+    await expect.element(page.getByText('Daily cap reached')).toBeInTheDocument();
+    await expect.element(page.getByText('$2.50 of $0.00')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('meter', { name: "Today's spend vs daily cap" }))
+      .not.toBeInTheDocument();
+  });
+
+  it('clamps an over-cap meter while preserving the actual spend in its accessible value', async () => {
+    render(CostsPage, {
+      data: {
+        ...data,
+        costs: { ...data.costs, todayTotalUsd: 12.5 },
+      },
+      params: {},
+      form: null,
+    });
+
+    const dailySpendMeter = page.getByRole('meter', { name: "Today's spend vs daily cap" });
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuenow', '10');
+    await expect
+      .element(dailySpendMeter)
+      .toHaveAttribute('aria-valuetext', '$12.50 of $10.00 daily cap');
   });
 });
