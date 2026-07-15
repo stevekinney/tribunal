@@ -3,9 +3,9 @@
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Badge } from '@lostgradient/cinder/badge';
+  import { Meter } from '@lostgradient/cinder/meter';
   import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
   import { Segment } from '@lostgradient/cinder/segment';
-  import { Progress } from '@lostgradient/cinder/progress';
 
   let { data }: PageProps = $props();
 
@@ -23,10 +23,12 @@
 
   let activeDimension = $state<DimensionKey>('byAgent');
 
+  const dailyCapIsEnabled = $derived(data.costs.dailyCostCapUsd > 0);
+
   const meterValue = $derived(
-    data.costs.dailyCostCapUsd === 0
-      ? 100
-      : Math.min(100, (data.costs.todayTotalUsd / data.costs.dailyCostCapUsd) * 100),
+    dailyCapIsEnabled
+      ? Math.min(100, (data.costs.todayTotalUsd / data.costs.dailyCostCapUsd) * 100)
+      : 0,
   );
 
   const capBadgeVariant = $derived<'success' | 'warning' | 'danger'>(
@@ -75,19 +77,33 @@
       <div class="spend-card">
         <div class="spend-header">
           <span class="stat-label">Today's spend</span>
-          <Badge variant={capBadgeVariant}>{meterValue.toFixed(0)}% of cap</Badge>
+          {#if dailyCapIsEnabled}
+            <Badge variant={capBadgeVariant}>{meterValue.toFixed(0)}% of cap</Badge>
+          {:else}
+            <Badge>Cap disabled</Badge>
+          {/if}
         </div>
         <div class="spend-amount">
           <span class="amount-primary">${data.costs.todayTotalUsd.toFixed(2)}</span>
-          <span class="amount-cap">of ${data.costs.dailyCostCapUsd.toFixed(2)}</span>
+          <span class="amount-cap">
+            {dailyCapIsEnabled
+              ? `of $${data.costs.dailyCostCapUsd.toFixed(2)}`
+              : 'Daily cap disabled'}
+          </span>
         </div>
-        <Progress
-          value={meterValue}
-          max={100}
-          size="sm"
-          label={`${meterValue.toFixed(0)}% of daily cap`}
-          ariaLabel="Today's spend vs daily cap"
-        />
+        {#if dailyCapIsEnabled}
+          <Meter
+            value={data.costs.todayTotalUsd}
+            min={0}
+            max={data.costs.dailyCostCapUsd}
+            low={data.costs.dailyCostCapUsd * 0.7}
+            high={data.costs.dailyCostCapUsd * 0.9}
+            optimum={0}
+            size="sm"
+            ariaLabel="Today's spend vs daily cap"
+            ariaValueText={`$${data.costs.todayTotalUsd.toFixed(2)} of $${data.costs.dailyCostCapUsd.toFixed(2)} daily cap`}
+          />
+        {/if}
       </div>
     </Card>
 

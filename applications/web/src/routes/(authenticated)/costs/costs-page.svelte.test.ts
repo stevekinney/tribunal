@@ -50,11 +50,34 @@ describe('/costs page', () => {
     await expect.element(estimateLink).toHaveAttribute('aria-current', 'page');
     await expect.element(reconciledLink).toHaveAttribute('href', '/costs?source=reconciled');
     await expect.element(reconciledLink).not.toHaveAttribute('aria-current');
+    const dailySpendMeter = page.getByRole('meter', { name: "Today's spend vs daily cap" });
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemin', '0');
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemax', '10');
+    await expect.element(dailySpendMeter).toHaveAttribute('aria-valuenow', '2.5');
+    await expect
+      .element(dailySpendMeter)
+      .toHaveAttribute('aria-valuetext', '$2.50 of $10.00 daily cap');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
     await expect.element(page.getByText('Repository')).toBeInTheDocument();
     await expect.element(page.getByText('Agent')).toBeInTheDocument();
     await expect.element(page.getByText('Pull request')).toBeInTheDocument();
     await expect.element(page.getByText('By Agent per Repository')).not.toBeInTheDocument();
     await expect.element(page.getByText('Read tokens: 25')).toBeInTheDocument();
+  });
+
+  it('does not expose a misleading meter range when the daily cap is disabled', async () => {
+    render(CostsPage, {
+      data: {
+        ...data,
+        costs: { ...data.costs, dailyCostCapUsd: 0 },
+      },
+      params: {},
+      form: null,
+    });
+
+    await expect.element(page.getByText('Daily cap disabled')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('meter', { name: "Today's spend vs daily cap" }))
+      .not.toBeInTheDocument();
   });
 });
