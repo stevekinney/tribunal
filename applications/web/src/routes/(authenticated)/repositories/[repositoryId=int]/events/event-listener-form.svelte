@@ -3,10 +3,10 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
+  import { Checkbox } from '@lostgradient/cinder/checkbox';
   import { Input } from '@lostgradient/cinder/input';
   import { MarkdownEditor } from '@lostgradient/cinder/markdown-editor';
   import { Select } from '@lostgradient/cinder/select';
-  import { Toggle } from '@lostgradient/cinder/toggle';
   import Save from 'lucide-svelte/icons/save';
   import { untrack } from 'svelte';
   import type { RepositoryEventListener } from '@tribunal/database/schema';
@@ -149,10 +149,12 @@
           This listener's stored filters could not be parsed, so it currently matches nothing (fails
           closed). Saving will replace them with whatever you set below -- confirm below to proceed.
         </Alert>
-        <label class="acknowledge-filters-reset">
-          <input type="checkbox" bind:checked={acknowledgeFiltersReset} />
-          I understand this replaces the invalid filters below.
-        </label>
+        <Checkbox
+          id="acknowledge-filters-reset"
+          label="I understand this replaces the invalid filters below."
+          bind:checked={acknowledgeFiltersReset}
+          fieldClass="acknowledge-filters-reset"
+        />
         <input
           type="hidden"
           name="acknowledgeFiltersReset"
@@ -203,16 +205,7 @@
       />
     </div>
 
-    <div class="enabled-row">
-      <span class="enabled-label">Enabled</span>
-      <Toggle
-        id="listener-enabled"
-        label="Enabled"
-        hideLabel
-        name="enabled"
-        bind:checked={enabled}
-      />
-    </div>
+    <Checkbox id="listener-enabled" label="Enabled" name="enabled" bind:checked={enabled} />
 
     <div class="form-actions">
       <Button href={cancelHref} variant="secondary">Cancel</Button>
@@ -249,26 +242,8 @@
     padding: 0 var(--space-1);
   }
 
-  .acknowledge-filters-reset {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
-    color: var(--text);
+  :global(.acknowledge-filters-reset) {
     margin: var(--space-3) 0;
-  }
-
-  .enabled-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  .enabled-label {
-    color: var(--text);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
   }
 
   .form-actions {
