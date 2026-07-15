@@ -21,8 +21,10 @@
   let { id, user, menuPlacement = 'default', class: className, children }: Props = $props();
 
   const dropdownPlacement = $derived(menuPlacement === 'sidebar-footer' ? 'top-end' : 'bottom-end');
+  const logoutFormId = $derived(`${id}-logout-form`);
 </script>
 
+<form id={logoutFormId} method="POST" action="/logout" hidden></form>
 <Dropdown {id} class={className} placement={dropdownPlacement}>
   <Dropdown.Trigger aria-label="User menu" showCaret={false}>
     <Avatar src={user.avatarUrl ?? undefined} alt={user.username} name={user.username} size="sm" />
@@ -36,19 +38,10 @@
       {@render children()}
       <Dropdown.Separator />
     {/if}
-    <form method="POST" action="/logout" class="user-menu-form">
-      <Dropdown.Item
-        variant="danger"
-        onclick={(e) => {
-          e.preventDefault();
-          const form = e.currentTarget.closest('form');
-          form?.requestSubmit();
-        }}
-      >
-        <LogOut class="cinder-icon-sm" aria-hidden="true" />
-        Sign out
-      </Dropdown.Item>
-    </form>
+    <Dropdown.Item variant="danger" type="submit" form={logoutFormId}>
+      <LogOut class="cinder-icon-sm" aria-hidden="true" />
+      Sign out
+    </Dropdown.Item>
   </Dropdown.Menu>
 </Dropdown>
 
@@ -56,9 +49,5 @@
   .user-menu-username {
     font-weight: var(--font-medium);
     color: var(--text);
-  }
-
-  .user-menu-form {
-    display: contents;
   }
 </style>
