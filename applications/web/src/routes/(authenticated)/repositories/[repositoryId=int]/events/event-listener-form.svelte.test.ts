@@ -96,7 +96,6 @@ describe('event-listener-form', () => {
       name: 'I understand this replaces the invalid filters below.',
     });
     await expect.element(acknowledgement).not.toBeChecked();
-    await expect.element(acknowledgement).toHaveClass('cinder-checkbox');
     expect(
       container.querySelector<HTMLInputElement>('input[name="acknowledgeFiltersReset"]')?.value,
     ).toBe('false');

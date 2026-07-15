@@ -219,7 +219,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual([]);
   });
 
-  it('disables the toggle for a disabled unassigned agent with helper text', async () => {
+  it('disables the checkbox for a disabled unassigned agent with helper text', async () => {
     render(SettingsPage, {
       data: {
         ...baseData,
