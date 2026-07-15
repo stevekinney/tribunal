@@ -79,6 +79,9 @@ const DEBOUNCE_DURATION = '15s';
 
 /**
  * Keeps the workflow signalable briefly while handing off to completion.
+ * This is not the pre-0.10 buffered-signal workaround: buffered signals now
+ * reliably beat an expired timer. The remaining window covers a later race,
+ * after the buffer is empty but before the workflow commits terminal state.
  * Weft #693 tracks making this signal-versus-terminal boundary atomic.
  */
 const DRAIN_DURATION = '1s';
