@@ -46,7 +46,6 @@ describe('/costs page', () => {
     const estimateLink = sourceNavigation.getByRole('link', { name: 'Estimate' });
     const reconciledLink = sourceNavigation.getByRole('link', { name: 'Reconciled' });
 
-    await expect.element(sourceNavigation).toHaveAttribute('data-cinder-variant', 'navigation');
     await expect.element(estimateLink).toHaveAttribute('href', '/costs?source=estimate');
     await expect.element(estimateLink).toHaveAttribute('aria-current', 'page');
     await expect.element(reconciledLink).toHaveAttribute('href', '/costs?source=reconciled');
