@@ -39,12 +39,17 @@ const data = {
 describe('/costs page', () => {
   afterEach(() => cleanup());
 
-  it('renders source toggle, cap meter, product rollups, and cache split', async () => {
+  it('renders linked source navigation, cap meter, product rollups, and cache split', async () => {
     render(CostsPage, { data, params: {}, form: null });
 
-    await expect
-      .element(page.getByRole('link', { name: 'Estimate' }))
-      .toHaveAttribute('data-active', 'true');
+    const sourceNavigation = page.getByRole('navigation', { name: 'Cost source' });
+    const estimateLink = sourceNavigation.getByRole('link', { name: 'Estimate' });
+    const reconciledLink = sourceNavigation.getByRole('link', { name: 'Reconciled' });
+
+    await expect.element(estimateLink).toHaveAttribute('href', '/costs?source=estimate');
+    await expect.element(estimateLink).toHaveAttribute('aria-current', 'page');
+    await expect.element(reconciledLink).toHaveAttribute('href', '/costs?source=reconciled');
+    await expect.element(reconciledLink).not.toHaveAttribute('aria-current');
     await expect.element(page.getByText('$2.50 of $10.00')).toBeInTheDocument();
     await expect.element(page.getByText('Repository')).toBeInTheDocument();
     await expect.element(page.getByText('Agent')).toBeInTheDocument();
