@@ -2,7 +2,7 @@
   import type { LayoutProps } from './$types';
   import { page } from '$app/state';
   import { MediaQuery } from 'svelte/reactivity';
-  import { Sidebar } from '@lostgradient/cinder/sidebar';
+  import { SIDEBAR_MOBILE_MEDIA_QUERY, Sidebar } from '@lostgradient/cinder/sidebar';
   import { SideNavigation } from '@lostgradient/cinder/side-navigation';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import SkipLinks from '$lib/components/skip-links.svelte';
@@ -41,7 +41,20 @@
   // collapsed on narrow screens, expanded on wide. MediaQuery (SSR fallback false
   // → desktop default) keeps it reactive across resizes; we re-sync only when the
   // breakpoint is actually crossed so a manual toggle within a breakpoint sticks.
-  const isNarrowViewport = new MediaQuery('(max-width: 47.99rem)');
+  const isNarrowViewport = new MediaQuery(SIDEBAR_MOBILE_MEDIA_QUERY, false);
+  const mobileLayoutStyles = `
+    #authenticated-shell {
+      flex-direction: column;
+    }
+
+    #authenticated-shell > .mobile-topbar {
+      display: flex;
+    }
+
+    #authenticated-shell .app-sidebar {
+      inline-size: auto;
+    }
+  `;
   let collapsed = $state(isNarrowViewport.current);
   let lastNarrow = isNarrowViewport.current;
   $effect(() => {
@@ -52,9 +65,15 @@
   });
 </script>
 
+<svelte:head>
+  <svelte:element this={'style'} media={SIDEBAR_MOBILE_MEDIA_QUERY}
+    >{mobileLayoutStyles}</svelte:element
+  >
+</svelte:head>
+
 <SkipLinks />
 
-<div class="app-layout">
+<div id="authenticated-shell" class="app-layout">
   <!--
     Mobile top bar: shown only on narrow viewports where the Sidebar renders as
     a Drawer overlay. The hamburger button opens the drawer by setting
@@ -65,6 +84,7 @@
       class="mobile-menu-button"
       onclick={() => (collapsed = false)}
       aria-label="Open navigation menu"
+      aria-controls="app-sidebar"
       aria-expanded={!collapsed}
     >
       <Menu size={20} aria-hidden="true" />
@@ -79,7 +99,7 @@
     (breakpoint handled inside the Cinder Sidebar component via MediaQuery).
     data-theme="dark" is forwarded via rest props to the underlying element.
   -->
-  <Sidebar bind:collapsed label="Tribunal" class="app-sidebar" data-theme="dark">
+  <Sidebar id="app-sidebar" bind:collapsed label="Tribunal" class="app-sidebar" data-theme="dark">
     {#snippet brand()}
       <a href="/repositories" class="brand-link">
         <span class="brand-name">Tribunal</span>
@@ -147,11 +167,8 @@
 </div>
 
 <style>
-  /* Keep this aligned with Cinder Sidebar's desktop breakpoint. */
-  @media (min-width: 48rem) {
-    :global(.app-sidebar) {
-      inline-size: 13.5rem;
-    }
+  .app-layout :global(.app-sidebar) {
+    inline-size: 13.5rem;
   }
 
   /* ============================================================
@@ -181,32 +198,19 @@
   }
 
   /* ============================================================
-   * Mobile top bar (shown below the sidebar's own 47.99rem breakpoint)
+   * Mobile top bar
    * ============================================================ */
 
   .mobile-topbar {
     display: none;
-  }
-
-  @media (max-width: 47.99rem) {
-    /* On narrow viewports the Sidebar renders as a Drawer overlay.
-     * Flip the page shell to a column and show the top bar.
-     * height: 100vh + overflow: hidden carry over — topbar at top, main scrolls. */
-    .app-layout {
-      flex-direction: column;
-    }
-
-    .mobile-topbar {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-      padding-block: var(--space-3);
-      padding-inline: var(--space-4);
-      /* Explicit dark surface that matches the app navigation. */
-      background: oklch(20% 0.04 245);
-      border-bottom: 1px solid oklch(40% 0.05 245);
-      flex-shrink: 0;
-    }
+    align-items: center;
+    gap: var(--space-3);
+    padding-block: var(--space-3);
+    padding-inline: var(--space-4);
+    /* Explicit dark surface that matches the app navigation. */
+    background: oklch(20% 0.04 245);
+    border-bottom: 1px solid oklch(40% 0.05 245);
+    flex-shrink: 0;
   }
 
   .mobile-menu-button {

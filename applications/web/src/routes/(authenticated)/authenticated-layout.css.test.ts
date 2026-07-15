@@ -7,10 +7,26 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const layout = readFileSync(resolve(directory, './+layout.svelte'), 'utf-8');
 
 describe('authenticated layout sidebar styles', () => {
-  it('sets the desktop width through an app-owned selector at the Sidebar breakpoint', () => {
-    expect(layout).toMatch(
-      /@media \(min-width: 48rem\)\s*{\s*:global\(\.app-sidebar\)\s*{\s*inline-size: 13\.5rem;/,
-    );
+  it("uses Cinder's public mobile media query contract for layout state", () => {
+    const head = layout.slice(layout.indexOf('<svelte:head>'), layout.indexOf('</svelte:head>'));
+
+    expect(layout).toMatch(/new MediaQuery\(\s*SIDEBAR_MOBILE_MEDIA_QUERY,\s*false\s*\)/);
+    expect(head).toContain('<svelte:element');
+    expect(head).toContain('media={SIDEBAR_MOBILE_MEDIA_QUERY}');
+    expect(layout).not.toContain('47.99rem');
+    expect(layout).not.toContain('48rem');
     expect(layout).not.toContain('cinder-sidebar--mobile');
+  });
+
+  it('connects the app-owned mobile trigger to the Cinder Sidebar', () => {
+    const buttonClassIndex = layout.indexOf('class="mobile-menu-button"');
+    const buttonStartIndex = layout.lastIndexOf('<button', buttonClassIndex);
+    const buttonEndIndex =
+      layout.indexOf('>', layout.indexOf('aria-expanded', buttonStartIndex)) + 1;
+    const mobileMenuButton = layout.slice(buttonStartIndex, buttonEndIndex);
+
+    expect(mobileMenuButton).toContain('aria-controls="app-sidebar"');
+    expect(mobileMenuButton).toContain('aria-expanded={!collapsed}');
+    expect(layout).toMatch(/<Sidebar[\s\S]*id="app-sidebar"/);
   });
 });
