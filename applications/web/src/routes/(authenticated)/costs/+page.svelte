@@ -23,12 +23,12 @@
 
   let activeDimension = $state<DimensionKey>('byAgent');
 
-  const dailyCapIsEnabled = $derived(data.costs.dailyCostCapUsd > 0);
+  const dailyCapHasValidRange = $derived(data.costs.dailyCostCapUsd > 0);
 
   const meterValue = $derived(
-    dailyCapIsEnabled
+    dailyCapHasValidRange
       ? Math.min(100, (data.costs.todayTotalUsd / data.costs.dailyCostCapUsd) * 100)
-      : 0,
+      : 100,
   );
 
   const capBadgeVariant = $derived<'success' | 'warning' | 'danger'>(
@@ -77,23 +77,19 @@
       <div class="spend-card">
         <div class="spend-header">
           <span class="stat-label">Today's spend</span>
-          {#if dailyCapIsEnabled}
+          {#if dailyCapHasValidRange}
             <Badge variant={capBadgeVariant}>{meterValue.toFixed(0)}% of cap</Badge>
           {:else}
-            <Badge>Cap disabled</Badge>
+            <Badge variant="danger">Daily cap reached</Badge>
           {/if}
         </div>
         <div class="spend-amount">
           <span class="amount-primary">${data.costs.todayTotalUsd.toFixed(2)}</span>
-          <span class="amount-cap">
-            {dailyCapIsEnabled
-              ? `of $${data.costs.dailyCostCapUsd.toFixed(2)}`
-              : 'Daily cap disabled'}
-          </span>
+          <span class="amount-cap">of ${data.costs.dailyCostCapUsd.toFixed(2)}</span>
         </div>
-        {#if dailyCapIsEnabled}
+        {#if dailyCapHasValidRange}
           <Meter
-            value={data.costs.todayTotalUsd}
+            value={Math.min(data.costs.todayTotalUsd, data.costs.dailyCostCapUsd)}
             min={0}
             max={data.costs.dailyCostCapUsd}
             low={data.costs.dailyCostCapUsd * 0.7}
