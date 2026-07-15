@@ -396,7 +396,7 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
         }
 
         // ── Analysis run completed normally ───────────────────────────────
-        // analysisRaceResult is AnalyzePullRequestOutput (no kind field).
+        // The keyed analysis branch carries AnalyzePullRequestOutput in value.
         // FIX 4: analysisCount counts analyses that actually WROTE. It is not
         // incremented when the activity throws (an exception propagates out of
         // ctx.run and never reaches here) NOR when the generation fence tripped

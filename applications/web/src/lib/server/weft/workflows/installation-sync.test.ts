@@ -155,7 +155,7 @@ const WORKFLOW_ID = 'installation-sync:42';
 const WORKFLOW_EXECUTION_TOKEN = 'workflow-token-42';
 const ACTIVITY_ATTEMPT_TOKEN = 'activity-attempt-token-42';
 
-// Duration string for the leading debounce timer.
+// Virtual-time advances for the independent debounce and handoff timers.
 const PAST_DEBOUNCE = '15s';
 const PAST_DRAIN = '1s';
 
