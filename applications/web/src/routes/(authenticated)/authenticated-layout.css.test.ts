@@ -7,10 +7,17 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const layout = readFileSync(resolve(directory, './+layout.svelte'), 'utf-8');
 
 describe('authenticated layout sidebar styles', () => {
-  it('sets the desktop width through an app-owned selector at the Sidebar breakpoint', () => {
-    expect(layout).toMatch(
-      /@media \(min-width: 48rem\)\s*{\s*:global\(\.app-sidebar\)\s*{\s*inline-size: 13\.5rem;/,
-    );
+  it("uses Cinder's public mobile media query contract for layout state", () => {
+    expect(layout).toContain('SIDEBAR_MOBILE_MEDIA_QUERY');
+    expect(layout).toContain('new MediaQuery(SIDEBAR_MOBILE_MEDIA_QUERY, false)');
+    expect(layout).toContain('data-mobile={isNarrowViewport.current}');
+    expect(layout).not.toContain('47.99rem');
+    expect(layout).not.toContain('48rem');
     expect(layout).not.toContain('cinder-sidebar--mobile');
+  });
+
+  it('connects the app-owned mobile trigger to the Cinder Sidebar', () => {
+    expect(layout).toMatch(/aria-controls="app-sidebar"[\s\S]*aria-expanded={!collapsed}/);
+    expect(layout).toMatch(/<Sidebar[\s\S]*id="app-sidebar"/);
   });
 });
