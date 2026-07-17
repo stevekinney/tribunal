@@ -98,6 +98,13 @@ export async function createEngineRuntime(
       options.reviewIntentPollIntervalMs ?? 1_000,
     );
 
+    // The idle-shutdown scheduler and a termination-signal handler can both
+    // reach `release()`. Dedupe on a single in-flight promise so concurrent
+    // callers share one dispose+release rather than double-disposing — but clear
+    // it on failure so a later shutdown attempt can retry and the singleton
+    // lease/advisory lock is never left held after a transient error.
+    let releasePromise: Promise<void> | undefined;
+
     return {
       engine,
       healthDependencies() {
@@ -130,11 +137,20 @@ export async function createEngineRuntime(
         );
       },
       async release() {
-        poller.stop();
+        releasePromise ??= (async () => {
+          poller.stop();
+          try {
+            await (engine as DisposableEngine)[Symbol.asyncDispose]?.();
+          } finally {
+            await lease?.release();
+          }
+        })();
+
         try {
-          await (engine as DisposableEngine)[Symbol.asyncDispose]?.();
-        } finally {
-          await lease?.release();
+          await releasePromise;
+        } catch (error) {
+          releasePromise = undefined;
+          throw error;
         }
       },
     };

@@ -1,6 +1,12 @@
 app = "tribunal-engine"
 primary_region = "dfw"
 
+# Give the engine time to release its Weft singleton lease on SIGTERM before Fly
+# escalates to SIGKILL. Without a prompt release the replacement instance waits
+# out the lease TTL (~30s of "engine runtime is starting") on every deploy.
+kill_signal = "SIGTERM"
+kill_timeout = "20s"
+
 [build]
   dockerfile = "../containers/engine.Dockerfile"
 
