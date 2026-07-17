@@ -164,6 +164,27 @@ describe('createEngineRuntime', () => {
 
     expect(events).toEqual(['engine.asyncDispose', 'lease.release']);
   });
+
+  it('releases only once when release is called repeatedly', async () => {
+    // A termination-signal handler and the idle-shutdown scheduler can both
+    // reach release(); disposing the engine or deleting the lease twice must be
+    // a no-op rather than an error during shutdown.
+    const events: string[] = [];
+    const lock = new FakeEngineSingletonLock(events);
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      lock,
+    });
+    (runtime.engine as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose] =
+      vi.fn(async () => {
+        events.push('engine.asyncDispose');
+      });
+
+    await runtime.release();
+    await runtime.release();
+
+    expect(events).toEqual(['engine.asyncDispose', 'lease.release']);
+  });
 });
 
 class FakeEngineSingletonLock implements EngineSingletonLock {

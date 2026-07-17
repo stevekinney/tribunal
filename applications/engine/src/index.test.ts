@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEngineServerOptions,
   createReviewIntentKickScheduler,
+  createSignalShutdown,
   createStartingEngineServerOptions,
   createStorageConfigurationFromEnvironment,
   parsePort,
@@ -857,5 +858,95 @@ describe('createStorageConfigurationFromEnvironment', () => {
         detail: 'single-process ephemeral runtime',
       },
     ]);
+  });
+});
+
+describe('createSignalShutdown', () => {
+  function createHarness(overrides: Partial<Parameters<typeof createSignalShutdown>[0]> = {}) {
+    const release = vi.fn(async () => {});
+    const stop = vi.fn();
+    const serverStop = vi.fn(async () => {});
+    const clearIntervalFunction = vi.fn();
+    const exit = vi.fn();
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const sandboxReaperTimer = {} as ReturnType<typeof setInterval>;
+
+    const shutdown = createSignalShutdown({
+      runtime: { release },
+      scheduler: { stop },
+      server: { stop: serverStop },
+      sandboxReaperTimer,
+      logger,
+      exit,
+      clearIntervalFunction,
+      ...overrides,
+    });
+
+    return {
+      shutdown,
+      release,
+      stop,
+      serverStop,
+      clearIntervalFunction,
+      exit,
+      logger,
+      sandboxReaperTimer,
+    };
+  }
+
+  it('stops the scheduler, reaper timer, and server, releases the lease, then exits', async () => {
+    const harness = createHarness();
+
+    await harness.shutdown();
+
+    expect(harness.stop).toHaveBeenCalledTimes(1);
+    expect(harness.clearIntervalFunction).toHaveBeenCalledWith(harness.sandboxReaperTimer);
+    expect(harness.serverStop).toHaveBeenCalledTimes(1);
+    expect(harness.release).toHaveBeenCalledTimes(1);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('is idempotent across repeated termination signals', async () => {
+    const harness = createHarness();
+
+    await harness.shutdown();
+    await harness.shutdown();
+
+    expect(harness.release).toHaveBeenCalledTimes(1);
+    expect(harness.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it('still releases the lease and exits when stopping the server throws', async () => {
+    const serverStop = vi.fn(async () => {
+      throw new Error('server already closed');
+    });
+    const harness = createHarness({ server: { stop: serverStop } });
+
+    await harness.shutdown();
+
+    expect(harness.release).toHaveBeenCalledTimes(1);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('exits cleanly even when releasing the lease throws', async () => {
+    const release = vi.fn(async () => {
+      throw new Error('lease already gone');
+    });
+    const harness = createHarness({ runtime: { release } });
+
+    await harness.shutdown();
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(harness.logger.error).toHaveBeenCalled();
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('skips clearing the reaper timer when one was never scheduled', async () => {
+    const harness = createHarness({ sandboxReaperTimer: undefined });
+
+    await harness.shutdown();
+
+    expect(harness.clearIntervalFunction).not.toHaveBeenCalled();
+    expect(harness.exit).toHaveBeenCalledWith(0);
   });
 });

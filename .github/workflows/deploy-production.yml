@@ -238,7 +238,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); const health = await response.json(); console.log(JSON.stringify(health)); const singleton = health.dependencies?.find((dependency) => dependency.name === \"singleton_lock\"); process.exit(response.ok && health.ok === true && singleton?.ok === true ? 0 : 1)"'
+          # Poll rather than probe once: a newly deployed engine can spend a few
+          # seconds acquiring its Weft singleton lease before /health reports ok.
+          attempts=12
+          delay=5
+          for attempt in $(seq 1 "$attempts"); do
+            if flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); const health = await response.json(); console.log(JSON.stringify(health)); const singleton = health.dependencies?.find((dependency) => dependency.name === \"singleton_lock\"); process.exit(response.ok && health.ok === true && singleton?.ok === true ? 0 : 1)"'; then
+              echo "engine health passed on attempt ${attempt}/${attempts}"
+              exit 0
+            fi
+            echo "engine not healthy yet (attempt ${attempt}/${attempts}); retrying in ${delay}s"
+            sleep "$delay"
+          done
+          echo "::error::engine health did not pass after ${attempts} attempts"
+          exit 1
 
       - name: Verify unauthorized proxy behavior
         shell: bash

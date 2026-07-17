@@ -46,14 +46,19 @@ if (import.meta.main) {
     isBackgroundWorkActive: () => activeSandboxReaperRuns > 0,
   });
 
-  startSandboxReaper(environment.SANDBOX_REAP_INTERVAL, runtime, setInterval, {
-    onRunStart: () => {
-      activeSandboxReaperRuns += 1;
+  const sandboxReaperTimer = startSandboxReaper(
+    environment.SANDBOX_REAP_INTERVAL,
+    runtime,
+    setInterval,
+    {
+      onRunStart: () => {
+        activeSandboxReaperRuns += 1;
+      },
+      onRunComplete: () => {
+        activeSandboxReaperRuns = Math.max(0, activeSandboxReaperRuns - 1);
+      },
     },
-    onRunComplete: () => {
-      activeSandboxReaperRuns = Math.max(0, activeSandboxReaperRuns - 1);
-    },
-  });
+  );
   server.reload(
     createEngineServerOptions(
       port,
@@ -64,6 +69,22 @@ if (import.meta.main) {
     ),
   );
   reviewIntentKickScheduler.kick();
+
+  // Release the Weft singleton lease promptly when Fly sends SIGTERM during a
+  // rolling deploy, so the replacement instance acquires ownership immediately
+  // instead of waiting out the lease TTL (~30s of "engine runtime is starting").
+  const handleShutdownSignal = createSignalShutdown({
+    runtime,
+    scheduler: reviewIntentKickScheduler,
+    server,
+    sandboxReaperTimer,
+  });
+  // `on`, not `once`: the handler is internally idempotent, and keeping the
+  // listener registered means a repeated SIGTERM cannot fall through to the
+  // default (immediate-termination) behavior and abort an in-progress release.
+  process.on('SIGTERM', () => void handleShutdownSignal());
+  process.on('SIGINT', () => void handleShutdownSignal());
+
   console.log('[engine] runtime ready');
 }
 
@@ -389,6 +410,71 @@ export function createReviewIntentKickScheduler(
     stop() {
       clearIdleShutdownTimer();
     },
+  };
+}
+
+export type SignalShutdownInput = {
+  runtime: Pick<EngineRuntime, 'release'>;
+  scheduler: Pick<ReviewIntentKickScheduler, 'stop'>;
+  server: { stop: (closeActiveConnections?: boolean) => Promise<void> | void };
+  sandboxReaperTimer?: ReturnType<typeof setInterval>;
+  logger?: Pick<Console, 'log' | 'error'>;
+  exit?: (code: number) => void;
+  clearIntervalFunction?: (timer: ReturnType<typeof setInterval>) => void;
+};
+
+/**
+ * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
+ *
+ * On a Fly rolling deploy the outgoing engine receives SIGTERM. Releasing the
+ * Weft ownership lease promptly — `runtime.release()` disposes the engine and
+ * deletes the lease record — lets the replacement instance acquire ownership
+ * immediately instead of waiting out the lease TTL. That is the difference
+ * between a ~1s and a ~30s "engine runtime is starting" window on every deploy.
+ * Relies on Weft's async-release contract (see stevekinney/weft#630); a bare
+ * `process.exit` would silently degrade the handoff to TTL-bounded.
+ *
+ * Releasing while work is in flight is safe by design and does NOT mirror the
+ * idle-shutdown path's "defer while busy" guard. Weft's `asyncDispose` drains
+ * queued workflow starts before releasing, durable checkpoints let the
+ * replacement instance resume in-flight executions, and lease-epoch fencing
+ * rejects any stale write from this instance. SIGTERM is a hard deadline
+ * (Fly escalates to SIGKILL after `kill_timeout`), so waiting for claimed
+ * review intents or sandbox reaps to finish would risk skipping the release
+ * entirely — reintroducing the TTL-bound handoff this exists to prevent. A
+ * concurrent idle-shutdown exit is harmless: `release()` is idempotent and a
+ * second `process.exit` is a no-op.
+ */
+export function createSignalShutdown(input: SignalShutdownInput): () => Promise<void> {
+  const logger = input.logger ?? console;
+  const exit = input.exit ?? ((code: number) => process.exit(code));
+  const clearIntervalFunction = input.clearIntervalFunction ?? clearInterval;
+  let shuttingDown = false;
+
+  return async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    logger.log('[engine] shutdown signal received; releasing singleton lease');
+
+    // Stop accepting new work first, but never let a failure here skip the
+    // lease release below — that release is the whole point of the handler.
+    try {
+      input.scheduler.stop();
+      if (input.sandboxReaperTimer !== undefined) clearIntervalFunction(input.sandboxReaperTimer);
+      await input.server.stop();
+    } catch (error) {
+      logger.error('[engine] stopping intake failed during shutdown', error);
+    }
+
+    try {
+      await input.runtime.release();
+    } catch (error) {
+      logger.error('[engine] lease release failed during shutdown', error);
+    }
+
+    logger.log('[engine] shutdown complete');
+    exit(0);
   };
 }
 

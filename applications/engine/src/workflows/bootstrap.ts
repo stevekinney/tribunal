@@ -98,6 +98,12 @@ export async function createEngineRuntime(
       options.reviewIntentPollIntervalMs ?? 1_000,
     );
 
+    // Guard against a double release: the idle-shutdown scheduler and a
+    // termination-signal handler can both reach `release()`, and disposing the
+    // engine or deleting the lease twice would surface a confusing error during
+    // an otherwise-clean shutdown.
+    let released = false;
+
     return {
       engine,
       healthDependencies() {
@@ -130,6 +136,9 @@ export async function createEngineRuntime(
         );
       },
       async release() {
+        if (released) return;
+        released = true;
+
         poller.stop();
         try {
           await (engine as DisposableEngine)[Symbol.asyncDispose]?.();
