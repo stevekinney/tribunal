@@ -47,9 +47,9 @@ const {
     Promise.resolve([]),
   ),
   mockSaveRepositoryWatchSettings: vi.fn(() => Promise.resolve({ success: true })),
-  mockBuildRepositoryDashboard: vi.fn<() => Promise<RepositoryDashboardRow[]>>(() =>
-    Promise.resolve([]),
-  ),
+  mockBuildRepositoryDashboard: vi.fn<
+    (context: unknown, repositories: Array<{ id: number }>) => Promise<RepositoryDashboardRow[]>
+  >(() => Promise.resolve([])),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -263,10 +263,7 @@ describe('/repositories server load', () => {
     };
 
     // Only the added repository is dashboard-built; the build receives only its id.
-    const [, dashboardInput] = mockBuildRepositoryDashboard.mock.calls[0] as [
-      unknown,
-      Array<{ id: number }>,
-    ];
+    const [, dashboardInput] = mockBuildRepositoryDashboard.mock.calls[0];
     expect(dashboardInput.map((entry) => entry.id)).toEqual([101]);
 
     // The table lists only the added repository; the accessible-but-unadded one
