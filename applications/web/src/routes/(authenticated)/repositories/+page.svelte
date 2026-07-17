@@ -18,8 +18,6 @@
   import { StatGroup } from '@lostgradient/cinder/stat-group';
   import { DataList } from '@lostgradient/cinder/data-list';
   import { StackedListItem } from '@lostgradient/cinder/stacked-list-item';
-  import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
-  import { Segment } from '@lostgradient/cinder/segment';
   import { Alert } from '@lostgradient/cinder/alert';
   import { FolderGit2, Plus } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
@@ -30,7 +28,6 @@
   let searchQuery = $state('');
   let repositoryToAddId = $state('');
   let repositoryToAddInput = $state('');
-  let watchView = $state<'all' | 'watched'>('all');
 
   /**
    * Optimistic watch states keyed by repository ID. Populated on toggle click and
@@ -42,14 +39,16 @@
   const activeWatchSubmissions = new SvelteSet<number>();
   const queuedWatchStates = new SvelteMap<number, boolean>();
 
-  // Every repository the user can access, per the locked decision to show all
-  // accessible repositories with a visible watched filter rather than silently
-  // narrowing the table to watched repositories only.
+  // Only repositories explicitly added to Tribunal (watched) appear in the
+  // table. The full accessible catalog is never rendered here — it lives behind
+  // the "Add repository" picker as `data.addableRepositories`.
   const repositories = $derived(data.repositories);
   const summary = $derived(data.summary);
   const attentionPullRequests = $derived(data.attentionPullRequests ?? []);
-  const agents = $derived(data.agents ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
+  // The Add picker only renders when there is something to add, so empty-state
+  // copy must not point at it unless an addable repository actually exists.
+  const hasAddableRepositories = $derived(data.addableRepositories.length > 0);
 
   /**
    * Resolves the effective watch state: returns the optimistic local state if
@@ -60,37 +59,25 @@
   }
 
   const addableRepositoryOptions = $derived(
-    repositories
-      .filter((repository) => !watchedFor(repository.id, repository.review.watched))
-      .map((repository) => ({
-        value: String(repository.id),
-        label: `${repository.owner}/${repository.name}`,
-        description: repository.defaultBranch
-          ? `Default branch: ${repository.defaultBranch}`
-          : undefined,
-      })),
+    data.addableRepositories.map((repository) => ({
+      value: String(repository.id),
+      label: `${repository.owner}/${repository.name}`,
+      description: repository.defaultBranch
+        ? `Default branch: ${repository.defaultBranch}`
+        : undefined,
+    })),
   );
 
   const subtitle = $derived(
     repositories.length > 0
-      ? `${repositories.length} accessible ${repositories.length === 1 ? 'repository' : 'repositories'}`
-      : 'Add repositories to start reviewing pull requests',
+      ? `${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'}`
+      : 'Add a repository to start reviewing pull requests',
   );
 
-  const viewFilteredRepositories = $derived.by(() => {
-    if (watchView === 'watched') {
-      return repositories.filter((repository) =>
-        watchedFor(repository.id, repository.review.watched),
-      );
-    }
-    return repositories;
-  });
-
   const filteredRepositories = $derived.by(() => {
-    const base = viewFilteredRepositories;
-    if (!searchQuery.trim()) return base;
+    if (!searchQuery.trim()) return repositories;
     const query = searchQuery.toLowerCase();
-    return base.filter(
+    return repositories.filter(
       (r) =>
         r.name.toLowerCase().includes(query) ||
         r.owner.toLowerCase().includes(query) ||
@@ -100,13 +87,15 @@
 
   const emptyStateTitle = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub to get started';
-    if (hasInstallations) return 'No repositories found';
+    if (hasInstallations) return 'No repositories added yet';
     return 'Install the GitHub App';
   });
   const emptyStateDescription = $derived.by(() => {
     if (data.needsConnect) return 'Connect GitHub before installing the GitHub App.';
     if (hasInstallations)
-      return 'Repositories will appear here once they are synced from your GitHub App installation.';
+      return hasAddableRepositories
+        ? 'Use “Add repository” above to start reviewing pull requests. Only repositories you add are reviewed.'
+        : 'Grant Tribunal access to a repository from “Manage repository access”, then add it here.';
     return 'Install Tribunal on a repository, then add it here.';
   });
   const emptyStateActionLabel = $derived.by(() => {
@@ -170,16 +159,13 @@
   }
 
   /**
-   * Returns the agent IDs to submit when toggling watch state.
-   *
-   * - Already watched → preserve the current agent assignment.
-   * - Not watched with saved settings → use the saved agent assignment.
-   * - Not watched with no saved settings → default to all enabled agents.
+   * Returns the agent IDs to submit when toggling a table row's watch state.
+   * The table only ever contains added (watched) repositories, so this always
+   * preserves the repository's current agent assignment — removing a repository
+   * keeps its saved settings intact for a later re-add. First-time defaults for
+   * repositories added through the picker are resolved server-side.
    */
   function agentIdsForWatch(repository: (typeof data.repositories)[number]): string[] {
-    if (!repository.review.watched && !repository.review.hasSavedSettings) {
-      return agents.filter((a) => a.enabled).map((a) => a.id);
-    }
     return repository.review.agents.map((a) => a.id);
   }
 
@@ -393,24 +379,10 @@
           oninput={(value) => (searchQuery = value)}
         />
       </div>
-      <SegmentedControl
-        id="repository-watch-filter"
-        label="Filter repositories"
-        bind:value={watchView}
-      >
-        <Segment value="all">All</Segment>
-        <Segment value="watched">Watched</Segment>
-      </SegmentedControl>
     </div>
 
     {#if filteredRepositories.length === 0}
-      <p class="empty-hint">
-        {#if searchQuery.trim()}
-          No repositories matching "{searchQuery}".
-        {:else}
-          No repositories match this filter.
-        {/if}
-      </p>
+      <p class="empty-hint">No repositories matching "{searchQuery}".</p>
     {:else}
       <Card padding="none">
         <div class="table-scroll">

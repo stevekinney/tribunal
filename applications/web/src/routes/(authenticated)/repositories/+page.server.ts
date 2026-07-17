@@ -78,6 +78,18 @@ interface RepositoryRow {
 }
 
 /**
+ * A repository the user can access but has not added to Tribunal yet. Carries
+ * only identity fields — the "Add repository" picker needs to list and label
+ * these, but they intentionally get no dashboard fan-out until they are added.
+ */
+interface AddableRepository {
+  id: number;
+  owner: string;
+  name: string;
+  defaultBranch: string | null;
+}
+
+/**
  * Explicit output shape for the load function. SvelteKit's generated
  * `PageData` type is derived via `ReturnType<typeof load>` against this
  * generic, so pinning it here keeps `summary`/`attentionPullRequests`
@@ -86,6 +98,7 @@ interface RepositoryRow {
  */
 interface RepositoriesPageData {
   repositories: RepositoryRow[];
+  addableRepositories: AddableRepository[];
   agents: Agent[];
   installations: Installation[];
   summary: DashboardSummary | null;
@@ -96,10 +109,13 @@ interface RepositoriesPageData {
 }
 
 /**
- * Lists the repositories the logged-in user can reach through their GitHub App
- * installations, decorated with dashboard health data (default-branch CI,
- * open pull request counts, attention signals). When the user has no GitHub
- * connection at all we surface a connect prompt rather than erroring out.
+ * Lists the repositories the logged-in user has added to Tribunal (watched),
+ * decorated with dashboard health data (default-branch CI, open pull request
+ * counts, attention signals). The full accessible set is enumerated only to
+ * populate the "Add repository" picker; it never drives a per-repository
+ * GitHub fan-out, so the page stays fast regardless of how many repositories
+ * the installation can reach. When the user has no GitHub connection at all we
+ * surface a connect prompt rather than erroring out.
  */
 export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }) => {
   const { user } = locals;
@@ -122,6 +138,7 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
     // connect prompt instead of a hard error so the user has an obvious next step.
     return {
       repositories: [],
+      addableRepositories: [],
       agents: [],
       installations: [],
       summary: null,
@@ -132,30 +149,35 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
     };
   }
 
-  // Every repository the user can access — the dashboard shows all of them,
-  // with watch state rendered as a visible per-row toggle/filter rather than
-  // silently narrowing the table to watched repositories only.
   const repositoryIds = result.repositories.map((entry) => entry.repository.id);
   const skipLiveGithubReads = shouldSkipLiveGithubDashboardReads();
 
-  // Resolve watch state (a local DB read) before spending the shared
-  // dashboard API budget, so watched repositories are prioritized ahead of
-  // unwatched ones and don't render as api-budget-exhausted/Unknown just
-  // because they sorted later in the accessible-repository list.
   const [operatorDetails, agents] = await Promise.all([
     getRepositoryOperatorDetails(user.id, repositoryIds),
     listAgents(user.id),
   ]);
 
-  const budgetOrderedRepositories = [...result.repositories].sort((a, b) => {
-    const aWatched = operatorDetails.get(a.repository.id)?.watched ? 0 : 1;
-    const bWatched = operatorDetails.get(b.repository.id)?.watched ? 0 : 1;
-    return aWatched - bWatched;
-  });
+  // The main table shows only repositories explicitly added to Tribunal
+  // (watched). Everything else the installation can reach stays out of the
+  // table and feeds the "Add repository" picker instead. Scoping the dashboard
+  // fan-out to added repositories keeps the GitHub work proportional to what
+  // the user is actually reviewing — not to the full accessible catalog, which
+  // could be hundreds of repositories and blow past the shared API budget.
+  const addedRepositories = result.repositories.filter(
+    (entry) => operatorDetails.get(entry.repository.id)?.watched,
+  );
+  const addableRepositories: AddableRepository[] = result.repositories
+    .filter((entry) => !operatorDetails.get(entry.repository.id)?.watched)
+    .map((entry) => ({
+      id: entry.repository.id,
+      owner: entry.repository.owner,
+      name: entry.repository.name,
+      defaultBranch: entry.repository.defaultBranch,
+    }));
 
   const dashboardRows = await buildRepositoryDashboard(
     githubContext,
-    budgetOrderedRepositories.map((entry) => ({
+    addedRepositories.map((entry) => ({
       id: entry.repository.id,
       owner: entry.repository.owner,
       name: entry.repository.name,
@@ -181,7 +203,7 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
 
   return {
-    repositories: result.repositories.map((entry) => ({
+    repositories: addedRepositories.map((entry) => ({
       id: entry.repository.id,
       owner: entry.repository.owner,
       name: entry.repository.name,
@@ -191,6 +213,7 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
       review: operatorDetails.get(entry.repository.id) ?? defaultOperatorDetails,
       dashboard: dashboardRowsById.get(entry.repository.id) ?? null,
     })),
+    addableRepositories,
     agents,
     installations: result.installations,
     summary: buildDashboardSummary(dashboardRows),

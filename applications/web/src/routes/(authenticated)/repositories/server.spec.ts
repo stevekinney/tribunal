@@ -47,9 +47,9 @@ const {
     Promise.resolve([]),
   ),
   mockSaveRepositoryWatchSettings: vi.fn(() => Promise.resolve({ success: true })),
-  mockBuildRepositoryDashboard: vi.fn<() => Promise<RepositoryDashboardRow[]>>(() =>
-    Promise.resolve([]),
-  ),
+  mockBuildRepositoryDashboard: vi.fn<
+    (context: unknown, repositories: Array<{ id: number }>) => Promise<RepositoryDashboardRow[]>
+  >(() => Promise.resolve([])),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -173,7 +173,7 @@ describe('/repositories server load', () => {
     expect.assertions(1);
   });
 
-  it('returns dashboard rows and honest summary counts for every accessible repository, watched or not', async () => {
+  it('builds dashboard rows only for added repositories and lists the rest as addable', async () => {
     mockRepositoriesResult.value = {
       ok: true,
       repositories: [
@@ -216,6 +216,8 @@ describe('/repositories server load', () => {
         ],
       ]),
     );
+    // Only the added repository (101) is passed to the dashboard build, so the
+    // build only ever returns a row for it — 202 never triggers a GitHub fetch.
     mockBuildRepositoryDashboard.mockResolvedValue([
       {
         repository: { id: 101, owner: 'acme', name: 'widgets', defaultBranch: 'main' },
@@ -247,17 +249,6 @@ describe('/repositories server load', () => {
         refreshedAt: '2026-07-09T00:00:00.000Z',
         dataStatus: 'ok',
       },
-      {
-        repository: { id: 202, owner: 'acme', name: 'gadgets', defaultBranch: 'main' },
-        defaultBranchStatus: 'passing',
-        openPullRequestCount: 0,
-        openPullRequestCountAtCap: false,
-        attentionPullRequestCount: 0,
-        unresolvedThreadCount: 0,
-        pullRequests: [],
-        refreshedAt: '2026-07-09T00:00:00.000Z',
-        dataStatus: 'ok',
-      },
     ]);
 
     const result = (await load(createEvent())) as unknown as {
@@ -266,20 +257,28 @@ describe('/repositories server load', () => {
         review: { watched: boolean };
         dashboard: { defaultBranchStatus: string } | null;
       }>;
+      addableRepositories: Array<{ id: number; owner: string; name: string }>;
       summary: RepositoriesLoadResult['summary'];
       attentionPullRequests: Array<{ number: number; repositoryOwner: string }>;
     };
 
-    // Both accessible repositories render, not just the watched one.
-    expect(result.repositories.map((r) => r.id)).toEqual([101, 202]);
+    // Only the added repository is dashboard-built; the build receives only its id.
+    const [, dashboardInput] = mockBuildRepositoryDashboard.mock.calls[0];
+    expect(dashboardInput.map((entry) => entry.id)).toEqual([101]);
+
+    // The table lists only the added repository; the accessible-but-unadded one
+    // is surfaced through the "Add repository" picker instead.
+    expect(result.repositories.map((r) => r.id)).toEqual([101]);
     expect(result.repositories.find((r) => r.id === 101)?.review.watched).toBe(true);
-    expect(result.repositories.find((r) => r.id === 202)?.review.watched).toBe(false);
     expect(result.repositories.find((r) => r.id === 101)?.dashboard?.defaultBranchStatus).toBe(
       'failing',
     );
+    expect(result.addableRepositories).toEqual([
+      { id: 202, owner: 'acme', name: 'gadgets', defaultBranch: 'main' },
+    ]);
 
     expect(result.summary).toEqual({
-      totalRepositoryCount: 2,
+      totalRepositoryCount: 1,
       failingDefaultBranchCount: 1,
       failingDefaultBranchCountExact: true,
       openPullRequestCount: 3,
@@ -313,6 +312,21 @@ describe('/repositories server load', () => {
       ],
       installations: [{ installationId: 1, accountLogin: 'acme', accountAvatarUrl: null }],
     };
+    mockGetRepositoryOperatorDetails.mockResolvedValue(
+      new Map([
+        [
+          101,
+          {
+            hasSavedSettings: true,
+            watched: true,
+            ignoreGlobs: [],
+            agents: [],
+            lastRunStatus: null,
+            estimatedCostLast30DaysUsd: 0,
+          },
+        ],
+      ]),
+    );
     mockBuildRepositoryDashboard.mockResolvedValue([
       {
         repository: { id: 101, owner: 'acme', name: 'widgets', defaultBranch: 'main' },
