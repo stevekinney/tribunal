@@ -185,6 +185,32 @@ describe('createEngineRuntime', () => {
 
     expect(events).toEqual(['engine.asyncDispose', 'lease.release']);
   });
+
+  it('retries the release after a transient failure rather than leaving the lease held', async () => {
+    const events: string[] = [];
+    const lock = new FakeEngineSingletonLock(events);
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      lock,
+    });
+    const dispose = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('dispose failed'))
+      .mockImplementationOnce(async () => {
+        events.push('engine.asyncDispose');
+      });
+    (runtime.engine as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose] =
+      dispose;
+
+    await expect(runtime.release()).rejects.toThrow('dispose failed');
+    await runtime.release();
+
+    // The first attempt failed, so the second must actually re-run disposal and
+    // still end with the lease released.
+    expect(dispose).toHaveBeenCalledTimes(2);
+    expect(events).toContain('engine.asyncDispose');
+    expect(events.filter((event) => event === 'lease.release').length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 class FakeEngineSingletonLock implements EngineSingletonLock {
