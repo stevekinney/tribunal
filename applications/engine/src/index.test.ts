@@ -901,7 +901,7 @@ describe('createSignalShutdown', () => {
 
     expect(harness.stop).toHaveBeenCalledTimes(1);
     expect(harness.clearIntervalFunction).toHaveBeenCalledWith(harness.sandboxReaperTimer);
-    expect(harness.serverStop).toHaveBeenCalledTimes(1);
+    expect(harness.serverStop).toHaveBeenCalledWith(true);
     expect(harness.release).toHaveBeenCalledTimes(1);
     expect(harness.exit).toHaveBeenCalledWith(0);
   });

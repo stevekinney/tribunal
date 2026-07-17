@@ -459,10 +459,13 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
 
     // Stop accepting new work first, but never let a failure here skip the
     // lease release below — that release is the whole point of the handler.
+    // Force active connections closed (`stop(true)`): a lease handoff must not
+    // be held hostage by an in-flight control/health request that could consume
+    // the whole kill_timeout before release() ever runs.
     try {
       input.scheduler.stop();
       if (input.sandboxReaperTimer !== undefined) clearIntervalFunction(input.sandboxReaperTimer);
-      await input.server.stop();
+      await input.server.stop(true);
     } catch (error) {
       logger.error('[engine] stopping intake failed during shutdown', error);
     }
