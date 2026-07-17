@@ -31,7 +31,10 @@ export function createPostgresAdvisoryLock(
     Number.isFinite(options.attempts) && (options.attempts ?? 0) >= 1
       ? Math.floor(options.attempts as number)
       : DEFAULT_ACQUIRE_ATTEMPTS;
-  const delayMs = options.delayMs ?? DEFAULT_ACQUIRE_DELAY_MS;
+  const delayMs =
+    Number.isFinite(options.delayMs) && (options.delayMs ?? -1) >= 0
+      ? (options.delayMs as number)
+      : DEFAULT_ACQUIRE_DELAY_MS;
   const sleep =
     options.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -61,11 +64,19 @@ export function createPostgresAdvisoryLock(
           lastError = error;
         }
 
-        if (attempt < attempts) await sleep(delayMs);
+        // A throwing custom sleep must not skip pool cleanup below; treat a
+        // failed delay as "no delay" and continue to the next attempt.
+        if (attempt < attempts) {
+          try {
+            await sleep(delayMs);
+          } catch {
+            // ignore — proceed to the next attempt immediately
+          }
+        }
       }
 
       await pool.end();
-      throw lastError;
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
     },
   };
 }

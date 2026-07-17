@@ -116,6 +116,8 @@ describe('createPostgresAdvisoryLock', () => {
     await expect(lock.acquire()).rejects.toThrow('query failed');
 
     expect(nextConnectClient!.query).toHaveBeenCalledTimes(2);
+    // Each failed attempt must return its connection to the pool.
+    expect(nextConnectClient!.release).toHaveBeenCalledTimes(2);
     expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
   });
 });
