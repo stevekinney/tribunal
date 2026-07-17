@@ -459,7 +459,13 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
   const logger = input.logger ?? console;
   const exit = input.exit ?? ((code: number) => process.exit(code));
   const clearIntervalFunction = input.clearIntervalFunction ?? clearInterval;
-  const releaseAttempts = input.releaseAttempts ?? DEFAULT_RELEASE_ATTEMPTS;
+  // Clamp to at least one attempt: a 0/negative/NaN override must never skip the
+  // release entirely — that would defeat the whole handler.
+  const requestedReleaseAttempts = input.releaseAttempts ?? DEFAULT_RELEASE_ATTEMPTS;
+  const releaseAttempts =
+    Number.isFinite(requestedReleaseAttempts) && requestedReleaseAttempts >= 1
+      ? Math.floor(requestedReleaseAttempts)
+      : DEFAULT_RELEASE_ATTEMPTS;
   const sleep =
     input.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));

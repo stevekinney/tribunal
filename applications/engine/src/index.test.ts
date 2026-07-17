@@ -962,6 +962,17 @@ describe('createSignalShutdown', () => {
     expect(harness.exit).toHaveBeenCalledWith(0);
   });
 
+  it('always attempts the release even when releaseAttempts is misconfigured', async () => {
+    const harness = createHarness({ releaseAttempts: 0 });
+
+    await harness.shutdown();
+
+    // A 0/negative/NaN override must never skip the release — the handler falls
+    // back to the default rather than exiting without a handoff.
+    expect(harness.release).toHaveBeenCalled();
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
   it('stops retrying once the release succeeds', async () => {
     const release = vi
       .fn<() => Promise<void>>()
