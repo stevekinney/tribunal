@@ -55,16 +55,25 @@ function makeAccessibleRepository(id: number, owner: string, name: string) {
   };
 }
 
-describe('/repositories load: dashboard budget ordering', () => {
+function watchedDetails() {
+  return {
+    hasSavedSettings: true,
+    watched: true,
+    ignoreGlobs: [],
+    agents: [],
+    lastRunStatus: null,
+    estimatedCostLast30DaysUsd: 0,
+  };
+}
+
+describe('/repositories load: added repositories only', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListAgents.mockResolvedValue([]);
     mockBuildRepositoryDashboard.mockResolvedValue([]);
   });
 
-  it('passes watched repositories to buildRepositoryDashboard ahead of unwatched ones', async () => {
-    // Alphabetically (and thus in the accessible-repository list order) "a-repo"
-    // sorts before "z-repo", but only "z-repo" is watched.
+  it('builds the dashboard only for repositories the user has added (watched)', async () => {
     const unwatched = makeAccessibleRepository(1, 'test-org', 'a-repo');
     const watched = makeAccessibleRepository(2, 'test-org', 'z-repo');
 
@@ -74,21 +83,7 @@ describe('/repositories load: dashboard budget ordering', () => {
       installations: [{ installationId: 999, accountLogin: 'test-org', accountAvatarUrl: null }],
     });
 
-    mockGetRepositoryOperatorDetails.mockResolvedValue(
-      new Map([
-        [
-          2,
-          {
-            hasSavedSettings: true,
-            watched: true,
-            ignoreGlobs: [],
-            agents: [],
-            lastRunStatus: null,
-            estimatedCostLast30DaysUsd: 0,
-          },
-        ],
-      ]),
-    );
+    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map([[2, watchedDetails()]]));
 
     await runLoad();
 
@@ -97,10 +92,32 @@ describe('/repositories load: dashboard budget ordering', () => {
       unknown,
       Array<{ id: number }>,
     ];
-    expect(dashboardInput.map((entry) => entry.id)).toEqual([2, 1]);
+    // Only the added repository is fanned out to GitHub — the unwatched one is
+    // never dashboard-built, no matter how large the accessible catalog is.
+    expect(dashboardInput.map((entry) => entry.id)).toEqual([2]);
   });
 
-  it('keeps unwatched repositories in their original relative order among themselves', async () => {
+  it('surfaces unwatched accessible repositories as addable, not in the table', async () => {
+    const unwatched = makeAccessibleRepository(1, 'test-org', 'a-repo');
+    const watched = makeAccessibleRepository(2, 'test-org', 'z-repo');
+
+    mockGetRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      repositories: [unwatched, watched],
+      installations: [{ installationId: 999, accountLogin: 'test-org', accountAvatarUrl: null }],
+    });
+
+    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map([[2, watchedDetails()]]));
+
+    const data = await runLoad();
+
+    expect(data.repositories.map((repository: { id: number }) => repository.id)).toEqual([2]);
+    expect(data.addableRepositories).toEqual([
+      { id: 1, owner: 'test-org', name: 'a-repo', defaultBranch: 'main' },
+    ]);
+  });
+
+  it('builds no dashboard and adds every accessible repository when nothing is watched', async () => {
     const first = makeAccessibleRepository(1, 'test-org', 'a-repo');
     const second = makeAccessibleRepository(2, 'test-org', 'b-repo');
 
@@ -112,12 +129,16 @@ describe('/repositories load: dashboard budget ordering', () => {
 
     mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
 
-    await runLoad();
+    const data = await runLoad();
 
     const [, dashboardInput] = mockBuildRepositoryDashboard.mock.calls[0] as [
       unknown,
       Array<{ id: number }>,
     ];
-    expect(dashboardInput.map((entry) => entry.id)).toEqual([1, 2]);
+    expect(dashboardInput).toEqual([]);
+    expect(data.repositories).toEqual([]);
+    expect(data.addableRepositories.map((repository: { id: number }) => repository.id)).toEqual([
+      1, 2,
+    ]);
   });
 });

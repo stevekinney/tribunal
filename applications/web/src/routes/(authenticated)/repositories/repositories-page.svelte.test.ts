@@ -129,6 +129,11 @@ function makeDashboardRow(overrides: Partial<DashboardRow> = {}): DashboardRow {
   };
 }
 
+type AddableRepository = PageData['addableRepositories'][number];
+
+// Repositories shown in the table are always added (watched); the picker below
+// reads from a separate `addableRepositories` list, so table fixtures default
+// to watched.
 function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
   return {
     id: 101,
@@ -138,14 +143,24 @@ function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
     accountLogin: 'test-org',
     accountAvatarUrl: null,
     review: {
-      hasSavedSettings: false,
-      watched: false,
+      hasSavedSettings: true,
+      watched: true,
       lastRunStatus: null,
       estimatedCostLast30DaysUsd: 0,
       ignoreGlobs: [],
       agents: [],
     },
     dashboard: makeDashboardRow(),
+    ...overrides,
+  };
+}
+
+function makeAddable(overrides: Partial<AddableRepository> = {}): AddableRepository {
+  return {
+    id: 202,
+    owner: 'other-org',
+    name: 'widgets',
+    defaultBranch: 'main',
     ...overrides,
   };
 }
@@ -161,7 +176,7 @@ const okSummaryForOne = {
   hasUnavailableRepositories: false,
 } satisfies PageData['summary'];
 
-const baseData = {
+const baseData: PageData = {
   user: {
     id: 1,
     username: 'testuser',
@@ -171,6 +186,7 @@ const baseData = {
     isPlatformAdministrator: false,
   },
   repositories: [],
+  addableRepositories: [],
   agents: [],
   installations: [],
   summary: null,
@@ -179,7 +195,7 @@ const baseData = {
   loadError: null,
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
   reviewsEnabled: false,
-} satisfies PageData;
+};
 
 describe('/repositories page', () => {
   beforeEach(() => {
@@ -197,7 +213,7 @@ describe('/repositories page', () => {
       .toHaveAttribute('href', '/connect/github');
   });
 
-  it('shows an empty state when an installation exists but no repositories are synced yet', async () => {
+  it('shows an "add repositories" empty state when an installation exists but nothing is added yet', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
@@ -219,7 +235,7 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await expect.element(page.getByText('No repositories found')).toBeInTheDocument();
+    await expect.element(page.getByText('No repositories added yet')).toBeInTheDocument();
   });
 
   it('renders the summary strip and repository health table for a healthy repository', async () => {
@@ -517,46 +533,11 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            id: 101,
-            name: 'review-target',
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-          makeRepository({
-            id: 202,
-            owner: 'other-org',
-            name: 'widgets',
-            dashboard: makeDashboardRow({
-              repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
-            }),
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
+        summary: okSummaryForOne,
+        addableRepositories: [
+          makeAddable({ id: 101, owner: 'test-org', name: 'review-target' }),
+          makeAddable({ id: 202, owner: 'other-org', name: 'widgets' }),
         ],
-        summary: {
-          totalRepositoryCount: 2,
-          failingDefaultBranchCount: 0,
-          failingDefaultBranchCountExact: true,
-          openPullRequestCount: 4,
-          openPullRequestCountExact: true,
-          attentionPullRequestCount: 0,
-          attentionPullRequestCountExact: true,
-          hasUnavailableRepositories: false,
-        },
       },
       form: null,
       params: {},
@@ -594,34 +575,8 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            id: 202,
-            owner: 'other-org',
-            name: 'widgets',
-            dashboard: makeDashboardRow({
-              repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
-            }),
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-        ],
-        summary: {
-          totalRepositoryCount: 1,
-          failingDefaultBranchCount: 0,
-          failingDefaultBranchCountExact: true,
-          openPullRequestCount: 2,
-          openPullRequestCountExact: true,
-          attentionPullRequestCount: 0,
-          attentionPullRequestCountExact: true,
-          hasUnavailableRepositories: false,
-        },
+        summary: okSummaryForOne,
+        addableRepositories: [makeAddable({ id: 202, owner: 'other-org', name: 'widgets' })],
       },
       form: null,
       params: {},
@@ -651,28 +606,8 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-        ],
-        summary: {
-          totalRepositoryCount: 1,
-          failingDefaultBranchCount: 0,
-          failingDefaultBranchCountExact: true,
-          openPullRequestCount: 2,
-          openPullRequestCountExact: true,
-          attentionPullRequestCount: 0,
-          attentionPullRequestCountExact: true,
-          hasUnavailableRepositories: false,
-        },
+        summary: okSummaryForOne,
+        addableRepositories: [makeAddable({ id: 101, owner: 'test-org', name: 'review-target' })],
       },
       form: null,
       params: {},
@@ -684,36 +619,10 @@ describe('/repositories page', () => {
     await expect.element(page.getByText('No results')).toBeInTheDocument();
   });
 
-  it('preserves saved repository settings when re-watching a repository', async () => {
+  it('submits the row form with preserved agents and ignore globs when removing a repository', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
-        agents: [
-          {
-            id: '1',
-            userId: 1,
-            slug: 'security',
-            description: 'Security reviews',
-            body: 'Review security risks.',
-            model: 'gpt-5',
-            effort: null,
-            enabled: true,
-            createdAt: new Date('2026-01-01T00:00:00Z'),
-            updatedAt: new Date('2026-01-01T00:00:00Z'),
-          },
-          {
-            id: '2',
-            userId: 1,
-            slug: 'documentation',
-            description: 'Documentation reviews',
-            body: 'Review documentation.',
-            model: 'gpt-5',
-            effort: null,
-            enabled: true,
-            createdAt: new Date('2026-01-01T00:00:00Z'),
-            updatedAt: new Date('2026-01-01T00:00:00Z'),
-          },
-        ],
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
@@ -721,7 +630,7 @@ describe('/repositories page', () => {
           makeRepository({
             review: {
               hasSavedSettings: true,
-              watched: false,
+              watched: true,
               lastRunStatus: null,
               estimatedCostLast30DaysUsd: 0,
               ignoreGlobs: ['generated/**', 'vendor/**'],
@@ -729,84 +638,22 @@ describe('/repositories page', () => {
             },
           }),
         ],
-        summary: {
-          totalRepositoryCount: 1,
-          failingDefaultBranchCount: 0,
-          failingDefaultBranchCountExact: true,
-          openPullRequestCount: 2,
-          openPullRequestCountExact: true,
-          attentionPullRequestCount: 0,
-          attentionPullRequestCountExact: true,
-          hasUnavailableRepositories: false,
-        },
+        summary: okSummaryForOne,
       },
       form: null,
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Add repository' }).click();
+    // The table only ever holds added repositories, so its toggle removes them —
+    // and it submits the current agents/globs so a later re-add restores them.
+    await page.getByRole('switch', { name: 'Remove repository' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['2']);
     expect(enhancedFormTesting.submissions[0]?.formData.get('ignoreGlobs')).toBe(
       'generated/**\nvendor/**',
     );
-    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
-  });
-
-  it('defaults first-time watched repositories to all enabled agents', async () => {
-    render(RepositoriesPage, {
-      data: {
-        ...baseData,
-        agents: [
-          {
-            id: '1',
-            userId: 1,
-            slug: 'security',
-            description: 'Security reviews',
-            body: 'Review security risks.',
-            model: 'gpt-5',
-            effort: null,
-            enabled: true,
-            createdAt: new Date('2026-01-01T00:00:00Z'),
-            updatedAt: new Date('2026-01-01T00:00:00Z'),
-          },
-        ],
-        installations: [
-          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
-        ],
-        repositories: [
-          makeRepository({
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-        ],
-        summary: {
-          totalRepositoryCount: 1,
-          failingDefaultBranchCount: 0,
-          failingDefaultBranchCountExact: true,
-          openPullRequestCount: 2,
-          openPullRequestCountExact: true,
-          attentionPullRequestCount: 0,
-          attentionPullRequestCountExact: true,
-          hasUnavailableRepositories: false,
-        },
-      },
-      form: null,
-      params: {},
-    });
-
-    await page.getByRole('switch', { name: 'Add repository' }).click();
-
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['1']);
-    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
+    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('');
   });
 
   it('queues rapid watch re-toggles so the final submitted state wins', async () => {
@@ -816,31 +663,18 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-        ],
+        repositories: [makeRepository()],
         summary: okSummaryForOne,
       },
       form: null,
       params: {},
     });
 
-    const watchSwitch = page.getByRole('switch', { name: 'Add repository' });
-
-    await watchSwitch.click();
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('on');
-
     await page.getByRole('switch', { name: 'Remove repository' }).click();
+    expect(enhancedFormTesting.submissions).toHaveLength(1);
+    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('');
+
+    await page.getByRole('switch', { name: 'Add repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
@@ -848,7 +682,7 @@ describe('/repositories page', () => {
     enhancedFormTesting.submissions[0]?.resolveUpdate();
 
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
-    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
+    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
   });
 
   it('allows watch toggles after an enhanced update rejects', async () => {
@@ -858,34 +692,23 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            review: {
-              hasSavedSettings: false,
-              watched: false,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: [],
-              agents: [],
-            },
-          }),
-        ],
+        repositories: [makeRepository()],
         summary: okSummaryForOne,
       },
       form: null,
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Add repository' }).click();
+    await page.getByRole('switch', { name: 'Remove repository' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
     enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
 
-    await expect.element(page.getByRole('switch', { name: 'Add repository' })).toBeVisible();
+    await expect.element(page.getByRole('switch', { name: 'Remove repository' })).toBeVisible();
 
-    await page.getByRole('switch', { name: 'Add repository' }).click();
+    await page.getByRole('switch', { name: 'Remove repository' }).click();
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
-    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
+    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
   });
 });
