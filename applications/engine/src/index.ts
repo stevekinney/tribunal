@@ -408,6 +408,11 @@ export function createReviewIntentKickScheduler(
   return {
     kick: startDrain,
     stop() {
+      // Quiesce the drain so no new review intents are claimed during shutdown:
+      // setting `released` makes `drainUntilIdle` exit after its current batch
+      // and `startDrain` refuse further drains. Intents already claimed by the
+      // in-flight batch are durable and re-claimable by the next engine.
+      released = true;
       clearIdleShutdownTimer();
     },
   };
@@ -421,7 +426,12 @@ export type SignalShutdownInput = {
   logger?: Pick<Console, 'log' | 'error'>;
   exit?: (code: number) => void;
   clearIntervalFunction?: (timer: ReturnType<typeof setInterval>) => void;
+  releaseAttempts?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
+
+const DEFAULT_RELEASE_ATTEMPTS = 3;
+const RELEASE_RETRY_DELAY_MS = 500;
 
 /**
  * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
@@ -449,6 +459,10 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
   const logger = input.logger ?? console;
   const exit = input.exit ?? ((code: number) => process.exit(code));
   const clearIntervalFunction = input.clearIntervalFunction ?? clearInterval;
+  const releaseAttempts = input.releaseAttempts ?? DEFAULT_RELEASE_ATTEMPTS;
+  const sleep =
+    input.sleep ??
+    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   let shuttingDown = false;
 
   return async () => {
@@ -470,10 +484,21 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
       logger.error('[engine] stopping intake failed during shutdown', error);
     }
 
-    try {
-      await input.runtime.release();
-    } catch (error) {
-      logger.error('[engine] lease release failed during shutdown', error);
+    // Retry the release within the shutdown window (bounded by kill_timeout).
+    // release() is retryable — it clears its in-flight promise on failure — and
+    // a prompt lease handoff, not a fall back to the lease TTL, is the whole
+    // point of this handler.
+    for (let attempt = 1; attempt <= releaseAttempts; attempt += 1) {
+      try {
+        await input.runtime.release();
+        break;
+      } catch (error) {
+        logger.error(
+          `[engine] lease release attempt ${attempt}/${releaseAttempts} failed during shutdown`,
+          error,
+        );
+        if (attempt < releaseAttempts) await sleep(RELEASE_RETRY_DELAY_MS);
+      }
     }
 
     logger.log('[engine] shutdown complete');

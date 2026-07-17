@@ -521,6 +521,24 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('quiesces the drain on stop so no further intents are claimed', () => {
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi
+          .fn()
+          .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 }),
+        release: vi.fn().mockResolvedValue(undefined),
+      },
+      {},
+    );
+
+    scheduler.stop();
+
+    // After stop(), a kick must not start a new drain — shutdown has begun.
+    expect(scheduler.kick()).toEqual({ started: false, reason: 'released' });
+  });
+
   it('does not release from a stale idle check after a kick starts', async () => {
     vi.useFakeTimers();
     const staleQueueStatus = createDeferred<{
@@ -879,6 +897,7 @@ describe('createSignalShutdown', () => {
       logger,
       exit,
       clearIntervalFunction,
+      sleep: async () => {},
       ...overrides,
     });
 
@@ -928,16 +947,31 @@ describe('createSignalShutdown', () => {
     expect(harness.exit).toHaveBeenCalledWith(0);
   });
 
-  it('exits cleanly even when releasing the lease throws', async () => {
+  it('retries the release across the shutdown window before giving up and exiting', async () => {
     const release = vi.fn(async () => {
       throw new Error('lease already gone');
     });
-    const harness = createHarness({ runtime: { release } });
+    const harness = createHarness({ runtime: { release }, releaseAttempts: 3 });
 
     await harness.shutdown();
 
-    expect(release).toHaveBeenCalledTimes(1);
+    // A prompt handoff is the point, so a transient release failure is retried
+    // within the window rather than immediately conceding to the lease TTL.
+    expect(release).toHaveBeenCalledTimes(3);
     expect(harness.logger.error).toHaveBeenCalled();
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('stops retrying once the release succeeds', async () => {
+    const release = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValueOnce(undefined);
+    const harness = createHarness({ runtime: { release }, releaseAttempts: 3 });
+
+    await harness.shutdown();
+
+    expect(release).toHaveBeenCalledTimes(2);
     expect(harness.exit).toHaveBeenCalledWith(0);
   });
 
