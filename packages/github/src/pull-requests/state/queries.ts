@@ -218,6 +218,7 @@ async function paginateCheckRunsRollup(
   ref: string,
   budget?: CheckRunBudget,
   includeStatusContexts = false,
+  requiredCheckNames?: ReadonlySet<string>,
 ): Promise<CheckRunSummary> {
   const perPage = 100;
   let page = 1;
@@ -227,6 +228,14 @@ async function paginateCheckRunsRollup(
   let hasError = false;
   let hasPending = false;
   let truncated = false;
+
+  // When the branch defines required status checks, narrow the rollup to just
+  // those so a non-required workflow (a deploy or release job) can't flip the
+  // default-branch verdict red. With no required checks the set is empty and
+  // every check run counts, preserving the prior "any failure fails" behavior.
+  const filterToRequired = requiredCheckNames !== undefined && requiredCheckNames.size > 0;
+  let matchedCheckCount = 0;
+  let matchedStatusCount = 0;
 
   while (true) {
     if (budget) {
@@ -250,6 +259,10 @@ async function paginateCheckRunsRollup(
     }
 
     for (const run of data.check_runs) {
+      if (filterToRequired && !requiredCheckNames.has(run.name)) {
+        continue;
+      }
+      matchedCheckCount += 1;
       if (run.status !== 'completed') {
         hasPending = true;
         continue;
@@ -307,7 +320,17 @@ async function paginateCheckRunsRollup(
       // every contribution on there actually being statuses, or a
       // check-run-only repository would flip from `passing` to `pending`.
       if (statusTotalCount > 0) {
-        if (combined.state === 'failure') {
+        if (filterToRequired) {
+          // Aggregate `combined.state` covers every context, so when filtering
+          // we must inspect each status and count only the required contexts.
+          for (const status of combined.statuses) {
+            if (!requiredCheckNames.has(status.context)) continue;
+            matchedStatusCount += 1;
+            if (status.state === 'failure') failingCount++;
+            else if (status.state === 'error') hasError = true;
+            else if (status.state === 'pending') hasPending = true;
+          }
+        } else if (combined.state === 'failure') {
           failingCount++;
         } else if (combined.state === 'error') {
           hasError = true;
@@ -317,6 +340,9 @@ async function paginateCheckRunsRollup(
       }
     }
   }
+
+  const effectiveCheckCount = filterToRequired ? matchedCheckCount : totalCount;
+  const effectiveStatusCount = filterToRequired ? matchedStatusCount : statusTotalCount;
 
   let ciStatus: CIStatus;
   if (failingCount > 0) {
@@ -331,13 +357,18 @@ async function paginateCheckRunsRollup(
     ciStatus = 'unknown';
   } else if (hasPending) {
     ciStatus = 'pending';
-  } else if (totalCount > 0 || statusTotalCount > 0) {
+  } else if (effectiveCheckCount > 0 || effectiveStatusCount > 0) {
     ciStatus = 'passing';
   } else {
     ciStatus = 'unknown';
   }
 
-  return { ciStatus, checkCount: totalCount + statusTotalCount, failingCount, truncated };
+  return {
+    ciStatus,
+    checkCount: effectiveCheckCount + effectiveStatusCount,
+    failingCount,
+    truncated,
+  };
 }
 
 /**
@@ -404,6 +435,7 @@ export async function getDefaultBranchCiStatus(
   branch: string,
   commitSha: string,
   budget?: CheckRunBudget,
+  requiredCheckNames?: ReadonlySet<string>,
 ): Promise<CIState> {
   const fetchCIState = async (): Promise<BranchCIState> => ({
     ...(await paginateCheckRunsRollup(
@@ -413,6 +445,7 @@ export async function getDefaultBranchCiStatus(
       commitSha,
       budget,
       /* includeStatusContexts */ true,
+      requiredCheckNames,
     )),
     commitSha,
   });

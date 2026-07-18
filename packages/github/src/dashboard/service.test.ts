@@ -210,6 +210,38 @@ describe('buildRepositoryDashboard', () => {
     expect(listForRef).not.toHaveBeenCalled();
   });
 
+  it('narrows default-branch CI to required checks so a failed non-required workflow does not fail CI', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // 'Deploy Production' is not a required check, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
   it('resolves the branch head live (via cachedRead) when commit is missing, instead of staying unknown forever', async () => {
     expect.assertions(4);
     const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });

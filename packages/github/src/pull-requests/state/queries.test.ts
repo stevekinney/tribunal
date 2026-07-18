@@ -361,3 +361,73 @@ describe('getDefaultBranchCiStatus', () => {
     expect(context.cache.deleteCache).not.toHaveBeenCalled();
   });
 });
+
+describe('getDefaultBranchCiStatus with required checks', () => {
+  const requiredCheckRuns = [
+    { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+    { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+  ];
+
+  it('ignores a failed non-required check so a deploy failure does not fail CI', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([{ total_count: 2, check_runs: requiredCheckRuns }]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('passing');
+  });
+
+  it('still fails when a required check fails', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'failure' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'success' },
+        ],
+      },
+    ]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('failing');
+  });
+
+  it('counts every check when no required checks are configured', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([{ total_count: 2, check_runs: requiredCheckRuns }]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(),
+    );
+
+    // Empty required set preserves the prior behavior: the failed deploy fails CI.
+    expect(result.ciStatus).toBe('failing');
+  });
+});
