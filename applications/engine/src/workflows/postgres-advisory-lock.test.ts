@@ -120,4 +120,27 @@ describe('createPostgresAdvisoryLock', () => {
     expect(nextConnectClient!.release).toHaveBeenCalledTimes(2);
     expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
   });
+
+  it('waits between retries using the real default sleep when none is injected', async () => {
+    nextConnectClient!.query
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockResolvedValueOnce({ rows: [{ acquired: true }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    // No `sleep` option — exercises the production `setTimeout`-based default.
+    // `delayMs` is kept tiny so the real wait stays fast in CI.
+    const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+      attempts: 2,
+      delayMs: 20,
+    });
+
+    const startedAt = performance.now();
+    const lease = await lock.acquire();
+    const elapsedMs = performance.now() - startedAt;
+    await lease.release();
+
+    // Proves the default sleep actually delayed the retry rather than spinning.
+    expect(elapsedMs).toBeGreaterThanOrEqual(20);
+    expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
+  });
 });
