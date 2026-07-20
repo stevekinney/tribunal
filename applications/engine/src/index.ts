@@ -102,7 +102,15 @@ export async function createEngineRuntimeWithSingletonRetry(
           'retrying boot instead of exiting',
         error,
       );
-      await sleep(cooldownMs);
+      // A throwing custom sleep must not abort the retry loop — this path
+      // exists specifically to survive failures, so treat a failed cooldown
+      // as "no cooldown" and retry the next cycle immediately, mirroring the
+      // same guard in `postgres-advisory-lock.ts`.
+      try {
+        await sleep(cooldownMs);
+      } catch {
+        // ignore — proceed to the next cycle immediately
+      }
     }
   }
 

@@ -28,7 +28,10 @@ export const HELD_ELSEWHERE_MESSAGE =
  * clean `kill_timeout` path and the observed SIGKILL/reap tail in a single
  * continuous wait (no process exit in between — see `index.ts`), and a wider
  * per-attempt delay keeps the retry from hammering Neon over that window.
- * `attempts * delayMs` ≈ 8.25 minutes.
+ * The delay only runs between attempts, so the total wait is
+ * `(attempts - 1) * delayMs` ≈ 8.25 minutes, not `attempts * delayMs`
+ * (≈8.33 minutes) — the loop returns or throws on the final attempt without
+ * sleeping again.
  */
 const DEFAULT_ACQUIRE_ATTEMPTS = 100;
 const DEFAULT_ACQUIRE_DELAY_MS = 5_000;
@@ -59,6 +62,14 @@ export function createPostgresAdvisoryLock(
   return {
     async acquire() {
       let lastError: unknown = new Error(HELD_ELSEWHERE_MESSAGE);
+      // Tracks whether the lock was observed held elsewhere on ANY attempt in
+      // this cycle, not just the last one. A rolling-deploy handoff can spend
+      // nearly the whole budget seeing "held elsewhere" and then hit a single
+      // transient connection/query error on the final attempt; without this,
+      // `lastError` would be that transient error, and the caller's retry
+      // wrapper (`index.ts`) would misclassify a normal, still-retryable
+      // handoff as an unrelated fatal boot failure and give up immediately.
+      let sawHeldElsewhere = false;
 
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         let client: PoolClient | undefined;
@@ -75,6 +86,7 @@ export function createPostgresAdvisoryLock(
           // predecessor engine's lock during a rolling deploy usually clears
           // within a few seconds of its connection dropping.
           client.release();
+          sawHeldElsewhere = true;
           lastError = new Error(HELD_ELSEWHERE_MESSAGE);
         } catch (error) {
           client?.release();
@@ -93,6 +105,12 @@ export function createPostgresAdvisoryLock(
       }
 
       await pool.end();
+      // Prefer the canonical "held elsewhere" error over whatever the final
+      // attempt happened to throw, as long as the cycle saw the lock held
+      // elsewhere at least once — that is the signal the retry wrapper needs
+      // to keep retrying instead of treating this as a distinct, fatal
+      // failure class.
+      if (sawHeldElsewhere) throw new Error(HELD_ELSEWHERE_MESSAGE);
       throw lastError instanceof Error ? lastError : new Error(String(lastError));
     },
   };

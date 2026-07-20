@@ -987,6 +987,39 @@ describe('createEngineRuntimeWithSingletonRetry', () => {
       expect.any(Error),
     );
   });
+
+  it('proceeds to the next cycle immediately when the cooldown sleep itself throws', async () => {
+    // A throwing custom sleep must not abort the retry loop — this path
+    // exists specifically to survive failures, so a failed cooldown must be
+    // treated as "no cooldown," not as a reason to stop retrying.
+    let lockCycle = 0;
+    const lockFactory = vi.fn(() => {
+      lockCycle += 1;
+      const cycle = lockCycle;
+      return {
+        async acquire() {
+          if (cycle < 2) throw new Error(HELD_ELSEWHERE_MESSAGE);
+          return { release: vi.fn(async () => {}) };
+        },
+      };
+    });
+    const sleep = vi.fn(async () => {
+      throw new Error('cooldown timer unavailable');
+    });
+    const logger = { error: vi.fn() };
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(lockFactory).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+
+    await runtime.release();
+  });
 });
 
 describe('createSignalShutdown', () => {

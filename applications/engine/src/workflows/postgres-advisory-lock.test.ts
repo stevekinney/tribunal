@@ -151,4 +151,28 @@ describe('createPostgresAdvisoryLock', () => {
     expect(elapsedMs).toBeGreaterThanOrEqual(minimumExpectedElapsedMs);
     expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
   });
+
+  it('still reports the lock as held elsewhere when the final attempt hits a transient error', async () => {
+    // A rolling-deploy handoff can spend nearly its whole budget seeing
+    // "held elsewhere" and then hit a one-off connection/query error on the
+    // very last attempt. The exhaustion error must still be
+    // HELD_ELSEWHERE_MESSAGE — not the transient error — so the caller's
+    // retry wrapper keeps treating this as a retryable handoff instead of
+    // misclassifying it as an unrelated fatal boot failure.
+    nextConnectClient!.query
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockRejectedValueOnce(new Error('connection reset'));
+
+    const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+      attempts: 3,
+      sleep: async () => {},
+    });
+
+    await expect(lock.acquire()).rejects.toThrow(
+      'another Tribunal engine already holds the singleton advisory lock',
+    );
+    expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
+    expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+  });
 });
