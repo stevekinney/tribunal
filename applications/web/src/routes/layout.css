@@ -26,8 +26,13 @@
 @layer cinder.tokens, cinder.foundation, cinder.components, cinder.utilities,
   utilities, components, tokens;
 
-/* Cinder design system bundle (base plus component styles). */
-@import '@lostgradient/cinder/styles/all';
+/*
+ * Cinder base stylesheet (tokens, foundation resets, shared internal
+ * component chrome, and utilities). Per-component CSS is no longer bundled
+ * here — each `@lostgradient/cinder/<component>` entrypoint auto-imports its
+ * own stylesheet, so components only ship the CSS the app actually uses.
+ */
+@import '@lostgradient/cinder/styles';
 
 /*
  * Relocated Tribunal design system styles. The app's route markup and wrappers
