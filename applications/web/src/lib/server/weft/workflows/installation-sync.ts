@@ -407,7 +407,8 @@ export const installationSyncWorkflow = workflow({
       // one already-buffered signal if present, otherwise continues immediately
       // (this ordering guarantee is specific to zero-duration sleeps). Because
       // the producer (enqueueInstallationSync) dispatches via startOrSignal with
-      // a stable workflow id, a deterministic signalId, and
+      // a stable workflow id, a signalId (stable per GitHub delivery when
+      // options.deliveryId is present, otherwise a fresh UUID per call), and
       // onTerminalConflict: 'start-new', Weft #693 (shipped in 0.11.0) serializes
       // signal delivery against terminal completion: a signal arriving after this
       // empty-buffer check but before the run commits terminal state is consumed

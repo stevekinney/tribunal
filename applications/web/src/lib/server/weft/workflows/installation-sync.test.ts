@@ -312,8 +312,9 @@ describe('installation-sync workflow (e2e, real engine)', () => {
    * DRAIN_DURATION-style delay inserted) is not dropped — it starts a fresh
    * successor run under the same stable workflow id.
    *
-   * This exercises enqueueInstallationSync's actual dispatch shape (`id`,
-   * deterministic `signalId`, `onTerminalConflict: 'start-new'`; see
+   * This exercises enqueueInstallationSync's actual dispatch shape (`id`, a
+   * `signalId` stable per GitHub delivery when `deliveryId` is present and
+   * freshly minted otherwise, `onTerminalConflict: 'start-new'`; see
    * packages/github/src/sync/index.ts) with zero added delay between
    * observing the first run's terminal and issuing the second dispatch — the
    * scenario the removed 1 s drain window used to (over-)cover.
@@ -347,9 +348,10 @@ describe('installation-sync workflow (e2e, real engine)', () => {
 
     // Dispatch exactly as enqueueInstallationSync does, immediately after
     // observing the first run's terminal — no added delay. onTerminalConflict:
-    // 'start-new' plus the deterministic signalId is what lets this land on a
-    // fresh successor run of the same stable workflow id instead of erroring
-    // as a conflict against a terminal run.
+    // 'start-new' plus a caller-supplied signalId (here a fresh UUID, mirroring
+    // enqueueInstallationSync's fallback when no deliveryId is present) is what
+    // lets this land on a fresh successor run of the same stable workflow id
+    // instead of erroring as a conflict against a terminal run.
     const { outcome } = await testEngine.startOrSignal(
       'installation-sync',
       syncInput(),
