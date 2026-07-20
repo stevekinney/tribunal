@@ -344,16 +344,15 @@ async function readRulesetRequiredChecks(
         const rules: unknown[] = [];
         while (true) {
           if (!budget.canSpend(1)) {
-            // Out of budget before even the first page — surface as a
-            // failure so the catch below degrades to classic-protection-only
-            // required checks. Out of budget after at least one page: keep
-            // what was already fetched rather than discarding it.
-            if (page === 1) {
-              throw new Error(
-                'API budget exhausted before resolving branch ruleset required checks',
-              );
-            }
-            break;
+            // Always throw on budget exhaustion mid-pagination, even after
+            // collecting one or more pages — a partial rule set can be
+            // missing the very `required_status_checks` rule that would
+            // have been on a later page, and `cachedRead` would otherwise
+            // cache that *incomplete* (looks-like-"no ruleset checks")
+            // result for the full TTL. Throwing routes through the catch
+            // below instead, which degrades to classic-protection-only
+            // required checks without caching a wrong answer.
+            throw new Error('API budget exhausted before resolving branch ruleset required checks');
           }
           budget.spend(1);
           const { data } = await octokit.rest.repos.getBranchRules({

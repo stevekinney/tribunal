@@ -376,6 +376,51 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[0].defaultBranchStatus).toBe('passing');
   });
 
+  it('does not cache a partial ruleset page set when the budget runs out mid-pagination', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    // A full page (100 items, no required_status_checks rule) forces a
+    // second page — but the budget runs out before it can be fetched.
+    const page1 = Array.from({ length: 100 }, () => ({ type: 'creation' }));
+    const getBranchRules = vi.fn().mockResolvedValueOnce({ data: page1 });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    // Budget: 1 for listPullRequests, 1 for get-branch-head-sha, 1 for
+    // ruleset page 1 — exhausted right before ruleset page 2, and before
+    // there's any budget left for the check-run rollup itself.
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ defaultBranch: 'main', commit: null })],
+      { apiBudget: 3 },
+    );
+
+    // The ruleset read throws instead of silently caching a partial,
+    // rule-missing page 1 — degrading (here) all the way to `unknown` since
+    // the budget is also exhausted for the check-run rollup, rather than a
+    // false green built on an incomplete required-check set.
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+    expect(context.cache.setCache).not.toHaveBeenCalledWith(
+      'github:response:acme:widgets:branch:main:rules',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('converts a pre-#156 cached envelope (requiredCheckNames) instead of dropping it', async () => {
     expect.assertions(1);
     const octokit = makeOctokit({
