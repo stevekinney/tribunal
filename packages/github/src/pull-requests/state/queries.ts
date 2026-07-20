@@ -218,6 +218,7 @@ async function paginateCheckRunsRollup(
   ref: string,
   budget?: CheckRunBudget,
   includeStatusContexts = false,
+  requiredCheckNames?: ReadonlySet<string>,
 ): Promise<CheckRunSummary> {
   const perPage = 100;
   let page = 1;
@@ -227,6 +228,24 @@ async function paginateCheckRunsRollup(
   let hasError = false;
   let hasPending = false;
   let truncated = false;
+
+  // When the branch defines required status checks, narrow the rollup to just
+  // those so a non-required workflow (a deploy or release job) can't flip the
+  // default-branch verdict red. With no required checks the set is empty and
+  // every check run counts, preserving the prior "any failure fails" behavior.
+  //
+  // Known limitations (safe by fallback, not handled here): required checks are
+  // matched by name only, so an `app_id`-pinned requirement accepts any provider
+  // with that name; and required checks defined via GitHub *rulesets* (rather
+  // than classic branch protection) are not surfaced by `getBranch`, so those
+  // repositories fall back to counting every check.
+  const filterToRequired = requiredCheckNames !== undefined && requiredCheckNames.size > 0;
+  // Track which required checks actually reported on this commit. A required
+  // check that never appears is "expected"/pending on GitHub — treating its
+  // absence as passing would show green while a required check is still missing.
+  const seenRequired = new Set<string>();
+  let matchedCheckCount = 0;
+  let matchedStatusCount = 0;
 
   while (true) {
     if (budget) {
@@ -250,6 +269,11 @@ async function paginateCheckRunsRollup(
     }
 
     for (const run of data.check_runs) {
+      if (filterToRequired && !requiredCheckNames.has(run.name)) {
+        continue;
+      }
+      matchedCheckCount += 1;
+      seenRequired.add(run.name);
       if (run.status !== 'completed') {
         hasPending = true;
         continue;
@@ -278,6 +302,14 @@ async function paginateCheckRunsRollup(
 
     fetchedCount += data.check_runs.length;
 
+    // Once every required check has reported, stop paging: the remaining
+    // (non-required) check runs can't change the verdict, and paging through
+    // them spends shared `ApiBudget` for nothing — potentially exhausting it
+    // and forcing a false `unknown` on a branch with many non-required runs.
+    if (filterToRequired && seenRequired.size >= requiredCheckNames.size) {
+      break;
+    }
+
     // Stop once every check run GitHub reported (`total_count`) has been
     // fetched. Relying only on "this page came back short" leaves a repo
     // with exactly `N * perPage` check runs assuming another page exists;
@@ -290,8 +322,12 @@ async function paginateCheckRunsRollup(
     page += 1;
   }
 
+  // When filtering, the combined-status request is only needed if a required
+  // check might be a legacy status context we haven't already seen as a check
+  // run — skip it (and its budget unit) once every required check has reported.
+  const allRequiredSeen = filterToRequired && seenRequired.size >= requiredCheckNames.size;
   let statusTotalCount = 0;
-  if (includeStatusContexts && !truncated) {
+  if (includeStatusContexts && !truncated && !allRequiredSeen) {
     if (budget && !budget.canSpend(1)) {
       truncated = true;
     } else {
@@ -307,7 +343,18 @@ async function paginateCheckRunsRollup(
       // every contribution on there actually being statuses, or a
       // check-run-only repository would flip from `passing` to `pending`.
       if (statusTotalCount > 0) {
-        if (combined.state === 'failure') {
+        if (filterToRequired) {
+          // Aggregate `combined.state` covers every context, so when filtering
+          // we must inspect each status and count only the required contexts.
+          for (const status of combined.statuses) {
+            if (!requiredCheckNames.has(status.context)) continue;
+            matchedStatusCount += 1;
+            seenRequired.add(status.context);
+            if (status.state === 'failure') failingCount++;
+            else if (status.state === 'error') hasError = true;
+            else if (status.state === 'pending') hasPending = true;
+          }
+        } else if (combined.state === 'failure') {
           failingCount++;
         } else if (combined.state === 'error') {
           hasError = true;
@@ -317,6 +364,22 @@ async function paginateCheckRunsRollup(
       }
     }
   }
+
+  // A required check that never reported on this commit is still pending on
+  // GitHub — don't let the other required checks passing report green while one
+  // is missing. Skip when truncated: an unfetched page, not a missing check,
+  // could be why we didn't see it, and truncation already yields `unknown`.
+  if (filterToRequired && !truncated) {
+    for (const requiredName of requiredCheckNames) {
+      if (!seenRequired.has(requiredName)) {
+        hasPending = true;
+        break;
+      }
+    }
+  }
+
+  const effectiveCheckCount = filterToRequired ? matchedCheckCount : totalCount;
+  const effectiveStatusCount = filterToRequired ? matchedStatusCount : statusTotalCount;
 
   let ciStatus: CIStatus;
   if (failingCount > 0) {
@@ -331,13 +394,18 @@ async function paginateCheckRunsRollup(
     ciStatus = 'unknown';
   } else if (hasPending) {
     ciStatus = 'pending';
-  } else if (totalCount > 0 || statusTotalCount > 0) {
+  } else if (effectiveCheckCount > 0 || effectiveStatusCount > 0) {
     ciStatus = 'passing';
   } else {
     ciStatus = 'unknown';
   }
 
-  return { ciStatus, checkCount: totalCount + statusTotalCount, failingCount, truncated };
+  return {
+    ciStatus,
+    checkCount: effectiveCheckCount + effectiveStatusCount,
+    failingCount,
+    truncated,
+  };
 }
 
 /**
@@ -376,6 +444,13 @@ export async function getFailingCheckCount(
 interface BranchCIState extends CIState {
   /** Commit SHA this rollup was computed for — used to detect a stale cross-commit cache hit. */
   commitSha: string;
+  /**
+   * Stable representation of the required-check set this rollup was filtered by.
+   * The cache key is `(owner, repo, branch)`, so without this a change to the
+   * branch's required checks (same branch, same commit) would replay a verdict
+   * computed against the old set.
+   */
+  requiredKey: string;
 }
 
 /**
@@ -404,7 +479,10 @@ export async function getDefaultBranchCiStatus(
   branch: string,
   commitSha: string,
   budget?: CheckRunBudget,
+  requiredCheckNames?: ReadonlySet<string>,
 ): Promise<CIState> {
+  // Sorted so the key is stable regardless of set iteration order.
+  const requiredKey = [...(requiredCheckNames ?? [])].sort().join('\n');
   const fetchCIState = async (): Promise<BranchCIState> => ({
     ...(await paginateCheckRunsRollup(
       octokit,
@@ -413,8 +491,10 @@ export async function getDefaultBranchCiStatus(
       commitSha,
       budget,
       /* includeStatusContexts */ true,
+      requiredCheckNames,
     )),
     commitSha,
+    requiredKey,
   });
 
   if (!context) {
@@ -441,7 +521,7 @@ export async function getDefaultBranchCiStatus(
     await context.cache.deleteCache(cacheKey);
   }
 
-  if (value.commitSha === commitSha) {
+  if (value.commitSha === commitSha && value.requiredKey === requiredKey) {
     return value;
   }
 

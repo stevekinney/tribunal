@@ -189,6 +189,58 @@ describe('getDefaultBranchCiStatus', () => {
     expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'new-sha' }));
   });
 
+  it('bypasses a cache hit computed for a different required-check set', async () => {
+    expect.assertions(1);
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn().mockResolvedValue({
+          value: {
+            ciStatus: 'passing',
+            checkCount: 1,
+            failingCount: 0,
+            commitSha: 'sha-1',
+            requiredKey: 'Old Check',
+          },
+          etag: undefined,
+          fetchedAt: Date.now(),
+          expiresAt: Date.now() + 30_000,
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+    const listForRef = vi.fn().mockResolvedValue({
+      data: {
+        total_count: 1,
+        check_runs: [{ name: 'New Check', status: 'completed', conclusion: 'failure' }],
+      },
+    });
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    // Same commit as the cached entry, but the branch's required-check set
+    // changed — the stale verdict must not be replayed for the new set.
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha-1',
+      undefined,
+      new Set(['New Check']),
+    );
+
+    expect(result.ciStatus).toBe('failing');
+  });
+
   it('spends one budget unit per check-run page fetched, plus one for the combined status read', async () => {
     expect.assertions(3);
     const page1 = Array.from({ length: 100 }, () => ({
@@ -359,5 +411,136 @@ describe('getDefaultBranchCiStatus', () => {
     await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc');
 
     expect(context.cache.deleteCache).not.toHaveBeenCalled();
+  });
+});
+
+describe('getDefaultBranchCiStatus with required checks', () => {
+  const requiredCheckRuns = [
+    { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+    { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+  ];
+
+  it('ignores a failed non-required check so a deploy failure does not fail CI', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([{ total_count: 2, check_runs: requiredCheckRuns }]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('passing');
+  });
+
+  it('still fails when a required check fails', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'failure' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'success' },
+        ],
+      },
+    ]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('failing');
+  });
+
+  it('counts every check when no required checks are configured', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([{ total_count: 2, check_runs: requiredCheckRuns }]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(),
+    );
+
+    // Empty required set preserves the prior behavior: the failed deploy fails CI.
+    expect(result.ciStatus).toBe('failing');
+  });
+
+  it('is pending when a required check has not reported yet', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      {
+        total_count: 1,
+        check_runs: [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }],
+      },
+    ]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests', 'Lint']),
+    );
+
+    // 'Lint' is required but absent from the commit's checks — GitHub treats a
+    // missing required check as still pending, not passing.
+    expect(result.ciStatus).toBe('pending');
+  });
+
+  it('stops paging (and skips the status call) once all required checks are seen', async () => {
+    const context = createMockContext();
+    // A full first page (100 runs) with a higher total_count would normally
+    // force a second page; the required check is present, so paging must stop.
+    const page1 = [
+      { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+      ...Array.from({ length: 99 }, () => ({
+        name: 'Deploy Production',
+        status: 'completed',
+        conclusion: 'failure',
+      })),
+    ];
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 200, check_runs: page1 } });
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('passing');
+    expect(listForRef).toHaveBeenCalledTimes(1);
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
   });
 });

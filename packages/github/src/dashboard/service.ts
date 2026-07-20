@@ -197,6 +197,32 @@ async function buildRepositoryRow(
   };
 }
 
+/** The cached default-branch head: its commit SHA plus the branch's required-check names. */
+type BranchHead = { sha: string; requiredCheckNames: string[] };
+
+/**
+ * Collects a branch's required status-check names from a `getBranch` response —
+ * both the legacy `contexts` list and the newer `checks[].context` entries.
+ * Empty when the branch has no protection or defines no required checks, in
+ * which case the CI rollup falls back to counting every check run.
+ */
+function extractRequiredCheckNames(branch: {
+  protection?: {
+    required_status_checks?: {
+      contexts?: string[];
+      checks?: { context: string }[];
+    };
+  };
+}): string[] {
+  const requiredStatusChecks = branch.protection?.required_status_checks;
+  if (!requiredStatusChecks) return [];
+
+  const names = new Set<string>();
+  for (const context of requiredStatusChecks.contexts ?? []) names.add(context);
+  for (const check of requiredStatusChecks.checks ?? []) names.add(check.context);
+  return [...names];
+}
+
 async function readDefaultBranchStatus(
   context: GithubServiceContext,
   octokit: NonNullable<Awaited<ReturnType<GithubServiceContext['getInstallationOctokit']>>>,
@@ -213,9 +239,10 @@ async function readDefaultBranchStatus(
   // through the short-lived cache first so a push invalidation or a synced
   // default-branch change cannot make the dashboard trust the old SHA.
   let commitSha = repository.commit;
+  let requiredCheckNames: string[] = [];
   try {
     const policy = requirePolicy('get-branch-head-sha');
-    const { value } = await cachedRead<string>(
+    const { value } = await cachedRead<BranchHead | string>(
       context.cache,
       policy,
       async () => {
@@ -228,11 +255,20 @@ async function readDefaultBranchStatus(
           repo: repository.name,
           branch: repository.defaultBranch as string,
         });
-        return { data: branch.commit.sha };
+        // Reuse this one call for the required-check names too, so narrowing the
+        // CI rollup to required checks costs no extra GitHub request.
+        return {
+          data: { sha: branch.commit.sha, requiredCheckNames: extractRequiredCheckNames(branch) },
+        };
       },
       [repository.owner, repository.name, repository.defaultBranch],
     );
-    commitSha = value;
+    // Tolerate a bare-string value cached by a previous build before this
+    // envelope carried required-check names (30s TTL clears it quickly).
+    const head: BranchHead =
+      typeof value === 'string' ? { sha: value, requiredCheckNames: [] } : value;
+    commitSha = head.sha;
+    requiredCheckNames = head.requiredCheckNames;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
     if (!commitSha) return 'unknown';
@@ -257,6 +293,7 @@ async function readDefaultBranchStatus(
       repository.defaultBranch,
       commitSha,
       budget,
+      new Set(requiredCheckNames),
     );
     return ciState.ciStatus;
   } catch (error) {
