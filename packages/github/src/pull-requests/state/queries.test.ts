@@ -189,6 +189,58 @@ describe('getDefaultBranchCiStatus', () => {
     expect(listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'new-sha' }));
   });
 
+  it('bypasses a cache hit computed for a different required-check set', async () => {
+    expect.assertions(1);
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn().mockResolvedValue({
+          value: {
+            ciStatus: 'passing',
+            checkCount: 1,
+            failingCount: 0,
+            commitSha: 'sha-1',
+            requiredKey: 'Old Check',
+          },
+          etag: undefined,
+          fetchedAt: Date.now(),
+          expiresAt: Date.now() + 30_000,
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+    const listForRef = vi.fn().mockResolvedValue({
+      data: {
+        total_count: 1,
+        check_runs: [{ name: 'New Check', status: 'completed', conclusion: 'failure' }],
+      },
+    });
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    // Same commit as the cached entry, but the branch's required-check set
+    // changed — the stale verdict must not be replayed for the new set.
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha-1',
+      undefined,
+      new Set(['New Check']),
+    );
+
+    expect(result.ciStatus).toBe('failing');
+  });
+
   it('spends one budget unit per check-run page fetched, plus one for the combined status read', async () => {
     expect.assertions(3);
     const page1 = Array.from({ length: 100 }, () => ({

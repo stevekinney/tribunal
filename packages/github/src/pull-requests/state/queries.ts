@@ -444,6 +444,13 @@ export async function getFailingCheckCount(
 interface BranchCIState extends CIState {
   /** Commit SHA this rollup was computed for — used to detect a stale cross-commit cache hit. */
   commitSha: string;
+  /**
+   * Stable representation of the required-check set this rollup was filtered by.
+   * The cache key is `(owner, repo, branch)`, so without this a change to the
+   * branch's required checks (same branch, same commit) would replay a verdict
+   * computed against the old set.
+   */
+  requiredKey: string;
 }
 
 /**
@@ -474,6 +481,8 @@ export async function getDefaultBranchCiStatus(
   budget?: CheckRunBudget,
   requiredCheckNames?: ReadonlySet<string>,
 ): Promise<CIState> {
+  // Sorted so the key is stable regardless of set iteration order.
+  const requiredKey = [...(requiredCheckNames ?? [])].sort().join('\n');
   const fetchCIState = async (): Promise<BranchCIState> => ({
     ...(await paginateCheckRunsRollup(
       octokit,
@@ -485,6 +494,7 @@ export async function getDefaultBranchCiStatus(
       requiredCheckNames,
     )),
     commitSha,
+    requiredKey,
   });
 
   if (!context) {
@@ -511,7 +521,7 @@ export async function getDefaultBranchCiStatus(
     await context.cache.deleteCache(cacheKey);
   }
 
-  if (value.commitSha === commitSha) {
+  if (value.commitSha === commitSha && value.requiredKey === requiredKey) {
     return value;
   }
 
