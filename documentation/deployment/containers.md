@@ -291,7 +291,13 @@ If the publish step fails, the workflow:
    fall back on — a first-ever deploy — the workflow stops here and deploys
    nothing.
 2. Skips staging a new secret, leaving the previously published reviewer image in
-   place.
+   place. As an **advisory** check it also runs `tl sbx image ls` and warns when no
+   `tribunal-reviewer` image is visible in the project. `flyctl secrets list` never
+   reveals secret values, so the workflow cannot read which image the engine points
+   at — only whether any reviewer image still exists. A pointer to a deleted image
+   satisfies the `z.string().min(1)` check, starts the engine cleanly, and then
+   fails at review time; this surfaces that case early. The check never fails the
+   step: making it fatal would re-couple the deploy to Tensorlake availability.
 3. Runs migrations and deploys proxy, engine, and web as usual, so application
    code reaches production.
 4. Fails the run at the end. The deploy succeeded but is **degraded**: the apps

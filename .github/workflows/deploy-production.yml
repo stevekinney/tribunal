@@ -205,6 +205,38 @@ jobs:
             echo "> Application code is current at \`${DEPLOY_SHA}\`, the reviewer image is not."
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # Advisory only. `flyctl secrets list` never reveals secret VALUES, so we
+          # cannot read which image the engine actually points at — only whether some
+          # reviewer image still exists in the project. A stale pointer to a removed
+          # image would satisfy the z.string().min(1) check above, start the engine
+          # cleanly, and then fail at review time; this surfaces that case early.
+          #
+          # Never fatal: making it fatal would re-couple the deploy to Tensorlake
+          # availability, which is exactly what this change removes. `tl` is installed
+          # by the publish step, which may have failed before reaching pip, so its
+          # absence is expected rather than exceptional.
+          reviewer_image_count=""
+          if command -v tl > /dev/null 2>&1; then
+            if tl sbx image ls > "$RUNNER_TEMP/tensorlake-images.txt" 2>&1; then
+              reviewer_image_count="$(grep -c 'tribunal-reviewer' "$RUNNER_TEMP/tensorlake-images.txt" || true)"
+            else
+              echo "::warning::Could not list Tensorlake images (\`tl sbx image ls\` failed); skipping reviewer image verification. This is expected if the Tensorlake API is rejecting all requests."
+            fi
+          else
+            echo "::warning::\`tl\` is not installed; skipping reviewer image verification."
+          fi
+
+          if [ "$reviewer_image_count" = "0" ]; then
+            echo "::warning::No \`tribunal-reviewer\` images are visible in the Tensorlake project. The TRIBUNAL_SANDBOX_IMAGE secret on tribunal-engine may point at an image that no longer exists, in which case the engine will start but reviews will fail. Verify with \`tl sbx image ls\`."
+            {
+              echo "> [!CAUTION]"
+              echo "> No \`tribunal-reviewer\` images found in the Tensorlake project."
+              echo "> The staged \`TRIBUNAL_SANDBOX_IMAGE\` may reference a deleted image."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$reviewer_image_count" ]; then
+            echo "- Reviewer images visible in Tensorlake: \`${reviewer_image_count}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Stage reviewer image secret
         if: steps.publish_reviewer_image.outcome == 'success'
         run: flyctl secrets set --stage --app tribunal-engine TRIBUNAL_SANDBOX_IMAGE="$TRIBUNAL_SANDBOX_IMAGE"
