@@ -28,6 +28,7 @@ import type { GithubServiceContext } from '../context.js';
 import { requirePolicy } from '../core/cache-policy.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { isRateLimitError } from '../errors.js';
+import { resolveHasNextPage } from '@tribunal/github/shared';
 import { listPullRequests, type PullRequestFilterOptions } from '../pull-requests/service.js';
 import { getDefaultBranchCiStatus, type RequiredCheck } from '../pull-requests/state/queries.js';
 import { listPRStatesForRepositories } from '../pull-requests/state/state.js';
@@ -284,22 +285,71 @@ function extractRequiredChecks(branch: {
 }
 
 /**
+ * Result of reading a branch's ruleset-derived required checks.
+ *
+ * `incomplete: true` means `checks` must not be treated as the full,
+ * confident required-check set for this branch — either because a rule type
+ * this reader cannot resolve to a check-run/status match was present (a
+ * `workflows` rule — see {@link extractRequiredChecksFromRules}), or because
+ * the read was cut off before every page of rules was seen (see
+ * {@link RulesetBudgetExhaustedError}). Callers must render `unknown` for
+ * the branch rather than computing a verdict from a `checks` set that might
+ * be silently missing a requirement.
+ */
+interface RulesetReadResult {
+  checks: RequiredCheck[];
+  incomplete: boolean;
+}
+
+/**
+ * Thrown when the `ApiBudget` runs out mid-pagination of `getBranchRules`.
+ * Distinct from any other error `getBranchRules` (or its pagination) can
+ * throw: a budget exhaustion is this build's own deliberate choice to stop,
+ * not evidence that no ruleset applies, so it must propagate as `incomplete`
+ * rather than degrade to classic-protection-only required checks. An
+ * ordinary GitHub error (rate limit, network failure, rulesets unsupported)
+ * still degrades to classic-only, per the existing documented tradeoff.
+ */
+class RulesetBudgetExhaustedError extends Error {}
+
+/** Reads either the current `RulesetReadResult` cache envelope or a bare `RequiredCheck[]` written by a prior deploy. */
+function normalizeCachedRulesetResult(
+  value: RulesetReadResult | RequiredCheck[],
+): RulesetReadResult {
+  if (Array.isArray(value)) return { checks: value, incomplete: false };
+  return value;
+}
+
+/**
  * Collects required status checks from a repository's rulesets — a
  * `GET .../rules/branches/{branch}` response is a flat array of rules that
  * apply to the branch (org- and repo-level rulesets combined), each
- * discriminated by `type`. Only `required_status_checks` rules contribute;
- * every other rule type (pull-request requirements, merge-queue, etc.) is
- * irrelevant to the CI rollup and ignored.
+ * discriminated by `type`. Only `required_status_checks` rules contribute
+ * an actual check to match against; every other rule type (pull-request
+ * requirements, merge-queue, etc.) is irrelevant to the CI rollup and
+ * ignored — except `workflows` ("Require workflows to pass"), whose
+ * required-check identity (a workflow file path + job, not a check-run
+ * `context`/`name`) this reader cannot resolve to a check-run match, so its
+ * presence is reported back via `hasWorkflowsRule` instead of being
+ * silently dropped.
  *
  * Rulesets pin a required check to an app via `integration_id` — GitHub's
  * ruleset equivalent of classic protection's `checks[].app_id`, without the
  * `-1` sentinel (an absent `integration_id` already means "unpinned").
  */
-function extractRequiredChecksFromRules(rules: readonly unknown[]): RequiredCheck[] {
+function extractRequiredChecksFromRules(rules: readonly unknown[]): {
+  checks: RequiredCheck[];
+  hasWorkflowsRule: boolean;
+} {
   const checks: RequiredCheck[] = [];
+  let hasWorkflowsRule = false;
   for (const rule of rules) {
     if (!rule || typeof rule !== 'object') continue;
     const { type, parameters } = rule as { type?: unknown; parameters?: unknown };
+    if (type === 'workflows') {
+      hasWorkflowsRule = true;
+      continue;
+    }
     if (type !== 'required_status_checks') continue;
 
     const requiredStatusChecks = (parameters as { required_status_checks?: unknown } | undefined)
@@ -316,7 +366,7 @@ function extractRequiredChecksFromRules(rules: readonly unknown[]): RequiredChec
       checks.push({ context, appId: typeof integrationId === 'number' ? integrationId : null });
     }
   }
-  return dedupeRequiredChecks(checks);
+  return { checks: dedupeRequiredChecks(checks), hasWorkflowsRule };
 }
 
 /**
@@ -341,10 +391,10 @@ async function readRulesetRequiredChecks(
   octokit: NonNullable<Awaited<ReturnType<GithubServiceContext['getInstallationOctokit']>>>,
   repository: DashboardRepositoryIdentity,
   budget: ApiBudget,
-): Promise<RequiredCheck[]> {
+): Promise<RulesetReadResult> {
   try {
     const policy = requirePolicy('get-branch-rules');
-    const { value } = await cachedRead<RequiredCheck[]>(
+    const { value } = await cachedRead<RulesetReadResult | RequiredCheck[]>(
       context.cache,
       policy,
       async () => {
@@ -363,12 +413,14 @@ async function readRulesetRequiredChecks(
             // have been on a later page, and `cachedRead` would otherwise
             // cache that *incomplete* (looks-like-"no ruleset checks")
             // result for the full TTL. Throwing routes through the catch
-            // below instead, which degrades to classic-protection-only
-            // required checks without caching a wrong answer.
-            throw new Error('API budget exhausted before resolving branch ruleset required checks');
+            // below instead, which reports the read as `incomplete` without
+            // caching a wrong answer.
+            throw new RulesetBudgetExhaustedError(
+              'API budget exhausted before resolving branch ruleset required checks',
+            );
           }
           budget.spend(1);
-          const { data } = await octokit.rest.repos.getBranchRules({
+          const { data, headers } = await octokit.rest.repos.getBranchRules({
             owner: repository.owner,
             repo: repository.name,
             branch: repository.defaultBranch as string,
@@ -376,17 +428,31 @@ async function readRulesetRequiredChecks(
             page,
           });
           rules.push(...data);
-          if (data.length < perPage) break;
+          // Rely on the `Link` response header, not page length: applicable
+          // rules can exactly fill a `perPage`-sized final page, and a
+          // length-only stop condition would then probe a phantom next page
+          // — wasting a budget unit (or, under a tighter budget, throwing
+          // and dropping the ruleset-derived requirements) for nothing.
+          if (!resolveHasNextPage(headers?.link)) break;
           page += 1;
         }
-        return { data: extractRequiredChecksFromRules(rules) };
+        const { checks, hasWorkflowsRule } = extractRequiredChecksFromRules(rules);
+        return { data: { checks, incomplete: hasWorkflowsRule } };
       },
       [repository.owner, repository.name, repository.defaultBranch],
     );
-    return value;
+    return normalizeCachedRulesetResult(value);
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    return [];
+    if (error instanceof RulesetBudgetExhaustedError) {
+      return { checks: [], incomplete: true };
+    }
+    // Any other failure (rate limit, network error, rulesets unsupported)
+    // degrades to classic-protection-only required checks rather than
+    // rendering the whole branch status unavailable — see the module-level
+    // comment on `readRulesetRequiredChecks`'s caller for why this differs
+    // from the budget-exhaustion case above.
+    return { checks: [], incomplete: false };
   }
 }
 
@@ -453,8 +519,19 @@ async function readDefaultBranchStatus(
   // every check run just because `protection.required_status_checks` is
   // empty. Independent of the branch-head read above: it degrades to an
   // empty list (classic-protection-only required checks) on any failure.
-  const rulesetChecks = await readRulesetRequiredChecks(context, octokit, repository, budget);
-  const mergedRequiredChecks = dedupeRequiredChecks([...requiredChecks, ...rulesetChecks]);
+  const rulesetResult = await readRulesetRequiredChecks(context, octokit, repository, budget);
+  if (rulesetResult.incomplete) {
+    // The ruleset-required-check set could not be fully resolved (budget
+    // exhaustion mid-pagination, or an unmatchable `workflows` rule) — a
+    // merged set built from `requiredChecks` alone here would silently
+    // narrow the rollup to a set that looks complete but isn't. A fresh
+    // `get-branch-ci-status` cache entry keyed to that narrowed set would
+    // then be indistinguishable from one computed against the true, full
+    // set, letting a missing ruleset-required check hide behind a false
+    // `passing`. Render `unknown` instead of proceeding.
+    return 'unknown';
+  }
+  const mergedRequiredChecks = dedupeRequiredChecks([...requiredChecks, ...rulesetResult.checks]);
 
   try {
     // No budget pre-check here: a cached, fresh envelope for this branch

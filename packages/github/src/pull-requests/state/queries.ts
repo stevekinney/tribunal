@@ -295,11 +295,10 @@ async function paginateCheckRunsRollup(
   let matchedCheckCount = 0;
   let matchedStatusCount = 0;
   // A required check that turns out to be a legacy status context never
-  // shows up among check runs, so the check-run early-break below can't fire
-  // for it — without this, the paginator would drain every check-run page
-  // before ever reading the combined status that would have resolved it.
-  // Reading the combined status once, between check-run pages, lets the
-  // early-break fire as soon as the outstanding required checks are covered.
+  // shows up among check runs, so it can only ever be resolved by reading
+  // the combined status — done once, after check-run pagination is done
+  // (see the sole call site below), so a same-named check run always gets
+  // read (and always wins) before status is consulted for what's left over.
   let statusContextsChecked = false;
   let statusTotalCount = 0;
 
@@ -442,28 +441,20 @@ async function paginateCheckRunsRollup(
 
     const hasMoreCheckRunPages = !(data.check_runs.length < perPage || fetchedCount >= totalCount);
 
-    // Before spending another check-run page, see whether the combined
-    // status already covers what's still outstanding — a required check that
-    // is actually a legacy status context will never appear among check
-    // runs, so paging further here would only be spent finding that out the
-    // slow way. Only do this early when the budget can also cover the next
-    // check-run page afterward (`canSpend(2)`: one for this read, one held
-    // in reserve) — otherwise an outstanding required check that's actually
-    // an ordinary check run on the next page would lose its last budget unit
-    // to a combined-status read that can never resolve it, and get reported
-    // as truncated/unknown instead of being read on that next page. With no
-    // budget at all (unbounded reads) this is always affordable.
-    if (
-      filterToRequired &&
-      includeStatusContexts &&
-      hasMoreCheckRunPages &&
-      (!budget || budget.canSpend(2))
-    ) {
-      await readRequiredStatusContexts();
-      if (truncated) break;
-      if (seenRequired.size >= required.length) break;
-    }
-
+    // Deliberately does *not* consult the combined status here, before the
+    // next check-run page, even though a required check that's actually a
+    // legacy status context will never appear among check runs and an early
+    // status read could in principle resolve it sooner. Two required-check
+    // sources can name the same context: an unpinned required check with
+    // both a legacy status and a same-named check run reporting on this
+    // commit. A status read that resolves the requirement here and stops
+    // pagination would never fetch the later page holding that check run —
+    // silently hiding a check-run failure behind a passing/pending status.
+    // Reading every check-run page to completion first (budget permitting)
+    // guarantees a same-named check run's result is always seen and always
+    // wins; the combined status is consulted only afterward, to resolve
+    // whatever required checks check runs never covered — see below.
+    //
     // Stop once every check run GitHub reported (`total_count`) has been
     // fetched. Relying only on "this page came back short" leaves a repo
     // with exactly `N * perPage` check runs assuming another page exists;
@@ -498,10 +489,13 @@ async function paginateCheckRunsRollup(
       }
     }
   } else if (includeStatusContexts && !truncated && seenRequired.size < required.length) {
-    // The check-run loop finished (either it never needed another page, or
-    // `includeStatusContexts` was reached only after the loop) without every
-    // required check accounted for — read the combined status now if it
-    // hasn't already been read.
+    // The check-run loop finished (ran out of pages, or the budget stopped
+    // it) without every required check accounted for — read the combined
+    // status now, once check-run pagination is done, so a required check
+    // that's actually a legacy status context gets resolved. This is the
+    // only place `readRequiredStatusContexts` is called, guaranteeing any
+    // same-named check run was already read (and already won, if it
+    // disagreed) before status is ever consulted.
     await readRequiredStatusContexts();
   }
 

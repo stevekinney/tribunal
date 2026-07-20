@@ -744,7 +744,65 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     expect(listForRef).toHaveBeenCalledTimes(2);
   });
 
-  it('reads the combined status before draining every check-run page when a required check is a legacy status', async () => {
+  it('never spends check-run-page budget on the combined status, even when combined status has multiple pages', async () => {
+    const context = createMockContext();
+    // Page 1 doesn't resolve the required check; it's a plain check run on
+    // page 2. The combined status, if it were ever read, would itself span
+    // two pages — capable of consuming far more than the single unit a
+    // reserve-based scheme would have set aside for it.
+    const page1 = Array.from({ length: 100 }, () => ({
+      name: 'Deploy Production',
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const page2 = [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }];
+    const listForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page1 } })
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page2 } });
+    const statusPage1 = Array.from({ length: 100 }, (_, index) => ({
+      context: `context-${index}`,
+      state: 'success',
+    }));
+    const statusPage2 = [{ context: 'Unit Tests', state: 'success' }];
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, statuses: statusPage1 } })
+      .mockResolvedValueOnce({ data: { total_count: 101, statuses: statusPage2 } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    // Exactly enough budget for page 1 and page 2 of check runs — none left
+    // for even a single combined-status page, let alone two.
+    let remaining = 2;
+    const budget = {
+      canSpend: vi.fn().mockImplementation((cost = 1) => remaining >= cost),
+      spend: vi.fn().mockImplementation((cost = 1) => {
+        remaining -= cost;
+      }),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      budget,
+      [{ context: 'Unit Tests', appId: null }],
+    );
+
+    // The required check run is found directly on check-run page 2 — the
+    // combined status (which could have consumed two more units than any
+    // reserve set aside for it) is never read at all.
+    expect(result.ciStatus).toBe('passing');
+    expect(result.truncated).toBe(false);
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
+  });
+
+  it('reads every check-run page before consulting the combined status for a required legacy status check', async () => {
     const context = createMockContext();
     // Two full check-run pages exist, but the required check never appears
     // among check runs at all — it's a legacy status context.
@@ -781,9 +839,50 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     );
 
     expect(result.ciStatus).toBe('passing');
-    // The combined status resolves the only required check right after
-    // page 1, so the paginator must never fetch check-run page 2.
-    expect(listForRef).toHaveBeenCalledTimes(1);
+    // Both check-run pages are read (this required check never appears
+    // among them) before the combined status is consulted — reading check
+    // runs to completion first guarantees a same-named check run is always
+    // seen and always wins over a legacy status result (see the regression
+    // test below); the combined status only resolves whatever is left over.
+    expect(listForRef).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a required check pass via a legacy status when the same-named check run (on a later page) is failing', async () => {
+    const context = createMockContext();
+    // 'Deploy Gate' is reported both as a legacy status (passing) and — only
+    // on check-run page 2 — as a check run (failing). The failure must win.
+    const page1 = Array.from({ length: 100 }, () => ({
+      name: 'Unrelated',
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const page2 = [{ name: 'Deploy Gate', status: 'completed', conclusion: 'failure' }];
+    const listForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page1 } })
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page2 } });
+    const getCombinedStatusForRef = vi.fn().mockResolvedValue({
+      data: { total_count: 1, statuses: [{ context: 'Deploy Gate', state: 'success' }] },
+    });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      [{ context: 'Deploy Gate', appId: null }],
+    );
+
+    // A status-early-resolve-and-stop would have reported this as `passing`
+    // (from the status) without ever reading the failing check run on page 2.
+    expect(result.ciStatus).toBe('failing');
+    expect(listForRef).toHaveBeenCalledTimes(2);
   });
 
   it('only counts the first entry for a required legacy status context, not every duplicate', async () => {
