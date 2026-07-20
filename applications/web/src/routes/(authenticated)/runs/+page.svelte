@@ -47,6 +47,7 @@
   {:else}
     <Card padding="none">
       <Table
+        aria-label="Recent runs"
         scrollable
         scrollContainerProps={{ 'aria-label': 'Recent runs' }}
         density="comfortable"
