@@ -88,6 +88,14 @@ describe('/webhooks page', () => {
     await expect.element(page.getByText('PR #7')).toBeInTheDocument();
   });
 
+  it('wraps the events table in a named, focusable scroll region', async () => {
+    render(WebhooksPage, { data: createData() });
+
+    const scrollRegion = page.getByRole('region', { name: 'Webhook events' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
+
   it('shows the subscribed events summary', async () => {
     render(WebhooksPage, { data: createData() });
 
