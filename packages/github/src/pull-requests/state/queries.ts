@@ -305,6 +305,18 @@ async function paginateCheckRunsRollup(
 
   const readRequiredStatusContexts = async (): Promise<void> => {
     if (statusContextsChecked) return;
+
+    // A status context has no per-status app identity, so it can only ever
+    // satisfy an unpinned required check — skip the request entirely (and
+    // spend no budget on it) when every still-outstanding required check is
+    // app-pinned, since a combined-status read could not resolve any of them.
+    const hasOutstandingUnpinnedRequirement = required.some(
+      (requiredCheck, index) => requiredCheck.appId === null && !seenRequired.has(index),
+    );
+    if (!hasOutstandingUnpinnedRequirement) {
+      statusContextsChecked = true;
+      return;
+    }
     statusContextsChecked = true;
 
     if (budget && !budget.canSpend(1)) {

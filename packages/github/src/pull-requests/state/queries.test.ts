@@ -575,6 +575,36 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     expect(result.ciStatus).toBe('pending');
   });
 
+  it('skips the combined-status read entirely when every outstanding required check is app-pinned', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({
+      data: {
+        total_count: 1,
+        check_runs: [{ name: 'Deploy', status: 'completed', conclusion: 'success' }],
+      },
+    });
+    const getCombinedStatusForRef = vi.fn();
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      [{ context: 'Unit Tests', appId: 42 }],
+    );
+
+    // A status context can never satisfy an app-pinned required check, so
+    // this request would spend budget for nothing — never issue it.
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
+    expect(result.ciStatus).toBe('pending');
+  });
+
   it('accepts a check run from the specific app id an app-pinned required check names', async () => {
     const context = createMockContext();
     const octokit = createMockOctokit([
