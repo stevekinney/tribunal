@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    {
+      "name": "tensorlake",
+      "description": "Tensorlake SDK for agent sandboxes and sandbox-native orchestration. Use when building AI agents that need sandboxed execution environments, isolated tool calls, or durable workflow orchestration.",
+      "path": "."
+    }
+  ]
+}

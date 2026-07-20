@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/neon-postgres/SKILL.md",
       "computedHash": "3c53df29c959dc0a7f724ff8620063b20fabd2b1fa702ec97e3f17e6a23d5a1c"
+    },
+    "tensorlake": {
+      "source": "tensorlakeai/tensorlake-skills",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "275da0717304ade1bc1fdc05053255e621c8b8698e0ac681429fc00df64b77db"
     }
   }
 }
