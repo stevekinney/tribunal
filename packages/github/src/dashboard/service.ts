@@ -29,7 +29,7 @@ import { requirePolicy } from '../core/cache-policy.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { isRateLimitError } from '../errors.js';
 import { listPullRequests, type PullRequestFilterOptions } from '../pull-requests/service.js';
-import { getDefaultBranchCiStatus } from '../pull-requests/state/queries.js';
+import { getDefaultBranchCiStatus, type RequiredCheck } from '../pull-requests/state/queries.js';
 import { listPRStatesForRepositories } from '../pull-requests/state/state.js';
 import type { PullRequestState } from '@tribunal/database/schema';
 import { ApiBudget, DEFAULT_DASHBOARD_API_BUDGET } from './api-budget.js';
@@ -197,30 +197,129 @@ async function buildRepositoryRow(
   };
 }
 
-/** The cached default-branch head: its commit SHA plus the branch's required-check names. */
-type BranchHead = { sha: string; requiredCheckNames: string[] };
+/** The cached default-branch head: its commit SHA plus the branch's required checks. */
+type BranchHead = { sha: string; requiredChecks: RequiredCheck[] };
+
+/** De-duplicates by `(context, appId)` pair, keeping the first occurrence. */
+function dedupeRequiredChecks(checks: RequiredCheck[]): RequiredCheck[] {
+  const seen = new Set<string>();
+  const result: RequiredCheck[] = [];
+  for (const check of checks) {
+    const key = `${check.context}::${check.appId ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(check);
+  }
+  return result;
+}
 
 /**
- * Collects a branch's required status-check names from a `getBranch` response —
- * both the legacy `contexts` list and the newer `checks[].context` entries.
+ * Collects a branch's required status checks from a `getBranch` response —
+ * both the legacy `contexts` list (unpinned) and the newer `checks[]` entries
+ * (optionally pinned to a GitHub App via `app_id`). GitHub uses `app_id: -1`
+ * as a sentinel for "accept from any source" — normalized to `null` here so
+ * downstream matching only ever sees a real app id or "unpinned".
+ *
  * Empty when the branch has no protection or defines no required checks, in
  * which case the CI rollup falls back to counting every check run.
  */
-function extractRequiredCheckNames(branch: {
+function extractRequiredChecks(branch: {
   protection?: {
     required_status_checks?: {
       contexts?: string[];
-      checks?: { context: string }[];
+      checks?: { context: string; app_id?: number | null }[];
     };
   };
-}): string[] {
+}): RequiredCheck[] {
   const requiredStatusChecks = branch.protection?.required_status_checks;
   if (!requiredStatusChecks) return [];
 
-  const names = new Set<string>();
-  for (const context of requiredStatusChecks.contexts ?? []) names.add(context);
-  for (const check of requiredStatusChecks.checks ?? []) names.add(check.context);
-  return [...names];
+  const checks: RequiredCheck[] = [];
+  for (const context of requiredStatusChecks.contexts ?? []) {
+    checks.push({ context, appId: null });
+  }
+  for (const check of requiredStatusChecks.checks ?? []) {
+    const appId = check.app_id === -1 || check.app_id == null ? null : check.app_id;
+    checks.push({ context: check.context, appId });
+  }
+  return dedupeRequiredChecks(checks);
+}
+
+/**
+ * Collects required status checks from a repository's rulesets — a
+ * `GET .../rules/branches/{branch}` response is a flat array of rules that
+ * apply to the branch (org- and repo-level rulesets combined), each
+ * discriminated by `type`. Only `required_status_checks` rules contribute;
+ * every other rule type (pull-request requirements, merge-queue, etc.) is
+ * irrelevant to the CI rollup and ignored.
+ *
+ * Rulesets pin a required check to an app via `integration_id` — GitHub's
+ * ruleset equivalent of classic protection's `checks[].app_id`, without the
+ * `-1` sentinel (an absent `integration_id` already means "unpinned").
+ */
+function extractRequiredChecksFromRules(rules: readonly unknown[]): RequiredCheck[] {
+  const checks: RequiredCheck[] = [];
+  for (const rule of rules) {
+    if (!rule || typeof rule !== 'object') continue;
+    const { type, parameters } = rule as { type?: unknown; parameters?: unknown };
+    if (type !== 'required_status_checks') continue;
+
+    const requiredStatusChecks = (parameters as { required_status_checks?: unknown } | undefined)
+      ?.required_status_checks;
+    if (!Array.isArray(requiredStatusChecks)) continue;
+
+    for (const requiredStatusCheck of requiredStatusChecks) {
+      if (!requiredStatusCheck || typeof requiredStatusCheck !== 'object') continue;
+      const { context, integration_id: integrationId } = requiredStatusCheck as {
+        context?: unknown;
+        integration_id?: unknown;
+      };
+      if (typeof context !== 'string') continue;
+      checks.push({ context, appId: typeof integrationId === 'number' ? integrationId : null });
+    }
+  }
+  return dedupeRequiredChecks(checks);
+}
+
+/**
+ * Reads required status checks defined via a repository ruleset — invisible
+ * to `getBranch`'s `protection.required_status_checks`, which only reflects
+ * *classic* branch protection. This is a distinct, separately-cached GitHub
+ * request (`get-branch-rules`) rather than being folded into the
+ * `get-branch-head-sha` read, so a repository with no ruleset support (or a
+ * transient failure) degrades to classic-protection-only required checks
+ * instead of failing the whole branch-status read.
+ */
+async function readRulesetRequiredChecks(
+  context: GithubServiceContext,
+  octokit: NonNullable<Awaited<ReturnType<GithubServiceContext['getInstallationOctokit']>>>,
+  repository: DashboardRepositoryIdentity,
+  budget: ApiBudget,
+): Promise<RequiredCheck[]> {
+  try {
+    const policy = requirePolicy('get-branch-rules');
+    const { value } = await cachedRead<RequiredCheck[]>(
+      context.cache,
+      policy,
+      async () => {
+        if (!budget.canSpend(1)) {
+          throw new Error('API budget exhausted before resolving branch ruleset required checks');
+        }
+        budget.spend(1);
+        const { data: rules } = await octokit.rest.repos.getBranchRules({
+          owner: repository.owner,
+          repo: repository.name,
+          branch: repository.defaultBranch as string,
+        });
+        return { data: extractRequiredChecksFromRules(rules) };
+      },
+      [repository.owner, repository.name, repository.defaultBranch],
+    );
+    return value;
+  } catch (error) {
+    if (isRateLimitError(error)) budget.markRateLimited();
+    return [];
+  }
 }
 
 async function readDefaultBranchStatus(
@@ -239,7 +338,7 @@ async function readDefaultBranchStatus(
   // through the short-lived cache first so a push invalidation or a synced
   // default-branch change cannot make the dashboard trust the old SHA.
   let commitSha = repository.commit;
-  let requiredCheckNames: string[] = [];
+  let requiredChecks: RequiredCheck[] = [];
   try {
     const policy = requirePolicy('get-branch-head-sha');
     const { value } = await cachedRead<BranchHead | string>(
@@ -255,24 +354,37 @@ async function readDefaultBranchStatus(
           repo: repository.name,
           branch: repository.defaultBranch as string,
         });
-        // Reuse this one call for the required-check names too, so narrowing the
-        // CI rollup to required checks costs no extra GitHub request.
+        // Reuse this one call for the classic-protection required checks too,
+        // so narrowing the CI rollup to required checks costs no extra
+        // GitHub request beyond the one this function already makes.
         return {
-          data: { sha: branch.commit.sha, requiredCheckNames: extractRequiredCheckNames(branch) },
+          data: { sha: branch.commit.sha, requiredChecks: extractRequiredChecks(branch) },
         };
       },
       [repository.owner, repository.name, repository.defaultBranch],
     );
-    // Tolerate a bare-string value cached by a previous build before this
-    // envelope carried required-check names (30s TTL clears it quickly).
+    // Tolerate a bare-string value (or an older envelope shape) cached by a
+    // previous build before this envelope carried required checks (30s TTL
+    // clears it quickly).
     const head: BranchHead =
-      typeof value === 'string' ? { sha: value, requiredCheckNames: [] } : value;
+      typeof value === 'string'
+        ? { sha: value, requiredChecks: [] }
+        : { sha: value.sha, requiredChecks: value.requiredChecks ?? [] };
     commitSha = head.sha;
-    requiredCheckNames = head.requiredCheckNames;
+    requiredChecks = head.requiredChecks;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
     if (!commitSha) return 'unknown';
   }
+
+  // Required checks defined via a repository *ruleset* (rather than classic
+  // branch protection) are invisible to `getBranch` — read them separately
+  // and merge, so a ruleset-only repository doesn't fall back to counting
+  // every check run just because `protection.required_status_checks` is
+  // empty. Independent of the branch-head read above: it degrades to an
+  // empty list (classic-protection-only required checks) on any failure.
+  const rulesetChecks = await readRulesetRequiredChecks(context, octokit, repository, budget);
+  const mergedRequiredChecks = dedupeRequiredChecks([...requiredChecks, ...rulesetChecks]);
 
   try {
     // No budget pre-check here: a cached, fresh envelope for this branch
@@ -293,7 +405,7 @@ async function readDefaultBranchStatus(
       repository.defaultBranch,
       commitSha,
       budget,
-      new Set(requiredCheckNames),
+      mergedRequiredChecks,
     );
     return ciState.ciStatus;
   } catch (error) {

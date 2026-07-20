@@ -191,6 +191,50 @@ export interface CheckRunBudget {
 }
 
 /**
+ * A single required-check requirement, as derived from either classic branch
+ * protection (`required_status_checks.checks[]`) or a repository ruleset
+ * (`required_status_checks` rule parameters).
+ *
+ * `appId: null` means the requirement is unpinned — a check run or legacy
+ * status context with the matching `context`/`name` satisfies it regardless
+ * of which GitHub App reported it (this is also GitHub's own convention for
+ * classic protection's `app_id: -1` sentinel, normalized to `null` before it
+ * reaches this type). A non-null `appId` only matches a check run whose
+ * `check_run.app.id` equals it — legacy status contexts have no per-status
+ * app identity, so a pinned requirement is only ever satisfied by a check
+ * run, never a status context.
+ */
+export interface RequiredCheck {
+  context: string;
+  appId: number | null;
+}
+
+/** First required-check index a check run (name + reporting app id) satisfies, or -1. */
+function findRequiredCheckRunMatch(
+  requiredChecks: ReadonlyArray<RequiredCheck>,
+  name: string,
+  appId: number | null,
+): number {
+  for (let index = 0; index < requiredChecks.length; index++) {
+    const required = requiredChecks[index];
+    if (required.context !== name) continue;
+    if (required.appId === null || required.appId === appId) return index;
+  }
+  return -1;
+}
+
+/** First required-check index a legacy status context (matched by name only) satisfies, or -1. */
+function findRequiredStatusContextMatch(
+  requiredChecks: ReadonlyArray<RequiredCheck>,
+  context: string,
+): number {
+  for (let index = 0; index < requiredChecks.length; index++) {
+    if (requiredChecks[index].context === context) return index;
+  }
+  return -1;
+}
+
+/**
  * Paginate through GitHub check runs for a ref and roll them up into a single
  * {@link CIStatus}. Shared by pull-request-head CI reads and default-branch
  * CI reads so the "what counts as failing/error/pending/passing" state
@@ -218,7 +262,7 @@ async function paginateCheckRunsRollup(
   ref: string,
   budget?: CheckRunBudget,
   includeStatusContexts = false,
-  requiredCheckNames?: ReadonlySet<string>,
+  requiredChecks?: ReadonlyArray<RequiredCheck>,
 ): Promise<CheckRunSummary> {
   const perPage = 100;
   let page = 1;
@@ -229,23 +273,85 @@ async function paginateCheckRunsRollup(
   let hasPending = false;
   let truncated = false;
 
-  // When the branch defines required status checks, narrow the rollup to just
-  // those so a non-required workflow (a deploy or release job) can't flip the
+  // When the branch defines required status checks (from classic branch
+  // protection and/or a repository ruleset), narrow the rollup to just those
+  // so a non-required workflow (a deploy or release job) can't flip the
   // default-branch verdict red. With no required checks the set is empty and
   // every check run counts, preserving the prior "any failure fails" behavior.
-  //
-  // Known limitations (safe by fallback, not handled here): required checks are
-  // matched by name only, so an `app_id`-pinned requirement accepts any provider
-  // with that name; and required checks defined via GitHub *rulesets* (rather
-  // than classic branch protection) are not surfaced by `getBranch`, so those
-  // repositories fall back to counting every check.
-  const filterToRequired = requiredCheckNames !== undefined && requiredCheckNames.size > 0;
-  // Track which required checks actually reported on this commit. A required
-  // check that never appears is "expected"/pending on GitHub — treating its
-  // absence as passing would show green while a required check is still missing.
-  const seenRequired = new Set<string>();
+  const required = requiredChecks ?? [];
+  const filterToRequired = required.length > 0;
+  // Track which required checks (by index into `required`, since two entries
+  // can share a `context` with different `appId` pins) actually reported on
+  // this commit. A required check that never appears is "expected"/pending on
+  // GitHub — treating its absence as passing would show green while a
+  // required check is still missing.
+  const seenRequired = new Set<number>();
   let matchedCheckCount = 0;
   let matchedStatusCount = 0;
+  // A required check that turns out to be a legacy status context never
+  // shows up among check runs, so the check-run early-break below can't fire
+  // for it — without this, the paginator would drain every check-run page
+  // before ever reading the combined status that would have resolved it.
+  // Reading the combined status once, between check-run pages, lets the
+  // early-break fire as soon as the outstanding required checks are covered.
+  let statusContextsChecked = false;
+  let statusTotalCount = 0;
+
+  const readRequiredStatusContexts = async (): Promise<void> => {
+    if (statusContextsChecked) return;
+    statusContextsChecked = true;
+
+    if (budget && !budget.canSpend(1)) {
+      truncated = true;
+      return;
+    }
+    budget?.spend(1);
+
+    let statusPage = 1;
+    let statusFetched = 0;
+    while (true) {
+      const { data: combined } = await octokit.rest.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+        per_page: perPage,
+        page: statusPage,
+      });
+
+      if (statusPage === 1) statusTotalCount = combined.total_count;
+
+      // An empty status-context set reports an aggregate `state` of
+      // "pending" even though there is nothing to be pending on — gate
+      // every contribution on there actually being statuses, or a
+      // check-run-only repository would flip from `passing` to `pending`.
+      // Guard on `statusTotalCount` (not just an empty `statuses` array)
+      // since some GitHub responses omit `statuses` entirely when empty.
+      const statuses = statusTotalCount > 0 ? (combined.statuses ?? []) : [];
+      for (const status of statuses) {
+        const matchIndex = findRequiredStatusContextMatch(required, status.context);
+        if (matchIndex === -1) continue;
+        matchedStatusCount += 1;
+        seenRequired.add(matchIndex);
+        if (status.state === 'failure') failingCount++;
+        else if (status.state === 'error') hasError = true;
+        else if (status.state === 'pending') hasPending = true;
+      }
+
+      statusFetched += statuses.length;
+
+      if (seenRequired.size >= required.length) return;
+      if (statuses.length < perPage || statusFetched >= statusTotalCount) return;
+
+      statusPage += 1;
+      if (budget) {
+        if (!budget.canSpend(1)) {
+          truncated = true;
+          return;
+        }
+        budget.spend(1);
+      }
+    }
+  };
 
   while (true) {
     if (budget) {
@@ -269,11 +375,12 @@ async function paginateCheckRunsRollup(
     }
 
     for (const run of data.check_runs) {
-      if (filterToRequired && !requiredCheckNames.has(run.name)) {
-        continue;
+      if (filterToRequired) {
+        const matchIndex = findRequiredCheckRunMatch(required, run.name, run.app?.id ?? null);
+        if (matchIndex === -1) continue;
+        seenRequired.add(matchIndex);
       }
       matchedCheckCount += 1;
-      seenRequired.add(run.name);
       if (run.status !== 'completed') {
         hasPending = true;
         continue;
@@ -306,8 +413,21 @@ async function paginateCheckRunsRollup(
     // (non-required) check runs can't change the verdict, and paging through
     // them spends shared `ApiBudget` for nothing — potentially exhausting it
     // and forcing a false `unknown` on a branch with many non-required runs.
-    if (filterToRequired && seenRequired.size >= requiredCheckNames.size) {
+    if (filterToRequired && seenRequired.size >= required.length) {
       break;
+    }
+
+    const hasMoreCheckRunPages = !(data.check_runs.length < perPage || fetchedCount >= totalCount);
+
+    // Before spending another check-run page, see whether the combined
+    // status already covers what's still outstanding — a required check that
+    // is actually a legacy status context will never appear among check
+    // runs, so paging further here would only be spent finding that out the
+    // slow way.
+    if (filterToRequired && includeStatusContexts && hasMoreCheckRunPages) {
+      await readRequiredStatusContexts();
+      if (truncated) break;
+      if (seenRequired.size >= required.length) break;
     }
 
     // Stop once every check run GitHub reported (`total_count`) has been
@@ -315,54 +435,40 @@ async function paginateCheckRunsRollup(
     // with exactly `N * perPage` check runs assuming another page exists;
     // with a tight budget, that spends the last allowed unit on an empty
     // page and reports `unknown` instead of the actual complete rollup.
-    if (data.check_runs.length < perPage || fetchedCount >= totalCount) {
+    if (!hasMoreCheckRunPages) {
       break;
     }
 
     page += 1;
   }
 
-  // When filtering, the combined-status request is only needed if a required
-  // check might be a legacy status context we haven't already seen as a check
-  // run — skip it (and its budget unit) once every required check has reported.
-  const allRequiredSeen = filterToRequired && seenRequired.size >= requiredCheckNames.size;
-  let statusTotalCount = 0;
-  if (includeStatusContexts && !truncated && !allRequiredSeen) {
-    if (budget && !budget.canSpend(1)) {
-      truncated = true;
-    } else {
-      budget?.spend(1);
-      const { data: combined } = await octokit.rest.repos.getCombinedStatusForRef({
-        owner,
-        repo,
-        ref,
-      });
-      statusTotalCount = combined.total_count;
-      // An empty status-context set reports an aggregate `state` of
-      // "pending" even though there is nothing to be pending on — gate
-      // every contribution on there actually being statuses, or a
-      // check-run-only repository would flip from `passing` to `pending`.
-      if (statusTotalCount > 0) {
-        if (filterToRequired) {
-          // Aggregate `combined.state` covers every context, so when filtering
-          // we must inspect each status and count only the required contexts.
-          for (const status of combined.statuses) {
-            if (!requiredCheckNames.has(status.context)) continue;
-            matchedStatusCount += 1;
-            seenRequired.add(status.context);
-            if (status.state === 'failure') failingCount++;
-            else if (status.state === 'error') hasError = true;
-            else if (status.state === 'pending') hasPending = true;
-          }
-        } else if (combined.state === 'failure') {
-          failingCount++;
-        } else if (combined.state === 'error') {
-          hasError = true;
-        } else if (combined.state === 'pending') {
-          hasPending = true;
+  if (!filterToRequired) {
+    // Unfiltered rollup: the aggregate `combined.state` already covers every
+    // status context regardless of pagination, so a single fetch suffices.
+    if (includeStatusContexts && !truncated) {
+      if (budget && !budget.canSpend(1)) {
+        truncated = true;
+      } else {
+        budget?.spend(1);
+        const { data: combined } = await octokit.rest.repos.getCombinedStatusForRef({
+          owner,
+          repo,
+          ref,
+        });
+        statusTotalCount = combined.total_count;
+        if (statusTotalCount > 0) {
+          if (combined.state === 'failure') failingCount++;
+          else if (combined.state === 'error') hasError = true;
+          else if (combined.state === 'pending') hasPending = true;
         }
       }
     }
+  } else if (includeStatusContexts && !truncated && seenRequired.size < required.length) {
+    // The check-run loop finished (either it never needed another page, or
+    // `includeStatusContexts` was reached only after the loop) without every
+    // required check accounted for — read the combined status now if it
+    // hasn't already been read.
+    await readRequiredStatusContexts();
   }
 
   // A required check that never reported on this commit is still pending on
@@ -370,8 +476,8 @@ async function paginateCheckRunsRollup(
   // is missing. Skip when truncated: an unfetched page, not a missing check,
   // could be why we didn't see it, and truncation already yields `unknown`.
   if (filterToRequired && !truncated) {
-    for (const requiredName of requiredCheckNames) {
-      if (!seenRequired.has(requiredName)) {
+    for (let index = 0; index < required.length; index++) {
+      if (!seenRequired.has(index)) {
         hasPending = true;
         break;
       }
@@ -479,10 +585,13 @@ export async function getDefaultBranchCiStatus(
   branch: string,
   commitSha: string,
   budget?: CheckRunBudget,
-  requiredCheckNames?: ReadonlySet<string>,
+  requiredChecks?: ReadonlyArray<RequiredCheck>,
 ): Promise<CIState> {
-  // Sorted so the key is stable regardless of set iteration order.
-  const requiredKey = [...(requiredCheckNames ?? [])].sort().join('\n');
+  // Sorted so the key is stable regardless of array ordering.
+  const requiredKey = [...(requiredChecks ?? [])]
+    .map((check) => `${check.context}::${check.appId ?? ''}`)
+    .sort()
+    .join('\n');
   const fetchCIState = async (): Promise<BranchCIState> => ({
     ...(await paginateCheckRunsRollup(
       octokit,
@@ -491,7 +600,7 @@ export async function getDefaultBranchCiStatus(
       commitSha,
       budget,
       /* includeStatusContexts */ true,
-      requiredCheckNames,
+      requiredChecks,
     )),
     commitSha,
     requiredKey,

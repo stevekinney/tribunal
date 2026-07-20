@@ -62,6 +62,8 @@ function makeOctokit(options: {
   checkRuns?: { total_count: number; check_runs: Array<Record<string, unknown>> };
   checksError?: unknown;
   getBranch?: ReturnType<typeof vi.fn>;
+  getBranchRules?: ReturnType<typeof vi.fn>;
+  getCombinedStatusForRef?: ReturnType<typeof vi.fn>;
 }) {
   const list = options.listPullsError
     ? vi.fn().mockRejectedValue(options.listPullsError)
@@ -73,9 +75,14 @@ function makeOctokit(options: {
 
   // Gated on total_count > 0 in paginateCheckRunsRollup, so this default
   // (empty) combined-status response never changes existing expectations.
-  const getCombinedStatusForRef = vi
-    .fn()
-    .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+  const getCombinedStatusForRef =
+    options.getCombinedStatusForRef ??
+    vi.fn().mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+
+  // Repositories with no rulesets simply have no rules for the branch — an
+  // empty array, not an error — so this default never changes existing
+  // classic-protection-only expectations.
+  const getBranchRules = options.getBranchRules ?? vi.fn().mockResolvedValue({ data: [] });
 
   return {
     rest: {
@@ -83,6 +90,7 @@ function makeOctokit(options: {
       checks: { listForRef },
       repos: {
         getCombinedStatusForRef,
+        getBranchRules,
         ...(options.getBranch ? { getBranch: options.getBranch } : {}),
       },
     },
@@ -239,6 +247,119 @@ describe('buildRepositoryDashboard', () => {
     ]);
 
     // 'Deploy Production' is not a required check, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('narrows default-branch CI to a required check defined only via a repository ruleset', async () => {
+    expect.assertions(2);
+    // No classic branch protection at all — the required check comes solely
+    // from the ruleset response, which `getBranch` never surfaces.
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Unit Tests' }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranchRules).toHaveBeenCalledWith({ owner: 'acme', repo: 'widgets', branch: 'main' });
+    // 'Deploy Production' is not required by the ruleset, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('merges required checks from classic branch protection and a ruleset', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Lint' }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // 'Lint' (ruleset-only) is required but hasn't reported — still pending
+    // even though the classic-protection required check ('Unit Tests') passed.
+    expect(rows[0].defaultBranchStatus).toBe('pending');
+  });
+
+  it('falls back to classic-protection-only required checks when the ruleset read fails', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockRejectedValue(new Error('rulesets not available'));
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // Ruleset read failed — degrade to the classic-protection required set
+    // rather than rendering the whole branch status unavailable.
     expect(rows[0].defaultBranchStatus).toBe('passing');
   });
 
