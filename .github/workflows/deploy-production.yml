@@ -151,7 +151,13 @@ jobs:
             echo "- Reviewer image size: \`${reviewer_image_size}\` (\`${reviewer_image_size_bytes}\` bytes)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # A Tensorlake outage or quota exhaustion must not strand production on stale
+      # code. This step is allowed to fail; the deploy then continues against the
+      # reviewer image already staged on tribunal-engine, and the run is failed at
+      # the end so the degradation is still visible.
       - name: Publish reviewer image to Tensorlake
+        id: publish_reviewer_image
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -177,7 +183,30 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "- Tensorlake reviewer image: \`${published_image}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      # tribunal-engine validates TRIBUNAL_SANDBOX_IMAGE with `z.string().min(1)` at
+      # startup, so deploying with no image at all would crash-loop the engine. If the
+      # publish failed we may only continue when a previously published image is
+      # already staged on the app.
+      - name: Require an existing reviewer image when publish failed
+        if: steps.publish_reviewer_image.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl secrets list --app tribunal-engine --json > "$RUNNER_TEMP/tribunal-engine-secrets.json"
+          secret_count="$(jq '[.[] | select((.Name // .name) == "TRIBUNAL_SANDBOX_IMAGE")] | length' "$RUNNER_TEMP/tribunal-engine-secrets.json")"
+          if [ "$secret_count" = "0" ]; then
+            echo "::error::Reviewer image publish failed and tribunal-engine has no existing TRIBUNAL_SANDBOX_IMAGE secret to fall back to. Refusing to deploy an engine that cannot start."
+            exit 1
+          fi
+          echo "::warning::Reviewer image publish failed. Deploying with the reviewer image already staged on tribunal-engine — the reviewer is now STALE relative to ${DEPLOY_SHA}."
+          {
+            echo "> [!WARNING]"
+            echo "> Reviewer image publish failed; deployed with the previously published reviewer image."
+            echo "> Application code is current at \`${DEPLOY_SHA}\`, the reviewer image is not."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Stage reviewer image secret
+        if: steps.publish_reviewer_image.outcome == 'success'
         run: flyctl secrets set --stage --app tribunal-engine TRIBUNAL_SANDBOX_IMAGE="$TRIBUNAL_SANDBOX_IMAGE"
 
       - name: Run production migrations
@@ -301,3 +330,13 @@ jobs:
             echo "- Web: \`${PRODUCTION_WEB_ORIGIN%/}\`"
             echo "- Reviews enabled: \`false\` unless changed separately through the live-review runbook"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Deployed, but degraded: the apps are current and healthy while the reviewer
+      # image is stale. Fail the run so this still pages, rather than reporting a
+      # clean green that hides a stale reviewer.
+      - name: Fail the run when the reviewer image is stale
+        if: steps.publish_reviewer_image.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::error::Production deployed successfully at ${DEPLOY_SHA}, but the reviewer image could not be published to Tensorlake and is stale. Re-run this workflow once Tensorlake is healthy."
+          exit 1

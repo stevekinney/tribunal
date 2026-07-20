@@ -276,6 +276,31 @@ live-state check uses `bun run deploy:status -- --live-status-only` without
 those allowances, so the refreshed engine secret and singleton engine Machine
 are required before the workflow can finish.
 
+### When the reviewer image cannot be published
+
+Publishing the reviewer image to Tensorlake is allowed to fail without stranding
+production on stale code. A Tensorlake outage or an exhausted CPU quota would
+otherwise skip the migration, proxy, engine, and web deploys entirely — a much
+larger problem than a stale reviewer.
+
+If the publish step fails, the workflow:
+
+1. Requires that `tribunal-engine` already has a `TRIBUNAL_SANDBOX_IMAGE` secret.
+   The engine validates that variable with `z.string().min(1)` at startup, so
+   deploying with no image at all would crash-loop it. With no existing secret to
+   fall back on — a first-ever deploy — the workflow stops here and deploys
+   nothing.
+2. Skips staging a new secret, leaving the previously published reviewer image in
+   place.
+3. Runs migrations and deploys proxy, engine, and web as usual, so application
+   code reaches production.
+4. Fails the run at the end. The deploy succeeded but is **degraded**: the apps
+   are current, the reviewer image is not. Re-run the workflow once Tensorlake is
+   healthy to bring the reviewer back in sync.
+
+The run is deliberately marked failed rather than green — a green result would
+hide the fact that reviews are running against an older image.
+
 The workflow does not create apps, allocate the proxy IPv4, configure provider
 consoles, set long-lived runtime application secrets, enable live reviews, or
 perform automatic rollback. Failed post-deploy health gates fail the workflow
