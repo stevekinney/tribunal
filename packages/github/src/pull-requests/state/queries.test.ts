@@ -691,6 +691,59 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     expect(getCombinedStatusForRef).toHaveBeenCalledTimes(2);
   });
 
+  it('reads a required check run on page 2 instead of spending the last budget unit on an early combined-status read', async () => {
+    const context = createMockContext();
+    // Page 1 is full of non-required runs and doesn't resolve the required
+    // check; it's actually a plain check run that only shows up on page 2.
+    const page1 = Array.from({ length: 100 }, () => ({
+      name: 'Deploy Production',
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const page2 = [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }];
+    const listForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page1 } })
+      .mockResolvedValueOnce({ data: { total_count: 101, check_runs: page2 } });
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, statuses: [] } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    // Exactly enough budget to fetch page 1 and then page 2 — one unit left
+    // after page 1, none to spare for an early combined-status read that
+    // couldn't have resolved the check run anyway.
+    let remaining = 2;
+    const budget = {
+      canSpend: vi.fn().mockImplementation((cost = 1) => remaining >= cost),
+      spend: vi.fn().mockImplementation((cost = 1) => {
+        remaining -= cost;
+      }),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      budget,
+      [{ context: 'Unit Tests', appId: null }],
+    );
+
+    // With only one budget unit left after page 1, spending it on a
+    // combined-status read that can't resolve a plain check run would
+    // exhaust the budget before page 2 (where the required check actually
+    // lives) is ever fetched — truncating the rollup to `unknown` instead of
+    // reading the required check run on page 2.
+    expect(result.ciStatus).toBe('passing');
+    expect(result.truncated).toBe(false);
+    expect(listForRef).toHaveBeenCalledTimes(2);
+  });
+
   it('reads the combined status before draining every check-run page when a required check is a legacy status', async () => {
     const context = createMockContext();
     // Two full check-run pages exist, but the required check never appears

@@ -446,8 +446,19 @@ async function paginateCheckRunsRollup(
     // status already covers what's still outstanding — a required check that
     // is actually a legacy status context will never appear among check
     // runs, so paging further here would only be spent finding that out the
-    // slow way.
-    if (filterToRequired && includeStatusContexts && hasMoreCheckRunPages) {
+    // slow way. Only do this early when the budget can also cover the next
+    // check-run page afterward (`canSpend(2)`: one for this read, one held
+    // in reserve) — otherwise an outstanding required check that's actually
+    // an ordinary check run on the next page would lose its last budget unit
+    // to a combined-status read that can never resolve it, and get reported
+    // as truncated/unknown instead of being read on that next page. With no
+    // budget at all (unbounded reads) this is always affordable.
+    if (
+      filterToRequired &&
+      includeStatusContexts &&
+      hasMoreCheckRunPages &&
+      (!budget || budget.canSpend(2))
+    ) {
       await readRequiredStatusContexts();
       if (truncated) break;
       if (seenRequired.size >= required.length) break;
