@@ -600,6 +600,33 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     expect(result.ciStatus).toBe('passing');
   });
 
+  it('does not let a same-named legacy status context satisfy an app-pinned required check', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });
+    const getCombinedStatusForRef = vi.fn().mockResolvedValue({
+      data: { total_count: 1, statuses: [{ context: 'Unit Tests', state: 'success' }] },
+    });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      [{ context: 'Unit Tests', appId: 42 }],
+    );
+
+    // A legacy status context has no per-status app identity, so it can
+    // never satisfy an app-pinned required check — the required check
+    // stays "missing" (pending), not a false green from an impostor status.
+    expect(result.ciStatus).toBe('pending');
+  });
+
   it('finds a required legacy status context beyond the first page of combined statuses', async () => {
     const context = createMockContext();
     const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });

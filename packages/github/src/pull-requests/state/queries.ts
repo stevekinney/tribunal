@@ -223,13 +223,19 @@ function findRequiredCheckRunMatch(
   return -1;
 }
 
-/** First required-check index a legacy status context (matched by name only) satisfies, or -1. */
+/**
+ * First required-check index a legacy status context satisfies, or -1.
+ * Only unpinned requirements (`appId: null`) can be satisfied this way — a
+ * status context carries no per-status app identity, so an app-pinned
+ * requirement can only ever be matched by a check run.
+ */
 function findRequiredStatusContextMatch(
   requiredChecks: ReadonlyArray<RequiredCheck>,
   context: string,
 ): number {
   for (let index = 0; index < requiredChecks.length; index++) {
-    if (requiredChecks[index].context === context) return index;
+    if (requiredChecks[index].appId === null && requiredChecks[index].context === context)
+      return index;
   }
   return -1;
 }
