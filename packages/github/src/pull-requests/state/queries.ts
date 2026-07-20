@@ -233,7 +233,17 @@ async function paginateCheckRunsRollup(
   // those so a non-required workflow (a deploy or release job) can't flip the
   // default-branch verdict red. With no required checks the set is empty and
   // every check run counts, preserving the prior "any failure fails" behavior.
+  //
+  // Known limitations (safe by fallback, not handled here): required checks are
+  // matched by name only, so an `app_id`-pinned requirement accepts any provider
+  // with that name; and required checks defined via GitHub *rulesets* (rather
+  // than classic branch protection) are not surfaced by `getBranch`, so those
+  // repositories fall back to counting every check.
   const filterToRequired = requiredCheckNames !== undefined && requiredCheckNames.size > 0;
+  // Track which required checks actually reported on this commit. A required
+  // check that never appears is "expected"/pending on GitHub — treating its
+  // absence as passing would show green while a required check is still missing.
+  const seenRequired = new Set<string>();
   let matchedCheckCount = 0;
   let matchedStatusCount = 0;
 
@@ -263,6 +273,7 @@ async function paginateCheckRunsRollup(
         continue;
       }
       matchedCheckCount += 1;
+      seenRequired.add(run.name);
       if (run.status !== 'completed') {
         hasPending = true;
         continue;
@@ -326,6 +337,7 @@ async function paginateCheckRunsRollup(
           for (const status of combined.statuses) {
             if (!requiredCheckNames.has(status.context)) continue;
             matchedStatusCount += 1;
+            seenRequired.add(status.context);
             if (status.state === 'failure') failingCount++;
             else if (status.state === 'error') hasError = true;
             else if (status.state === 'pending') hasPending = true;
@@ -337,6 +349,19 @@ async function paginateCheckRunsRollup(
         } else if (combined.state === 'pending') {
           hasPending = true;
         }
+      }
+    }
+  }
+
+  // A required check that never reported on this commit is still pending on
+  // GitHub — don't let the other required checks passing report green while one
+  // is missing. Skip when truncated: an unfetched page, not a missing check,
+  // could be why we didn't see it, and truncation already yields `unknown`.
+  if (filterToRequired && !truncated) {
+    for (const requiredName of requiredCheckNames) {
+      if (!seenRequired.has(requiredName)) {
+        hasPending = true;
+        break;
       }
     }
   }

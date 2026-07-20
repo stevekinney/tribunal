@@ -430,4 +430,29 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     // Empty required set preserves the prior behavior: the failed deploy fails CI.
     expect(result.ciStatus).toBe('failing');
   });
+
+  it('is pending when a required check has not reported yet', async () => {
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      {
+        total_count: 1,
+        check_runs: [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }],
+      },
+    ]);
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests', 'Lint']),
+    );
+
+    // 'Lint' is required but absent from the commit's checks — GitHub treats a
+    // missing required check as still pending, not passing.
+    expect(result.ciStatus).toBe('pending');
+  });
 });
