@@ -36,6 +36,19 @@ export const HELD_ELSEWHERE_MESSAGE =
 const DEFAULT_ACQUIRE_ATTEMPTS = 100;
 const DEFAULT_ACQUIRE_DELAY_MS = 5_000;
 
+/**
+ * The long acquire budget above exists to survive a real held-lock handoff —
+ * it should not also apply to a connection/query failure (bad credentials, a
+ * network partition, a Neon outage), which is a different failure class that
+ * should surface quickly rather than grinding through ~8.25 minutes of
+ * retries. This caps how many *consecutive* transport/query failures are
+ * tolerated before giving up early; it resets on every successful query
+ * (whether the lock was acquired or seen held elsewhere), so a handoff that
+ * is mostly "held elsewhere" with an occasional transient hiccup is
+ * unaffected — only a run of failures in a row trips it.
+ */
+const MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3;
+
 export type PostgresAdvisoryLockOptions = {
   attempts?: number;
   delayMs?: number;
@@ -70,6 +83,7 @@ export function createPostgresAdvisoryLock(
       // wrapper (`index.ts`) would misclassify a normal, still-retryable
       // handoff as an unrelated fatal boot failure and give up immediately.
       let sawHeldElsewhere = false;
+      let consecutiveTransportFailures = 0;
 
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         let client: PoolClient | undefined;
@@ -79,6 +93,7 @@ export function createPostgresAdvisoryLock(
             `SELECT pg_try_advisory_lock(hashtext($1)) AS acquired`,
             [lockKey],
           );
+          consecutiveTransportFailures = 0;
           if (result.rows[0]?.acquired === true) {
             return new PostgresAdvisoryLease(pool, client);
           }
@@ -91,6 +106,11 @@ export function createPostgresAdvisoryLock(
         } catch (error) {
           client?.release();
           lastError = error;
+          consecutiveTransportFailures += 1;
+          if (consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
+            await pool.end();
+            throw error instanceof Error ? error : new Error(String(error));
+          }
         }
 
         // A throwing custom sleep must not skip pool cleanup below; treat a
