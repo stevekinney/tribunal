@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createEngineRuntimeWithSingletonRetry,
   createEngineServerOptions,
   createReviewIntentKickScheduler,
   createSignalShutdown,
@@ -8,6 +9,7 @@ import {
   parsePort,
   startSandboxReaper,
 } from './index';
+import { HELD_ELSEWHERE_MESSAGE } from './workflows/postgres-advisory-lock';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -834,6 +836,10 @@ describe('createStorageConfigurationFromEnvironment', () => {
       { name: 'weft_database', ok: true },
       { name: 'singleton_lock', ok: true, detail: 'Postgres advisory lock held' },
     ]);
+    // A factory, not a shared lock instance: each singleton-retry cycle needs
+    // its own Pool once a prior cycle's lock has exhausted its own budget and
+    // ended its pool (see postgres-advisory-lock.ts).
+    expect(configuration.lockFactory).toBeTypeOf('function');
   });
 
   it('requires durable storage in production unless explicitly enabled for tests', () => {
@@ -876,6 +882,78 @@ describe('createStorageConfigurationFromEnvironment', () => {
         detail: 'single-process ephemeral runtime',
       },
     ]);
+  });
+});
+
+describe('createEngineRuntimeWithSingletonRetry', () => {
+  it('acquires without throwing, and without ever giving up, once a held lock is released', async () => {
+    // Reproduces the rolling-deploy handoff: the incoming engine faces a lock
+    // held by the outgoing engine through two full exhausted acquire cycles
+    // before a normal release frees it on the third. The previous behavior
+    // (createEngineRuntime called directly, letting the exhausted-acquire
+    // throw hit the top level) crash-looped the whole process on cycles one
+    // and two; this must instead retry in-process and resolve.
+    let lockCycle = 0;
+    const lockFactory = vi.fn(() => {
+      lockCycle += 1;
+      const cycle = lockCycle;
+      return {
+        async acquire() {
+          if (cycle < 3) throw new Error(HELD_ELSEWHERE_MESSAGE);
+          return { release: vi.fn(async () => {}) };
+        },
+      };
+    });
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(lockFactory).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledTimes(2);
+
+    await runtime.release();
+  });
+
+  it('does not retry a boot failure unrelated to the singleton lock', async () => {
+    const lockFactory = vi.fn(() => ({
+      async acquire() {
+        throw new Error('connection refused');
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+
+    await expect(
+      createEngineRuntimeWithSingletonRetry({ allowEphemeralStorageForTests: true }, lockFactory, {
+        sleep,
+        logger,
+      }),
+    ).rejects.toThrow('connection refused');
+
+    expect(lockFactory).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('boots directly when there is no lock to acquire (ephemeral storage)', async () => {
+    const sleep = vi.fn(async () => {});
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      undefined,
+      { sleep },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(sleep).not.toHaveBeenCalled();
+
+    await runtime.release();
   });
 });
 

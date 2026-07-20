@@ -2,19 +2,36 @@ import { Pool, type PoolClient } from '@neondatabase/serverless';
 import type { EngineSingletonLease, EngineSingletonLock } from './bootstrap';
 
 const lockKey = 'tribunal-engine-singleton';
-const HELD_ELSEWHERE_MESSAGE = 'another Tribunal engine already holds the singleton advisory lock';
+export const HELD_ELSEWHERE_MESSAGE =
+  'another Tribunal engine already holds the singleton advisory lock';
 
 /**
  * Tuning for advisory-lock acquisition retries. On a rolling deploy the outgoing
- * engine's session lock on Neon is not always released the instant the new
- * engine starts — the predecessor's connection can take a few seconds to drop.
- * `pg_try_advisory_lock` is a hard, no-wait acquire, so without retries the new
- * engine crashes on startup and the deploy fails. Retrying bounds the wait to
- * roughly `attempts * delayMs` (~30s by default), comparable to Weft's own
- * lease wait, before giving up.
+ * engine releases this lock in `runtime.release()`, which runs strictly after
+ * the Weft engine's `asyncDispose()` completes (see `bootstrap.ts`) — so the
+ * advisory lock lags the prompt Weft-lease release from #146, it does not track
+ * it. That release path is itself bounded by `kill_timeout = 20s`
+ * (`deployment/fly/engine.toml`): if it does not finish in time, Fly SIGKILLs
+ * the outgoing machine, the Postgres session dies uncleanly, and the advisory
+ * lock is only freed once Neon reaps the dead session — a delay this process
+ * does not control and that is not bounded by `kill_timeout` at all.
+ *
+ * Production run 29780778638 (see #169) measured that tail directly: the
+ * incoming engine did not win the lock until ~7 minutes after the deploy
+ * began. A 30s retry budget (the previous default) cannot span that, so the
+ * old behavior was to exhaust the budget, throw, and let the process exit —
+ * which Fly Machines turns into a full VM reboot that discards all retry
+ * progress and restarts the clock. Two such reboots is exactly what stretched
+ * the observed handoff past flyctl's ~5 minute health-check window.
+ *
+ * The fix is two-part: this budget is sized to comfortably clear both the
+ * clean `kill_timeout` path and the observed SIGKILL/reap tail in a single
+ * continuous wait (no process exit in between — see `index.ts`), and a wider
+ * per-attempt delay keeps the retry from hammering Neon over that window.
+ * `attempts * delayMs` ≈ 8.25 minutes.
  */
-const DEFAULT_ACQUIRE_ATTEMPTS = 10;
-const DEFAULT_ACQUIRE_DELAY_MS = 3_000;
+const DEFAULT_ACQUIRE_ATTEMPTS = 100;
+const DEFAULT_ACQUIRE_DELAY_MS = 5_000;
 
 export type PostgresAdvisoryLockOptions = {
   attempts?: number;

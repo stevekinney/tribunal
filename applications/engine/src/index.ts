@@ -4,11 +4,15 @@ import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
   createEngineRuntime,
+  type EngineBootstrapOptions,
   type EngineRuntime,
   type EngineSingletonLock,
   type ReviewIntentQueueStatus,
 } from './workflows/bootstrap';
-import { createPostgresAdvisoryLock } from './workflows/postgres-advisory-lock';
+import {
+  createPostgresAdvisoryLock,
+  HELD_ELSEWHERE_MESSAGE,
+} from './workflows/postgres-advisory-lock';
 import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
 import { parseEngineEnvironment } from './environment';
 
@@ -16,6 +20,60 @@ export function parsePort(value: string | undefined, fallback: number): number {
   if (value === undefined || value === '') return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
+}
+
+const SINGLETON_RETRY_COOLDOWN_MS = 5_000;
+
+export type CreateEngineRuntimeWithSingletonRetryHooks = {
+  sleep?: (milliseconds: number) => Promise<void>;
+  logger?: Pick<typeof console, 'error'>;
+  cooldownMs?: number;
+};
+
+/**
+ * Boots the engine runtime, retrying indefinitely — without ever exiting the
+ * process — when the singleton advisory lock is still held by the outgoing
+ * engine after a full acquire-budget cycle (`postgres-advisory-lock.ts`).
+ *
+ * A previous engine that crashes or exits during boot gets rebooted as a
+ * whole new Fly Machine, which discards all retry progress and restarts the
+ * clock — the exact crash-loop behavior that let a normal, if slow, rolling
+ * deploy handoff blow past flyctl's health-check window (see #169). Staying
+ * in-process and retrying is what makes the wait actually cumulative: the
+ * HTTP server built by `createStartingEngineServerOptions` already reports
+ * `/health` as not-ready for as long as this loop keeps running, so this
+ * looks to flyctl like an ordinary (if slow) boot, not a crash.
+ *
+ * Only `HELD_ELSEWHERE_MESSAGE` is retried — any other boot failure (bad
+ * storage configuration, a corrupt durable store, and so on) still throws
+ * immediately, since retrying those forever would hide a genuine, unrelated
+ * defect instead of a normal deploy handoff.
+ */
+export async function createEngineRuntimeWithSingletonRetry(
+  options: EngineBootstrapOptions,
+  lockFactory: (() => EngineSingletonLock) | undefined,
+  hooks: CreateEngineRuntimeWithSingletonRetryHooks = {},
+): Promise<EngineRuntime> {
+  const sleep =
+    hooks.sleep ??
+    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const logger = hooks.logger ?? console;
+  const cooldownMs = hooks.cooldownMs ?? SINGLETON_RETRY_COOLDOWN_MS;
+
+  for (;;) {
+    try {
+      return await createEngineRuntime({ ...options, lock: lockFactory?.() });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== HELD_ELSEWHERE_MESSAGE) throw error;
+
+      logger.error(
+        '[engine] singleton advisory lock still held after the full acquire budget; ' +
+          'retrying boot instead of exiting',
+        error,
+      );
+      await sleep(cooldownMs);
+    }
+  }
 }
 
 if (import.meta.main) {
@@ -32,14 +90,16 @@ if (import.meta.main) {
   );
   console.log(`[engine] listening on ${server.hostname}:${server.port}; starting runtime`);
 
-  const runtime = await createEngineRuntime({
-    storage: storageConfiguration.storage,
-    lock: storageConfiguration.lock,
-    healthDependencies: storageConfiguration.healthDependencies,
-    reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
-    reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
-    allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
-  });
+  const runtime = await createEngineRuntimeWithSingletonRetry(
+    {
+      storage: storageConfiguration.storage,
+      healthDependencies: storageConfiguration.healthDependencies,
+      reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
+      reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
+      allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
+    },
+    storageConfiguration.lockFactory,
+  );
   let activeSandboxReaperRuns = 0;
   const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
     idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
@@ -148,14 +208,19 @@ export function createStorageConfigurationFromEnvironment(environment: {
   WEFT_DATABASE_URL?: string;
 }): {
   storage: Storage | undefined;
-  lock?: EngineSingletonLock;
+  lockFactory?: () => EngineSingletonLock;
   allowEphemeralStorageForTests: boolean;
   healthDependencies: EngineHealthDependency[];
 } {
   if (environment.WEFT_DATABASE_URL) {
+    const weftDatabaseUrl = environment.WEFT_DATABASE_URL;
     return {
-      storage: new NeonStorage({ url: environment.WEFT_DATABASE_URL }),
-      lock: createPostgresAdvisoryLock(environment.WEFT_DATABASE_URL),
+      storage: new NeonStorage({ url: weftDatabaseUrl }),
+      // A factory, not a shared instance: each singleton-retry cycle in
+      // `createEngineRuntimeWithSingletonRetry` needs its own Pool, because a
+      // prior cycle's lock ends its pool once its own bounded acquire budget
+      // is exhausted (see `postgres-advisory-lock.ts`).
+      lockFactory: () => createPostgresAdvisoryLock(weftDatabaseUrl),
       allowEphemeralStorageForTests: false,
       healthDependencies: [
         { name: 'weft_database', ok: true },
