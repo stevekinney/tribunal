@@ -361,22 +361,23 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(outcome).toBe('started');
     await yieldToPortableEventLoop();
 
-    // The successor run's own signal (buffered into its creation batch by
-    // startOrSignal, same as the first run's) makes it debounce, sync, loop
-    // once for that buffered signal, debounce again, and sync a second time —
-    // two virtual debounce windows' worth of advance, no real time.
-    await testEngine.advanceTime(PAST_DEBOUNCE);
-    await yieldToPortableEventLoop();
+    // The successor run's own signal is buffered into its creation batch by
+    // startOrSignal, same as the first run's. The workflow drains that
+    // buffered signal BEFORE syncing (see installation-sync.ts), so the
+    // initiating signal is satisfied by the single sync pass below rather
+    // than triggering an extra loop — only one debounce window's worth of
+    // advance is needed, no real time.
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
     await yieldToPortableEventLoop();
 
     const secondState = await awaitTerminal(testEngine, handle.id);
     expect(secondState.status).toBe('completed');
-    // The successor run executed sync passes beyond the first run's single
-    // call — observed with no added delay between the first run's terminal
-    // and the dispatch that started this successor.
-    expect(mockRefresh.mock.calls.length).toBeGreaterThan(1);
+    // The successor run performs exactly one additional sync pass — its own
+    // initiating signal, drained before the sync, does not cause a redundant
+    // second pass — observed with no added delay between the first run's
+    // terminal and the dispatch that started this successor.
+    expect(mockRefresh.mock.calls.length).toBe(2);
   });
 
   /**
@@ -429,6 +430,144 @@ describe('installation-sync workflow (e2e, real engine)', () => {
 
     expect(state.status).toBe('completed');
     // Two sync passes: the initial one plus the coalesced second request.
+    expect(mockRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * 5b. Regression for issue #166: a run dispatched exactly as production does
+   * — `startOrSignal` with `input` AND a `sync_requested` signal buffered into
+   * the run's creation batch, plus `onTerminalConflict: 'start-new'` — must
+   * perform EXACTLY ONE sync when nothing else arrives.
+   *
+   * Before the fix, the drain race only ran AFTER the sync and consumed just
+   * one signal per iteration, so this exact production dispatch shape found
+   * its OWN initiating signal still buffered at the drain point and looped
+   * for a redundant second pass. The fix drains the buffer BEFORE syncing, so
+   * the initiating signal is satisfied by the sync that is about to run.
+   */
+  it('startOrSignal dispatch (production shape) performs exactly one sync when nothing else arrives', async () => {
+    const testEngine = createEngine();
+
+    const { outcome } = await testEngine.startOrSignal(
+      'installation-sync',
+      syncInput(),
+      { name: 'sync_requested', payload: syncInput(), signalId: crypto.randomUUID() },
+      { id: WORKFLOW_ID, onTerminalConflict: 'start-new' },
+    );
+    expect(outcome).toBe('started');
+    await yieldToPortableEventLoop();
+
+    // A single debounce window: the initiating signal is drained before the
+    // sync, so there is no extra loop iteration to advance time for.
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await yieldToPortableEventLoop();
+
+    const state = await awaitTerminal(testEngine, WORKFLOW_ID);
+
+    expect(state.status).toBe('completed');
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 5c. Regression for issue #166: N signals buffered BEFORE the sync (a
+   * webhook burst arriving during the leading debounce) must still produce
+   * exactly ONE sync pass, not N.
+   *
+   * Before the fix, the drain race consumed exactly one buffered signal per
+   * loop iteration, so N buffered signals produced N extra passes, each
+   * behind its own 15 s debounce. Buffering three distinct signals here
+   * (distinct signalId per delivery, mirroring distinct GitHub deliveries)
+   * during the debounce window and asserting a single sync pass proves the
+   * whole burst collapses into the one sync about to run.
+   */
+  it('N signals buffered before the sync still produce exactly one sync pass', async () => {
+    const testEngine = createEngine();
+
+    const handle = await testEngine.start('installation-sync', syncInput(), {
+      id: WORKFLOW_ID,
+    });
+
+    // Simulate a burst of three lifecycle webhooks arriving during the
+    // leading debounce, each a distinct delivery (distinct signalId).
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await yieldToPortableEventLoop();
+
+    const state = await awaitTerminal(testEngine, handle.id);
+
+    expect(state.status).toBe('completed');
+    // All three buffered signals are satisfied by the single sync pass.
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 5d. Regression for issue #166: N signals arriving DURING a sync must
+   * produce exactly ONE additional pass, not N.
+   *
+   * Mirrors test 5 above (a single signal during the sync produces one
+   * additional pass) but buffers three distinct signals while the sync is
+   * in flight, proving the post-sync drain consumes the whole buffer in one
+   * go rather than looping once per signal.
+   */
+  it('N signals arriving during a sync produce exactly one additional pass', async () => {
+    const { promise: firstSyncStarted, resolve: markFirstSyncStarted } =
+      Promise.withResolvers<void>();
+    mockRefresh.mockImplementationOnce(
+      () =>
+        new Promise<{ repositoryCount: number; deactivatedRepositoryCount: number }>((resolve) => {
+          markFirstSyncStarted();
+          releaseHungSync = () => resolve({ repositoryCount: 3, deactivatedRepositoryCount: 0 });
+        }),
+    );
+
+    const testEngine = createEngine();
+
+    const handle = await testEngine.start('installation-sync', syncInput(), {
+      id: WORKFLOW_ID,
+    });
+
+    // Stage 1: fire the leading debounce so the first sync runs.
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await firstSyncStarted;
+
+    // Buffer three distinct signals while the first sync is still in flight,
+    // then release the activity. The post-sync drain must consume all three
+    // in one pass rather than looping three times.
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput(), {
+      signalId: crypto.randomUUID(),
+    });
+    releaseHungSync?.();
+    releaseHungSync = undefined;
+    await yieldToPortableEventLoop();
+
+    // The buffered burst sends us back into the loop for exactly one more
+    // pass: a debounce, then a second sync, then the empty handoff drain.
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
+    await yieldToPortableEventLoop();
+
+    const state = await awaitTerminal(testEngine, handle.id);
+
+    expect(state.status).toBe('completed');
+    // Exactly one additional pass for the whole burst, not one per signal.
     expect(mockRefresh).toHaveBeenCalledTimes(2);
   });
 
