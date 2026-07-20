@@ -18,7 +18,10 @@ describe('landing page dark-theme tokens', () => {
      * tokens resolve correctly without a page-local copy of the values.
      */
     expect(markup).not.toMatch(/\.landing-page\[data-theme=['"]dark['"]\]/);
-    expect(markup).not.toMatch(/--text:\s*oklch/);
-    expect(markup).not.toMatch(/--surface-raised:\s*oklch/);
+    // Match `oklch` anywhere in the declaration's value (not just directly
+    // after the colon) so a reintroduction wrapped in light-dark(), e.g.
+    // `--text: light-dark(oklch(...), oklch(...));`, is still caught.
+    expect(markup).not.toMatch(/--text:[^;]*oklch/);
+    expect(markup).not.toMatch(/--surface-raised:[^;]*oklch/);
   });
 });
