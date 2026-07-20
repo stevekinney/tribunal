@@ -69,7 +69,7 @@ describe('/repositories/[repositoryId]/events page', () => {
     await expect.element(page.getByRole('cell', { name: 'issues opened' })).toBeVisible();
     await expect.element(page.getByText('triage-agent')).toBeVisible();
     await expect
-      .element(page.getByRole('switch', { name: 'Disable Triage issues' }))
+      .element(page.getByRole('switch', { name: 'Event listener Triage issues enabled' }))
       .toHaveAttribute('aria-checked', 'true');
     await expect.element(page.getByText('No runs yet')).toBeVisible();
     await expect

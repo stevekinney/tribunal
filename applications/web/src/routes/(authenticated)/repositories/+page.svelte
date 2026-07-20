@@ -510,7 +510,7 @@
                         <Toggle
                           id="watching-{repository.id}"
                           checked={isWatching}
-                          label={isWatching ? 'Remove repository' : 'Add repository'}
+                          label="Repository watched"
                           hideLabel
                           onValueChange={(next) => {
                             localWatchStates.set(repository.id, next);

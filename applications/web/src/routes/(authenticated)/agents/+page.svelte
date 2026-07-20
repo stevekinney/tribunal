@@ -66,7 +66,7 @@
                   <input type="hidden" name="enabled" value={agent.enabled ? 'false' : 'true'} />
                   <Toggle
                     id={`agent-${agent.id}-enabled`}
-                    label={`${agent.enabled ? 'Disable' : 'Enable'} ${agent.slug}`}
+                    label={`Agent ${agent.slug} enabled`}
                     hideLabel
                     checked={agent.enabled}
                     onValueChange={(next) => {
