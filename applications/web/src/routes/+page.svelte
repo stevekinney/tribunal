@@ -49,20 +49,6 @@
 </main>
 
 <style>
-  /*
-   * light-dark() tokens resolve at :root (color-scheme: light) and do NOT
-   * re-evaluate under a data-theme="dark" subtree — same constraint the login
-   * and onboarding brand panels work around. Pin the tokens this hero consumes
-   * to their dark-arm values so the text and logo chip read correctly on the
-   * dark backdrop.
-   */
-  .landing-page[data-theme='dark'] {
-    --text: oklch(92% 0.02 245);
-    /* Dark-arm --surface-raised: a subtly raised chip that reads on the dark
-     * backdrop (the darker --surface-overlay would nearly vanish here). */
-    --surface-raised: oklch(24% 0.045 245);
-  }
-
   .landing-page {
     display: flex;
     min-height: 100vh;
