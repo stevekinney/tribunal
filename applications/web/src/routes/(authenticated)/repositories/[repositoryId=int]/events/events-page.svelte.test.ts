@@ -77,6 +77,17 @@ describe('/repositories/[repositoryId]/events page', () => {
       .toHaveAttribute('href', '/repositories/42/events?listener=listener_1');
   });
 
+  it('wraps the listener table in a named, focusable scroll region', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: null,
+    });
+
+    const scrollRegion = page.getByRole('region', { name: 'Event listeners' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
+
   it('shows the last matched delivery and links to its run', async () => {
     render(EventsPage, {
       data: createData({

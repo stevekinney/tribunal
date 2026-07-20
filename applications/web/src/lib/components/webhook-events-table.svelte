@@ -65,183 +65,180 @@
   </Card>
 {:else}
   <Card padding="none">
-    <div class="table-scroll">
-      <Table density="comfortable">
-        <Table.Header>
+    <Table
+      scrollable
+      scrollContainerProps={{ 'aria-label': 'Webhook events' }}
+      density="comfortable"
+    >
+      <Table.Header>
+        <Table.Row>
+          <Table.HeaderCell scope="col">
+            <span class="cinder-sr-only">Expand row</span>
+          </Table.HeaderCell>
+          {#if showRepositoryColumn}
+            <Table.HeaderCell scope="col">Repository</Table.HeaderCell>
+          {/if}
+          <Table.HeaderCell scope="col">Received</Table.HeaderCell>
+          <Table.HeaderCell scope="col">Event / action</Table.HeaderCell>
+          <Table.HeaderCell scope="col">Related object</Table.HeaderCell>
+          <Table.HeaderCell scope="col">Sender</Table.HeaderCell>
+          <Table.HeaderCell scope="col">Delivery ID</Table.HeaderCell>
+          <Table.HeaderCell scope="col">Listener progress</Table.HeaderCell>
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
+        {#each events as event (event.id)}
+          {@const expanded = expandedIds.has(event.id)}
           <Table.Row>
-            <Table.HeaderCell scope="col">
-              <span class="cinder-sr-only">Expand row</span>
-            </Table.HeaderCell>
+            <Table.Cell>
+              <Button
+                variant="ghost"
+                size="xs"
+                aria-expanded={expanded}
+                aria-controls={`webhook-event-detail-${event.id}`}
+                onclick={() => toggle(event.id)}
+              >
+                {#snippet leadingIcon()}
+                  {#if expanded}
+                    <ChevronDown size={14} aria-hidden="true" />
+                  {:else}
+                    <ChevronRight size={14} aria-hidden="true" />
+                  {/if}
+                {/snippet}
+                <span class="cinder-sr-only">
+                  {expanded ? 'Hide details' : 'Show details'} for delivery {event.deliveryId ??
+                    event.id}
+                </span>
+              </Button>
+            </Table.Cell>
             {#if showRepositoryColumn}
-              <Table.HeaderCell scope="col">Repository</Table.HeaderCell>
+              <Table.Cell as="th">
+                <Link href={`/repositories/${event.repositoryId}/webhooks`}>
+                  {event.repositoryOwner}/{event.repositoryName}
+                </Link>
+              </Table.Cell>
             {/if}
-            <Table.HeaderCell scope="col">Received</Table.HeaderCell>
-            <Table.HeaderCell scope="col">Event / action</Table.HeaderCell>
-            <Table.HeaderCell scope="col">Related object</Table.HeaderCell>
-            <Table.HeaderCell scope="col">Sender</Table.HeaderCell>
-            <Table.HeaderCell scope="col">Delivery ID</Table.HeaderCell>
-            <Table.HeaderCell scope="col">Listener progress</Table.HeaderCell>
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {#each events as event (event.id)}
-            {@const expanded = expandedIds.has(event.id)}
-            <Table.Row>
-              <Table.Cell>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  aria-expanded={expanded}
-                  aria-controls={`webhook-event-detail-${event.id}`}
-                  onclick={() => toggle(event.id)}
-                >
-                  {#snippet leadingIcon()}
-                    {#if expanded}
-                      <ChevronDown size={14} aria-hidden="true" />
-                    {:else}
-                      <ChevronRight size={14} aria-hidden="true" />
-                    {/if}
-                  {/snippet}
-                  <span class="cinder-sr-only">
-                    {expanded ? 'Hide details' : 'Show details'} for delivery {event.deliveryId ??
-                      event.id}
-                  </span>
-                </Button>
-              </Table.Cell>
-              {#if showRepositoryColumn}
-                <Table.Cell as="th">
-                  <Link href={`/repositories/${event.repositoryId}/webhooks`}>
-                    {event.repositoryOwner}/{event.repositoryName}
-                  </Link>
-                </Table.Cell>
+            <Table.Cell>{formatReceivedAt(event.receivedAt)}</Table.Cell>
+            <Table.Cell>
+              <Badge size="sm" variant="neutral">{event.eventType}</Badge>
+              {#if event.action}
+                <span class="event-action">{event.action}</span>
               {/if}
-              <Table.Cell>{formatReceivedAt(event.receivedAt)}</Table.Cell>
-              <Table.Cell>
-                <Badge size="sm" variant="neutral">{event.eventType}</Badge>
-                {#if event.action}
-                  <span class="event-action">{event.action}</span>
-                {/if}
-              </Table.Cell>
-              <Table.Cell>{relatedObjectLabel(event) ?? '—'}</Table.Cell>
-              <Table.Cell>{event.senderLogin ?? '—'}</Table.Cell>
-              <Table.Cell>
-                {#if event.deliveryId}
-                  <code class="delivery-id">{event.deliveryId}</code>
-                {:else}
-                  —
-                {/if}
-              </Table.Cell>
-              <Table.Cell>
-                <Badge size="sm" variant={progressVariant(event.listenerProgress.status)}>
-                  {progressLabel(event.listenerProgress.status)}
-                </Badge>
-                {#if event.listenerProgress.matchCount > 0}
-                  <span class="listener-names">
-                    {event.listenerProgress.matchedListenerNames.join(', ')}
-                  </span>
-                {/if}
-              </Table.Cell>
-            </Table.Row>
-            {#if expanded}
-              <Table.Row>
-                <Table.Cell colspan={columnCount}>
-                  <div id={`webhook-event-detail-${event.id}`} class="detail-panel">
-                    <dl class="detail-summary">
-                      <div>
-                        <dt>Event</dt>
-                        <dd>{event.eventType}{event.action ? ` · ${event.action}` : ''}</dd>
-                      </div>
-                      <div>
-                        <dt>Repository</dt>
-                        <dd>{event.repositoryOwner}/{event.repositoryName}</dd>
-                      </div>
-                      <div>
-                        <dt>Installation ID</dt>
-                        <dd>{event.installationId ?? 'Unknown'}</dd>
-                      </div>
-                      <div>
-                        <dt>Sender</dt>
-                        <dd>{event.senderLogin ?? '—'}</dd>
-                      </div>
-                      <div>
-                        <dt>Related object</dt>
-                        <dd>{relatedObjectLabel(event) ?? '—'}</dd>
-                      </div>
-                      <div>
-                        <dt>GitHub timestamp</dt>
-                        <dd>
-                          {event.githubCreatedAt
-                            ? formatReceivedAt(event.githubCreatedAt)
-                            : 'Unknown'}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Received</dt>
-                        <dd>{formatReceivedAt(event.receivedAt)}</dd>
-                      </div>
-                      <div>
-                        <dt>Delivery ID</dt>
-                        <dd>{event.deliveryId ?? 'Unknown'}</dd>
-                      </div>
-                    </dl>
-
-                    <div class="listener-progress-detail">
-                      <h3>Event listener progress</h3>
-                      {#if event.listenerProgress.receivedOnly}
-                        <p class="listener-progress-empty">
-                          No event listeners matched this delivery.
-                        </p>
-                      {:else}
-                        <ul class="listener-match-list">
-                          {#each event.listenerProgress.matches as match (match.deliveryId)}
-                            <li>
-                              <div class="listener-match-header">
-                                <span class="listener-match-name">
-                                  {match.listenerDeleted
-                                    ? `${match.listenerName} (deleted)`
-                                    : match.listenerName}
-                                </span>
-                                <Badge size="sm" variant={progressVariant(match.status)}>
-                                  {progressLabel(match.status)}
-                                </Badge>
-                              </div>
-                              {#if match.lastError}
-                                <Alert variant="danger">{match.lastError}</Alert>
-                              {/if}
-                              {#if match.runId}
-                                <Link href={`/runs/${match.runId}`}>View run</Link>
-                              {/if}
-                            </li>
-                          {/each}
-                        </ul>
-                      {/if}
+            </Table.Cell>
+            <Table.Cell>{relatedObjectLabel(event) ?? '—'}</Table.Cell>
+            <Table.Cell>{event.senderLogin ?? '—'}</Table.Cell>
+            <Table.Cell>
+              {#if event.deliveryId}
+                <code class="delivery-id">{event.deliveryId}</code>
+              {:else}
+                —
+              {/if}
+            </Table.Cell>
+            <Table.Cell>
+              <Badge size="sm" variant={progressVariant(event.listenerProgress.status)}>
+                {progressLabel(event.listenerProgress.status)}
+              </Badge>
+              {#if event.listenerProgress.matchCount > 0}
+                <span class="listener-names">
+                  {event.listenerProgress.matchedListenerNames.join(', ')}
+                </span>
+              {/if}
+            </Table.Cell>
+          </Table.Row>
+          {#if expanded}
+            <Table.Row>
+              <Table.Cell colspan={columnCount}>
+                <div id={`webhook-event-detail-${event.id}`} class="detail-panel">
+                  <dl class="detail-summary">
+                    <div>
+                      <dt>Event</dt>
+                      <dd>{event.eventType}{event.action ? ` · ${event.action}` : ''}</dd>
                     </div>
+                    <div>
+                      <dt>Repository</dt>
+                      <dd>{event.repositoryOwner}/{event.repositoryName}</dd>
+                    </div>
+                    <div>
+                      <dt>Installation ID</dt>
+                      <dd>{event.installationId ?? 'Unknown'}</dd>
+                    </div>
+                    <div>
+                      <dt>Sender</dt>
+                      <dd>{event.senderLogin ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>Related object</dt>
+                      <dd>{relatedObjectLabel(event) ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>GitHub timestamp</dt>
+                      <dd>
+                        {event.githubCreatedAt
+                          ? formatReceivedAt(event.githubCreatedAt)
+                          : 'Unknown'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Received</dt>
+                      <dd>{formatReceivedAt(event.receivedAt)}</dd>
+                    </div>
+                    <div>
+                      <dt>Delivery ID</dt>
+                      <dd>{event.deliveryId ?? 'Unknown'}</dd>
+                    </div>
+                  </dl>
 
-                    {#if event.payloadParseError}
-                      <Alert variant="warning">
-                        This event's stored payload was not valid JSON. Showing the raw text
-                        instead.
-                      </Alert>
-                      <CodeBlock code={event.rawPayload} language="text" copyable />
+                  <div class="listener-progress-detail">
+                    <h3>Event listener progress</h3>
+                    {#if event.listenerProgress.receivedOnly}
+                      <p class="listener-progress-empty">
+                        No event listeners matched this delivery.
+                      </p>
                     {:else}
-                      <JsonViewer value={event.payload} initialDepth={2} />
+                      <ul class="listener-match-list">
+                        {#each event.listenerProgress.matches as match (match.deliveryId)}
+                          <li>
+                            <div class="listener-match-header">
+                              <span class="listener-match-name">
+                                {match.listenerDeleted
+                                  ? `${match.listenerName} (deleted)`
+                                  : match.listenerName}
+                              </span>
+                              <Badge size="sm" variant={progressVariant(match.status)}>
+                                {progressLabel(match.status)}
+                              </Badge>
+                            </div>
+                            {#if match.lastError}
+                              <Alert variant="danger">{match.lastError}</Alert>
+                            {/if}
+                            {#if match.runId}
+                              <Link href={`/runs/${match.runId}`}>View run</Link>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
                     {/if}
                   </div>
-                </Table.Cell>
-              </Table.Row>
-            {/if}
-          {/each}
-        </Table.Body>
-      </Table>
-    </div>
+
+                  {#if event.payloadParseError}
+                    <Alert variant="warning">
+                      This event's stored payload was not valid JSON. Showing the raw text instead.
+                    </Alert>
+                    <CodeBlock code={event.rawPayload} language="text" copyable />
+                  {:else}
+                    <JsonViewer value={event.payload} initialDepth={2} />
+                  {/if}
+                </div>
+              </Table.Cell>
+            </Table.Row>
+          {/if}
+        {/each}
+      </Table.Body>
+    </Table>
   </Card>
 {/if}
 
 <style>
-  .table-scroll {
-    overflow-x: auto;
-  }
-
   .event-action {
     margin-left: var(--space-2);
     color: var(--text-muted);

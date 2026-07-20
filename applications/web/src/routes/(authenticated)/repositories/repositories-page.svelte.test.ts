@@ -270,6 +270,34 @@ describe('/repositories page', () => {
       .toBeInTheDocument();
   });
 
+  it('wraps the repository table in a named, focusable scroll region', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 2,
+          openPullRequestCountExact: true,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: true,
+          hasUnavailableRepositories: false,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    const scrollRegion = page.getByRole('region', { name: 'Repositories' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
+
   it('renders an attention pull request in the cross-repository list', async () => {
     render(RepositoriesPage, {
       data: {
