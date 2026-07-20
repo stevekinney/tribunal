@@ -23,31 +23,50 @@ export function parsePort(value: string | undefined, fallback: number): number {
 }
 
 const SINGLETON_RETRY_COOLDOWN_MS = 5_000;
+// Each cycle already spends ~8.25 minutes inside the acquire budget
+// (`postgres-advisory-lock.ts`), so 5 cycles is a ~41 minute outer ceiling —
+// several multiples of the ~7 minute handoff observed in #169, without
+// looping forever on a lock that is never coming back.
+const DEFAULT_SINGLETON_RETRY_CYCLES = 5;
 
 export type CreateEngineRuntimeWithSingletonRetryHooks = {
   sleep?: (milliseconds: number) => Promise<void>;
   logger?: Pick<typeof console, 'error'>;
   cooldownMs?: number;
+  maxCycles?: number;
+  /** Overridable for tests; production leaves this as an unresolved wait. */
+  park?: () => Promise<never>;
 };
 
 /**
- * Boots the engine runtime, retrying indefinitely — without ever exiting the
- * process — when the singleton advisory lock is still held by the outgoing
- * engine after a full acquire-budget cycle (`postgres-advisory-lock.ts`).
+ * Boots the engine runtime, retrying — without ever exiting the process —
+ * when the singleton advisory lock is still held by the outgoing engine
+ * after a full acquire-budget cycle (`postgres-advisory-lock.ts`).
  *
  * A previous engine that crashes or exits during boot gets rebooted as a
  * whole new Fly Machine, which discards all retry progress and restarts the
- * clock — the exact crash-loop behavior that let a normal, if slow, rolling
- * deploy handoff blow past flyctl's health-check window (see #169). Staying
- * in-process and retrying is what makes the wait actually cumulative: the
- * HTTP server built by `createStartingEngineServerOptions` already reports
- * `/health` as not-ready for as long as this loop keeps running, so this
- * looks to flyctl like an ordinary (if slow) boot, not a crash.
+ * clock. That crash-loop is what turned a slow-but-real rolling-deploy
+ * handoff into a false deploy failure in #169: each exhausted acquire budget
+ * threw, the process exited, and the reboot lost everything the wait had
+ * already covered. Staying in-process instead makes the wait cumulative:
+ * `/health` (`createStartingEngineServerOptions`) reports not-ready for as
+ * long as this loop runs, so an operator or dashboard sees "still starting,"
+ * not a crash-loop — though a wait long enough to outlast flyctl's own
+ * health-check window will still read as a failed deploy there; raising that
+ * window is the deliberately separate follow-up #169 calls for.
  *
  * Only `HELD_ELSEWHERE_MESSAGE` is retried — any other boot failure (bad
  * storage configuration, a corrupt durable store, and so on) still throws
  * immediately, since retrying those forever would hide a genuine, unrelated
  * defect instead of a normal deploy handoff.
+ *
+ * Bounded at `maxCycles` full acquire-budget cycles (default 5, ~41 minutes
+ * total): a lock that is still held after that is no longer a normal
+ * handoff. Per this repository's "cap at 5 attempts, then surface status"
+ * rule, giving up here still does not exit the process — exiting is exactly
+ * the crash-loop this function exists to prevent. Instead it logs loudly and
+ * parks: the server keeps reporting not-ready and an operator has to
+ * intervene, rather than the machine rebooting itself indefinitely.
  */
 export async function createEngineRuntimeWithSingletonRetry(
   options: EngineBootstrapOptions,
@@ -59,21 +78,38 @@ export async function createEngineRuntimeWithSingletonRetry(
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const logger = hooks.logger ?? console;
   const cooldownMs = hooks.cooldownMs ?? SINGLETON_RETRY_COOLDOWN_MS;
+  const maxCycles = hooks.maxCycles ?? DEFAULT_SINGLETON_RETRY_CYCLES;
+  const park = hooks.park ?? (() => new Promise<never>(() => {}));
 
-  for (;;) {
+  for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
     try {
       return await createEngineRuntime({ ...options, lock: lockFactory?.() });
     } catch (error) {
       if (!(error instanceof Error) || error.message !== HELD_ELSEWHERE_MESSAGE) throw error;
 
+      if (cycle >= maxCycles) {
+        logger.error(
+          `[engine] singleton advisory lock still held after ${maxCycles} full acquire ` +
+            'budget cycles; giving up on this boot without exiting — an operator must ' +
+            'investigate the outgoing engine',
+          error,
+        );
+        return park();
+      }
+
       logger.error(
-        '[engine] singleton advisory lock still held after the full acquire budget; ' +
+        `[engine] singleton advisory lock still held after acquire cycle ${cycle}/${maxCycles}; ` +
           'retrying boot instead of exiting',
         error,
       );
       await sleep(cooldownMs);
     }
   }
+
+  // Unreachable: the loop always returns or parks above. Kept for
+  // exhaustiveness so the function's return type stays `Promise<EngineRuntime>`
+  // without a non-null assertion at every call site.
+  return park();
 }
 
 if (import.meta.main) {

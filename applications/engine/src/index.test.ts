@@ -886,7 +886,7 @@ describe('createStorageConfigurationFromEnvironment', () => {
 });
 
 describe('createEngineRuntimeWithSingletonRetry', () => {
-  it('acquires without throwing, and without ever giving up, once a held lock is released', async () => {
+  it('acquires without throwing once a held lock is released within the retry cap', async () => {
     // Reproduces the rolling-deploy handoff: the incoming engine faces a lock
     // held by the outgoing engine through two full exhausted acquire cycles
     // before a normal release frees it on the third. The previous behavior
@@ -954,6 +954,38 @@ describe('createEngineRuntimeWithSingletonRetry', () => {
     expect(sleep).not.toHaveBeenCalled();
 
     await runtime.release();
+  });
+
+  it('gives up without exiting after the retry cap, instead of crash-looping forever', async () => {
+    // A lock held past the cap is no longer a normal handoff (per the
+    // repository's "cap at 5 attempts, then surface status" rule), but
+    // giving up must still never exit the process — that would reintroduce
+    // the crash-loop-on-reboot defect this function exists to prevent.
+    const lockFactory = vi.fn(() => ({
+      async acquire() {
+        throw new Error(HELD_ELSEWHERE_MESSAGE);
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+    const parkedForever = Symbol('parked');
+    const park = vi.fn(async () => parkedForever as never);
+
+    const result = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger, maxCycles: 2, park },
+    );
+
+    expect(result).toBe(parkedForever);
+    expect(lockFactory).toHaveBeenCalledTimes(2);
+    // Cooldown only between cycles, not after the final give-up.
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(park).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenLastCalledWith(
+      expect.stringContaining('giving up on this boot without exiting'),
+      expect.any(Error),
+    );
   });
 });
 
