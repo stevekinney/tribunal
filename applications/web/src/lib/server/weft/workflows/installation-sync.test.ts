@@ -4,7 +4,9 @@
  * Drives a TestEngine — a real in-memory Weft engine with virtual time control.
  * TestEngine is a subclass of Engine (not a mock); all workflow and activity
  * execution paths are real. Virtual time lets us advance past the leading
- * debounce and bounded completion-handoff drain without waiting on real timers.
+ * debounce without waiting on real timers. The completion-handoff drain is a
+ * zero-duration ctx.sleep(0) race (Weft >= 0.11.0), so it resolves on a
+ * yieldToPortableEventLoop() with no time advance.
  *
  * External boundary mocks:
  *   - @tribunal/github/repositories/service (refreshInstallationRepositories)
@@ -155,9 +157,10 @@ const WORKFLOW_ID = 'installation-sync:42';
 const WORKFLOW_EXECUTION_TOKEN = 'workflow-token-42';
 const ACTIVITY_ATTEMPT_TOKEN = 'activity-attempt-token-42';
 
-// Virtual-time advances for the independent debounce and handoff timers.
+// Virtual-time advance for the leading debounce timer. The completion-handoff
+// drain is a zero-duration sleep (ctx.sleep(0)) since Weft 0.11.0, so it needs
+// no time advance — only a yield to the portable event loop.
 const PAST_DEBOUNCE = '15s';
-const PAST_DRAIN = '1s';
 
 function activityContext(overrides: Partial<ActivityContext> = {}): ActivityContext {
   return {
@@ -181,7 +184,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
    * 1. A single start runs the sync activity once and the workflow reaches
    *    a terminal (completed) state after the debounce and handoff drain.
    *
-   * Virtual time advances past the 15 s leading debounce and one-second drain.
+   * Virtual time advances past the 15 s leading debounce; the completion-handoff
+   * drain (a zero-duration sleep) resolves on a yield with no time advance.
    * After advanceTime, the scheduler fires expired timers synchronously, so
    * the workflow should complete within a short real-time polling budget.
    */
@@ -196,7 +200,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     // timer so the workflow proceeds to run the sync activity.
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await testEngine.advanceTime(PAST_DRAIN);
+    // The completion-handoff drain is ctx.sleep(0); no time advance needed,
+    // only a yield so the zero-duration race resolves.
     await yieldToPortableEventLoop();
 
     const state = await awaitTerminal(testEngine, handle.id);
@@ -230,7 +235,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
 
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await testEngine.advanceTime(PAST_DRAIN);
+    // The completion-handoff drain is ctx.sleep(0); no time advance needed,
+    // only a yield so the zero-duration race resolves.
     await yieldToPortableEventLoop();
     const state = await awaitTerminal(testEngine, handle.id);
 
@@ -274,10 +280,11 @@ describe('installation-sync workflow (e2e, real engine)', () => {
    * 4. The drain race exits cleanly when no further signal is buffered.
    *
    * A run with one start and no subsequent signals must terminate after the
-   * intentional bounded handoff, not spin indefinitely.
+   * zero-duration drain race, not spin indefinitely.
    *
    * The undefined sleep result remains distinct from the declared object signal
-   * payload. When the bounded timer wins, the workflow exits.
+   * payload. When no signal is buffered, ctx.sleep(0) wins the race and the
+   * workflow exits.
    */
   it('terminates after the handoff drain when no buffered signal is waiting', async () => {
     const testEngine = createEngine();
@@ -290,7 +297,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     // Stage 1: advance past the debounce so the sync runs.
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await testEngine.advanceTime(PAST_DRAIN);
+    // The completion-handoff drain is ctx.sleep(0); no time advance needed,
+    // only a yield so the zero-duration race resolves.
     await yieldToPortableEventLoop();
     const state = await awaitTerminal(testEngine, handle.id);
 
@@ -299,14 +307,29 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it('loops when a signal arrives during the completion-handoff drain', async () => {
-    const { promise: firstSyncCompleted, resolve: markFirstSyncCompleted } =
-      Promise.withResolvers<void>();
-    mockRefresh.mockImplementationOnce(async () => {
-      markFirstSyncCompleted();
-      return { repositoryCount: 3, deactivatedRepositoryCount: 0 };
-    });
-
+  /**
+   * 4b. A dispatch landing immediately after a run has gone terminal (no
+   * DRAIN_DURATION-style delay inserted) is not dropped — it starts a fresh
+   * successor run under the same stable workflow id.
+   *
+   * This exercises enqueueInstallationSync's actual dispatch shape (`id`, a
+   * `signalId` stable per GitHub delivery when `deliveryId` is present and
+   * freshly minted otherwise, `onTerminalConflict: 'start-new'`; see
+   * packages/github/src/sync/index.ts) with zero added delay between
+   * observing the first run's terminal and issuing the second dispatch — the
+   * scenario the removed 1 s drain window used to (over-)cover.
+   *
+   * Note: `onTerminalConflict: 'start-new'` restarting a terminal run is
+   * weft#604 (shipped in 0.7.0), not the #693 fix this PR adopts — this test
+   * does not, and cannot from outside the engine, exercise the exact
+   * signal-vs-terminal-commit race that #693 makes atomic (that guarantee is
+   * documented in the Weft README, not independently reproducible here). What
+   * proves DRAIN_DURATION is safe to remove is test 4 above: it terminates
+   * cleanly with only a yield after the debounce — no time advance for the
+   * old 1 s window — which would hang under virtual time if that window were
+   * still required for correctness.
+   */
+  it('a dispatch with no added delay after a run goes terminal starts a successor run', async () => {
     const testEngine = createEngine();
 
     const handle = await testEngine.start('installation-sync', syncInput(), {
@@ -315,22 +338,45 @@ describe('installation-sync workflow (e2e, real engine)', () => {
 
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await firstSyncCompleted;
+    // The completion-handoff drain is ctx.sleep(0); no time advance needed,
+    // only a yield so the zero-duration race resolves and the run terminates.
     await yieldToPortableEventLoop();
 
-    // The first sync has finished, but the workflow remains signalable during
-    // the bounded handoff drain instead of committing completion immediately.
-    await testEngine.signal(WORKFLOW_ID, 'sync_requested', syncInput());
+    const firstState = await awaitTerminal(testEngine, handle.id);
+    expect(firstState.status).toBe('completed');
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+
+    // Dispatch exactly as enqueueInstallationSync does, immediately after
+    // observing the first run's terminal — no added delay. onTerminalConflict:
+    // 'start-new' plus a caller-supplied signalId (here a fresh UUID, mirroring
+    // enqueueInstallationSync's fallback when no deliveryId is present) is what
+    // lets this land on a fresh successor run of the same stable workflow id
+    // instead of erroring as a conflict against a terminal run.
+    const { outcome } = await testEngine.startOrSignal(
+      'installation-sync',
+      syncInput(),
+      { name: 'sync_requested', payload: syncInput(), signalId: crypto.randomUUID() },
+      { id: WORKFLOW_ID, onTerminalConflict: 'start-new' },
+    );
+    expect(outcome).toBe('started');
     await yieldToPortableEventLoop();
 
+    // The successor run's own signal (buffered into its creation batch by
+    // startOrSignal, same as the first run's) makes it debounce, sync, loop
+    // once for that buffered signal, debounce again, and sync a second time —
+    // two virtual debounce windows' worth of advance, no real time.
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await testEngine.advanceTime(PAST_DRAIN);
+    await testEngine.advanceTime(PAST_DEBOUNCE);
+    await yieldToPortableEventLoop();
     await yieldToPortableEventLoop();
 
-    const state = await awaitTerminal(testEngine, handle.id);
-    expect(state.status).toBe('completed');
-    expect(mockRefresh).toHaveBeenCalledTimes(2);
+    const secondState = await awaitTerminal(testEngine, handle.id);
+    expect(secondState.status).toBe('completed');
+    // The successor run executed sync passes beyond the first run's single
+    // call — observed with no added delay between the first run's terminal
+    // and the dispatch that started this successor.
+    expect(mockRefresh.mock.calls.length).toBeGreaterThan(1);
   });
 
   /**
@@ -375,7 +421,8 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     // debounce + a second sync, then waits out the empty handoff drain.
     await testEngine.advanceTime(PAST_DEBOUNCE);
     await yieldToPortableEventLoop();
-    await testEngine.advanceTime(PAST_DRAIN);
+    // The completion-handoff drain is ctx.sleep(0); no time advance needed,
+    // only a yield so the zero-duration race resolves.
     await yieldToPortableEventLoop();
 
     const state = await awaitTerminal(testEngine, handle.id);
