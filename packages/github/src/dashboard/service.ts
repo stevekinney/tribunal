@@ -200,6 +200,20 @@ async function buildRepositoryRow(
 /** The cached default-branch head: its commit SHA plus the branch's required checks. */
 type BranchHead = { sha: string; requiredChecks: RequiredCheck[] };
 
+/** The pre-#156 cached envelope shape, still possibly live in cache for up to one TTL after deploy. */
+type LegacyBranchHead = { sha: string; requiredCheckNames?: string[] };
+
+/** Reads either envelope shape, converting legacy `requiredCheckNames` (all unpinned) if present. */
+function normalizeCachedRequiredChecks(value: BranchHead | LegacyBranchHead): RequiredCheck[] {
+  if ('requiredChecks' in value && Array.isArray(value.requiredChecks)) {
+    return value.requiredChecks;
+  }
+  if ('requiredCheckNames' in value && Array.isArray(value.requiredCheckNames)) {
+    return value.requiredCheckNames.map((context) => ({ context, appId: null }));
+  }
+  return [];
+}
+
 /** De-duplicates by `(context, appId)` pair, keeping the first occurrence. */
 function dedupeRequiredChecks(checks: RequiredCheck[]): RequiredCheck[] {
   const seen = new Set<string>();
@@ -235,12 +249,23 @@ function extractRequiredChecks(branch: {
   if (!requiredStatusChecks) return [];
 
   const checks: RequiredCheck[] = [];
-  for (const context of requiredStatusChecks.contexts ?? []) {
-    checks.push({ context, appId: null });
-  }
+  const coveredByChecksArray = new Set<string>();
   for (const check of requiredStatusChecks.checks ?? []) {
     const appId = check.app_id === -1 || check.app_id == null ? null : check.app_id;
     checks.push({ context: check.context, appId });
+    coveredByChecksArray.add(check.context);
+  }
+  // GitHub mirrors every `checks[]` entry's context into the legacy
+  // `contexts` list for backward compatibility, so a context normally
+  // appears in both. Only add a `contexts` entry when `checks[]` doesn't
+  // already cover it — otherwise the same required check would get both an
+  // unpinned (from `contexts`) and a pinned (from `checks[]`) entry, and
+  // matching returns the first match it finds, so the unpinned entry would
+  // shadow the pinned one and leave the real (pinned) required check
+  // "missing" even after a matching check run reported.
+  for (const context of requiredStatusChecks.contexts ?? []) {
+    if (coveredByChecksArray.has(context)) continue;
+    checks.push({ context, appId: null });
   }
   return dedupeRequiredChecks(checks);
 }
@@ -310,15 +335,38 @@ async function readRulesetRequiredChecks(
       context.cache,
       policy,
       async () => {
-        if (!budget.canSpend(1)) {
-          throw new Error('API budget exhausted before resolving branch ruleset required checks');
+        // `getBranchRules` is a list endpoint (default page size 30) — a
+        // branch with many org/repo rules layered on it can have its
+        // `required_status_checks` rule land past page 1, so this pages
+        // through the full rule set rather than reading page 1 alone.
+        const perPage = 100;
+        let page = 1;
+        const rules: unknown[] = [];
+        while (true) {
+          if (!budget.canSpend(1)) {
+            // Out of budget before even the first page — surface as a
+            // failure so the catch below degrades to classic-protection-only
+            // required checks. Out of budget after at least one page: keep
+            // what was already fetched rather than discarding it.
+            if (page === 1) {
+              throw new Error(
+                'API budget exhausted before resolving branch ruleset required checks',
+              );
+            }
+            break;
+          }
+          budget.spend(1);
+          const { data } = await octokit.rest.repos.getBranchRules({
+            owner: repository.owner,
+            repo: repository.name,
+            branch: repository.defaultBranch as string,
+            per_page: perPage,
+            page,
+          });
+          rules.push(...data);
+          if (data.length < perPage) break;
+          page += 1;
         }
-        budget.spend(1);
-        const { data: rules } = await octokit.rest.repos.getBranchRules({
-          owner: repository.owner,
-          repo: repository.name,
-          branch: repository.defaultBranch as string,
-        });
         return { data: extractRequiredChecksFromRules(rules) };
       },
       [repository.owner, repository.name, repository.defaultBranch],
@@ -349,7 +397,7 @@ async function readDefaultBranchStatus(
   let requiredChecks: RequiredCheck[] = [];
   try {
     const policy = requirePolicy('get-branch-head-sha');
-    const { value } = await cachedRead<BranchHead | string>(
+    const { value } = await cachedRead<BranchHead | LegacyBranchHead | string>(
       context.cache,
       policy,
       async () => {
@@ -371,13 +419,15 @@ async function readDefaultBranchStatus(
       },
       [repository.owner, repository.name, repository.defaultBranch],
     );
-    // Tolerate a bare-string value (or an older envelope shape) cached by a
-    // previous build before this envelope carried required checks (30s TTL
-    // clears it quickly).
+    // Tolerate a bare-string value, or the pre-#156 envelope shape
+    // (`{ sha, requiredCheckNames: string[] }`) cached by a previous build —
+    // the 30s TTL clears either quickly, but converting `requiredCheckNames`
+    // (as unpinned checks) rather than dropping it avoids a deploy-window
+    // regression to the unfiltered "any failure fails" behavior.
     const head: BranchHead =
       typeof value === 'string'
         ? { sha: value, requiredChecks: [] }
-        : { sha: value.sha, requiredChecks: value.requiredChecks ?? [] };
+        : { sha: value.sha, requiredChecks: normalizeCachedRequiredChecks(value) };
     commitSha = head.sha;
     requiredChecks = head.requiredChecks;
   } catch (error) {

@@ -284,8 +284,139 @@ describe('buildRepositoryDashboard', () => {
       makeRepository({ defaultBranch: 'main', commit: null }),
     ]);
 
-    expect(getBranchRules).toHaveBeenCalledWith({ owner: 'acme', repo: 'widgets', branch: 'main' });
+    expect(getBranchRules).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'widgets',
+      branch: 'main',
+      per_page: 100,
+      page: 1,
+    });
     // 'Deploy Production' is not required by the ruleset, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('does not duplicate a required check mirrored in both `contexts` and `checks[]`', async () => {
+    expect.assertions(1);
+    // GitHub mirrors every `checks[]` entry's context into the legacy
+    // `contexts` list — the same required check appears in both.
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: {
+          required_status_checks: {
+            contexts: ['Unit Tests'],
+            checks: [{ context: 'Unit Tests', app_id: 42 }],
+          },
+        },
+      },
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 1,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success', app: { id: 42 } },
+        ],
+      },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // Without de-duplication, the unpinned `contexts` entry would match
+    // first, never marking the pinned `checks[]` entry as seen — reporting
+    // a false "pending" even though the app-42 check run passed.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('pages through every branch-rules page to find a required_status_checks rule past page 1', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const page1 = Array.from({ length: 100 }, () => ({ type: 'creation' }));
+    const page2 = [
+      {
+        type: 'required_status_checks',
+        parameters: { required_status_checks: [{ context: 'Unit Tests' }] },
+      },
+    ];
+    const getBranchRules = vi
+      .fn()
+      .mockResolvedValueOnce({ data: page1 })
+      .mockResolvedValueOnce({ data: page2 });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranchRules).toHaveBeenCalledTimes(2);
+    // The required_status_checks rule only exists on page 2 — a single-page
+    // read would miss it and fall back to counting every check run.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('converts a pre-#156 cached envelope (requiredCheckNames) instead of dropping it', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+    });
+    const now = Date.now();
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+      cache: {
+        getCached: vi.fn(async (key: string) => {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+            return {
+              // Pre-#156 shape: no `requiredChecks` field.
+              value: { sha: 'commit-sha-1', requiredCheckNames: ['Unit Tests'] },
+              fetchedAt: now,
+              expiresAt: now + 30_000,
+              source: 'cache',
+            };
+          }
+          return null;
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    // Converted (as unpinned) rather than dropped — 'Deploy Production' is
+    // excluded from the rollup, so its failure doesn't fail CI.
     expect(rows[0].defaultBranchStatus).toBe('passing');
   });
 

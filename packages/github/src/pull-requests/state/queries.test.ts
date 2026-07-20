@@ -702,4 +702,37 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     // page 1, so the paginator must never fetch check-run page 2.
     expect(listForRef).toHaveBeenCalledTimes(1);
   });
+
+  it('only counts the first entry for a required legacy status context, not every duplicate', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });
+    // Defensive against a hypothetical duplicate — GitHub's combined-status
+    // endpoint already dedupes to the latest state per context, but an older
+    // failing duplicate must not override an earlier-seen passing entry.
+    const getCombinedStatusForRef = vi.fn().mockResolvedValue({
+      data: {
+        total_count: 2,
+        statuses: [
+          { context: 'Required Status', state: 'success' },
+          { context: 'Required Status', state: 'failure' },
+        ],
+      },
+    });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      [{ context: 'Required Status', appId: null }],
+    );
+
+    expect(result.ciStatus).toBe('passing');
+  });
 });

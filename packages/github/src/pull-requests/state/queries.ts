@@ -336,6 +336,11 @@ async function paginateCheckRunsRollup(
       for (const status of statuses) {
         const matchIndex = findRequiredStatusContextMatch(required, status.context);
         if (matchIndex === -1) continue;
+        // GitHub's combined-status endpoint already returns one entry per
+        // context (the latest state), but guard defensively against a
+        // duplicate anyway: only the first entry seen for a required index
+        // counts, so an older/duplicate entry can never override it.
+        if (seenRequired.has(matchIndex)) continue;
         matchedStatusCount += 1;
         seenRequired.add(matchIndex);
         if (status.state === 'failure') failingCount++;
