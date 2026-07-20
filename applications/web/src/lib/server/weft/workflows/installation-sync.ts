@@ -10,8 +10,12 @@
  * Loop shape (ported from depict's Temporal installationSyncWorkflow):
  *   1. Sleep 15 s (debounce — lets rapid signals accumulate).
  *   2. Run the sync activity (refreshInstallationRepositories).
- *   3. Bounded handoff race: did another sync_requested arrive during the
- *      sleep, sync, or completion handoff? If yes, loop. If no, return.
+ *   3. Non-blocking drain race: did another sync_requested arrive during the
+ *      sleep or the sync? If yes, loop. If no, return. Weft #693 (0.11.0) made
+ *      signal delivery serialize against terminal completion, so a signal
+ *      arriving after this drain check but before the run commits terminal
+ *      state is handed to a successor run rather than lost — see the drain
+ *      race below.
  *
  * continueAsNew is DROPPED intentionally. Weft's checkpoint model bounds
  * history per run; the workflow terminates naturally when the signal buffer
@@ -76,15 +80,6 @@ const syncRequestedSignal = signal<SyncRequestedPayload>('sync_requested');
 
 /** Leading-sleep debounce window. Matches depict's DEBOUNCE_MS=15000. */
 const DEBOUNCE_DURATION = '15s';
-
-/**
- * Keeps the workflow signalable briefly while handing off to completion.
- * This is not the pre-0.10 buffered-signal workaround: buffered signals now
- * reliably beat an expired timer. The remaining window covers a later race,
- * after the buffer is empty but before the workflow commits terminal state.
- * Weft #693 tracks making this signal-versus-terminal boundary atomic.
- */
-const DRAIN_DURATION = '1s';
 
 // ============================================================================
 // ACTIVITY DEFINITIONS
@@ -407,19 +402,24 @@ export const installationSyncWorkflow = workflow({
         return;
       }
 
-      // Drain signals buffered during the sync and keep the waiter live briefly
-      // while handing off to completion. Weft 0.10 guarantees buffered signals
-      // beat an expired timer, but a zero sleep would still leave a window where
-      // startOrSignal targets this live run after the empty-buffer decision and
-      // before terminal state commits. The bounded wait narrows that upstream
-      // atomicity gap until Weft #693 lands.
+      // Non-blocking drain: race a direct waitForSignal against a literal
+      // ctx.sleep(0). Weft checks the durable signal buffer first and consumes
+      // one already-buffered signal if present, otherwise continues immediately
+      // (this ordering guarantee is specific to zero-duration sleeps). Because
+      // the producer (enqueueInstallationSync) dispatches via startOrSignal with
+      // a stable workflow id, a deterministic signalId, and
+      // onTerminalConflict: 'start-new', Weft #693 (shipped in 0.11.0) serializes
+      // signal delivery against terminal completion: a signal arriving after this
+      // empty-buffer check but before the run commits terminal state is consumed
+      // by this run or handed to a fresh successor run — never dropped. No
+      // positive drain window is needed for correctness.
       const drainResult = yield* ctx.race([
         ctx.waitForSignal('sync_requested'),
-        ctx.sleep(DRAIN_DURATION),
+        ctx.sleep(0),
       ] as const);
 
       if (drainResult === undefined) {
-        // No signal arrived during the bounded handoff; complete the run.
+        // No signal was buffered; complete the run.
         ctx.log?.info('installation-sync: no pending signals, workflow complete', {
           installationId,
         });
