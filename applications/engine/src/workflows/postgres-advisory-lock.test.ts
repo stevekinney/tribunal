@@ -140,7 +140,10 @@ describe('createPostgresAdvisoryLock', () => {
     await lease.release();
 
     // Proves the default sleep actually delayed the retry rather than spinning.
-    expect(elapsedMs).toBeGreaterThanOrEqual(20);
+    // The floor is kept below `delayMs` (rather than equal to it) because
+    // `setTimeout` is permitted to fire a hair early; 10ms is comfortably
+    // above async/microtask overhead but leaves margin against that slack.
+    expect(elapsedMs).toBeGreaterThanOrEqual(10);
     expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
   });
 });
