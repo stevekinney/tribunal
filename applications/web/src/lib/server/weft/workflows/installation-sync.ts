@@ -7,11 +7,19 @@
  * sleeps 15 s on entry so bursts of webhooks accumulate as buffered signals
  * before the first sync executes.
  *
- * Loop shape (ported from depict's Temporal installationSyncWorkflow):
+ * Loop shape (ported from depict's Temporal installationSyncWorkflow, adapted
+ * to drain BEFORE each sync rather than only after):
  *   1. Sleep 15 s (debounce — lets rapid signals accumulate).
- *   2. Run the sync activity (refreshInstallationRepositories).
- *   3. Non-blocking drain race: did another sync_requested arrive during the
- *      sleep or the sync? If yes, loop. If no, return. Weft #693 (0.11.0) made
+ *   2. Drain every sync_requested signal already buffered — this includes the
+ *      initiating signal from startOrSignal's creation batch plus anything
+ *      that arrived during the debounce. The sync about to run satisfies all
+ *      of them, since it re-reads live installation state from the GitHub
+ *      API rather than working off a stale input snapshot.
+ *   3. Run the sync activity (refreshInstallationRepositories).
+ *   4. Non-blocking drain race: did a sync_requested arrive DURING the sync?
+ *      Only signals that arrive after step 2 need a further pass, so drain the
+ *      whole buffer again — N signals collapse into one additional pass, not
+ *      N. If a signal was seen, loop. If not, return. Weft #693 (0.11.0) made
  *      signal delivery serialize against terminal completion, so a signal
  *      arriving after this drain check but before the run commits terminal
  *      state is handed to a successor run rather than lost — see the drain
@@ -54,7 +62,13 @@
  * before any cancellable work begins.
  */
 
-import { workflow, signal, activity, type ActivityContext } from '@lostgradient/weft';
+import {
+  workflow,
+  signal,
+  activity,
+  type ActivityContext,
+  type WorkflowContext,
+} from '@lostgradient/weft';
 import { and, eq, isNull, lte, or } from 'drizzle-orm';
 import { githubInstallation } from '@tribunal/database/schema';
 import { refreshInstallationRepositories } from '@tribunal/github/repositories/service';
@@ -190,6 +204,32 @@ export async function syncRepositories(
       );
 
     throw error;
+  }
+}
+
+/**
+ * Drain every sync_requested signal already sitting in the durable buffer,
+ * non-blocking. Races a direct `ctx.waitForSignal('sync_requested')` against a
+ * literal `ctx.sleep(0)`: Weft checks the durable signal buffer first and
+ * consumes one already-buffered signal if present, otherwise the zero-duration
+ * sleep wins immediately. Repeating this until the sleep wins drains the WHOLE
+ * buffer in one pass — a burst of N buffered signals is consumed here, not one
+ * at a time across N loop iterations.
+ *
+ * Returns whether at least one signal was consumed, so the caller can decide
+ * whether another sync pass is warranted.
+ */
+function* drainBufferedSignals(ctx: WorkflowContext): Generator<unknown, boolean, unknown> {
+  let sawSignal = false;
+  while (true) {
+    const drainResult = yield* ctx.race([
+      ctx.waitForSignal('sync_requested'),
+      ctx.sleep(0),
+    ] as const);
+    if (drainResult === undefined) {
+      return sawSignal;
+    }
+    sawSignal = true;
   }
 }
 
@@ -377,10 +417,21 @@ export const installationSyncWorkflow = workflow({
     yield* ctx.sleep(DEBOUNCE_DURATION);
 
     // -----------------------------------------------------------------------
-    // Sync loop: run the sync, then check for buffered signals (non-blocking).
-    // If a new signal arrived during the sleep or the sync itself, loop back.
+    // Sync loop: drain everything already buffered (it will be satisfied by
+    // the sync about to run), sync, then check for signals that arrived
+    // DURING the sync (non-blocking). Only those need another pass.
     // -----------------------------------------------------------------------
     while (true) {
+      // Drain the whole buffer BEFORE syncing. This consumes the initiating
+      // signal from startOrSignal's creation batch plus anything buffered
+      // during the debounce (or, on a later iteration, during the previous
+      // sync). refreshInstallationRepositories re-reads live installation
+      // state from the GitHub API rather than working off a stale input
+      // snapshot, so the sync about to run satisfies every drained signal —
+      // draining first (once) instead of after (once per signal) is what
+      // collapses a burst of N signals into a single extra pass rather than N.
+      yield* drainBufferedSignals(ctx);
+
       ctx.log?.info('installation-sync: starting sync', { installationId });
 
       try {
@@ -402,35 +453,31 @@ export const installationSyncWorkflow = workflow({
         return;
       }
 
-      // Non-blocking drain: race a direct waitForSignal against a literal
-      // ctx.sleep(0). Weft checks the durable signal buffer first and consumes
-      // one already-buffered signal if present, otherwise continues immediately
-      // (this ordering guarantee is specific to zero-duration sleeps). Because
-      // the producer (enqueueInstallationSync) dispatches via startOrSignal with
-      // a stable workflow id, a signalId (stable per GitHub delivery when
-      // options.deliveryId is present, otherwise a fresh UUID per call), and
-      // onTerminalConflict: 'start-new', Weft #693 (shipped in 0.11.0) serializes
-      // signal delivery against terminal completion: a signal arriving after this
-      // empty-buffer check but before the run commits terminal state is consumed
-      // by this run or handed to a fresh successor run — never dropped. No
-      // positive drain window is needed for correctness.
-      const drainResult = yield* ctx.race([
-        ctx.waitForSignal('sync_requested'),
-        ctx.sleep(0),
-      ] as const);
+      // Non-blocking drain: did a sync_requested arrive DURING the sync we
+      // just ran? Because the producer (enqueueInstallationSync) dispatches
+      // via startOrSignal with a stable workflow id, a signalId (stable per
+      // GitHub delivery when options.deliveryId is present, otherwise a fresh
+      // UUID per call), and onTerminalConflict: 'start-new', Weft #693
+      // (shipped in 0.11.0) serializes signal delivery against terminal
+      // completion: a signal arriving after this empty-buffer check but
+      // before the run commits terminal state is consumed by this run or
+      // handed to a fresh successor run — never dropped. No positive drain
+      // window is needed for correctness.
+      const sawSignalDuringSync = yield* drainBufferedSignals(ctx);
 
-      if (drainResult === undefined) {
-        // No signal was buffered; complete the run.
+      if (!sawSignalDuringSync) {
+        // No signal arrived during the sync; complete the run.
         ctx.log?.info('installation-sync: no pending signals, workflow complete', {
           installationId,
         });
         return;
       }
 
-      // A sync_requested signal arrived — loop for another sync pass.
-      ctx.log?.info('installation-sync: new signal received, looping', {
+      // A sync_requested signal arrived during the sync — loop for another
+      // pass. The drain above already consumed every signal buffered so far
+      // (a whole burst collapses into this one additional pass).
+      ctx.log?.info('installation-sync: new signal received during sync, looping', {
         installationId,
-        reason: drainResult.reason,
       });
 
       // Short debounce between back-to-back syncs so a burst of signals
