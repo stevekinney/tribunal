@@ -69,4 +69,19 @@ describe('/runs page', () => {
     await expect.element(page.getByText('Pull request review')).toBeInTheDocument();
     await expect.element(page.getByText('opened')).toBeInTheDocument();
   });
+
+  it('wraps the table in a named, focusable scroll region', async () => {
+    const data = {
+      user: baseUser,
+      reviewsEnabled: true,
+      runs: [baseRun],
+      surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+    } satisfies PageProps['data'];
+
+    render(RunsPage, { data, form: null, params: {} });
+
+    const scrollRegion = page.getByRole('region', { name: 'Recent runs' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
 });

@@ -256,3 +256,11 @@ registerPolicy({
   ttlSeconds: 30, // Short TTL — a branch can move at any time via push
   supportsEtag: false, // repos.getBranch — no conditional-request support wired here
 });
+
+registerPolicy({
+  operationId: 'get-branch-rules',
+  keyFactory: (owner: string, repo: string, branch: string) =>
+    CACHE_KEYS.GITHUB_BRANCH_RULES(owner, repo, branch),
+  ttlSeconds: 30, // Short TTL — matches get-branch-head-sha's required-check freshness window
+  supportsEtag: false, // repos.getBranchRules — no conditional-request support wired here
+});

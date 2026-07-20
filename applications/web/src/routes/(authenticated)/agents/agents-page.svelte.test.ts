@@ -89,7 +89,7 @@ describe('/agents page', () => {
 
     await expect.element(page.getByText('Enabled', { exact: true })).toBeVisible();
     await expect
-      .element(page.getByRole('switch', { name: 'Disable security' }))
+      .element(page.getByRole('switch', { name: 'Agent security enabled' }))
       .toHaveAttribute('aria-checked', 'true');
   });
 

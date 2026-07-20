@@ -385,147 +385,146 @@
       <p class="empty-hint">No repositories matching "{searchQuery}".</p>
     {:else}
       <Card padding="none">
-        <div class="table-scroll">
-          <Table density="comfortable">
-            <Table.Header>
+        <Table
+          scrollable
+          scrollContainerProps={{ 'aria-label': 'Repositories' }}
+          density="comfortable"
+        >
+          <Table.Header>
+            <Table.Row>
+              <Table.HeaderCell>Repository</Table.HeaderCell>
+              <Table.HeaderCell>Default branch CI</Table.HeaderCell>
+              <Table.HeaderCell align="right">Open PRs</Table.HeaderCell>
+              <Table.HeaderCell align="right">Attention</Table.HeaderCell>
+              <Table.HeaderCell align="right">Unresolved threads</Table.HeaderCell>
+              <Table.HeaderCell align="center">Watching</Table.HeaderCell>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {#each filteredRepositories as repository (repository.id)}
+              {@const isWatching = watchedFor(repository.id, repository.review.watched)}
+              {@const dashboard = repository.dashboard}
               <Table.Row>
-                <Table.HeaderCell>Repository</Table.HeaderCell>
-                <Table.HeaderCell>Default branch CI</Table.HeaderCell>
-                <Table.HeaderCell align="right">Open PRs</Table.HeaderCell>
-                <Table.HeaderCell align="right">Attention</Table.HeaderCell>
-                <Table.HeaderCell align="right">Unresolved threads</Table.HeaderCell>
-                <Table.HeaderCell align="center">Watching</Table.HeaderCell>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {#each filteredRepositories as repository (repository.id)}
-                {@const isWatching = watchedFor(repository.id, repository.review.watched)}
-                {@const dashboard = repository.dashboard}
-                <Table.Row>
-                  <Table.Cell>
-                    <div class="repository-identity">
-                      <Link href={`/repositories/${repository.id}/pull-requests`}>
-                        <span class="repository-owner">{repository.owner}</span><span
-                          class="repository-separator">/</span
-                        ><span class="repository-name">{repository.name}</span>
-                      </Link>
-                      {#if repository.defaultBranch}
-                        <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
-                      {/if}
-                      <Button
-                        href={`/repositories/${repository.id}/webhooks`}
-                        variant="ghost"
-                        size="xs"
-                      >
-                        {#snippet leadingIcon()}<WebhookIcon
-                            size={14}
-                            aria-hidden="true"
-                          />{/snippet}
-                        <span class="cinder-sr-only">Webhook events</span>
-                      </Button>
-                    </div>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <StatusDot
-                      status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
-                      label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
-                      showLabel
-                      size="sm"
-                    />
-                  </Table.Cell>
-                  <Table.Cell align="right">
-                    {#if dashboard && dashboard.openPullRequestCount !== null}
-                      <Link href={`/repositories/${repository.id}/pull-requests`}>
-                        {dashboard.openPullRequestCountAtCap
-                          ? `${dashboard.openPullRequestCount}+`
-                          : dashboard.openPullRequestCount}
-                      </Link>
-                    {:else}
-                      <span class="text-muted">Unknown</span>
+                <Table.Cell>
+                  <div class="repository-identity">
+                    <Link href={`/repositories/${repository.id}/pull-requests`}>
+                      <span class="repository-owner">{repository.owner}</span><span
+                        class="repository-separator">/</span
+                      ><span class="repository-name">{repository.name}</span>
+                    </Link>
+                    {#if repository.defaultBranch}
+                      <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
                     {/if}
-                  </Table.Cell>
-                  <Table.Cell align="right">
-                    {#if dashboard && dashboard.attentionPullRequestCount !== null}
-                      <Badge
-                        size="sm"
-                        variant={dashboard.attentionPullRequestCount > 0 ||
-                        dashboard.openPullRequestCountAtCap
-                          ? 'warning'
-                          : 'success'}
-                      >
-                        {dashboard.openPullRequestCountAtCap
-                          ? `${dashboard.attentionPullRequestCount}+`
-                          : dashboard.attentionPullRequestCount}
-                      </Badge>
-                    {:else}
-                      <span class="text-muted">Unknown</span>
-                    {/if}
-                  </Table.Cell>
-                  <Table.Cell align="right">
-                    {#if dashboard && dashboard.unresolvedThreadCount !== null}
+                    <Button
+                      href={`/repositories/${repository.id}/webhooks`}
+                      variant="ghost"
+                      size="xs"
+                    >
+                      {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
+                      <span class="cinder-sr-only">Webhook events</span>
+                    </Button>
+                  </div>
+                </Table.Cell>
+                <Table.Cell>
+                  <StatusDot
+                    status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
+                    label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
+                    showLabel
+                    size="sm"
+                  />
+                </Table.Cell>
+                <Table.Cell align="right">
+                  {#if dashboard && dashboard.openPullRequestCount !== null}
+                    <Link href={`/repositories/${repository.id}/pull-requests`}>
                       {dashboard.openPullRequestCountAtCap
-                        ? `${dashboard.unresolvedThreadCount}+`
-                        : dashboard.unresolvedThreadCount}
-                    {:else}
-                      <span class="text-muted">Unknown</span>
-                    {/if}
-                  </Table.Cell>
-                  <Table.Cell align="center">
-                    <div class="watching-cell">
-                      <form
-                        id="watch-form-{repository.id}"
-                        method="POST"
-                        action="?/watch"
-                        class="watch-form"
-                        use:enhance={({ formData }) => {
-                          const id = repository.id;
-                          const watched = watchedFor(id, repository.review.watched);
-                          formData.set('watched', watched ? 'on' : '');
+                        ? `${dashboard.openPullRequestCount}+`
+                        : dashboard.openPullRequestCount}
+                    </Link>
+                  {:else}
+                    <span class="text-muted">Unknown</span>
+                  {/if}
+                </Table.Cell>
+                <Table.Cell align="right">
+                  {#if dashboard && dashboard.attentionPullRequestCount !== null}
+                    <Badge
+                      size="sm"
+                      variant={dashboard.attentionPullRequestCount > 0 ||
+                      dashboard.openPullRequestCountAtCap
+                        ? 'warning'
+                        : 'success'}
+                    >
+                      {dashboard.openPullRequestCountAtCap
+                        ? `${dashboard.attentionPullRequestCount}+`
+                        : dashboard.attentionPullRequestCount}
+                    </Badge>
+                  {:else}
+                    <span class="text-muted">Unknown</span>
+                  {/if}
+                </Table.Cell>
+                <Table.Cell align="right">
+                  {#if dashboard && dashboard.unresolvedThreadCount !== null}
+                    {dashboard.openPullRequestCountAtCap
+                      ? `${dashboard.unresolvedThreadCount}+`
+                      : dashboard.unresolvedThreadCount}
+                  {:else}
+                    <span class="text-muted">Unknown</span>
+                  {/if}
+                </Table.Cell>
+                <Table.Cell align="center">
+                  <div class="watching-cell">
+                    <form
+                      id="watch-form-{repository.id}"
+                      method="POST"
+                      action="?/watch"
+                      class="watch-form"
+                      use:enhance={({ formData }) => {
+                        const id = repository.id;
+                        const watched = watchedFor(id, repository.review.watched);
+                        formData.set('watched', watched ? 'on' : '');
 
-                          return async ({ update }) => {
-                            try {
-                              await update();
-                            } finally {
-                              activeWatchSubmissions.delete(id);
-                              if (
-                                !(await submitQueuedWatchState(repository)) &&
-                                !activeWatchSubmissions.has(id)
-                              ) {
-                                localWatchStates.delete(id);
-                              }
+                        return async ({ update }) => {
+                          try {
+                            await update();
+                          } finally {
+                            activeWatchSubmissions.delete(id);
+                            if (
+                              !(await submitQueuedWatchState(repository)) &&
+                              !activeWatchSubmissions.has(id)
+                            ) {
+                              localWatchStates.delete(id);
                             }
-                          };
+                          }
+                        };
+                      }}
+                    >
+                      <input type="hidden" name="repositoryId" value={repository.id} />
+                      {#each agentIdsForWatch(repository) as agentId (agentId)}
+                        <input type="hidden" name="agentIds" value={agentId} />
+                      {/each}
+                      <input
+                        type="hidden"
+                        name="ignoreGlobs"
+                        value={repository.review.ignoreGlobs.join('\n')}
+                      />
+                      <input type="hidden" name="watched" value={isWatching ? 'on' : ''} />
+                      <Toggle
+                        id="watching-{repository.id}"
+                        checked={isWatching}
+                        label="Repository watched"
+                        hideLabel
+                        onValueChange={(next) => {
+                          localWatchStates.set(repository.id, next);
+                          submitWatchForm(repository.id, next);
+                          return next;
                         }}
-                      >
-                        <input type="hidden" name="repositoryId" value={repository.id} />
-                        {#each agentIdsForWatch(repository) as agentId (agentId)}
-                          <input type="hidden" name="agentIds" value={agentId} />
-                        {/each}
-                        <input
-                          type="hidden"
-                          name="ignoreGlobs"
-                          value={repository.review.ignoreGlobs.join('\n')}
-                        />
-                        <input type="hidden" name="watched" value={isWatching ? 'on' : ''} />
-                        <Toggle
-                          id="watching-{repository.id}"
-                          checked={isWatching}
-                          label={isWatching ? 'Remove repository' : 'Add repository'}
-                          hideLabel
-                          onValueChange={(next) => {
-                            localWatchStates.set(repository.id, next);
-                            submitWatchForm(repository.id, next);
-                            return next;
-                          }}
-                        />
-                      </form>
-                    </div>
-                  </Table.Cell>
-                </Table.Row>
-              {/each}
-            </Table.Body>
-          </Table>
-        </div>
+                      />
+                    </form>
+                  </div>
+                </Table.Cell>
+              </Table.Row>
+            {/each}
+          </Table.Body>
+        </Table>
       </Card>
       <p class="table-hint">
         Showing {filteredRepositories.length} of {repositories.length}
@@ -576,10 +575,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);
-  }
-
-  .table-scroll {
-    overflow-x: auto;
   }
 
   .repository-identity {

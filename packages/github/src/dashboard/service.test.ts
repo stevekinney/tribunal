@@ -62,6 +62,8 @@ function makeOctokit(options: {
   checkRuns?: { total_count: number; check_runs: Array<Record<string, unknown>> };
   checksError?: unknown;
   getBranch?: ReturnType<typeof vi.fn>;
+  getBranchRules?: ReturnType<typeof vi.fn>;
+  getCombinedStatusForRef?: ReturnType<typeof vi.fn>;
 }) {
   const list = options.listPullsError
     ? vi.fn().mockRejectedValue(options.listPullsError)
@@ -73,9 +75,14 @@ function makeOctokit(options: {
 
   // Gated on total_count > 0 in paginateCheckRunsRollup, so this default
   // (empty) combined-status response never changes existing expectations.
-  const getCombinedStatusForRef = vi
-    .fn()
-    .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+  const getCombinedStatusForRef =
+    options.getCombinedStatusForRef ??
+    vi.fn().mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+
+  // Repositories with no rulesets simply have no rules for the branch — an
+  // empty array, not an error — so this default never changes existing
+  // classic-protection-only expectations.
+  const getBranchRules = options.getBranchRules ?? vi.fn().mockResolvedValue({ data: [] });
 
   return {
     rest: {
@@ -83,6 +90,7 @@ function makeOctokit(options: {
       checks: { listForRef },
       repos: {
         getCombinedStatusForRef,
+        getBranchRules,
         ...(options.getBranch ? { getBranch: options.getBranch } : {}),
       },
     },
@@ -208,6 +216,545 @@ describe('buildRepositoryDashboard', () => {
 
     expect(rows[0].defaultBranchStatus).toBe('unknown');
     expect(listForRef).not.toHaveBeenCalled();
+  });
+
+  it('narrows default-branch CI to required checks so a failed non-required workflow does not fail CI', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // 'Deploy Production' is not a required check, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('narrows default-branch CI to a required check defined only via a repository ruleset', async () => {
+    expect.assertions(2);
+    // No classic branch protection at all — the required check comes solely
+    // from the ruleset response, which `getBranch` never surfaces.
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Unit Tests' }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranchRules).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'widgets',
+      branch: 'main',
+      per_page: 100,
+      page: 1,
+    });
+    // 'Deploy Production' is not required by the ruleset, so its failure is excluded.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('does not duplicate a required check mirrored in both `contexts` and `checks[]`', async () => {
+    expect.assertions(1);
+    // GitHub mirrors every `checks[]` entry's context into the legacy
+    // `contexts` list — the same required check appears in both.
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: {
+          required_status_checks: {
+            contexts: ['Unit Tests'],
+            checks: [{ context: 'Unit Tests', app_id: 42 }],
+          },
+        },
+      },
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 1,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success', app: { id: 42 } },
+        ],
+      },
+      getBranch,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // Without de-duplication, the unpinned `contexts` entry would match
+    // first, never marking the pinned `checks[]` entry as seen — reporting
+    // a false "pending" even though the app-42 check run passed.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('pages through every branch-rules page to find a required_status_checks rule past page 1', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const page1 = Array.from({ length: 100 }, () => ({ type: 'creation' }));
+    const page2 = [
+      {
+        type: 'required_status_checks',
+        parameters: { required_status_checks: [{ context: 'Unit Tests' }] },
+      },
+    ];
+    const getBranchRules = vi
+      .fn()
+      .mockResolvedValueOnce({ data: page1, headers: { link: '<...>; rel="next"' } })
+      .mockResolvedValueOnce({ data: page2, headers: {} });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(getBranchRules).toHaveBeenCalledTimes(2);
+    // The required_status_checks rule only exists on page 2 — a single-page
+    // read would miss it and fall back to counting every check run.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('does not probe a phantom next branch-rules page when applicable rules exactly fill a perPage-sized page', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    // Exactly 100 rules (a full page), the last of which is the required
+    // check — and GitHub reports no further page via the `Link` header.
+    const page1 = [
+      ...Array.from({ length: 99 }, () => ({ type: 'creation' })),
+      {
+        type: 'required_status_checks',
+        parameters: { required_status_checks: [{ context: 'Unit Tests' }] },
+      },
+    ];
+    const getBranchRules = vi.fn().mockResolvedValueOnce({ data: page1, headers: {} });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    // Budget: 1 for listPullRequests, 1 for get-branch-head-sha, 1 for
+    // ruleset page 1, 1 for the (single-page) check-run rollup — a phantom
+    // page-2 probe (page-length-only stop condition) would consume that last
+    // unit before the check-run rollup, forcing an incorrect `unknown` on a
+    // branch that was actually fully read.
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ defaultBranch: 'main', commit: null })],
+      { apiBudget: 4 },
+    );
+
+    expect(getBranchRules).toHaveBeenCalledTimes(1);
+    // 'Deploy Production' is not required, so its failure is excluded — the
+    // branch was fully read (not degraded to `unknown`) with budget to
+    // spare for the check-run rollup.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('does not cache a partial ruleset page set when the budget runs out mid-pagination', async () => {
+    expect.assertions(2);
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    // A full page (100 items, no required_status_checks rule) forces a
+    // second page — but the budget runs out before it can be fetched.
+    const page1 = Array.from({ length: 100 }, () => ({ type: 'creation' }));
+    const getBranchRules = vi
+      .fn()
+      .mockResolvedValueOnce({ data: page1, headers: { link: '<...>; rel="next"' } });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    // Budget: 1 for listPullRequests, 1 for get-branch-head-sha, 1 for
+    // ruleset page 1 — exhausted right before ruleset page 2 (the `Link`
+    // header says one exists), and before there's any budget left for the
+    // check-run rollup itself.
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ defaultBranch: 'main', commit: null })],
+      { apiBudget: 3 },
+    );
+
+    // The ruleset read throws instead of silently caching a partial,
+    // rule-missing page 1 — degrading (here) all the way to `unknown` since
+    // the budget is also exhausted for the check-run rollup, rather than a
+    // false green built on an incomplete required-check set.
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+    expect(context.cache.setCache).not.toHaveBeenCalledWith(
+      'github:response:acme:widgets:branch:main:rules',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('converts a pre-#156 cached envelope (requiredCheckNames) instead of dropping it', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+    });
+    const now = Date.now();
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+      cache: {
+        getCached: vi.fn(async (key: string) => {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+            return {
+              // Pre-#156 shape: no `requiredChecks` field.
+              value: { sha: 'commit-sha-1', requiredCheckNames: ['Unit Tests'] },
+              fetchedAt: now,
+              expiresAt: now + 30_000,
+              source: 'cache',
+            };
+          }
+          return null;
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    // Converted (as unpinned) rather than dropped — 'Deploy Production' is
+    // excluded from the rollup, so its failure doesn't fail CI.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('merges required checks from classic branch protection and a ruleset', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Lint' }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // 'Lint' (ruleset-only) is required but hasn't reported — still pending
+    // even though the classic-protection required check ('Unit Tests') passed.
+    expect(rows[0].defaultBranchStatus).toBe('pending');
+  });
+
+  it('prefers a ruleset-pinned requirement over classic protection leaving the same context unpinned', async () => {
+    expect.assertions(1);
+    // Classic protection requires 'Unit Tests' unpinned; a ruleset also
+    // requires 'Unit Tests', pinned to app 42.
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Unit Tests', integration_id: 42 }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      // A run from exactly the pinned app (42) — satisfies the ruleset's
+      // pinned requirement.
+      checkRuns: {
+        total_count: 1,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success', app: { id: 42 } },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // Without preferring the pinned entry, the unpinned classic-protection
+    // duplicate for the same context would be matched (and marked seen)
+    // first, leaving the ruleset's pinned entry permanently unseen and the
+    // rollup stuck at `pending` even though the app-42 run passed.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
+  it('renders unknown, not a classic-only verdict, when the ruleset read fails', async () => {
+    expect.assertions(1);
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockRejectedValue(new Error('rulesets not available'));
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 2,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // GitHub's `getBranchRules` returns `200` with an empty array for a
+    // genuinely rule-free branch — it never throws to signal "no rules". So
+    // a thrown error here can only mean the read didn't complete, not that
+    // this branch has no ruleset-required checks; degrading to the
+    // classic-protection-only set would risk a false green if a
+    // ruleset-required check exists and never gets seen because of it.
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+  });
+
+  it('treats a ruleset "Require workflows to pass" rule as an unmatched requirement rather than dropping it', async () => {
+    expect.assertions(1);
+    // No classic branch protection at all — the branch's only requirement is
+    // a ruleset `workflows` rule, which this reader cannot resolve to a
+    // check-run/status match (its identity is a workflow file + job, not a
+    // check-run `context`/`name`).
+    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'workflows',
+          parameters: { workflows: [{ repository_id: 1, path: '.github/workflows/ci.yml' }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      // Every check run passes — without the fix, an empty (dropped)
+      // required-check set would fall back to counting every check run and
+      // report `passing`, even though the actual ruleset requirement (the
+      // workflow) was never verified.
+      checkRuns: {
+        total_count: 1,
+        check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+  });
+
+  it('does not accept a fresh classic-only-requiredKey cache entry as complete when the ruleset read is cut off by budget exhaustion', async () => {
+    expect.assertions(1);
+    // Classic protection requires 'Unit Tests'. A ruleset (invisible to
+    // `getBranch`) additionally requires 'Deploy Gate' — but this build's
+    // ruleset read is cut off by budget exhaustion before it can see that
+    // rule, so the merged required-check set this build would otherwise
+    // compute collapses to the classic-only set.
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const rulesPage1 = Array.from({ length: 100 }, () => ({ type: 'creation' }));
+    const getBranchRules = vi
+      .fn()
+      .mockResolvedValueOnce({ data: rulesPage1, headers: { link: '<...>; rel="next"' } });
+    // A fresh cache entry already exists for this branch's CI status, keyed
+    // to the classic-only required set ('Unit Tests' only) — as if written
+    // by an earlier build that also failed to see the ruleset's 'Deploy
+    // Gate' requirement. 'Deploy Gate' never reported on this commit, so a
+    // rollup that trusted the classic-only required set would show
+    // `passing`, hiding the still-missing ruleset-required check.
+    const requiredKey = 'Unit Tests::';
+    const now = Date.now();
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+      cache: {
+        getCached: vi.fn(async (key: string) => {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main')) {
+            return {
+              value: {
+                ciStatus: 'passing',
+                checkCount: 1,
+                failingCount: 0,
+                truncated: false,
+                commitSha: 'resolved-sha',
+                requiredKey,
+              },
+              fetchedAt: now,
+              expiresAt: now + 30_000,
+              source: 'cache',
+            };
+          }
+          return null;
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+
+    // Budget: 1 for listPullRequests, 1 for get-branch-head-sha, 1 for
+    // ruleset page 1 — exhausted right before ruleset page 2 (which holds
+    // 'Deploy Gate'). Plenty of budget would otherwise remain to serve the
+    // fresh cache entry, since a cache hit costs nothing.
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ defaultBranch: 'main', commit: null })],
+      { apiBudget: 3 },
+    );
+
+    // The incomplete ruleset read must not let the reduced, classic-only
+    // requiredKey accept the stale cache entry as a confident `passing`.
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
   });
 
   it('resolves the branch head live (via cachedRead) when commit is missing, instead of staying unknown forever', async () => {

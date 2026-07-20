@@ -159,7 +159,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('renders enabled assigned agents as a checked checkbox', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const checkbox = page.getByRole('checkbox', { name: 'Remove security' });
+    const checkbox = page.getByRole('checkbox', { name: 'Assign security to repository' });
     await expect.element(checkbox).toBeChecked();
     await expect.element(checkbox).not.toBeDisabled();
   });
@@ -180,7 +180,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
       params: { repositoryId: '101' },
     });
 
-    const checkbox = page.getByRole('checkbox', { name: 'Remove documentation' });
+    const checkbox = page.getByRole('checkbox', { name: 'Assign documentation to repository' });
     await expect.element(checkbox).toBeChecked();
     await expect.element(checkbox).not.toBeDisabled();
     await expect
@@ -191,7 +191,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('renders enabled unassigned agents as an unchecked checkbox', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const checkbox = page.getByRole('checkbox', { name: 'Add performance' });
+    const checkbox = page.getByRole('checkbox', { name: 'Assign performance to repository' });
     await expect.element(checkbox).not.toBeChecked();
     await expect.element(checkbox).not.toBeDisabled();
   });
@@ -199,7 +199,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('toggling an enabled unassigned agent on adds its id to the submitted agentIds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    await page.getByRole('checkbox', { name: 'Add performance' }).click();
+    await page.getByRole('checkbox', { name: 'Assign performance to repository' }).click();
     await page.getByRole('button', { name: 'Save settings' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
@@ -212,7 +212,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('toggling an enabled assigned agent off removes its id from the submitted agentIds', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    await page.getByRole('checkbox', { name: 'Remove security' }).click();
+    await page.getByRole('checkbox', { name: 'Assign security to repository' }).click();
     await page.getByRole('button', { name: 'Save settings' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
@@ -229,7 +229,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
       params: { repositoryId: '101' },
     });
 
-    const checkbox = page.getByRole('checkbox', { name: 'Add style' });
+    const checkbox = page.getByRole('checkbox', { name: 'Assign style to repository' });
     await expect.element(checkbox).toBeDisabled();
     await expect
       .element(page.getByText('Disabled agents cannot be assigned until re-enabled.'))
@@ -309,7 +309,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('disables agent checkboxes while a save is in flight so pending edits cannot race the request', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const checkbox = page.getByRole('checkbox', { name: 'Remove security' });
+    const checkbox = page.getByRole('checkbox', { name: 'Assign security to repository' });
     await expect.element(checkbox).not.toBeDisabled();
 
     await page.getByRole('button', { name: 'Save settings' }).click();

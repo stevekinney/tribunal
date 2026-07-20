@@ -102,108 +102,110 @@
     </Card>
   {:else}
     <Card padding="none">
-      <div class="table-scroll">
-        <Table density="comfortable">
-          <Table.Header>
+      <Table
+        scrollable
+        scrollContainerProps={{ 'aria-label': 'Event listeners' }}
+        density="comfortable"
+      >
+        <Table.Header>
+          <Table.Row>
+            <Table.HeaderCell scope="col">Name</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Event / action</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Agent</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Enabled</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Last matched</Table.HeaderCell>
+            <Table.HeaderCell scope="col">Last run status</Table.HeaderCell>
+            <Table.HeaderCell scope="col">
+              <span class="cinder-sr-only">Manage</span>
+            </Table.HeaderCell>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {#each data.listeners as row (row.listener.id)}
             <Table.Row>
-              <Table.HeaderCell scope="col">Name</Table.HeaderCell>
-              <Table.HeaderCell scope="col">Event / action</Table.HeaderCell>
-              <Table.HeaderCell scope="col">Agent</Table.HeaderCell>
-              <Table.HeaderCell scope="col">Enabled</Table.HeaderCell>
-              <Table.HeaderCell scope="col">Last matched</Table.HeaderCell>
-              <Table.HeaderCell scope="col">Last run status</Table.HeaderCell>
-              <Table.HeaderCell scope="col">
-                <span class="cinder-sr-only">Manage</span>
-              </Table.HeaderCell>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {#each data.listeners as row (row.listener.id)}
-              <Table.Row>
-                <Table.Cell as="th">{row.listener.name}</Table.Cell>
-                <Table.Cell>
-                  <Badge size="sm" variant="neutral">{row.listener.eventType}</Badge>
-                  {#if row.listener.action}
-                    <span class="listener-action">{row.listener.action}</span>
+              <Table.Cell as="th">{row.listener.name}</Table.Cell>
+              <Table.Cell>
+                <Badge size="sm" variant="neutral">{row.listener.eventType}</Badge>
+                {#if row.listener.action}
+                  <span class="listener-action">{row.listener.action}</span>
+                {/if}
+              </Table.Cell>
+              <Table.Cell>{row.agentSlug}{row.agentEnabled ? '' : ' (disabled)'}</Table.Cell>
+              <Table.Cell>
+                <form
+                  id={`listener-${row.listener.id}-enabled-form`}
+                  method="POST"
+                  action="?/setEnabled"
+                >
+                  <input type="hidden" name="listenerId" value={row.listener.id} />
+                  <input
+                    type="hidden"
+                    name="enabled"
+                    value={row.listener.enabled ? 'false' : 'true'}
+                  />
+                  <Toggle
+                    id={`listener-${row.listener.id}-enabled`}
+                    label={`Event listener ${row.listener.name} enabled`}
+                    hideLabel
+                    checked={row.listener.enabled}
+                    onValueChange={(next) => {
+                      if (next === row.listener.enabled) return;
+                      submitEnabledForm(row.listener.id);
+                    }}
+                  />
+                </form>
+              </Table.Cell>
+              <Table.Cell>{formatMatchedAt(row.lastDelivery?.matchedAt)}</Table.Cell>
+              <Table.Cell>
+                {#if row.lastDelivery}
+                  <Badge
+                    size="sm"
+                    variant={eventListenerStatusVariant(row.lastDelivery.displayStatus)}
+                  >
+                    {eventListenerStatusLabel(row.lastDelivery.displayStatus)}
+                  </Badge>
+                  {#if row.lastDelivery.runId}
+                    <Button href={`/runs/${row.lastDelivery.runId}`} variant="ghost" size="xs">
+                      View run
+                    </Button>
                   {/if}
-                </Table.Cell>
-                <Table.Cell>{row.agentSlug}{row.agentEnabled ? '' : ' (disabled)'}</Table.Cell>
-                <Table.Cell>
+                {:else}
+                  <span class="no-runs">No runs yet</span>
+                {/if}
+              </Table.Cell>
+              <Table.Cell>
+                <div class="row-actions">
+                  <Button
+                    href={`${eventsPath}?listener=${row.listener.id}`}
+                    variant="secondary"
+                    size="sm"
+                  >
+                    Manage
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onclick={() => {
+                      deleteTarget = { id: row.listener.id, name: row.listener.name };
+                      confirmDeleteOpen = true;
+                    }}
+                  >
+                    {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
+                    <span class="cinder-sr-only">Delete {row.listener.name}</span>
+                  </Button>
                   <form
-                    id={`listener-${row.listener.id}-enabled-form`}
+                    id={`listener-${row.listener.id}-delete-form`}
                     method="POST"
-                    action="?/setEnabled"
+                    action="?/delete"
                   >
                     <input type="hidden" name="listenerId" value={row.listener.id} />
-                    <input
-                      type="hidden"
-                      name="enabled"
-                      value={row.listener.enabled ? 'false' : 'true'}
-                    />
-                    <Toggle
-                      id={`listener-${row.listener.id}-enabled`}
-                      label={`${row.listener.enabled ? 'Disable' : 'Enable'} ${row.listener.name}`}
-                      hideLabel
-                      checked={row.listener.enabled}
-                      onValueChange={(next) => {
-                        if (next === row.listener.enabled) return;
-                        submitEnabledForm(row.listener.id);
-                      }}
-                    />
                   </form>
-                </Table.Cell>
-                <Table.Cell>{formatMatchedAt(row.lastDelivery?.matchedAt)}</Table.Cell>
-                <Table.Cell>
-                  {#if row.lastDelivery}
-                    <Badge
-                      size="sm"
-                      variant={eventListenerStatusVariant(row.lastDelivery.displayStatus)}
-                    >
-                      {eventListenerStatusLabel(row.lastDelivery.displayStatus)}
-                    </Badge>
-                    {#if row.lastDelivery.runId}
-                      <Button href={`/runs/${row.lastDelivery.runId}`} variant="ghost" size="xs">
-                        View run
-                      </Button>
-                    {/if}
-                  {:else}
-                    <span class="no-runs">No runs yet</span>
-                  {/if}
-                </Table.Cell>
-                <Table.Cell>
-                  <div class="row-actions">
-                    <Button
-                      href={`${eventsPath}?listener=${row.listener.id}`}
-                      variant="secondary"
-                      size="sm"
-                    >
-                      Manage
-                    </Button>
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onclick={() => {
-                        deleteTarget = { id: row.listener.id, name: row.listener.name };
-                        confirmDeleteOpen = true;
-                      }}
-                    >
-                      {#snippet leadingIcon()}<Trash2 size={14} aria-hidden="true" />{/snippet}
-                      <span class="cinder-sr-only">Delete {row.listener.name}</span>
-                    </Button>
-                    <form
-                      id={`listener-${row.listener.id}-delete-form`}
-                      method="POST"
-                      action="?/delete"
-                    >
-                      <input type="hidden" name="listenerId" value={row.listener.id} />
-                    </form>
-                  </div>
-                </Table.Cell>
-              </Table.Row>
-            {/each}
-          </Table.Body>
-        </Table>
-      </div>
+                </div>
+              </Table.Cell>
+            </Table.Row>
+          {/each}
+        </Table.Body>
+      </Table>
     </Card>
   {/if}
 
@@ -222,10 +224,6 @@
 </Page>
 
 <style>
-  .table-scroll {
-    overflow-x: auto;
-  }
-
   .listener-action {
     margin-left: var(--space-2);
     color: var(--text-muted);

@@ -270,6 +270,34 @@ describe('/repositories page', () => {
       .toBeInTheDocument();
   });
 
+  it('wraps the repository table in a named, focusable scroll region', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 2,
+          openPullRequestCountExact: true,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: true,
+          hasUnavailableRepositories: false,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    const scrollRegion = page.getByRole('region', { name: 'Repositories' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
+
   it('renders an attention pull request in the cross-repository list', async () => {
     render(RepositoriesPage, {
       data: {
@@ -646,7 +674,7 @@ describe('/repositories page', () => {
 
     // The table only ever holds added repositories, so its toggle removes them —
     // and it submits the current agents/globs so a later re-add restores them.
-    await page.getByRole('switch', { name: 'Remove repository' }).click();
+    await page.getByRole('switch', { name: 'Repository watched' }).click();
 
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['2']);
@@ -670,11 +698,11 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Remove repository' }).click();
+    await page.getByRole('switch', { name: 'Repository watched' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('');
 
-    await page.getByRole('switch', { name: 'Add repository' }).click();
+    await page.getByRole('switch', { name: 'Repository watched' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
@@ -699,15 +727,15 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await page.getByRole('switch', { name: 'Remove repository' }).click();
+    await page.getByRole('switch', { name: 'Repository watched' }).click();
     expect(enhancedFormTesting.submissions).toHaveLength(1);
 
     enhancedFormTesting.submissions[0]?.resolveResult();
     enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
 
-    await expect.element(page.getByRole('switch', { name: 'Remove repository' })).toBeVisible();
+    await expect.element(page.getByRole('switch', { name: 'Repository watched' })).toBeVisible();
 
-    await page.getByRole('switch', { name: 'Remove repository' }).click();
+    await page.getByRole('switch', { name: 'Repository watched' }).click();
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
   });
