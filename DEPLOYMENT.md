@@ -263,6 +263,13 @@ token secrets into GitHub Actions. It only publishes a fresh Tensorlake reviewer
 image and stages the returned `TRIBUNAL_SANDBOX_IMAGE` value on
 `tribunal-engine` before deploying the engine.
 
+If that publish fails (Tensorlake outage or exhausted CPU quota), the deploy
+continues against the reviewer image already staged on `tribunal-engine` and the
+run is failed at the end to flag the degradation. The deploy stops before
+migrations only when no previous image exists to fall back on, since the engine
+requires `TRIBUNAL_SANDBOX_IMAGE` to start. See
+`documentation/deployment/containers.md` for the full sequence.
+
 The automatic deploy still assumes these one-time operator actions are complete:
 
 - Fly apps exist.
