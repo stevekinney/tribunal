@@ -214,11 +214,30 @@ function normalizeCachedRequiredChecks(value: BranchHead | LegacyBranchHead): Re
   return [];
 }
 
-/** De-duplicates by `(context, appId)` pair, keeping the first occurrence. */
+/**
+ * De-duplicates required checks by `context`, preferring an app-pinned entry
+ * over an unpinned one for the same context. Two sources can each name the
+ * same context differently pinned — classic protection's `contexts` (always
+ * unpinned) mirrors its own `checks[]` (possibly pinned), and separately a
+ * ruleset can pin a context that classic protection left unpinned (or vice
+ * versa). If both an unpinned and a pinned entry for the same context
+ * survived, `findRequiredCheckRunMatch` would match the (looser) unpinned
+ * entry first for any same-named check run, permanently starving the pinned
+ * entry of a match and reporting it as "missing" even after a matching
+ * check run from the required app reported. Two *distinct* pinned entries
+ * for the same context (different `appId`) are each kept, as separate
+ * requirements.
+ */
 function dedupeRequiredChecks(checks: RequiredCheck[]): RequiredCheck[] {
+  const pinnedContexts = new Set<string>();
+  for (const check of checks) {
+    if (check.appId !== null) pinnedContexts.add(check.context);
+  }
+
   const seen = new Set<string>();
   const result: RequiredCheck[] = [];
   for (const check of checks) {
+    if (check.appId === null && pinnedContexts.has(check.context)) continue;
     const key = `${check.context}::${check.appId ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -233,6 +252,11 @@ function dedupeRequiredChecks(checks: RequiredCheck[]): RequiredCheck[] {
  * (optionally pinned to a GitHub App via `app_id`). GitHub uses `app_id: -1`
  * as a sentinel for "accept from any source" — normalized to `null` here so
  * downstream matching only ever sees a real app id or "unpinned".
+ *
+ * GitHub mirrors every `checks[]` entry's context into the legacy `contexts`
+ * list for backward compatibility, so a context normally appears in both —
+ * `dedupeRequiredChecks` resolves that by preferring the (possibly pinned)
+ * `checks[]` entry over its mirrored, always-unpinned `contexts` duplicate.
  *
  * Empty when the branch has no protection or defines no required checks, in
  * which case the CI rollup falls back to counting every check run.
@@ -249,23 +273,12 @@ function extractRequiredChecks(branch: {
   if (!requiredStatusChecks) return [];
 
   const checks: RequiredCheck[] = [];
-  const coveredByChecksArray = new Set<string>();
+  for (const context of requiredStatusChecks.contexts ?? []) {
+    checks.push({ context, appId: null });
+  }
   for (const check of requiredStatusChecks.checks ?? []) {
     const appId = check.app_id === -1 || check.app_id == null ? null : check.app_id;
     checks.push({ context: check.context, appId });
-    coveredByChecksArray.add(check.context);
-  }
-  // GitHub mirrors every `checks[]` entry's context into the legacy
-  // `contexts` list for backward compatibility, so a context normally
-  // appears in both. Only add a `contexts` entry when `checks[]` doesn't
-  // already cover it — otherwise the same required check would get both an
-  // unpinned (from `contexts`) and a pinned (from `checks[]`) entry, and
-  // matching returns the first match it finds, so the unpinned entry would
-  // shadow the pinned one and leave the real (pinned) required check
-  // "missing" even after a matching check run reported.
-  for (const context of requiredStatusChecks.contexts ?? []) {
-    if (coveredByChecksArray.has(context)) continue;
-    checks.push({ context, appId: null });
   }
   return dedupeRequiredChecks(checks);
 }

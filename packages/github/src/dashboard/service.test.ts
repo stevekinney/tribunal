@@ -504,6 +504,53 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[0].defaultBranchStatus).toBe('pending');
   });
 
+  it('prefers a ruleset-pinned requirement over classic protection leaving the same context unpinned', async () => {
+    expect.assertions(1);
+    // Classic protection requires 'Unit Tests' unpinned; a ruleset also
+    // requires 'Unit Tests', pinned to app 42.
+    const getBranch = vi.fn().mockResolvedValue({
+      data: {
+        commit: { sha: 'resolved-sha' },
+        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+      },
+    });
+    const getBranchRules = vi.fn().mockResolvedValue({
+      data: [
+        {
+          type: 'required_status_checks',
+          parameters: { required_status_checks: [{ context: 'Unit Tests', integration_id: 42 }] },
+        },
+      ],
+    });
+    const octokit = makeOctokit({
+      pullRequests: [],
+      // A run from exactly the pinned app (42) — satisfies the ruleset's
+      // pinned requirement.
+      checkRuns: {
+        total_count: 1,
+        check_runs: [
+          { name: 'Unit Tests', status: 'completed', conclusion: 'success', app: { id: 42 } },
+        ],
+      },
+      getBranch,
+      getBranchRules,
+    });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [
+      makeRepository({ defaultBranch: 'main', commit: null }),
+    ]);
+
+    // Without preferring the pinned entry, the unpinned classic-protection
+    // duplicate for the same context would be matched (and marked seen)
+    // first, leaving the ruleset's pinned entry permanently unseen and the
+    // rollup stuck at `pending` even though the app-42 run passed.
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
   it('falls back to classic-protection-only required checks when the ruleset read fails', async () => {
     expect.assertions(1);
     const getBranch = vi.fn().mockResolvedValue({
