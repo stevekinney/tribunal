@@ -444,15 +444,18 @@ async function readRulesetRequiredChecks(
     return normalizeCachedRulesetResult(value);
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    if (error instanceof RulesetBudgetExhaustedError) {
-      return { checks: [], incomplete: true };
-    }
-    // Any other failure (rate limit, network error, rulesets unsupported)
-    // degrades to classic-protection-only required checks rather than
-    // rendering the whole branch status unavailable — see the module-level
-    // comment on `readRulesetRequiredChecks`'s caller for why this differs
-    // from the budget-exhaustion case above.
-    return { checks: [], incomplete: false };
+    // Any failure here — budget exhaustion (thrown as
+    // `RulesetBudgetExhaustedError` above), a rate limit, a network error,
+    // or anything else `getBranchRules` can throw — is incomplete evidence,
+    // not proof the branch has no ruleset-required checks. GitHub's
+    // `GET .../rules/branches/{branch}` returns `200` with an empty array
+    // for a genuinely rule-free branch; it never throws to signal "no
+    // rules". So a thrown error can only mean the read didn't complete, and
+    // there is no way to distinguish "rulesets unsupported here" from "this
+    // read just failed" at this catch site. Degrading to classic-only in
+    // that ambiguous case risks the exact false green this function exists
+    // to prevent — see `readDefaultBranchStatus`'s handling of `incomplete`.
+    return { checks: [], incomplete: true };
   }
 }
 

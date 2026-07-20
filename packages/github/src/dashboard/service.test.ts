@@ -602,7 +602,7 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[0].defaultBranchStatus).toBe('passing');
   });
 
-  it('falls back to classic-protection-only required checks when the ruleset read fails', async () => {
+  it('renders unknown, not a classic-only verdict, when the ruleset read fails', async () => {
     expect.assertions(1);
     const getBranch = vi.fn().mockResolvedValue({
       data: {
@@ -632,9 +632,13 @@ describe('buildRepositoryDashboard', () => {
       makeRepository({ defaultBranch: 'main', commit: null }),
     ]);
 
-    // Ruleset read failed — degrade to the classic-protection required set
-    // rather than rendering the whole branch status unavailable.
-    expect(rows[0].defaultBranchStatus).toBe('passing');
+    // GitHub's `getBranchRules` returns `200` with an empty array for a
+    // genuinely rule-free branch — it never throws to signal "no rules". So
+    // a thrown error here can only mean the read didn't complete, not that
+    // this branch has no ruleset-required checks; degrading to the
+    // classic-protection-only set would risk a false green if a
+    // ruleset-required check exists and never gets seen because of it.
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
   });
 
   it('treats a ruleset "Require workflows to pass" rule as an unmatched requirement rather than dropping it', async () => {
