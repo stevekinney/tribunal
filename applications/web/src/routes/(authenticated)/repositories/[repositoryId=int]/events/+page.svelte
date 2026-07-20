@@ -142,7 +142,7 @@
                     />
                     <Toggle
                       id={`listener-${row.listener.id}-enabled`}
-                      label={`${row.listener.enabled ? 'Disable' : 'Enable'} ${row.listener.name}`}
+                      label={`Event listener ${row.listener.name} enabled`}
                       hideLabel
                       checked={row.listener.enabled}
                       onValueChange={(next) => {

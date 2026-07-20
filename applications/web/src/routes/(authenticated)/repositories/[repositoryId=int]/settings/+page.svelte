@@ -125,7 +125,7 @@
                 name="agentIds"
                 value={agent.id}
                 checked={selected}
-                aria-label={selected ? `Remove ${agent.slug}` : `Add ${agent.slug}`}
+                aria-label={`Assign ${agent.slug} to repository`}
                 disabled={!canToggle || saving}
                 onValueChange={(next) => {
                   const nextSelectedAgentIds = new Set(selectedAgentIds);
