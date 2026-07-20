@@ -455,4 +455,40 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     // missing required check as still pending, not passing.
     expect(result.ciStatus).toBe('pending');
   });
+
+  it('stops paging (and skips the status call) once all required checks are seen', async () => {
+    const context = createMockContext();
+    // A full first page (100 runs) with a higher total_count would normally
+    // force a second page; the required check is present, so paging must stop.
+    const page1 = [
+      { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+      ...Array.from({ length: 99 }, () => ({
+        name: 'Deploy Production',
+        status: 'completed',
+        conclusion: 'failure',
+      })),
+    ];
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 200, check_runs: page1 } });
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 0, state: 'pending' } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      undefined,
+      new Set(['Unit Tests']),
+    );
+
+    expect(result.ciStatus).toBe('passing');
+    expect(listForRef).toHaveBeenCalledTimes(1);
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
+  });
 });

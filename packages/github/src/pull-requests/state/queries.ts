@@ -302,6 +302,14 @@ async function paginateCheckRunsRollup(
 
     fetchedCount += data.check_runs.length;
 
+    // Once every required check has reported, stop paging: the remaining
+    // (non-required) check runs can't change the verdict, and paging through
+    // them spends shared `ApiBudget` for nothing — potentially exhausting it
+    // and forcing a false `unknown` on a branch with many non-required runs.
+    if (filterToRequired && seenRequired.size >= requiredCheckNames.size) {
+      break;
+    }
+
     // Stop once every check run GitHub reported (`total_count`) has been
     // fetched. Relying only on "this page came back short" leaves a repo
     // with exactly `N * perPage` check runs assuming another page exists;
@@ -314,8 +322,12 @@ async function paginateCheckRunsRollup(
     page += 1;
   }
 
+  // When filtering, the combined-status request is only needed if a required
+  // check might be a legacy status context we haven't already seen as a check
+  // run — skip it (and its budget unit) once every required check has reported.
+  const allRequiredSeen = filterToRequired && seenRequired.size >= requiredCheckNames.size;
   let statusTotalCount = 0;
-  if (includeStatusContexts && !truncated) {
+  if (includeStatusContexts && !truncated && !allRequiredSeen) {
     if (budget && !budget.canSpend(1)) {
       truncated = true;
     } else {
