@@ -289,6 +289,14 @@ function extractRequiredChecksFromRules(rules: readonly unknown[]): RequiredChec
  * `get-branch-head-sha` read, so a repository with no ruleset support (or a
  * transient failure) degrades to classic-protection-only required checks
  * instead of failing the whole branch-status read.
+ *
+ * Not invalidated by `resource-invalidation.ts`: this app doesn't subscribe
+ * to a ruleset-change webhook (nor, for that matter, to classic branch
+ * protection's edit event — the existing `get-branch-head-sha` required
+ * checks already carry the same gap), so an edited ruleset is picked up
+ * within this policy's 30s TTL rather than immediately. Subscribing to
+ * `repository_ruleset` for immediate invalidation is a separate, larger
+ * change (new webhook subscription + schema) outside this fix's scope.
  */
 async function readRulesetRequiredChecks(
   context: GithubServiceContext,
