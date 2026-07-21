@@ -151,4 +151,75 @@ describe('createPostgresAdvisoryLock', () => {
     expect(elapsedMs).toBeGreaterThanOrEqual(minimumExpectedElapsedMs);
     expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
   });
+
+  it('still reports the lock as held elsewhere when the final attempt hits a transient error', async () => {
+    // A rolling-deploy handoff can spend nearly its whole budget seeing
+    // "held elsewhere" and then hit a one-off connection/query error on the
+    // very last attempt. The exhaustion error must still be
+    // HELD_ELSEWHERE_MESSAGE — not the transient error — so the caller's
+    // retry wrapper keeps treating this as a retryable handoff instead of
+    // misclassifying it as an unrelated fatal boot failure.
+    nextConnectClient!.query
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockRejectedValueOnce(new Error('connection reset'));
+
+    const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+      attempts: 3,
+      sleep: async () => {},
+    });
+
+    await expect(lock.acquire()).rejects.toThrow(
+      'another Tribunal engine already holds the singleton advisory lock',
+    );
+    expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
+    expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fast on persistent transport failures instead of exhausting the full held-lock budget', async () => {
+    // The long default acquire budget (~8.25 minutes) exists to survive a
+    // real held-lock handoff. A connection/query failure is a different
+    // failure class — bad credentials, a network partition, a Neon outage —
+    // and must surface after a handful of consecutive failures, not after
+    // grinding through the whole budget with the default sleep.
+    nextConnectClient!.query.mockRejectedValue(new Error('connection refused'));
+
+    const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+      // Deliberately omit `attempts` to exercise the real (large) default
+      // budget — the fix under test is that transport failures do not
+      // consume it.
+      sleep: async () => {},
+    });
+
+    await expect(lock.acquire()).rejects.toThrow('connection refused');
+
+    // Three consecutive transport failures, not the full 100-attempt budget.
+    expect(nextConnectClient!.query).toHaveBeenCalledTimes(3);
+    expect(nextConnectClient!.release).toHaveBeenCalledTimes(3);
+    expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets the consecutive-transport-failure count on a successful held-elsewhere probe', async () => {
+    // A handoff that is mostly "held elsewhere" with occasional transient
+    // hiccups sprinkled in must not trip the fail-fast transport guard —
+    // only a run of consecutive failures should.
+    nextConnectClient!.query
+      .mockRejectedValueOnce(new Error('blip 1'))
+      .mockRejectedValueOnce(new Error('blip 2'))
+      .mockResolvedValueOnce({ rows: [{ acquired: false }] })
+      .mockRejectedValueOnce(new Error('blip 3'))
+      .mockRejectedValueOnce(new Error('blip 4'))
+      .mockResolvedValueOnce({ rows: [{ acquired: true }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+      attempts: 10,
+      sleep: async () => {},
+    });
+
+    const lease = await lock.acquire();
+    await lease.release();
+
+    expect(nextConnectClient!.query).toHaveBeenCalledTimes(7);
+  });
 });

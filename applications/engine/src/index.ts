@@ -4,11 +4,15 @@ import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
   createEngineRuntime,
+  type EngineBootstrapOptions,
   type EngineRuntime,
   type EngineSingletonLock,
   type ReviewIntentQueueStatus,
 } from './workflows/bootstrap';
-import { createPostgresAdvisoryLock } from './workflows/postgres-advisory-lock';
+import {
+  createPostgresAdvisoryLock,
+  HELD_ELSEWHERE_MESSAGE,
+} from './workflows/postgres-advisory-lock';
 import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
 import { parseEngineEnvironment } from './environment';
 
@@ -16,6 +20,104 @@ export function parsePort(value: string | undefined, fallback: number): number {
   if (value === undefined || value === '') return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
+}
+
+const SINGLETON_RETRY_COOLDOWN_MS = 5_000;
+// Each cycle already spends ~8.25 minutes inside the acquire budget
+// (`postgres-advisory-lock.ts`), so 5 cycles is a ~41 minute outer ceiling —
+// several multiples of the ~7 minute handoff observed in #169, without
+// looping forever on a lock that is never coming back.
+const DEFAULT_SINGLETON_RETRY_CYCLES = 5;
+
+export type CreateEngineRuntimeWithSingletonRetryHooks = {
+  sleep?: (milliseconds: number) => Promise<void>;
+  logger?: Pick<typeof console, 'error'>;
+  cooldownMs?: number;
+  maxCycles?: number;
+  /** Overridable for tests; production leaves this as an unresolved wait. */
+  park?: () => Promise<never>;
+};
+
+/**
+ * Boots the engine runtime, retrying — without ever exiting the process —
+ * when the singleton advisory lock is still held by the outgoing engine
+ * after a full acquire-budget cycle (`postgres-advisory-lock.ts`).
+ *
+ * A previous engine that crashes or exits during boot gets rebooted as a
+ * whole new Fly Machine, which discards all retry progress and restarts the
+ * clock. That crash-loop is what turned a slow-but-real rolling-deploy
+ * handoff into a false deploy failure in #169: each exhausted acquire budget
+ * threw, the process exited, and the reboot lost everything the wait had
+ * already covered. Staying in-process instead makes the wait cumulative:
+ * `/health` (`createStartingEngineServerOptions`) reports not-ready for as
+ * long as this loop runs, so an operator or dashboard sees "still starting,"
+ * not a crash-loop — though a wait long enough to outlast flyctl's own
+ * health-check window will still read as a failed deploy there; raising that
+ * window is the deliberately separate follow-up #169 calls for.
+ *
+ * Only `HELD_ELSEWHERE_MESSAGE` is retried — any other boot failure (bad
+ * storage configuration, a corrupt durable store, and so on) still throws
+ * immediately, since retrying those forever would hide a genuine, unrelated
+ * defect instead of a normal deploy handoff.
+ *
+ * Bounded at `maxCycles` full acquire-budget cycles (default 5, ~41 minutes
+ * total): a lock that is still held after that is no longer a normal
+ * handoff. Per this repository's "cap at 5 attempts, then surface status"
+ * rule, giving up here still does not exit the process — exiting is exactly
+ * the crash-loop this function exists to prevent. Instead it logs loudly and
+ * parks: the server keeps reporting not-ready and an operator has to
+ * intervene, rather than the machine rebooting itself indefinitely.
+ */
+export async function createEngineRuntimeWithSingletonRetry(
+  options: EngineBootstrapOptions,
+  lockFactory: (() => EngineSingletonLock) | undefined,
+  hooks: CreateEngineRuntimeWithSingletonRetryHooks = {},
+): Promise<EngineRuntime> {
+  const sleep =
+    hooks.sleep ??
+    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const logger = hooks.logger ?? console;
+  const cooldownMs = hooks.cooldownMs ?? SINGLETON_RETRY_COOLDOWN_MS;
+  const maxCycles = hooks.maxCycles ?? DEFAULT_SINGLETON_RETRY_CYCLES;
+  const park = hooks.park ?? (() => new Promise<never>(() => {}));
+
+  for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
+    try {
+      return await createEngineRuntime({ ...options, lock: lockFactory?.() });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== HELD_ELSEWHERE_MESSAGE) throw error;
+
+      if (cycle >= maxCycles) {
+        logger.error(
+          `[engine] singleton advisory lock still held after ${maxCycles} full acquire ` +
+            'budget cycles; giving up on this boot without exiting — an operator must ' +
+            'investigate the outgoing engine',
+          error,
+        );
+        return park();
+      }
+
+      logger.error(
+        `[engine] singleton advisory lock still held after acquire cycle ${cycle}/${maxCycles}; ` +
+          'retrying boot instead of exiting',
+        error,
+      );
+      // A throwing custom sleep must not abort the retry loop — this path
+      // exists specifically to survive failures, so treat a failed cooldown
+      // as "no cooldown" and retry the next cycle immediately, mirroring the
+      // same guard in `postgres-advisory-lock.ts`.
+      try {
+        await sleep(cooldownMs);
+      } catch {
+        // ignore — proceed to the next cycle immediately
+      }
+    }
+  }
+
+  // Unreachable: the loop always returns or parks above. Kept for
+  // exhaustiveness so the function's return type stays `Promise<EngineRuntime>`
+  // without a non-null assertion at every call site.
+  return park();
 }
 
 if (import.meta.main) {
@@ -32,14 +134,16 @@ if (import.meta.main) {
   );
   console.log(`[engine] listening on ${server.hostname}:${server.port}; starting runtime`);
 
-  const runtime = await createEngineRuntime({
-    storage: storageConfiguration.storage,
-    lock: storageConfiguration.lock,
-    healthDependencies: storageConfiguration.healthDependencies,
-    reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
-    reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
-    allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
-  });
+  const runtime = await createEngineRuntimeWithSingletonRetry(
+    {
+      storage: storageConfiguration.storage,
+      healthDependencies: storageConfiguration.healthDependencies,
+      reviewIntentConsumer: createReviewIntentConsumerFromEnvironment(environment),
+      reviewIntentPollIntervalMs: environment.REVIEW_INTENT_POLL_INTERVAL_MS,
+      allowEphemeralStorageForTests: storageConfiguration.allowEphemeralStorageForTests,
+    },
+    storageConfiguration.lockFactory,
+  );
   let activeSandboxReaperRuns = 0;
   const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
     idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
@@ -148,14 +252,19 @@ export function createStorageConfigurationFromEnvironment(environment: {
   WEFT_DATABASE_URL?: string;
 }): {
   storage: Storage | undefined;
-  lock?: EngineSingletonLock;
+  lockFactory?: () => EngineSingletonLock;
   allowEphemeralStorageForTests: boolean;
   healthDependencies: EngineHealthDependency[];
 } {
   if (environment.WEFT_DATABASE_URL) {
+    const weftDatabaseUrl = environment.WEFT_DATABASE_URL;
     return {
-      storage: new NeonStorage({ url: environment.WEFT_DATABASE_URL }),
-      lock: createPostgresAdvisoryLock(environment.WEFT_DATABASE_URL),
+      storage: new NeonStorage({ url: weftDatabaseUrl }),
+      // A factory, not a shared instance: each singleton-retry cycle in
+      // `createEngineRuntimeWithSingletonRetry` needs its own Pool, because a
+      // prior cycle's lock ends its pool once its own bounded acquire budget
+      // is exhausted (see `postgres-advisory-lock.ts`).
+      lockFactory: () => createPostgresAdvisoryLock(weftDatabaseUrl),
       allowEphemeralStorageForTests: false,
       healthDependencies: [
         { name: 'weft_database', ok: true },

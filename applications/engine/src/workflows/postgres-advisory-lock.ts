@@ -2,19 +2,52 @@ import { Pool, type PoolClient } from '@neondatabase/serverless';
 import type { EngineSingletonLease, EngineSingletonLock } from './bootstrap';
 
 const lockKey = 'tribunal-engine-singleton';
-const HELD_ELSEWHERE_MESSAGE = 'another Tribunal engine already holds the singleton advisory lock';
+export const HELD_ELSEWHERE_MESSAGE =
+  'another Tribunal engine already holds the singleton advisory lock';
 
 /**
  * Tuning for advisory-lock acquisition retries. On a rolling deploy the outgoing
- * engine's session lock on Neon is not always released the instant the new
- * engine starts — the predecessor's connection can take a few seconds to drop.
- * `pg_try_advisory_lock` is a hard, no-wait acquire, so without retries the new
- * engine crashes on startup and the deploy fails. Retrying bounds the wait to
- * roughly `attempts * delayMs` (~30s by default), comparable to Weft's own
- * lease wait, before giving up.
+ * engine releases this lock in `runtime.release()`, which runs strictly after
+ * the Weft engine's `asyncDispose()` completes (see `bootstrap.ts`) — so the
+ * advisory lock lags the prompt Weft-lease release from #146, it does not track
+ * it. That release path is itself bounded by `kill_timeout = 20s`
+ * (`deployment/fly/engine.toml`): if it does not finish in time, Fly SIGKILLs
+ * the outgoing machine, the Postgres session dies uncleanly, and the advisory
+ * lock is only freed once Neon reaps the dead session — a delay this process
+ * does not control and that is not bounded by `kill_timeout` at all.
+ *
+ * Production run 29780778638 (see #169) measured that tail directly: the
+ * incoming engine did not win the lock until ~7 minutes after the deploy
+ * began. A 30s retry budget (the previous default) cannot span that, so the
+ * old behavior was to exhaust the budget, throw, and let the process exit —
+ * which Fly Machines turns into a full VM reboot that discards all retry
+ * progress and restarts the clock. Two such reboots is exactly what stretched
+ * the observed handoff past flyctl's ~5 minute health-check window.
+ *
+ * The fix is two-part: this budget is sized to comfortably clear both the
+ * clean `kill_timeout` path and the observed SIGKILL/reap tail in a single
+ * continuous wait (no process exit in between — see `index.ts`), and a wider
+ * per-attempt delay keeps the retry from hammering Neon over that window.
+ * The delay only runs between attempts, so the total wait is
+ * `(attempts - 1) * delayMs` ≈ 8.25 minutes, not `attempts * delayMs`
+ * (≈8.33 minutes) — the loop returns or throws on the final attempt without
+ * sleeping again.
  */
-const DEFAULT_ACQUIRE_ATTEMPTS = 10;
-const DEFAULT_ACQUIRE_DELAY_MS = 3_000;
+const DEFAULT_ACQUIRE_ATTEMPTS = 100;
+const DEFAULT_ACQUIRE_DELAY_MS = 5_000;
+
+/**
+ * The long acquire budget above exists to survive a real held-lock handoff —
+ * it should not also apply to a connection/query failure (bad credentials, a
+ * network partition, a Neon outage), which is a different failure class that
+ * should surface quickly rather than grinding through ~8.25 minutes of
+ * retries. This caps how many *consecutive* transport/query failures are
+ * tolerated before giving up early; it resets on every successful query
+ * (whether the lock was acquired or seen held elsewhere), so a handoff that
+ * is mostly "held elsewhere" with an occasional transient hiccup is
+ * unaffected — only a run of failures in a row trips it.
+ */
+const MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3;
 
 export type PostgresAdvisoryLockOptions = {
   attempts?: number;
@@ -42,6 +75,15 @@ export function createPostgresAdvisoryLock(
   return {
     async acquire() {
       let lastError: unknown = new Error(HELD_ELSEWHERE_MESSAGE);
+      // Tracks whether the lock was observed held elsewhere on ANY attempt in
+      // this cycle, not just the last one. A rolling-deploy handoff can spend
+      // nearly the whole budget seeing "held elsewhere" and then hit a single
+      // transient connection/query error on the final attempt; without this,
+      // `lastError` would be that transient error, and the caller's retry
+      // wrapper (`index.ts`) would misclassify a normal, still-retryable
+      // handoff as an unrelated fatal boot failure and give up immediately.
+      let sawHeldElsewhere = false;
+      let consecutiveTransportFailures = 0;
 
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         let client: PoolClient | undefined;
@@ -51,6 +93,7 @@ export function createPostgresAdvisoryLock(
             `SELECT pg_try_advisory_lock(hashtext($1)) AS acquired`,
             [lockKey],
           );
+          consecutiveTransportFailures = 0;
           if (result.rows[0]?.acquired === true) {
             return new PostgresAdvisoryLease(pool, client);
           }
@@ -58,10 +101,16 @@ export function createPostgresAdvisoryLock(
           // predecessor engine's lock during a rolling deploy usually clears
           // within a few seconds of its connection dropping.
           client.release();
+          sawHeldElsewhere = true;
           lastError = new Error(HELD_ELSEWHERE_MESSAGE);
         } catch (error) {
           client?.release();
           lastError = error;
+          consecutiveTransportFailures += 1;
+          if (consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
+            await pool.end();
+            throw error instanceof Error ? error : new Error(String(error));
+          }
         }
 
         // A throwing custom sleep must not skip pool cleanup below; treat a
@@ -76,6 +125,12 @@ export function createPostgresAdvisoryLock(
       }
 
       await pool.end();
+      // Prefer the canonical "held elsewhere" error over whatever the final
+      // attempt happened to throw, as long as the cycle saw the lock held
+      // elsewhere at least once — that is the signal the retry wrapper needs
+      // to keep retrying instead of treating this as a distinct, fatal
+      // failure class.
+      if (sawHeldElsewhere) throw new Error(HELD_ELSEWHERE_MESSAGE);
       throw lastError instanceof Error ? lastError : new Error(String(lastError));
     },
   };

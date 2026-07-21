@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createEngineRuntimeWithSingletonRetry,
   createEngineServerOptions,
   createReviewIntentKickScheduler,
   createSignalShutdown,
@@ -8,6 +9,7 @@ import {
   parsePort,
   startSandboxReaper,
 } from './index';
+import { HELD_ELSEWHERE_MESSAGE } from './workflows/postgres-advisory-lock';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -834,6 +836,10 @@ describe('createStorageConfigurationFromEnvironment', () => {
       { name: 'weft_database', ok: true },
       { name: 'singleton_lock', ok: true, detail: 'Postgres advisory lock held' },
     ]);
+    // A factory, not a shared lock instance: each singleton-retry cycle needs
+    // its own Pool once a prior cycle's lock has exhausted its own budget and
+    // ended its pool (see postgres-advisory-lock.ts).
+    expect(configuration.lockFactory).toBeTypeOf('function');
   });
 
   it('requires durable storage in production unless explicitly enabled for tests', () => {
@@ -876,6 +882,143 @@ describe('createStorageConfigurationFromEnvironment', () => {
         detail: 'single-process ephemeral runtime',
       },
     ]);
+  });
+});
+
+describe('createEngineRuntimeWithSingletonRetry', () => {
+  it('acquires without throwing once a held lock is released within the retry cap', async () => {
+    // Reproduces the rolling-deploy handoff: the incoming engine faces a lock
+    // held by the outgoing engine through two full exhausted acquire cycles
+    // before a normal release frees it on the third. The previous behavior
+    // (createEngineRuntime called directly, letting the exhausted-acquire
+    // throw hit the top level) crash-looped the whole process on cycles one
+    // and two; this must instead retry in-process and resolve.
+    let lockCycle = 0;
+    const lockFactory = vi.fn(() => {
+      lockCycle += 1;
+      const cycle = lockCycle;
+      return {
+        async acquire() {
+          if (cycle < 3) throw new Error(HELD_ELSEWHERE_MESSAGE);
+          return { release: vi.fn(async () => {}) };
+        },
+      };
+    });
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(lockFactory).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledTimes(2);
+
+    await runtime.release();
+  });
+
+  it('does not retry a boot failure unrelated to the singleton lock', async () => {
+    const lockFactory = vi.fn(() => ({
+      async acquire() {
+        throw new Error('connection refused');
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+
+    await expect(
+      createEngineRuntimeWithSingletonRetry({ allowEphemeralStorageForTests: true }, lockFactory, {
+        sleep,
+        logger,
+      }),
+    ).rejects.toThrow('connection refused');
+
+    expect(lockFactory).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('boots directly when there is no lock to acquire (ephemeral storage)', async () => {
+    const sleep = vi.fn(async () => {});
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      undefined,
+      { sleep },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(sleep).not.toHaveBeenCalled();
+
+    await runtime.release();
+  });
+
+  it('gives up without exiting after the retry cap, instead of crash-looping forever', async () => {
+    // A lock held past the cap is no longer a normal handoff (per the
+    // repository's "cap at 5 attempts, then surface status" rule), but
+    // giving up must still never exit the process — that would reintroduce
+    // the crash-loop-on-reboot defect this function exists to prevent.
+    const lockFactory = vi.fn(() => ({
+      async acquire() {
+        throw new Error(HELD_ELSEWHERE_MESSAGE);
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+    const logger = { error: vi.fn() };
+    const parkedForever = Symbol('parked');
+    const park = vi.fn(async () => parkedForever as never);
+
+    const result = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger, maxCycles: 2, park },
+    );
+
+    expect(result).toBe(parkedForever);
+    expect(lockFactory).toHaveBeenCalledTimes(2);
+    // Cooldown only between cycles, not after the final give-up.
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(park).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenLastCalledWith(
+      expect.stringContaining('giving up on this boot without exiting'),
+      expect.any(Error),
+    );
+  });
+
+  it('proceeds to the next cycle immediately when the cooldown sleep itself throws', async () => {
+    // A throwing custom sleep must not abort the retry loop — this path
+    // exists specifically to survive failures, so a failed cooldown must be
+    // treated as "no cooldown," not as a reason to stop retrying.
+    let lockCycle = 0;
+    const lockFactory = vi.fn(() => {
+      lockCycle += 1;
+      const cycle = lockCycle;
+      return {
+        async acquire() {
+          if (cycle < 2) throw new Error(HELD_ELSEWHERE_MESSAGE);
+          return { release: vi.fn(async () => {}) };
+        },
+      };
+    });
+    const sleep = vi.fn(async () => {
+      throw new Error('cooldown timer unavailable');
+    });
+    const logger = { error: vi.fn() };
+
+    const runtime = await createEngineRuntimeWithSingletonRetry(
+      { allowEphemeralStorageForTests: true },
+      lockFactory,
+      { sleep, logger },
+    );
+
+    expect(runtime).toBeDefined();
+    expect(lockFactory).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+
+    await runtime.release();
   });
 });
 
