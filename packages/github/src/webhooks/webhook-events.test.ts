@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createTestContext, type TestContext } from '@tribunal/test/context';
 import { webhookEvent } from '@tribunal/database/schema';
@@ -76,5 +76,63 @@ describe('storeWebhookEvent', () => {
       .from(webhookEvent)
       .where(eq(webhookEvent.deliveryId, 'delivery-1'));
     expect(rows).toHaveLength(1);
+  });
+});
+
+/**
+ * The two failure branches below (a conflicted insert with no `deliveryId`
+ * to re-select by, and a conflicted insert whose re-select finds nothing)
+ * are defensive guards against states the real database can never actually
+ * produce -- `onConflictDoNothing({ target: webhookEvent.deliveryId })`
+ * only ever conflicts on a non-null `deliveryId` (multiple `null`s are
+ * distinct under a unique constraint), and a conflict guarantees a row with
+ * that exact `deliveryId` exists to re-select. A hand-built fake `db` --
+ * scoped to just these two tests via `vi.spyOn`, not a file-wide `vi.mock`,
+ * so the real-database tests above are unaffected -- is the only way to
+ * exercise them.
+ */
+describe('storeWebhookEvent (defensive guards unreachable via the real database)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function createFakeDbContext(options: {
+    insertReturning: unknown[];
+    selectReturning?: unknown[];
+  }): Promise<GithubServiceContext> {
+    const repositoriesService = await import('../repositories/service.js');
+    vi.spyOn(repositoriesService, 'getOrCreateRepository').mockResolvedValue(undefined as never);
+
+    const insertReturning = vi.fn().mockResolvedValue(options.insertReturning);
+    const onConflictDoNothing = vi.fn(() => ({ returning: insertReturning }));
+    const values = vi.fn(() => ({ onConflictDoNothing }));
+    const insert = vi.fn(() => ({ values }));
+
+    const selectLimit = vi.fn().mockResolvedValue(options.selectReturning ?? []);
+    const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+    const selectFrom = vi.fn(() => ({ where: selectWhere }));
+    const select = vi.fn(() => ({ from: selectFrom }));
+
+    return {
+      db: { insert, select } as unknown as GithubServiceContext['db'],
+      cache: {} as GithubServiceContext['cache'],
+      getInstallationOctokit: vi.fn(),
+    };
+  }
+
+  it('throws when the insert conflicts but no deliveryId was supplied to re-select by', async () => {
+    const context = await createFakeDbContext({ insertReturning: [] });
+
+    await expect(storeWebhookEvent(context, eventData({ deliveryId: null }))).rejects.toThrow(
+      'storeWebhookEvent: insert conflicted without a deliveryId to re-select by',
+    );
+  });
+
+  it('throws when the insert conflicts and the re-select finds no existing row', async () => {
+    const context = await createFakeDbContext({ insertReturning: [], selectReturning: [] });
+
+    await expect(storeWebhookEvent(context, eventData())).rejects.toThrow(
+      'storeWebhookEvent: insert conflicted on delivery delivery-1 but no existing row was found',
+    );
   });
 });

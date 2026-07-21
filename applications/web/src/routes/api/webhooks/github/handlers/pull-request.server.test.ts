@@ -88,6 +88,90 @@ describe('handlePullRequestEvent', () => {
 
     expect(signalPullRequestClosedMock).toHaveBeenCalledTimes(1);
   });
+
+  it('no-ops for an unhandled action', async () => {
+    const context = createContext();
+    await handlePullRequestEvent(createPayload('labeled'), context);
+
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
+    expect(signalPullRequestClosedMock).not.toHaveBeenCalled();
+    expect(context.logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'labeled' }),
+      expect.stringContaining('Unhandled'),
+    );
+  });
+
+  it('logs and throws when the opened/reopened/synchronize enqueue fails', async () => {
+    signalPullRequestEventMock.mockResolvedValue({
+      ok: false,
+      workflowId: 'review:pr:42:7',
+      error: 'boom',
+      intentKind: 'start',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      handlePullRequestEvent(createPayload('opened', { draft: false }), createContext()),
+    ).rejects.toThrow(/Failed to enqueue PR opened intent/);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[webhook] Failed to enqueue pull request review intent:',
+      expect.objectContaining({ event: 'pull_request', action: 'opened' }),
+    );
+  });
+
+  it('includes hookId in the failure log when present', async () => {
+    signalPullRequestEventMock.mockResolvedValue({
+      ok: false,
+      workflowId: 'review:pr:42:7',
+      error: 'boom',
+      intentKind: 'start',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const context = createContext();
+    context.hookId = 'hook-123';
+
+    await expect(
+      handlePullRequestEvent(createPayload('opened', { draft: false }), context),
+    ).rejects.toThrow();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[webhook] Failed to enqueue pull request review intent:',
+      expect.objectContaining({ hookId: 'hook-123' }),
+    );
+  });
+
+  it('logs and throws when the ready_for_review enqueue fails', async () => {
+    signalPullRequestEventMock.mockResolvedValue({
+      ok: false,
+      workflowId: 'review:pr:42:7',
+      error: 'boom',
+      intentKind: 'start',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      handlePullRequestEvent(createPayload('ready_for_review', { draft: false }), createContext()),
+    ).rejects.toThrow(/Failed to enqueue PR ready_for_review intent/);
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('logs and throws when the closed enqueue fails', async () => {
+    signalPullRequestClosedMock.mockResolvedValue({
+      ok: false,
+      workflowId: 'review:pr:42:7',
+      error: 'boom',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      handlePullRequestEvent(createPayload('closed', { draft: false }), createContext()),
+    ).rejects.toThrow(/Failed to enqueue PR closed intent/);
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[webhook] Failed to enqueue PR closed review intent:',
+      expect.objectContaining({ event: 'pull_request' }),
+    );
+  });
 });
 
 function createPayload(action: string, overrides: { draft?: boolean } = {}): PullRequestEvent {

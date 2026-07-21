@@ -22,11 +22,18 @@ import {
 import { eq } from 'drizzle-orm';
 import {
   deleteAgent,
+  getAgent,
   getRepositoryOperatorDetails,
   getCostOverview,
+  getReviewEffortOptions,
+  getReviewModelOptions,
   getReviewsEnabled,
   getRunInspector,
+  getRunsOverview,
+  getUserReviewSettings,
   hasWatchedRepositories,
+  listAgents,
+  normalizeIgnoreGlobs,
   saveAgent,
   saveRepositoryWatchSettings,
   saveUserReviewSettings,
@@ -36,6 +43,7 @@ import {
   streamRunAgentEvents,
   submitRepositorySettingsForm,
   userOwnsRepository,
+  validateEffort,
 } from './operator';
 
 const mocks = vi.hoisted(() => ({
@@ -325,6 +333,50 @@ describe('review operator server helpers', () => {
       }),
     );
 
+    // Two runs for the same repository (newest first, per orderBy) exercise
+    // the `seenRuns` dedup so only the most recent run's status is kept, and
+    // a non-"estimate" cost event exercises the source-filter skip below.
+    await insertReviewRun({
+      id: 'run_9101_older',
+      userId: firstOwner.id,
+      repositoryId: 9101,
+      prNumber: 1,
+      headSha: 'a'.repeat(40),
+      trigger: 'opened',
+      status: 'failed',
+      startedAt: new Date(Date.now() - 60_000),
+    });
+    await insertReviewRun({
+      id: 'run_9101_newer',
+      userId: firstOwner.id,
+      repositoryId: 9101,
+      prNumber: 2,
+      headSha: 'b'.repeat(40),
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date(),
+    });
+    await testDb.db.insert(costEvent).values([
+      {
+        id: 'cost_9101_estimate',
+        userId: firstOwner.id,
+        kind: 'llm',
+        source: 'estimate',
+        repositoryId: 9101,
+        amountUsd: '3.00',
+        idempotencyKey: 'cost_9101_estimate',
+      },
+      {
+        id: 'cost_9101_reconciled',
+        userId: firstOwner.id,
+        kind: 'llm',
+        source: 'reconciled',
+        repositoryId: 9101,
+        amountUsd: '99.00',
+        idempotencyKey: 'cost_9101_reconciled',
+      },
+    ]);
+
     const firstDetails = await withTestDatabase(() =>
       getRepositoryOperatorDetails(firstOwner.id, [9101]),
     );
@@ -336,12 +388,24 @@ describe('review operator server helpers', () => {
       watched: true,
       ignoreGlobs: ['docs/**'],
       agents: [{ id: firstAgent.id, slug: firstAgent.slug, enabled: true }],
+      // Only the newest run's status survives the dedup, and only the
+      // "estimate"-sourced cost event (not the "actual" one) is rolled up.
+      lastRunStatus: 'posted',
+      estimatedCostLast30DaysUsd: 3,
     });
     expect(secondDetails.get(9101)).toMatchObject({
       watched: false,
       ignoreGlobs: ['src/generated/**'],
       agents: [{ id: secondAgent.id, slug: secondAgent.slug, enabled: true }],
     });
+  });
+
+  it('returns an empty map without querying the database when no repository ids are given', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    const details = await withTestDatabase(() => getRepositoryOperatorDetails(owner.id, []));
+
+    expect(details.size).toBe(0);
   });
 
   it('does not leave partial watch settings when assignment persistence fails', async () => {
@@ -445,6 +509,180 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it('normalizes ignore globs by dropping blanks and deduplicating', () => {
+    expect(normalizeIgnoreGlobs(['  dist/** ', '', '   ', 'dist/**', 'coverage/**'])).toEqual([
+      'dist/**',
+      'coverage/**',
+    ]);
+  });
+
+  it('creates a new agent when no id is submitted', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('slug', 'style-checker');
+    formData.set('description', 'Checks style');
+    formData.set('body', 'Review for style issues.');
+    formData.set('model', 'sonnet');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toMatchObject({ success: true });
+    const [created] = await testDb.db
+      .select()
+      .from(agent)
+      .where(eq(agent.id, (result as { id: string }).id));
+    expect(created).toMatchObject({ slug: 'style-checker', userId: owner.id, enabled: true });
+  });
+
+  it('updates an existing owned agent in place', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toEqual({ success: true, id: reviewAgent.id });
+    const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
+    expect(updated).toMatchObject({ description: 'Updated description', model: 'opus' });
+  });
+
+  it('rejects an invalid agent submission with the schema validation error', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    // Invalid: slug must be lowercase-kebab-case; this contains spaces.
+    formData.set('slug', 'not a valid slug');
+    formData.set('description', 'x');
+    formData.set('body', 'x');
+    formData.set('model', 'sonnet');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toMatchObject({ status: 400 });
+  });
+
+  it('deletes an owned agent', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+
+    const result = await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    expect(result).toEqual({ success: true });
+    const rows = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rejects deleting an agent with a missing id', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('id', '');
+
+    const result = await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    expect(result).toMatchObject({ status: 400, data: { error: 'Agent id is required.' } });
+  });
+
+  it('rejects enabling/disabling an agent with a missing id', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('id', '');
+    formData.set('enabled', 'true');
+
+    const result = await withTestDatabase(() => setAgentEnabled(owner.id, formData));
+
+    expect(result).toMatchObject({ status: 400, data: { error: 'Agent id is required.' } });
+  });
+
+  it('404s the losing side of two concurrent deletes racing the same agent', async () => {
+    // requireAgentMutationAccess's existence/ownership check and the delete's
+    // own WHERE are two separate round trips. Racing two concurrent deletes
+    // for the same row means both pass the access check (the row still
+    // exists for both), but only one DELETE actually removes a row -- the
+    // other's `deletedRows.length === 0` fires deterministically.
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formDataA = new FormData();
+    formDataA.set('id', reviewAgent.id);
+    const formDataB = new FormData();
+    formDataB.set('id', reviewAgent.id);
+
+    const [resultA, resultB] = await withTestDatabase(() =>
+      Promise.all([deleteAgent(owner.id, formDataA), deleteAgent(owner.id, formDataB)]),
+    );
+
+    const results = [resultA, resultB];
+    const successes = results.filter((r) => 'success' in r && r.success === true);
+    const notFound = results.filter((r) => 'status' in r && r.status === 404);
+    expect(successes).toHaveLength(1);
+    expect(notFound).toHaveLength(1);
+  });
+
+  it('404s the losing side of two concurrent enable/disable toggles racing a deletion', async () => {
+    // Same race shape as delete: requireAgentMutationAccess passes for both
+    // (the agent still exists at check time), but by the time the update's
+    // own WHERE runs, the agent has already been deleted by the other
+    // concurrent call, so its update affects 0 rows.
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const deleteFormData = new FormData();
+    deleteFormData.set('id', reviewAgent.id);
+    const enableFormData = new FormData();
+    enableFormData.set('id', reviewAgent.id);
+    enableFormData.set('enabled', 'false');
+
+    const [deleteResult, enableResult] = await withTestDatabase(() =>
+      Promise.all([
+        deleteAgent(owner.id, deleteFormData),
+        setAgentEnabled(owner.id, enableFormData),
+      ]),
+    );
+
+    // Whichever call's own mutating statement loses the race against the
+    // other's DELETE affects 0 rows and returns fail(404); this asserts the
+    // race actually produced a 404 rather than requiring a specific side to
+    // win (that ordering isn't guaranteed).
+    const anyNotFound =
+      ('status' in deleteResult && deleteResult.status === 404) ||
+      ('status' in enableResult && enableResult.status === 404);
+    expect(anyNotFound).toBe(true);
+  });
+
+  it('enables and disables an owned agent', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('enabled', 'false');
+
+    const result = await withTestDatabase(() => setAgentEnabled(owner.id, formData));
+
+    expect(result).toEqual({ success: true });
+    const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
+    expect(updated?.enabled).toBe(false);
+  });
+
+  it('rejects watch settings referencing an agent the user does not own', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    const result = await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: true,
+        ignoreGlobs: [],
+        agentIds: ['agent_does_not_exist'],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'One or more selected agents are unavailable.' },
+    });
+  });
+
   it('rejects inherited default models for user review settings', async () => {
     const { owner } = await seedRepositoryOwnership();
     const formData = new FormData();
@@ -458,6 +696,111 @@ describe('review operator server helpers', () => {
       status: 400,
       data: { error: 'Default model is invalid.' },
     });
+  });
+
+  it('lists and reads a single agent scoped to the owning user', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+
+    const agents = await withTestDatabase(() => listAgents(owner.id));
+    expect(agents.map((a) => a.id)).toEqual([reviewAgent.id]);
+
+    const found = await withTestDatabase(() => getAgent(owner.id, reviewAgent.id));
+    expect(found).toMatchObject({ id: reviewAgent.id });
+
+    const missing = await withTestDatabase(() => getAgent(owner.id, 'agent_missing'));
+    expect(missing).toBeNull();
+  });
+
+  it('returns the run overview scoped to the owning user, newest first', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_older',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 1,
+      headSha: 'sha-older',
+      trigger: 'opened',
+      startedAt: new Date('2026-06-01T00:00:00Z'),
+    });
+    await insertReviewRun({
+      id: 'run_newer',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 2,
+      headSha: 'sha-newer',
+      trigger: 'opened',
+      startedAt: new Date('2026-06-02T00:00:00Z'),
+    });
+
+    const overview = await withTestDatabase(() => getRunsOverview(owner.id));
+
+    expect(overview.map((r) => r.id)).toEqual(['run_newer', 'run_older']);
+    expect(overview[0]).toMatchObject({
+      repositoryOwner: 'lost-gradient',
+      repositoryName: 'tribunal',
+    });
+  });
+
+  it('rejects a negative or non-numeric daily cost cap for user review settings', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    const negative = new FormData();
+    negative.set('dailyCostCapUsd', '-5');
+    negative.set('defaultModel', 'sonnet');
+    await expect(
+      withTestDatabase(() => saveUserReviewSettings(owner.id, negative)),
+    ).resolves.toMatchObject({
+      status: 400,
+      data: { error: 'Daily cost cap must be zero or greater.' },
+    });
+
+    const notANumber = new FormData();
+    notANumber.set('dailyCostCapUsd', 'not-a-number');
+    notANumber.set('defaultModel', 'sonnet');
+    await expect(
+      withTestDatabase(() => saveUserReviewSettings(owner.id, notANumber)),
+    ).resolves.toMatchObject({
+      status: 400,
+      data: { error: 'Daily cost cap must be zero or greater.' },
+    });
+  });
+
+  it('upserts valid user review settings and getUserReviewSettings reads them back', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    const initial = await withTestDatabase(() => getUserReviewSettings(owner.id));
+    expect(initial).toHaveLength(1);
+    expect(initial[0]).toMatchObject({ userId: owner.id });
+
+    const formData = new FormData();
+    formData.set('dailyCostCapUsd', '15');
+    formData.set('defaultModel', 'opus');
+    formData.set('reviewsEnabled', 'on');
+
+    const result = await withTestDatabase(() => saveUserReviewSettings(owner.id, formData));
+    expect(result).toEqual({ success: true });
+
+    const [settingsRow] = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+    expect(settingsRow).toMatchObject({
+      dailyCostCapUsd: '15',
+      defaultModel: 'opus',
+      reviewsEnabled: true,
+    });
+
+    // A second read via getUserReviewSettings exercises the onConflictDoNothing
+    // fallback-select branch (the row already exists from the upsert above).
+    const secondRead = await withTestDatabase(() => getUserReviewSettings(owner.id));
+    expect(secondRead[0]).toMatchObject({ defaultModel: 'opus' });
+  });
+
+  it('exposes the model options, effort options, and effort validator', () => {
+    expect(getReviewModelOptions()).toEqual(['inherit', 'sonnet', 'opus', 'haiku', 'fable']);
+    expect(getReviewEffortOptions()).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(validateEffort('medium')).toBe(true);
+    expect(validateEffort('not-a-real-effort')).toBe(false);
   });
 
   it('scopes run inspection and stop control to the owning user', async () => {
@@ -566,6 +909,66 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });
   });
 
+  it('404s a pull_request_review run whose review row is missing (data inconsistency)', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(tribunalRun).values({
+      id: 'run_orphaned_review',
+      userId: owner.id,
+      repositoryId: 9001,
+      runKind: 'pull_request_review',
+      status: 'queued',
+    });
+
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_orphaned_review')),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run details not found.' } });
+  });
+
+  it('404s a webhook_event_handler run whose handler row is missing (data inconsistency)', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(tribunalRun).values({
+      id: 'run_orphaned_webhook',
+      userId: owner.id,
+      repositoryId: 9001,
+      runKind: 'webhook_event_handler',
+      status: 'queued',
+    });
+
+    await expect(
+      withTestDatabase(() => getRunInspector(owner.id, 'run_orphaned_webhook')),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run details not found.' } });
+  });
+
+  it('404s streaming a run that does not exist', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const abortController = new AbortController();
+
+    await expect(
+      withTestDatabase(() =>
+        streamRunAgentEvents(owner.id, 'run_does_not_exist', abortController.signal),
+      ),
+    ).rejects.toMatchObject({ status: 404, body: { message: 'Run not found.' } });
+  });
+
+  it('403s streaming a run owned by a different user', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    const abortController = new AbortController();
+
+    await expect(
+      withTestDatabase(() => streamRunAgentEvents(otherUser.id, 'run_1', abortController.signal)),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it('streams only new agent events and sends an idle keepalive', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     await insertReviewRun({
@@ -614,6 +1017,275 @@ describe('review operator server helpers', () => {
     await reader.cancel().catch(() => undefined);
 
     expect(streamedText).toContain(': connected');
+    expect(streamedText).toContain(': keepalive');
+    expect(streamedText).not.toContain('event: agent_event');
+  });
+
+  it('emits an error chunk when reading agent events fails, then recovers on the next poll', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const abortController = new AbortController();
+
+    // The ReadableStream's start() callback runs synchronously during
+    // construction (inside streamRunAgentEvents, before it returns), so the
+    // first poll's `select()` already fires before this call resolves --
+    // too late to intercept with a spy set up afterward. Instead, count
+    // calls: #1 is requireRunAccess's own select (must pass through), #2 is
+    // listRunAgentEvents's first poll (fail it), then fall back to the real
+    // implementation for any later, unrelated selects.
+    let selectCallCount = 0;
+    const realSelect = testDb.db.select.bind(testDb.db);
+    const selectSpy = vi
+      .spyOn(testDb.db, 'select')
+      .mockImplementation((...args: Parameters<typeof testDb.db.select>) => {
+        selectCallCount += 1;
+        if (selectCallCount === 2) throw new Error('connection reset');
+        return realSelect(...args);
+      });
+
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, 0),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    let streamedText = decoder.decode((await reader.read()).value ?? new Uint8Array());
+    if (!streamedText.includes(': event read failed')) {
+      streamedText += decoder.decode((await reader.read()).value ?? new Uint8Array());
+    }
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+    selectSpy.mockRestore();
+
+    expect(streamedText).toContain(': event read failed');
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Failed to stream run agent events',
+      expect.objectContaining({ runId: 'run_1', error: expect.any(Error) }),
+    );
+  });
+
+  it('reschedules and polls again ~2.5s after connecting, and cancel() clears the pending timer', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    const abortController = new AbortController();
+
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, 0),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+
+    // First chunk: ": connected". Second chunk: the first poll's keepalive.
+    let streamedText = decoder.decode((await reader.read()).value ?? new Uint8Array());
+    streamedText += decoder.decode((await reader.read()).value ?? new Uint8Array());
+    const keepalivesBeforeWait = streamedText.split(': keepalive').length - 1;
+
+    // Insert a new event so the *rescheduled* poll (fired by the internal
+    // setTimeout ~2.5s after the first poll) has something new to emit,
+    // proving the reschedule actually ran rather than just idling.
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { allowed: true },
+    });
+
+    streamedText += decoder.decode((await reader.read()).value ?? new Uint8Array());
+
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+
+    const keepalivesAfterWait = streamedText.split(': keepalive').length - 1;
+    expect(keepalivesAfterWait).toBeGreaterThanOrEqual(keepalivesBeforeWait);
+    expect(streamedText).toContain('event: agent_event');
+  }, 8_000);
+
+  it('cancel() clears the pending reschedule timer so no further polls run after the reader cancels', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    const abortController = new AbortController();
+
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, 0),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+
+    // Consume the initial ": connected" + first keepalive, then cancel the
+    // reader directly (exercising the stream's `cancel()` handler) before
+    // the ~2.5s reschedule would otherwise fire.
+    await reader.read();
+    await reader.read();
+    await reader.cancel();
+
+    // Insert an event that a still-running reschedule would have emitted,
+    // then wait past the reschedule interval. If cancel() failed to clear
+    // the timer, `enqueue` would still be called, but `controller.enqueue`
+    // on an already-cancelled stream throws -- surfacing as an unhandled
+    // rejection rather than silently succeeding. Reading again after cancel
+    // must reject or return done, proving no further polling is observable.
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { allowed: true },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2_800));
+
+    const result = await reader.read().catch((error: unknown) => ({ done: true, error }));
+    expect(result.done).toBe(true);
+  }, 8_000);
+
+  it('streams an already-buffered agent event immediately (no afterEventId cursor)', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { allowed: true },
+    });
+    const abortController = new AbortController();
+
+    // No afterEventId cursor: the stream computes the latest seen id from the
+    // DB (0, since this event was inserted before the stream opened is not
+    // how the cursor works — omitting it makes the activity's own
+    // getLatestRunAgentEventId resolve to the already-inserted event's id, so
+    // pass an explicit cursor of 0 to force the "new event" branch instead).
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal, 0),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    let streamedText = decoder.decode((await reader.read()).value ?? new Uint8Array());
+    if (!streamedText.includes('event: agent_event')) {
+      streamedText += decoder.decode((await reader.read()).value ?? new Uint8Array());
+    }
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+
+    expect(streamedText).toContain('event: agent_event');
+  });
+
+  it('resolves the latest event id from the database when no cursor is supplied', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_1',
+      seq: 1,
+      kind: 'tool_pre',
+      tool: 'Read',
+      detail: { allowed: true },
+    });
+    const abortController = new AbortController();
+
+    // No afterEventId: the stream resolves its own cursor via
+    // getLatestRunAgentEventId, which should be the already-inserted event's
+    // id — so no further events are "new" and a keepalive is sent instead.
+    const response = await withTestDatabase(() =>
+      streamRunAgentEvents(owner.id, 'run_1', abortController.signal),
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    let streamedText = decoder.decode((await reader.read()).value ?? new Uint8Array());
+    if (!streamedText.includes(': keepalive')) {
+      streamedText += decoder.decode((await reader.read()).value ?? new Uint8Array());
+    }
+    abortController.abort();
+    await reader.cancel().catch(() => undefined);
+
     expect(streamedText).toContain(': keepalive');
     expect(streamedText).not.toContain('event: agent_event');
   });
@@ -677,6 +1349,68 @@ describe('review operator server helpers', () => {
         headers: { authorization: 'Bearer control-token' },
       },
     );
+  });
+
+  it('keeps the persisted agent stop when the live engine agent-stop signal itself throws', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network unreachable'));
+    const warnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_security',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+
+    await expect(
+      withTestDatabase(() => stopAgent(owner.id, 'run_1', reviewAgent.id)),
+    ).resolves.toEqual({ ok: true });
+
+    expect(warnMock).toHaveBeenCalledWith('Engine agent stop signal failed.', expect.any(Error));
+  });
+
+  it('warns (but still succeeds) when the live engine agent-stop signal returns a non-404 failure status', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }));
+    const warnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_security',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+
+    await expect(
+      withTestDatabase(() => stopAgent(owner.id, 'run_1', reviewAgent.id)),
+    ).resolves.toEqual({ ok: true });
+
+    expect(warnMock).toHaveBeenCalledWith('Engine agent stop signal failed with status 500.');
   });
 
   it('returns not found when an owned run does not contain the requested agent run', async () => {
@@ -851,6 +1585,37 @@ describe('review operator server helpers', () => {
     expect(warnMock).toHaveBeenCalledWith('Engine stop signal failed with status 503.');
   });
 
+  it('keeps the persisted stop when the live engine stop signal itself throws (network failure)', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network unreachable'));
+    const warnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await insertReviewRun({
+      id: 'run_1',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 22,
+      headSha: 'abc123',
+      trigger: 'manual',
+      status: 'running',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_1',
+      userId: owner.id,
+      runId: 'run_1',
+      agentId: reviewAgent.id,
+      status: 'running',
+    });
+
+    await expect(withTestDatabase(() => stopRun(owner.id, 'run_1'))).resolves.toEqual({
+      ok: true,
+    });
+
+    expect(warnMock).toHaveBeenCalledWith('Engine stop signal failed.', expect.any(Error));
+  });
+
   it('rolls up estimated costs and cache-token splits', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     await insertReviewRun({
@@ -862,34 +1627,85 @@ describe('review operator server helpers', () => {
       trigger: 'manual',
       status: 'posted',
     });
-    await testDb.db.insert(agentRun).values({
-      id: 'agent_run_cost',
+    await insertReviewRun({
+      id: 'run_cost_2',
       userId: owner.id,
-      runId: 'run_cost',
-      agentId: reviewAgent.id,
-      status: 'succeeded',
-    });
-    await testDb.db.insert(costEvent).values({
-      id: 'cost_1',
-      userId: owner.id,
-      kind: 'llm',
-      source: 'estimate',
       repositoryId: 9001,
-      reviewRunId: 'run_cost',
-      agentRunId: 'agent_run_cost',
-      agentId: reviewAgent.id,
-      amountUsd: '1.25',
-      idempotencyKey: 'cost_1',
-      meta: { cacheReadTokens: 20, cacheCreationTokens: 10 },
+      prNumber: 23,
+      headSha: 'ghi789',
+      trigger: 'manual',
+      status: 'posted',
     });
+    await testDb.db.insert(agent).values({
+      id: 'agent_performance',
+      userId: owner.id,
+      slug: 'performance',
+      description: 'Finds performance issues',
+      body: 'Review for performance issues.',
+      model: 'sonnet',
+      enabled: true,
+    });
+    await testDb.db.insert(agentRun).values([
+      {
+        id: 'agent_run_cost',
+        userId: owner.id,
+        runId: 'run_cost',
+        agentId: reviewAgent.id,
+        status: 'succeeded',
+      },
+      {
+        id: 'agent_run_cost_2',
+        userId: owner.id,
+        runId: 'run_cost_2',
+        agentId: 'agent_performance',
+        status: 'succeeded',
+      },
+    ]);
+    await testDb.db.insert(costEvent).values([
+      {
+        id: 'cost_1',
+        userId: owner.id,
+        kind: 'llm',
+        source: 'estimate',
+        repositoryId: 9001,
+        reviewRunId: 'run_cost',
+        agentRunId: 'agent_run_cost',
+        agentId: reviewAgent.id,
+        amountUsd: '1.25',
+        idempotencyKey: 'cost_1',
+        meta: { cacheReadTokens: 20, cacheCreationTokens: 10 },
+      },
+      {
+        id: 'cost_2',
+        userId: owner.id,
+        kind: 'llm',
+        source: 'estimate',
+        repositoryId: 9001,
+        reviewRunId: 'run_cost_2',
+        agentRunId: 'agent_run_cost_2',
+        agentId: 'agent_performance',
+        amountUsd: '2.5',
+        idempotencyKey: 'cost_2',
+        meta: { cacheReadTokens: 5, cacheCreationTokens: 15 },
+      },
+    ]);
 
     const overview = await withTestDatabase(() => getCostOverview(owner.id, 'estimate'));
 
-    expect(overview.rollups.byReviewRun).toEqual([{ label: 'run_cost', amountUsd: 1.25 }]);
-    expect(overview.rollups.byAgent).toEqual([{ label: 'security', amountUsd: 1.25 }]);
+    // Two distinct labels in each rollup exercises the multi-entry sort path
+    // (rollup() is only meaningfully exercised with 2+ groups).
+    expect(overview.rollups.byReviewRun).toEqual([
+      { label: 'run_cost_2', amountUsd: 2.5 },
+      { label: 'run_cost', amountUsd: 1.25 },
+    ]);
+    expect(overview.rollups.byAgent).toEqual([
+      { label: 'performance', amountUsd: 2.5 },
+      { label: 'security', amountUsd: 1.25 },
+    ]);
     expect(overview.rollups.byAgentPerRepository).toEqual([
+      { label: 'performance @ lost-gradient/tribunal', amountUsd: 2.5 },
       { label: 'security @ lost-gradient/tribunal', amountUsd: 1.25 },
     ]);
-    expect(overview.cacheTokens).toEqual({ cacheReadTokens: 20, cacheCreationTokens: 10 });
+    expect(overview.cacheTokens).toEqual({ cacheReadTokens: 25, cacheCreationTokens: 25 });
   });
 });

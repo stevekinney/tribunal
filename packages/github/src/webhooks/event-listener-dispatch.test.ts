@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createTestContext, type TestContext } from '@tribunal/test/context';
 import {
@@ -6,6 +6,7 @@ import {
   agentRun,
   eventListenerDelivery,
   githubInstallationRepository,
+  repositoryEventListener,
   tribunalRun,
   webhookEvent,
   webhookEventHandlerRun,
@@ -458,5 +459,130 @@ describe('drainEventListenerDeliveries', () => {
       .from(eventListenerDelivery)
       .where(eq(eventListenerDelivery.id, pending.id));
     expect(deliveryRow?.status).toBe('running');
+  });
+
+  describe('rows vanishing between matching and claim (races dispatchClaimedDelivery re-checks)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /**
+     * `dispatchClaimedDelivery` re-reads the listener/delivery/event/agent
+     * rows after the claim rather than trusting the pre-claim `candidate`
+     * snapshot (see the module docstring), specifically to guard against
+     * one of those rows vanishing between matching and this claim. Because
+     * `listClaimableEventListenerDeliveries` inner-joins the listener and
+     * agent, a row that's actually gone never appears as a candidate in the
+     * first place -- these guards can only fire from a genuine race, which
+     * requires forcing the *specific* re-read inside `dispatchClaimedDelivery`
+     * to come back empty without disturbing the earlier candidate-listing
+     * read that uses the same table. `interceptSelectFrom` does exactly
+     * that: it only overrides an *upcoming* `.select().from(table)...limit()`
+     * call, leaving every prior and unrelated read on the real database.
+     */
+    function interceptSelectFrom(table: unknown, occurrence = 1) {
+      const originalSelect = testContext.db.select.bind(testContext.db);
+      let matchesSeen = 0;
+      vi.spyOn(testContext.db, 'select').mockImplementation((...selectArgs: unknown[]) => {
+        const builder = (originalSelect as (...args: unknown[]) => any)(...selectArgs);
+        const originalFrom = builder.from.bind(builder);
+        builder.from = (fromTable: unknown, ...fromRest: unknown[]) => {
+          const fromResult = originalFrom(fromTable, ...fromRest);
+          if (fromTable !== table) return fromResult;
+          matchesSeen += 1;
+          if (matchesSeen !== occurrence) return fromResult;
+          const originalWhere = fromResult.where.bind(fromResult);
+          fromResult.where = (...whereArgs: unknown[]) => {
+            const whereResult = originalWhere(...whereArgs);
+            whereResult.limit = () => Promise.resolve([]);
+            return whereResult;
+          };
+          return fromResult;
+        };
+        return builder;
+      });
+    }
+
+    it('marks the delivery failed when the listener row vanishes just after claim', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      interceptSelectFrom(repositoryEventListener);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
+
+    it('marks the delivery failed when the delivery row vanishes just after claim', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      // `.from(eventListenerDelivery)` is also used by the candidates-listing
+      // read the drain performs first -- target the *second* match, which
+      // is `dispatchClaimedDelivery`'s own re-read of the just-claimed row.
+      interceptSelectFrom(eventListenerDelivery, 2);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
+
+    it('marks the delivery failed when the webhook event row vanishes just after claim', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      interceptSelectFrom(webhookEvent);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
+
+    it('marks the delivery failed when the agent row vanishes just after claim', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      interceptSelectFrom(agent);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
+
+    it("marks the delivery skippedDisabled when the listener owner's installation access is no longer active", async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      vi.spyOn(
+        await import('@tribunal/database/queries'),
+        'isEventListenerOwnerInstallationActive',
+      ).mockResolvedValueOnce(false);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+    });
+
+    it('marks the delivery failed (generic, non-disabled error) when a non-EventListenerDisabledError is thrown mid-dispatch', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      vi.spyOn(
+        await import('@tribunal/database/queries'),
+        'isEventListenerOwnerInstallationActive',
+      ).mockRejectedValueOnce(new Error('installation lookup exploded'));
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
+
+    it('marks the delivery failed when the repository row for the listener no longer exists', async () => {
+      const { repository } = await createFixture();
+      const context = createGithubContext(testContext);
+      vi.spyOn(
+        await import('../repositories/service.js'),
+        'getRepositoryById',
+      ).mockResolvedValueOnce(null);
+
+      const result = await drainEventListenerDeliveries(context, repository.id);
+
+      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+    });
   });
 });

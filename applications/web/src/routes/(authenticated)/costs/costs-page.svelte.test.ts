@@ -98,4 +98,25 @@ describe('/costs page', () => {
       .element(dailySpendMeter)
       .toHaveAttribute('aria-valuetext', '$12.50 of $10.00 daily cap');
   });
+
+  it('switches the breakdown to another dimension when its segment is selected', async () => {
+    render(CostsPage, { data, params: {}, form: null });
+
+    await expect.element(page.getByText('security', { exact: true })).toBeInTheDocument();
+
+    await page.getByRole('radio', { name: 'Repository' }).click();
+
+    await expect.element(page.getByText('lost-gradient/tribunal')).toBeInTheDocument();
+    await expect.element(page.getByText('security', { exact: true })).not.toBeInTheDocument();
+  });
+
+  it('shows an empty note when the active dimension has no cost rows', async () => {
+    render(CostsPage, {
+      data: { ...data, costs: { ...data.costs, rollups: { ...data.costs.rollups, byAgent: [] } } },
+      params: {},
+      form: null,
+    });
+
+    await expect.element(page.getByText('No cost events for this dimension.')).toBeInTheDocument();
+  });
 });

@@ -18,6 +18,16 @@ export default defineConfig({
         inline: ['prose-writer'],
       },
     },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json'],
+      include: ['lib/**/*.ts'],
+      exclude: ['lib/**/*.test.ts'],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+      },
+    },
   },
   // Externalize database drivers that drizzle-kit dynamically imports
   // to prevent bundling errors during test runs

@@ -9,6 +9,7 @@ const {
   mockGetPullRequestOperationalStatus,
   mockGetRepositoryOperatorDetails,
   mockListAgents,
+  mockSubmitRepositorySettingsForm,
   mockDbSelect,
   mockEnv,
 } = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const {
   mockGetPullRequestOperationalStatus: vi.fn(),
   mockGetRepositoryOperatorDetails: vi.fn(),
   mockListAgents: vi.fn(),
+  mockSubmitRepositorySettingsForm: vi.fn(),
   mockDbSelect: vi.fn(),
   mockEnv: {
     NODE_ENV: 'test' as string,
@@ -35,6 +37,7 @@ vi.mock('@sveltejs/kit', () => ({
   error: (status: number, message: string) => {
     throw { status, body: { message }, type: 'error' };
   },
+  fail: (status: number, data: unknown) => ({ status, data, type: 'failure' }),
 }));
 
 vi.mock('@tribunal/github/repositories/service', () => ({
@@ -59,6 +62,7 @@ vi.mock('$lib/server/repositories', () => ({
 vi.mock('$lib/server/review/operator', () => ({
   getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
   listAgents: mockListAgents,
+  submitRepositorySettingsForm: mockSubmitRepositorySettingsForm,
 }));
 
 vi.mock('$lib/server/database', () => ({
@@ -71,7 +75,7 @@ vi.mock('$env/dynamic/private', () => ({
   },
 }));
 
-import { load } from './+page.server';
+import { actions, load } from './+page.server';
 
 const defaultFilters = {
   state: 'open' as const,
@@ -409,5 +413,95 @@ describe('repository pull requests page load (E2E test mode)', () => {
     )) as { pullRequests: Array<{ number: number }> };
 
     expect(result.pullRequests).toHaveLength(0);
+  });
+
+  it('filters synthesized E2E pull requests by head and base ref', async () => {
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    mockParsePullRequestFilters.mockReturnValue({
+      ...defaultFilters,
+      head: 'e2e/pr-1',
+      base: 'main',
+    });
+    mockDbSelect.mockReturnValue({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                {
+                  run: { status: 'posted', startedAt: new Date('2024-01-01T00:00:00Z') },
+                  review: { prNumber: 1, headSha: 'sha1' },
+                },
+                {
+                  run: { status: 'posted', startedAt: new Date('2024-01-02T00:00:00Z') },
+                  review: { prNumber: 2, headSha: 'sha2' },
+                },
+              ]),
+          }),
+        }),
+      }),
+    });
+
+    const result = (await runLoad(
+      'https://example.com/repositories/1/pull-requests?pr_head=e2e/pr-1&pr_base=main',
+    )) as { pullRequests: Array<{ number: number }> };
+
+    expect(result.pullRequests.map((pr) => pr.number)).toEqual([1]);
+  });
+});
+
+describe('repository pull requests page actions.saveSettings (legacy)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('redirects to /login when no user is present', async () => {
+    const request = { formData: vi.fn() } as unknown as Request;
+    await expect(
+      actions.saveSettings({ locals: {}, request, params: { repositoryId: '1' } } as never),
+    ).rejects.toMatchObject({ status: 302, location: '/login' });
+  });
+
+  it('rejects an invalid repository id without touching the database', async () => {
+    const request = { formData: vi.fn() } as unknown as Request;
+
+    const result = await actions.saveSettings({
+      locals: { user: { id: 1 } },
+      request,
+      params: { repositoryId: 'not-a-number' },
+    } as never);
+
+    expect(result).toMatchObject({ status: 400, data: { error: 'Repository is invalid.' } });
+    expect(mockUserCanAccessRepository).not.toHaveBeenCalled();
+  });
+
+  it('errors with 404 when the user cannot access the repository', async () => {
+    mockUserCanAccessRepository.mockResolvedValue(false);
+    const request = { formData: vi.fn() } as unknown as Request;
+
+    await expect(
+      actions.saveSettings({
+        locals: { user: { id: 1 } },
+        request,
+        params: { repositoryId: '1' },
+      } as never),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('delegates to submitRepositorySettingsForm for an authorized user', async () => {
+    mockUserCanAccessRepository.mockResolvedValue(true);
+    const formData = new FormData();
+    const request = { formData: vi.fn().mockResolvedValue(formData) } as unknown as Request;
+    mockSubmitRepositorySettingsForm.mockResolvedValue({ success: true });
+
+    const result = await actions.saveSettings({
+      locals: { user: { id: 1 } },
+      request,
+      params: { repositoryId: '1' },
+    } as never);
+
+    expect(mockSubmitRepositorySettingsForm).toHaveBeenCalledWith(1, 1, formData);
+    expect(result).toEqual({ success: true });
   });
 });

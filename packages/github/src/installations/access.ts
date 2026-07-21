@@ -231,8 +231,12 @@ export function parseSsoHeader(
 
 /**
  * Determine if a denial should be cached based on reason and user scopes.
+ *
+ * Exported for direct unit testing: the `invalid_token` and `no_token` arms
+ * are defensive — the access flow returns before caching for those reasons —
+ * so they are unreachable through the public API.
  */
-function shouldCacheDenial(
+export function shouldCacheDenial(
   reason: GitHubAccessDenialReason,
   userScopes: UserScopes,
   lastSuccessAt: number | undefined,

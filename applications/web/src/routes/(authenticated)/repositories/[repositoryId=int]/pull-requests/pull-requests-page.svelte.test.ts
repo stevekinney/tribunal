@@ -303,4 +303,81 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
       expect.anything(),
     );
   });
+
+  it('navigates with the head branch filter and resets to page 1', async () => {
+    render(PullRequestsPage, {
+      data: { ...baseData, filters: { ...baseData.filters, page: 3 } },
+    });
+
+    await browserPage.getByLabelText('Head branch').fill('octocat:feature');
+    await browserPage.getByLabelText('Base branch').click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('pr_head=octocat%3Afeature'),
+      expect.objectContaining({ invalidateAll: true }),
+    );
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('pr_page=1'),
+      expect.anything(),
+    );
+  });
+
+  it('removes an applied filter chip and resets to page 1', async () => {
+    render(PullRequestsPage, {
+      data: { ...baseData, filters: { ...baseData.filters, state: 'closed', page: 3 } },
+    });
+
+    await browserPage.getByRole('button', { name: /Remove filter: State/ }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.not.stringContaining('pr_state='),
+      expect.objectContaining({ invalidateAll: true }),
+    );
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('pr_page=1'),
+      expect.anything(),
+    );
+  });
+
+  it('renders CI, thread, and merge-conflict badges across their full status range', async () => {
+    render(PullRequestsPage, {
+      data: {
+        ...baseData,
+        pullRequests: [
+          {
+            ...samplePullRequest,
+            number: 1,
+            status: {
+              ...samplePullRequest.status,
+              ciStatus: 'failing',
+              unresolvedReviewThreadCount: null,
+              resolvedReviewThreadCount: null,
+              mergeConflictStatus: 'conflicting',
+            },
+          },
+          {
+            ...samplePullRequest,
+            number: 2,
+            status: {
+              ...samplePullRequest.status,
+              ciStatus: 'pending',
+              mergeConflictStatus: 'unknown',
+            },
+          },
+          {
+            ...samplePullRequest,
+            number: 3,
+            status: { ...samplePullRequest.status, ciStatus: 'unknown' },
+          },
+        ],
+      },
+    });
+
+    await expect.element(browserPage.getByText('CI failing')).toBeVisible();
+    await expect.element(browserPage.getByText('Threads unknown')).toBeVisible();
+    await expect.element(browserPage.getByText('Conflicts with main')).toBeVisible();
+    await expect.element(browserPage.getByText('CI pending')).toBeVisible();
+    await expect.element(browserPage.getByText('Conflict status unknown')).toBeVisible();
+    await expect.element(browserPage.getByText('CI unknown')).toBeVisible();
+  });
 });

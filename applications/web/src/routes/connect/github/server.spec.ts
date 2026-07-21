@@ -405,6 +405,31 @@ describe('GET /connect/github', () => {
       }
     });
 
+    it('starts a fresh install flow when listing installations fails', async () => {
+      expect.assertions(3);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockGithubRequest.mockRejectedValue(new Error('GitHub API unavailable'));
+
+      const request = createRequest();
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const redirectData = e as { location: string; type: string };
+        expect(redirectData.type).toBe('redirect');
+        // Falls through to a fresh install flow instead of surfacing the error.
+        expect(redirectData.location).toContain(
+          'https://github.com/apps/test-github-app/installations/new',
+        );
+      }
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Could not list GitHub installations before starting install flow',
+        expect.any(Error),
+      );
+      warnSpy.mockRestore();
+    });
+
     it('includes state nonce in redirect URL', async () => {
       expect.assertions(1);
 

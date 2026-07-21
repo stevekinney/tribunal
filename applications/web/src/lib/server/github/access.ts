@@ -109,15 +109,19 @@ async function withRetry<T>(
       return await fn();
     } catch (error) {
       lastError = error;
-      if (!isRetriable(error) || attempt === RETRY_CONFIG.maxAttempts - 1) {
+      if (!isRetriable(error)) {
         throw error;
       }
-      // Exponential backoff
-      const delay = Math.min(
-        RETRY_CONFIG.minDelayMs * Math.pow(2, attempt),
-        RETRY_CONFIG.maxDelayMs,
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      // Exponential backoff between attempts; the final failure falls
+      // through to the exhaustion throw below.
+      if (attempt < RETRY_CONFIG.maxAttempts - 1) {
+        const delay = Math.min(
+          RETRY_CONFIG.minDelayMs * Math.pow(2, attempt),
+          RETRY_CONFIG.maxDelayMs,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
   throw lastError;
@@ -225,8 +229,12 @@ export function parseSsoHeader(
 
 /**
  * Determine if a denial should be cached based on reason and user scopes.
+ *
+ * Exported for direct unit testing: the `invalid_token` and `no_token` arms
+ * are defensive — the access flow returns before caching for those reasons —
+ * so they are unreachable through the public API.
  */
-function shouldCacheDenial(
+export function shouldCacheDenial(
   reason: GitHubAccessDenialReason,
   userScopes: UserScopes,
   lastSuccessAt: number | undefined,

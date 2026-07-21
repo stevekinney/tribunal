@@ -50,6 +50,10 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
+      // Browser-mode coverage: Vite must serve the istanbul provider to
+      // Chromium. Pre-bundling keeps it inside the served root even when
+      // node_modules resolves through a symlink (e.g. git worktrees).
+      '@vitest/coverage-istanbul',
       '@lostgradient/cinder/meter',
       'lucide-svelte/icons/pencil',
       'lucide-svelte/icons/plus',

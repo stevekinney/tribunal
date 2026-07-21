@@ -13,5 +13,17 @@ export default defineConfig({
         inline: ['prose-writer'],
       },
     },
+    // Whole-package gate. The narrower test:coverage:review-engine script
+    // overrides include/exclude/thresholds via CLI flags and is unaffected.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts'],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+      },
+    },
   },
 });

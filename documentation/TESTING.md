@@ -92,6 +92,40 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
   (configured in `applications/web/svelte.config.js`).
 - Cross-package test helpers (database, factories, port allocation) live in `packages/test`.
 
+## Coverage Gates
+
+Every workspace enforces **100% lines and 100% functions** (branches are deliberately not
+gated). Run the full monorepo gate from the repository root:
+
+```bash
+bun run test:coverage
+```
+
+This chains each workspace's own `test:coverage` script. CI enforces the same command in
+the `coverage` job of `.github/workflows/ci.yml`, so a coverage regression fails the merge
+gate.
+
+Per-workspace scopes:
+
+- Node packages (`packages/*`, `applications/engine`, `applications/proxy`, `scripts`)
+  gate `src/**/*.ts` (or `lib/**/*.ts` for `scripts`) via `coverage.thresholds` in each
+  vitest configuration. Barrel and type-only files (`index.ts`, `types.ts`) and
+  `packages/database/src/test/**` (operational tooling that drives real Neon branches)
+  are excluded.
+- `applications/web` gates per project: `test:coverage:server` covers `src/**/*.ts` in the
+  Node server project; `test:coverage:client` covers `src/**/*.svelte` rendered in real
+  Chromium. Components are measured only in the client project because the server project
+  would instrument their SSR-compiled shape, which no server test renders — the same
+  component measured in two compile shapes cannot merge into one honest number.
+- `packages/github` additionally keeps the narrower `test:coverage:review-engine` script,
+  which overrides scope via CLI flags for the review-engine deploy gate.
+- `runner` runs its plain `test` script (a single Vitest file, no coverage
+  instrumentation).
+
+When measuring locally alongside other running suites, pass a distinct
+`--coverage.reportsDirectory` — concurrent runs sharing one `coverage/.tmp` clobber each
+other's intermediate files.
+
 ## Notes
 
 - E2E runs a production build and preview server. The Playwright config

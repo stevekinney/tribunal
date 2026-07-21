@@ -100,6 +100,18 @@ describe('insertPendingEventListenerDeliveries', () => {
     expect(inserted[0]?.attemptCount).toBe(0);
   });
 
+  it('returns an empty list when the driver yields an unrecognized result shape', async () => {
+    // getRows guards against driver differences (PGlite returns a bare array,
+    // neon-http wraps rows). A scalar result must fall through to [].
+    const stubDatabase = {
+      execute: async () => 0,
+    } as unknown as Parameters<typeof insertPendingEventListenerDeliveries>[0];
+
+    const inserted = await insertPendingEventListenerDeliveries(stubDatabase, ['listener_x'], 1);
+
+    expect(inserted).toEqual([]);
+  });
+
   it('redelivery of the same webhook event does not create a duplicate pending row', async () => {
     const { listener, event } = await createFixture();
 

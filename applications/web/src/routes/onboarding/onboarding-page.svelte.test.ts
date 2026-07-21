@@ -166,4 +166,114 @@ describe('/onboarding page', () => {
       .element(page.getByRole('alert'))
       .toHaveTextContent('Too many repositories selected.');
   });
+
+  it('pre-selects already-watched repositories and shows a plural account label', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: true },
+        { id: 2, owner: 'test-org', name: 'widgets', defaultBranch: 'main', watched: false },
+      ],
+      installations: [
+        { installationId: 1, accountLogin: 'test-org', accountAvatarUrl: null },
+        { installationId: 2, accountLogin: 'other-org', accountAvatarUrl: null },
+      ],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await expect.element(page.getByRole('checkbox', { name: /tribunal/ })).toBeChecked();
+    await expect
+      .element(page.getByRole('button', { name: 'Add 1 repository' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('2 accounts')).toBeInTheDocument();
+  });
+
+  it('adds and removes a repository from the selection when its checkbox is toggled', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    const checkbox = page.getByRole('checkbox', { name: /tribunal/ });
+    await checkbox.click();
+    await expect
+      .element(page.getByRole('button', { name: 'Add 1 repository' }))
+      .toBeInTheDocument();
+
+    await checkbox.click();
+    await expect
+      .element(page.getByRole('button', { name: 'Add 0 repositories' }))
+      .toBeInTheDocument();
+  });
+
+  it('filters the repository list by search query', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+        { id: 2, owner: 'test-org', name: 'widgets', defaultBranch: 'main', watched: false },
+      ],
+      installations: [],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await page.getByRole('searchbox').fill('widgets');
+
+    await expect.element(page.getByText('widgets', { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByText('tribunal', { exact: true })).not.toBeInTheDocument();
+  });
+
+  it('shows a no-matches message when a search query matches no repositories', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await page.getByRole('searchbox').fill('no-such-repo');
+
+    await expect
+      .element(page.getByText('No repositories matching "no-such-repo".'))
+      .toBeInTheDocument();
+  });
+
+  it('shows a generic empty message when there are no repositories at all', async () => {
+    const data = {
+      repositories: [],
+      installations: [],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await expect.element(page.getByText('No repositories found.')).toBeInTheDocument();
+  });
+
+  it('falls back to the sign-in step for an unrecognized connect reason', async () => {
+    const data = {
+      repositories: [],
+      installations: [],
+      connectReason: 'some_future_reason' as any,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    // The default switch arm treats unrecognized reasons as a healthy
+    // connection (renders the picker) with the sign-in step highlighted.
+    await expect
+      .element(page.getByRole('heading', { name: 'Add repositories to Tribunal' }))
+      .toBeInTheDocument();
+    expect(currentStepText()).toBe('1 Sign in with GitHub');
+  });
 });

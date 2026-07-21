@@ -15,6 +15,7 @@ import {
   createEventListener,
   deleteEventListener,
   getEventListener,
+  isEventListenerOwnerInstallationActive,
   listEnabledListenersForRepositoryEventType,
   listEventListenersForRepository,
   listEventListenersWithProgressForRepository,
@@ -510,6 +511,67 @@ describe('listEnabledListenersForRepositoryEventType', () => {
     );
 
     expect(matched.map((row) => row.id)).not.toContain(listener.id);
+  });
+});
+
+describe('isEventListenerOwnerInstallationActive', () => {
+  it('returns true when the user has active installation access to the repository', async () => {
+    const { user, repository } = await createFixture();
+
+    const result = await isEventListenerOwnerInstallationActive(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(result).toBe(true);
+  });
+
+  it('returns false when the installation link no longer exists', async () => {
+    const { user, repository } = await createFixture();
+    await testDatabase.db
+      .delete(githubInstallationRepository)
+      .where(eq(githubInstallationRepository.repositoryId, repository.id));
+
+    const result = await isEventListenerOwnerInstallationActive(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when the installation link is inactive', async () => {
+    const { user } = await createFixture();
+    const factories = createFactories(testDatabase.db);
+    const repository = await factories.repository.create({ id: 5005 });
+    await grantActiveInstallationAccess(user.id, repository.id, { linkActive: false });
+
+    const result = await isEventListenerOwnerInstallationActive(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when the installation is suspended', async () => {
+    const { user } = await createFixture();
+    const factories = createFactories(testDatabase.db);
+    const repository = await factories.repository.create({ id: 5006 });
+    await grantActiveInstallationAccess(user.id, repository.id, {
+      installationStatus: 'suspended',
+    });
+
+    const result = await isEventListenerOwnerInstallationActive(
+      testDatabase.db,
+      user.id,
+      repository.id,
+    );
+
+    expect(result).toBe(false);
   });
 });
 

@@ -175,6 +175,23 @@ describe('handleRepositoryMetadataEvents', () => {
         999,
       );
     });
+
+    it('logs error and does not throw when the database update fails', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockIsRepositoryRenamedEvent.mockReturnValue(true);
+      const dbError = new Error('Database connection failed');
+      mockUpdateRepositoryMetadata.mockRejectedValueOnce(dbError);
+      const data = makeRepositoryPayload({ action: 'renamed' });
+
+      await handleRepositoryMetadataEvents(context, data);
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Failed to update repository after rename:',
+        dbError,
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -194,6 +211,23 @@ describe('handleRepositoryMetadataEvents', () => {
         'widgets',
         999,
       );
+    });
+
+    it('logs error and does not throw when the database update fails', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockIsRepositoryTransferredEvent.mockReturnValue(true);
+      const dbError = new Error('Database connection failed');
+      mockUpdateRepositoryMetadata.mockRejectedValueOnce(dbError);
+      const data = makeRepositoryPayload({ action: 'transferred' });
+
+      await handleRepositoryMetadataEvents(context, data);
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Failed to update repository after transfer:',
+        dbError,
+      );
+
+      consoleErrorSpy.mockRestore();
     });
   });
 });

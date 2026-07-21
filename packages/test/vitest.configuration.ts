@@ -8,5 +8,15 @@ export default defineConfig({
     teardownTimeout: 10_000,
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts'],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+      },
+    },
   },
 });

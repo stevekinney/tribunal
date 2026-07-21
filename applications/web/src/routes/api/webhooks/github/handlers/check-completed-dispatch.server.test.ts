@@ -109,6 +109,28 @@ describe('dispatchCheckCompletedSignals', () => {
     ).rejects.toThrow('database unavailable');
   });
 
+  it('does not kick the review engine when no PR mapped to a durable review intent', async () => {
+    signalPullRequestEventMock.mockResolvedValue({
+      ok: true,
+      workflowId: 'review:pr:42:7',
+      enqueued: false,
+      enqueueStatus: 'no_watchers',
+    });
+
+    await dispatchCheckCompletedSignals(
+      {
+        eventLabel: 'check_run',
+        prNumbers: [7],
+        owner: 'lostgradient',
+        repo: 'tribunal',
+        actorLogin: 'steve',
+      },
+      createContext(),
+    );
+
+    expect(kickReviewEngineAfterDurableIntentCountMock).not.toHaveBeenCalled();
+  });
+
   it('kicks the review engine once durable review intents exist for at least one PR', async () => {
     await dispatchCheckCompletedSignals(
       {

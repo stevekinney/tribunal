@@ -53,6 +53,14 @@ vi.mock('$lib/server/github/access', () => ({
   invalidateGitHubAccessCache: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockDbWhere = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockDbSet = vi.hoisted(() => vi.fn(() => ({ where: mockDbWhere })));
+const mockDbUpdate = vi.hoisted(() => vi.fn(() => ({ set: mockDbSet })));
+
+vi.mock('$lib/server/database', () => ({
+  db: { update: mockDbUpdate },
+}));
+
 import { GET } from './+server';
 import { consumeOAuthStateCookie, upsertOAuthConnection } from '$lib/server/auth/authentication';
 import { invalidateGitHubAccessCache } from '$lib/server/github/access';
@@ -60,6 +68,7 @@ import { invalidateGitHubAccessCache } from '$lib/server/github/access';
 describe('GET /connect/github/account/callback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDbWhere.mockResolvedValue(undefined);
     mockUser.value = { id: 1, username: 'test-user' };
     mockValidateAuthorizationCode.mockResolvedValue({
       accessToken: () => 'github-access-token',
@@ -122,5 +131,92 @@ describe('GET /connect/github/account/callback', () => {
     });
     expect(invalidateGitHubAccessCache).toHaveBeenCalledWith(1);
     expect.assertions(4);
+  });
+
+  it('redirects with github_denied when GitHub reports an OAuth error', async () => {
+    await expect(GET(createRequest('?error=access_denied'))).rejects.toMatchObject({
+      status: 302,
+      location: '/repositories?error=github_denied',
+    });
+    expect(mockValidateAuthorizationCode).not.toHaveBeenCalled();
+  });
+
+  it('errors with 400 when the code or state query parameters are missing', async () => {
+    await expect(GET(createRequest('?code=oauth-code'))).rejects.toMatchObject({ status: 400 });
+    await expect(GET(createRequest('?state=oauth-state'))).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('errors with 400 when the OAuth state cookie is invalid or expired', async () => {
+    vi.mocked(consumeOAuthStateCookie).mockReturnValueOnce(null);
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('redirects with github_failed when exchanging the authorization code fails', async () => {
+    mockValidateAuthorizationCode.mockRejectedValue(new Error('bad code'));
+
+    await expect(GET(createRequest())).rejects.toMatchObject({
+      status: 302,
+      location: '/repositories?error=github_failed',
+    });
+  });
+
+  it('errors with 400 when the GitHub user lookup fails', async () => {
+    mockFetch.mockResolvedValue({ ok: false, headers: new Headers(), json: async () => ({}) });
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('defaults the scopes when GitHub omits the X-OAuth-Scopes header', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      json: async () => ({ id: 12345, login: 'octo-user' }),
+    });
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 302 });
+
+    expect(upsertOAuthConnection).toHaveBeenCalledWith(
+      1,
+      'github',
+      expect.objectContaining({ scope: 'repo,user:email' }),
+    );
+  });
+
+  it('updates the user avatar when GitHub reports one', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'X-OAuth-Scopes': 'repo' }),
+      json: async () => ({ id: 12345, login: 'octo-user', avatar_url: 'https://gh/avatar.png' }),
+    });
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 302 });
+
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
+    expect(mockDbSet).toHaveBeenCalledWith({ avatarUrl: 'https://gh/avatar.png' });
+  });
+
+  it('does not touch the avatar when GitHub reports none', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'X-OAuth-Scopes': 'repo' }),
+      json: async () => ({ id: 12345, login: 'octo-user' }),
+    });
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 302 });
+
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+
+  it('logs but does not fail the request when cache invalidation throws', async () => {
+    vi.mocked(invalidateGitHubAccessCache).mockRejectedValueOnce(new Error('cache down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 302 });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Failed to invalidate GitHub access cache:',
+      expect.any(Error),
+    );
   });
 });

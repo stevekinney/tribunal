@@ -277,4 +277,96 @@ describe('/repositories/[repositoryId]/issues page', () => {
       vi.useRealTimers();
     }
   });
+
+  it('applies the label filter after the debounce fires uninterrupted', async () => {
+    vi.useFakeTimers();
+    try {
+      render(IssuesPage, { data: baseData });
+
+      const labelsInput = browserPage.getByLabelText('Labels');
+      await labelsInput.fill('bug');
+
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(mocks.goto).toHaveBeenCalledWith(
+        expect.stringContaining('issue_labels=bug'),
+        expect.objectContaining({ invalidateAll: true }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes an applied filter chip and resets to page 1', async () => {
+    render(IssuesPage, {
+      data: { ...baseData, filters: { ...baseData.filters, state: 'closed', page: 3 } },
+    });
+
+    await browserPage.getByRole('button', { name: /Remove filter: State/ }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.not.stringContaining('issue_state='),
+      expect.objectContaining({ invalidateAll: true }),
+    );
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('issue_page=1'),
+      expect.anything(),
+    );
+  });
+
+  it('clears every filter when Clear all is clicked', async () => {
+    render(IssuesPage, {
+      data: { ...baseData, filters: { ...baseData.filters, state: 'closed' } },
+    });
+
+    await browserPage.getByRole('button', { name: 'Clear all filters' }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith('/repositories/1/issues', {
+      keepFocus: true,
+      noScroll: true,
+      invalidateAll: true,
+    });
+  });
+
+  it('navigates to the next page when the pagination control advances', async () => {
+    render(IssuesPage, {
+      data: { ...baseData, issues: [sampleIssue], hasNextPage: true },
+    });
+
+    await browserPage.getByRole('button', { name: 'Go to next page' }).click();
+
+    expect(mocks.goto).toHaveBeenCalledWith(
+      expect.stringContaining('issue_page=2'),
+      expect.objectContaining({ invalidateAll: true }),
+    );
+  });
+
+  it('renders milestone and issue-type badges, and falls back copy for missing author, labels, and assignees', async () => {
+    render(IssuesPage, {
+      data: {
+        ...baseData,
+        issues: [
+          {
+            ...sampleIssue,
+            author: null,
+            labels: [],
+            assignees: [],
+            milestone: {
+              title: 'v1.0',
+              number: 1,
+              state: 'open' as const,
+              htmlUrl: 'https://github.com/acme/widgets/milestone/1',
+            },
+            issueType: 'Bug',
+          },
+        ],
+      },
+    });
+
+    await expect.element(browserPage.getByText('v1.0')).toBeVisible();
+    await expect.element(browserPage.getByText('Bug')).toBeVisible();
+    await expect.element(browserPage.getByText('Unknown')).toBeVisible();
+    await expect.element(browserPage.getByText('None')).toBeVisible();
+    await expect.element(browserPage.getByText('Unassigned')).toBeVisible();
+  });
 });

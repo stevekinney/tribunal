@@ -105,6 +105,13 @@ describe('onboarding load: connectReason discrimination', () => {
       installations: [{ installationId: 1, accountLogin: 'acme' }],
     });
   });
+
+  it('redirects unauthenticated requests to login', async () => {
+    await expect(load({ locals: {} } as never)).rejects.toMatchObject({
+      status: 302,
+      location: '/login',
+    });
+  });
 });
 
 describe('onboarding watch action', () => {
@@ -118,11 +125,11 @@ describe('onboarding watch action', () => {
     mockListAgents.mockResolvedValue([]);
   });
 
-  function runWatch(repositoryIds: string[]) {
+  function runWatch(repositoryIds: string[], userId: number | null = 1) {
     const formData = new FormData();
     for (const id of repositoryIds) formData.append('repositoryId', id);
     return actions.watch({
-      locals: { user: { id: 1 } },
+      locals: userId !== null ? { user: { id: userId } } : {},
       request: { formData: async () => formData },
     } as never);
   }
@@ -168,5 +175,64 @@ describe('onboarding watch action', () => {
       1,
       expect.objectContaining({ repositoryId: 8 }),
     );
+  });
+
+  it('redirects unauthenticated submissions to login', async () => {
+    await expect(runWatch(['7'], null)).rejects.toMatchObject({
+      status: 302,
+      location: '/login',
+    });
+  });
+
+  it('rejects an empty selection', async () => {
+    const result = await runWatch([]);
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'Select at least one repository to watch.' },
+    });
+  });
+
+  it('rejects a batch larger than the onboarding cap', async () => {
+    const ids = Array.from({ length: 101 }, (_, index) => String(index + 1));
+
+    const result = await runWatch(ids);
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'Too many repositories selected.' },
+    });
+  });
+
+  it('rejects a non-integer repository id', async () => {
+    const result = await runWatch(['not-a-number']);
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'One or more repository IDs are invalid.' },
+    });
+  });
+
+  it('rejects a batch containing a repository the user does not own', async () => {
+    mockUserOwnsRepository.mockImplementation((_userId: number, repositoryId: number) =>
+      Promise.resolve(repositoryId !== 8),
+    );
+
+    const result = await runWatch(['7', '8']);
+
+    expect(result).toMatchObject({
+      status: 403,
+      data: { error: 'You do not have access to one or more repositories.' },
+    });
+    expect(mockSaveRepositoryWatchSettings).not.toHaveBeenCalled();
+  });
+
+  it('forwards an ActionFailure returned by a watch write instead of redirecting', async () => {
+    const failure = { status: 400, data: { error: 'Could not save.' } };
+    mockSaveRepositoryWatchSettings.mockResolvedValue(failure);
+
+    const result = await runWatch(['7']);
+
+    expect(result).toBe(failure);
   });
 });

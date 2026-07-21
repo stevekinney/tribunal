@@ -29,8 +29,20 @@ vi.mock('$lib/server/repositories', () => ({
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
+// Pass-through mock so individual tests can vi.spyOn queries (e.g. to simulate
+// the delete-between-read-and-update race). All implementations stay real.
+vi.mock('@tribunal/database/queries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tribunal/database/queries')>()),
+}));
+
+const { mockGetRegisteredWebhooks } = vi.hoisted(() => ({
+  mockGetRegisteredWebhooks: vi.fn(() =>
+    Promise.resolve({ registered: ['issues', 'pull_request'] }),
+  ),
+}));
+
 vi.mock('@tribunal/github/webhooks/registered-webhooks', () => ({
-  getRegisteredWebhooks: vi.fn(() => Promise.resolve({ registered: ['issues', 'pull_request'] })),
+  getRegisteredWebhooks: mockGetRegisteredWebhooks,
 }));
 
 import { actions, load } from './+page.server';
@@ -52,6 +64,8 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
     resetIdCounter();
     mockRepository.value = { id: 42, owner: 'acme', name: 'widgets' };
     mockCanAccess.value = true;
+    mockGetRegisteredWebhooks.mockReset();
+    mockGetRegisteredWebhooks.mockResolvedValue({ registered: ['issues', 'pull_request'] });
   });
 
   function withTestDatabase<T>(operation: () => T): T {
@@ -254,6 +268,15 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       expect(result.editing).toBe('new');
       expect(result.editingListener).toBeNull();
     });
+
+    it('renders with no subscribed event types when the GitHub App webhook lookup fails', async () => {
+      const { user } = await createFixture();
+      mockGetRegisteredWebhooks.mockRejectedValue(new Error('App not configured'));
+
+      const result = await loadPage(user.id);
+
+      expect(result.listeners).toEqual([]);
+    });
   });
 
   describe('actions.create', () => {
@@ -332,6 +355,129 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
           ),
         ),
       ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('redirects unauthenticated create attempts to login', async () => {
+      await expect(
+        withTestDatabase(() =>
+          actions.create(createActionEvent(undefined, { name: 'x', eventType: 'issues' })),
+        ),
+      ).rejects.toMatchObject({ status: 302, location: '/login' });
+    });
+
+    it('rejects a missing name', async () => {
+      const { user, testAgent } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.create(
+          createActionEvent(user.id, { name: '', eventType: 'issues', agentId: testAgent.id }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Name is required.' } });
+    });
+
+    it('rejects a missing event type', async () => {
+      const { user, testAgent } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.create(
+          createActionEvent(user.id, { name: 'Triage', eventType: '', agentId: testAgent.id }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Event type is required.' } });
+    });
+
+    it('rejects an invalid issueNumber filter', async () => {
+      const { user, testAgent } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.create(
+          createActionEvent(user.id, {
+            name: 'Triage',
+            eventType: 'issues',
+            agentId: testAgent.id,
+            filterIssueNumber: 'not-a-number',
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400 });
+    });
+
+    it('accepts a senderLogin filter and a valid prNumber/issueNumber filter', async () => {
+      const { user, testAgent } = await createFixture();
+
+      await expect(
+        withTestDatabase(() =>
+          actions.create(
+            createActionEvent(user.id, {
+              name: 'Triage',
+              eventType: 'issues',
+              agentId: testAgent.id,
+              filterSenderLogin: 'octocat',
+              filterPrNumber: '7',
+              filterIssueNumber: '9',
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ status: 303 });
+
+      const [row] = await testDb.db.select().from(repositoryEventListener);
+      expect(JSON.parse(row?.filtersJson ?? '{}')).toEqual({
+        senderLogin: 'octocat',
+        prNumber: 7,
+        issueNumber: 9,
+      });
+    });
+
+    it('rejects an agent the user does not own', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.create(
+          createActionEvent(user.id, {
+            name: 'Triage',
+            eventType: 'issues',
+            agentId: 'agent_does_not_exist',
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Select an agent you own.' } });
+    });
+
+    it('rethrows an error that is not an agent-ownership failure', async () => {
+      // No repository row exists for id 42 -- `userCanAccessRepository` is
+      // mocked (bypassing the real access check), so the insert reaches the
+      // database and fails its repositoryId foreign key, a genuine error
+      // distinct from EventListenerAgentOwnershipError that must propagate
+      // rather than being swallowed into a form `fail`.
+      const factories = createFactories(testDb.db);
+      const user = await factories.user.create();
+      const [testAgent] = await testDb.db
+        .insert(agent)
+        .values({
+          id: 'agent_1',
+          userId: user.id,
+          slug: 'agent-1',
+          description: 'Test agent',
+          body: 'Do the thing.',
+        })
+        .returning();
+
+      await expect(
+        withTestDatabase(() =>
+          actions.create(
+            createActionEvent(user.id, {
+              name: 'Triage',
+              eventType: 'issues',
+              agentId: testAgent.id,
+            }),
+          ),
+        ),
+      ).rejects.toThrow(/insert into "repository_event_listener"/i);
     });
   });
 
@@ -432,6 +578,181 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       expect(row?.name).toBe('Renamed');
       expect(row?.filtersJson).toBe('{}');
     });
+
+    it('rejects a missing listener id', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, { name: 'Renamed', eventType: 'issues', agentId: 'x' }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Missing listener id.' } });
+    });
+
+    it('rejects a missing name, event type, or agent on update', async () => {
+      const { user } = await createFixture();
+
+      const missingName = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, { listenerId: 'listener_1', name: '', eventType: 'issues' }),
+        ),
+      );
+      expect(missingName).toMatchObject({ status: 400, data: { error: 'Name is required.' } });
+
+      const missingEventType = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, { listenerId: 'listener_1', name: 'x', eventType: '' }),
+        ),
+      );
+      expect(missingEventType).toMatchObject({
+        status: 400,
+        data: { error: 'Event type is required.' },
+      });
+
+      const missingAgent = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, {
+            listenerId: 'listener_1',
+            name: 'x',
+            eventType: 'issues',
+            agentId: '',
+          }),
+        ),
+      );
+      expect(missingAgent).toMatchObject({ status: 400, data: { error: 'Select an agent.' } });
+    });
+
+    it('rejects an invalid filter on update', async () => {
+      const { user, testAgent } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, {
+            listenerId: 'listener_1',
+            name: 'x',
+            eventType: 'issues',
+            agentId: testAgent.id,
+            filterPrNumber: 'not-a-number',
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400 });
+    });
+
+    it('404s an update against a listener that does not exist', async () => {
+      const { user, testAgent } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, {
+            listenerId: 'listener_does_not_exist',
+            name: 'x',
+            eventType: 'issues',
+            agentId: testAgent.id,
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 404, data: { error: 'Listener not found.' } });
+    });
+
+    it('404s when the listener is deleted between the existence read and the update', async () => {
+      const { user, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_race',
+        repositoryId: 42,
+        userId: user.id,
+        name: 'Race listener',
+        eventType: 'issues',
+        agentId: testAgent.id,
+        enabled: true,
+      });
+
+      const queries = await import('@tribunal/database/queries');
+      const updateSpy = vi
+        .spyOn(queries, 'updateEventListener')
+        .mockResolvedValueOnce(undefined as never);
+
+      try {
+        const result = await withTestDatabase(() =>
+          actions.update(
+            createActionEvent(user.id, {
+              listenerId: 'listener_race',
+              name: 'Renamed',
+              eventType: 'issues',
+              agentId: testAgent.id,
+            }),
+          ),
+        );
+
+        expect(result).toMatchObject({ status: 404, data: { error: 'Listener not found.' } });
+      } finally {
+        updateSpy.mockRestore();
+      }
+    });
+
+    it('rethrows unexpected update failures instead of mapping them to a form error', async () => {
+      const { user, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_boom',
+        repositoryId: 42,
+        userId: user.id,
+        name: 'Boom listener',
+        eventType: 'issues',
+        agentId: testAgent.id,
+        enabled: true,
+      });
+
+      const queries = await import('@tribunal/database/queries');
+      const updateSpy = vi
+        .spyOn(queries, 'updateEventListener')
+        .mockRejectedValueOnce(new Error('database exploded'));
+
+      try {
+        await expect(
+          withTestDatabase(() =>
+            actions.update(
+              createActionEvent(user.id, {
+                listenerId: 'listener_boom',
+                name: 'Renamed',
+                eventType: 'issues',
+                agentId: testAgent.id,
+              }),
+            ),
+          ),
+        ).rejects.toThrow('database exploded');
+      } finally {
+        updateSpy.mockRestore();
+      }
+    });
+
+    it('rejects an agent the user does not own on update', async () => {
+      const { user, repository, testAgent } = await createFixture();
+      await testDb.db.insert(repositoryEventListener).values({
+        id: 'listener_1',
+        userId: user.id,
+        repositoryId: repository.id,
+        name: 'Original',
+        eventType: 'issues',
+        agentId: testAgent.id,
+      });
+
+      const result = await withTestDatabase(() =>
+        actions.update(
+          createActionEvent(user.id, {
+            listenerId: 'listener_1',
+            name: 'Renamed',
+            eventType: 'issues',
+            agentId: 'agent_does_not_exist',
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Select an agent you own.' } });
+    });
   });
 
   describe('actions.setEnabled', () => {
@@ -461,6 +782,28 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
       );
       [row] = await testDb.db.select().from(repositoryEventListener);
       expect(row?.enabled).toBe(true);
+    });
+
+    it('rejects a missing listener id', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.setEnabled(createActionEvent(user.id, { enabled: 'true' })),
+      );
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Missing listener id.' } });
+    });
+
+    it('404s when the listener does not exist', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.setEnabled(
+          createActionEvent(user.id, { listenerId: 'listener_does_not_exist', enabled: 'true' }),
+        ),
+      );
+
+      expect(result).toMatchObject({ status: 404, data: { error: 'Listener not found.' } });
     });
   });
 
@@ -494,6 +837,24 @@ describe('/repositories/[repositoryId]/events server load and actions', () => {
           actions.delete(createActionEvent(user.id, { listenerId: 'listener_1' })),
         ),
       ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('rejects a missing listener id', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() => actions.delete(createActionEvent(user.id, {})));
+
+      expect(result).toMatchObject({ status: 400, data: { error: 'Missing listener id.' } });
+    });
+
+    it('404s when the listener does not exist', async () => {
+      const { user } = await createFixture();
+
+      const result = await withTestDatabase(() =>
+        actions.delete(createActionEvent(user.id, { listenerId: 'listener_does_not_exist' })),
+      );
+
+      expect(result).toMatchObject({ status: 404, data: { error: 'Listener not found.' } });
     });
   });
 });

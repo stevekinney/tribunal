@@ -66,7 +66,8 @@
     "check": "tsc --noEmit",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write --ignore-path ../../.prettierignore .",
-    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
+    "format:check": "prettier --check --ignore-path ../../.prettierignore .",
+    "test:coverage": "vitest run -c vitest.configuration.ts --coverage"
   },
   "dependencies": {
     "@lostgradient/weft": "^0.11.0",

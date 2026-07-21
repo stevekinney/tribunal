@@ -16,7 +16,8 @@
     "check": "tsc --noEmit",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:coverage": "vitest run -c vitest.configuration.ts --coverage"
   },
   "dependencies": {
     "@tribunal/database": "workspace:*",

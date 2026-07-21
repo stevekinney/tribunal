@@ -562,3 +562,73 @@ describe('markGitHubTokensInvalidByProviderUserId', () => {
     consoleSpy.mockRestore();
   });
 });
+
+describe('invalidateAllAccessCacheForRepo', () => {
+  it('deletes every cached access entry for the repository across all users', async () => {
+    const { deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCacheByPattern).mockResolvedValue(0);
+
+    const { invalidateAllAccessCacheForRepo } = await import('./access');
+    await invalidateAllAccessCacheForRepo(42);
+
+    expect(deleteCacheByPattern).toHaveBeenCalledWith('github-access:*:42');
+  });
+});
+
+describe('invalidateGitHubAccessCache', () => {
+  it('deletes only the specific user+repo cache entry when a repositoryId is given', async () => {
+    const { deleteCache, deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCache).mockReset().mockResolvedValue(true);
+    vi.mocked(deleteCacheByPattern).mockReset().mockResolvedValue(0);
+
+    const { invalidateGitHubAccessCache } = await import('./access');
+    await invalidateGitHubAccessCache(7, 42);
+
+    expect(deleteCache).toHaveBeenCalledWith('github-access:7:42');
+    expect(deleteCacheByPattern).not.toHaveBeenCalled();
+  });
+
+  it('deletes every cached entry for the user when no repositoryId is given', async () => {
+    const { deleteCache, deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCache).mockReset().mockResolvedValue(true);
+    vi.mocked(deleteCacheByPattern).mockReset().mockResolvedValue(0);
+
+    const { invalidateGitHubAccessCache } = await import('./access');
+    await invalidateGitHubAccessCache(7);
+
+    expect(deleteCacheByPattern).toHaveBeenCalledWith('github-access:7:*');
+    expect(deleteCache).not.toHaveBeenCalled();
+  });
+});
+
+describe('markGitHubTokenInvalid', () => {
+  it('marks the connection invalid', async () => {
+    const { db } = await import('../database');
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as unknown as ReturnType<
+      typeof db.update
+    >);
+
+    const { markGitHubTokenInvalid } = await import('./access');
+    await markGitHubTokenInvalid(1);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
+  });
+
+  it('logs but does not throw when the update fails', async () => {
+    const { db } = await import('../database');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(db.update).mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+
+    const { markGitHubTokenInvalid } = await import('./access');
+    await expect(markGitHubTokenInvalid(1)).resolves.toBeUndefined();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'Failed to mark GitHub token as invalid:',
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
+  });
+});

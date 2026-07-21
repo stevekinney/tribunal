@@ -36,6 +36,21 @@ describe('createCache', () => {
     expect(cache).toHaveProperty('resetCacheClient');
   });
 
+  it('logs Redis client errors via the registered error handler', async () => {
+    const cache = createCache(() => 'redis://localhost:6379');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await cache.getCached('key');
+
+    expect(mockOn).toHaveBeenCalledWith('error', expect.any(Function));
+    const errorHandler = mockOn.mock.calls.find(([event]) => event === 'error')?.[1];
+    const clientError = new Error('connection lost');
+    errorHandler(clientError);
+
+    expect(consoleSpy).toHaveBeenCalledWith('Redis Client Error', clientError);
+    consoleSpy.mockRestore();
+  });
+
   it('does not create a Redis client until first operation (lazy initialization)', async () => {
     const { createClient } = await import('redis');
     const cache = createCache(() => 'redis://localhost:6379');

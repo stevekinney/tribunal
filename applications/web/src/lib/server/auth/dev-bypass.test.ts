@@ -140,6 +140,17 @@ describe('devAuthBypassMode', () => {
     mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
     expect(devAuthBypassMode()).toBe('github');
   });
+
+  it('warns and falls back to local mode for an unsupported value', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.env.DEV_AUTH_BYPASS_MODE = 'saml';
+
+    expect(devAuthBypassMode()).toBe('local');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('DEV_AUTH_BYPASS_MODE="saml" is not supported'),
+    );
+    warnSpy.mockRestore();
+  });
 });
 
 describe('bypassUsername', () => {
@@ -198,6 +209,15 @@ describe('devAuthBypassHandle', () => {
     await devAuthBypassHandle({ event, resolve } as never);
 
     expect(event.locals).toMatchObject({ user: { username: 'dev' } });
+  });
+
+  it('throws when the bypass user cannot be resolved or created after the insert', async () => {
+    mocks.selectedRow = null;
+    const event = { locals: {} };
+
+    await expect(devAuthBypassHandle({ event, resolve } as never)).rejects.toThrow(
+      /failed to resolve or create user "dev"/,
+    );
   });
 
   it('refuses to log in as an existing account that merely shares the bypass username', async () => {

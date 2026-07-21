@@ -630,6 +630,64 @@ describe('getPullRequest', () => {
       'Server Error',
     );
   });
+
+  it('reuses the cached PR when GitHub responds 304 Not Modified to a conditional request', async () => {
+    expect.assertions(2);
+    const cachedDetail = {
+      number: 42,
+      title: 'Cached title',
+      state: 'open',
+      draft: false,
+      locked: false,
+      author: null,
+      createdAt: '2024-01-15T10:00:00Z',
+      updatedAt: '2024-01-16T12:00:00Z',
+      closedAt: null,
+      mergedAt: null,
+      labels: [],
+      headRef: 'feature',
+      headSha: 'cachedsha',
+      baseRef: 'main',
+      htmlUrl: 'https://github.com/owner/repo/pull/42',
+      body: null,
+      additions: 1,
+      deletions: 0,
+      changedFiles: 1,
+      mergeable: null,
+      mergeableState: 'unknown',
+      merged: false,
+      mergedBy: null,
+      comments: 0,
+      reviewComments: 0,
+      commits: 1,
+    };
+    const now = Date.now();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn().mockResolvedValue({
+          value: cachedDetail,
+          etag: 'pr-etag',
+          fetchedAt: now - 10_000,
+          expiresAt: now - 1_000, // Expired, forces a conditional request.
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+    const notModifiedError = Object.assign(new Error('Not Modified'), { status: 304 });
+    const get = vi.fn().mockRejectedValue(notModifiedError);
+    const octokit = { rest: { pulls: { get } } } as never;
+
+    const result = await getPullRequest(context, octokit, 'owner', 'repo', 42);
+
+    expect(result).toEqual(cachedDetail);
+    expect(get).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'if-none-match': 'pr-etag' } }),
+    );
+  });
 });
 
 describe('getPullRequestOperationalStatus', () => {
@@ -1256,6 +1314,100 @@ describe('requestReviewers', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.requestedTeams[0].description).toBeNull();
+    }
+  });
+
+  it('returns a team_not_found validation message', async () => {
+    expect.assertions(3);
+    const error = Object.assign(new Error('Validation Error'), {
+      status: 422,
+      response: { data: { message: 'team not found' } },
+    });
+    const octokit = createMockOctokit(null, error);
+
+    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
+      teamReviewers: ['ghost-team'],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('team_not_found');
+      expect(result.message).toBe('One or more requested teams were not found');
+    }
+  });
+
+  it('returns a no_access validation message', async () => {
+    expect.assertions(3);
+    const error = Object.assign(new Error('Validation Error'), {
+      status: 422,
+      response: { data: { message: 'user lacks access to repository' } },
+    });
+    const octokit = createMockOctokit(null, error);
+
+    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
+      reviewers: ['outsider'],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('no_access');
+      expect(result.message).toBe(
+        'One or more requested reviewers do not have access to this repository',
+      );
+    }
+  });
+
+  it('returns a pr_closed validation message', async () => {
+    expect.assertions(3);
+    const error = Object.assign(new Error('Validation Error'), {
+      status: 422,
+      response: { data: { message: 'Pull request is closed' } },
+    });
+    const octokit = createMockOctokit(null, error);
+
+    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
+      reviewers: ['reviewer1'],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('pr_closed');
+      expect(result.message).toBe('Cannot request reviewers on a closed or merged pull request');
+    }
+  });
+
+  it('falls back to the raw error message for an unrecognized validation reason', async () => {
+    expect.assertions(3);
+    const error = Object.assign(new Error('Validation Error'), {
+      status: 422,
+      response: { data: { message: 'Resource already exists' } },
+    });
+    const octokit = createMockOctokit(null, error);
+
+    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
+      reviewers: ['reviewer1'],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.reason).toBe('already_exists');
+      expect(result.message).toBe('Resource already exists');
+    }
+  });
+
+  it('returns an unknown error for status codes that do not match a known classification', async () => {
+    expect.assertions(3);
+    const error = Object.assign(new Error('Teapot'), { status: 418 });
+    const octokit = createMockOctokit(null, error);
+
+    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
+      reviewers: ['reviewer1'],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe('unknown');
+      expect(result.message).toBe('Teapot');
     }
   });
 });

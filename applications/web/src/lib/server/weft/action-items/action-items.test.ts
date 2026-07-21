@@ -125,6 +125,37 @@ describe('parse → render round-trip', () => {
     expect(result).toBeNull();
   });
 
+  it('returns null when the start marker is present but the end marker is missing', () => {
+    const result = parseActionItemsBlock('<!--TRIBUNAL-ACTION-ITEMS-START-->\n- [ ] Do a thing');
+    expect(result).toBeNull();
+  });
+
+  it('skips a line that matches the stable-id comment but is not a checklist item', () => {
+    const body = [
+      '<!--TRIBUNAL-ACTION-ITEMS-START-->',
+      '## Action Items',
+      'Not a checklist line <!-- tribunal:ai:some-id -->',
+      '<!--TRIBUNAL-ACTION-ITEMS-END-->',
+    ].join('\n');
+
+    const parsed = parseActionItemsBlock(body);
+
+    expect(parsed!.items).toHaveLength(0);
+  });
+
+  it('skips a checklist line with no tribunal:ai: stable-id comment', () => {
+    const body = [
+      '<!--TRIBUNAL-ACTION-ITEMS-START-->',
+      '## Action Items',
+      '- [ ] A human-added checklist item with no marker',
+      '<!--TRIBUNAL-ACTION-ITEMS-END-->',
+    ].join('\n');
+
+    const parsed = parseActionItemsBlock(body);
+
+    expect(parsed!.items).toHaveLength(0);
+  });
+
   it('records startIndex and endIndex that span the block', () => {
     const prefix = 'Some description text.\n\n';
     const items: ActionItem[] = [{ id: 'x', description: 'Do something', completed: false }];
@@ -379,6 +410,24 @@ describe('reconcileActionItems — orphan preservation', () => {
     // bot_noise → hard-filtered → removed from result
     expect(result).toHaveLength(0);
   });
+
+  it('heals an over-long existing description with a deterministic summary', () => {
+    const longDescription = 'A'.repeat(250);
+    const existing: ParsedActionItem[] = [
+      {
+        id: 'review-comment:RT_long:C_1',
+        description: longDescription,
+        completed: false,
+        rawLine: `- [ ] ${longDescription} <!-- tribunal:ai:review-comment:RT_long:C_1 -->`,
+      },
+    ];
+
+    const result = reconcileActionItems(existing, [], emptyState());
+
+    expect(result).toHaveLength(1);
+    expect(result[0].description).toBe(deterministicSummary(longDescription));
+    expect(result[0].description.length).toBeLessThan(longDescription.length);
+  });
 });
 
 // ============================================================================
@@ -490,6 +539,16 @@ describe('sanitizeActionItemCandidate', () => {
 
     expect(result.filtered).toBe(true);
     expect(result.reason).toBe('opaque_blob');
+  });
+
+  it('does not filter brace-wrapped text that only looks like JSON but fails to parse', () => {
+    const result = sanitizeActionItemCandidate(
+      '{ this is not valid json, just a sentence in curly braces }',
+      'issue-comment-44',
+    );
+
+    expect(result.filtered).toBe(false);
+    expect(result.reason).toBeUndefined();
   });
 
   it('filters a version control payload ([vc]: prefix) as version_control_payload', () => {

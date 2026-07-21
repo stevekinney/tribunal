@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import AgentsPage from './+page.svelte';
@@ -105,5 +105,43 @@ describe('/agents page', () => {
 
     await expect.element(page.getByRole('link', { name: 'security' })).toBeVisible();
     await expect.element(page.getByText('Finds security issues')).not.toBeInTheDocument();
+  });
+
+  it('shows an effort badge when the agent has a configured effort level', async () => {
+    render(AgentsPage, {
+      data: {
+        ...data,
+        agents: [{ ...baseAgent, effort: 'xhigh' }],
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByText('xhigh')).toBeVisible();
+  });
+
+  it('surfaces a batch action error from the form', async () => {
+    render(AgentsPage, {
+      data: { ...data, agents: [baseAgent] },
+      form: { error: 'Could not update the agent.' },
+      params: {},
+    });
+
+    await expect.element(page.getByText('Could not update the agent.')).toBeVisible();
+  });
+
+  it('submits the enabled-toggle form when the toggle is flipped', async () => {
+    render(AgentsPage, {
+      data: { ...data, agents: [baseAgent] },
+      form: null,
+      params: {},
+    });
+
+    const form = document.getElementById('agent-agent_security-enabled-form') as HTMLFormElement;
+    const submitSpy = vi.spyOn(form, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('switch', { name: 'Agent security enabled' }).click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
   });
 });
