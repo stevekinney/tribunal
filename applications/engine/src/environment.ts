@@ -22,6 +22,14 @@ export const engineEnvironmentSchema = z
     DATABASE_URL: z.string().url(),
     REDIS_URL: z.string().url().optional(),
     WEFT_DATABASE_URL: z.string().url().optional(),
+    // Optional direct (unpooled) Neon connection used ONLY for the singleton
+    // advisory lock in postgres-advisory-lock.ts. Session-level advisory locks
+    // are unsound over a PgBouncer transaction-pooled endpoint (the default for
+    // WEFT_DATABASE_URL) — see that file's header comment. Falls back to
+    // WEFT_DATABASE_URL when unset so this ships safely before the operator
+    // provisions the secret; must stay optional or a missing secret would
+    // crash-loop production.
+    ENGINE_SINGLETON_DATABASE_URL: z.string().url().optional(),
     GITHUB_APP_ID: z.string().min(1),
     GITHUB_APP_PRIVATE_KEY: z.string().min(1),
     TENSORLAKE_API_KEY: z.string().min(1),

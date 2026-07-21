@@ -38,7 +38,7 @@ describe('createPostgresAdvisoryLock', () => {
   it('acquires and releases the singleton advisory lock', async () => {
     nextConnectClient!.query
       .mockResolvedValueOnce({ rows: [{ acquired: true }] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ released: true }] });
 
     const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal');
     const lease = await lock.acquire();
@@ -55,7 +55,7 @@ describe('createPostgresAdvisoryLock', () => {
     );
     expect(nextConnectClient!.query).toHaveBeenNthCalledWith(
       2,
-      'SELECT pg_advisory_unlock(hashtext($1))',
+      'SELECT pg_advisory_unlock(hashtext($1)) AS released',
       ['tribunal-engine-singleton'],
     );
     expect(nextConnectClient!.release).toHaveBeenCalledTimes(1);
@@ -83,7 +83,7 @@ describe('createPostgresAdvisoryLock', () => {
     nextConnectClient!.query
       .mockResolvedValueOnce({ rows: [{ acquired: false }] })
       .mockResolvedValueOnce({ rows: [{ acquired: true }] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ released: true }] });
 
     const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
       attempts: 5,
@@ -134,7 +134,7 @@ describe('createPostgresAdvisoryLock', () => {
     nextConnectClient!.query
       .mockResolvedValueOnce({ rows: [{ acquired: false }] })
       .mockResolvedValueOnce({ rows: [{ acquired: true }] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ released: true }] });
 
     // No `sleep` option — exercises the production `setTimeout`-based default.
     const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
@@ -210,7 +210,7 @@ describe('createPostgresAdvisoryLock', () => {
       .mockRejectedValueOnce(new Error('blip 3'))
       .mockRejectedValueOnce(new Error('blip 4'))
       .mockResolvedValueOnce({ rows: [{ acquired: true }] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ released: true }] });
 
     const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
       attempts: 10,
@@ -221,5 +221,74 @@ describe('createPostgresAdvisoryLock', () => {
     await lease.release();
 
     expect(nextConnectClient!.query).toHaveBeenCalledTimes(7);
+  });
+
+  describe('pooled-endpoint detection', () => {
+    it('logs an error at construction when the connection host is a Neon pooled endpoint', () => {
+      const logger = { error: vi.fn() };
+
+      createPostgresAdvisoryLock(
+        'postgres://user:pass@ep-cool-cell-12345-pooler.us-east-2.aws.neon.tech/tribunal',
+        { logger },
+      );
+
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.error.mock.calls[0]?.[0]).toContain('UNRELIABLE');
+      expect(logger.error.mock.calls[0]?.[0]).toContain('ENGINE_SINGLETON_DATABASE_URL');
+    });
+
+    it('stays silent at construction when the connection host is a direct endpoint', () => {
+      const logger = { error: vi.fn() };
+
+      createPostgresAdvisoryLock(
+        'postgres://user:pass@ep-cool-cell-12345.us-east-2.aws.neon.tech/tribunal',
+        { logger },
+      );
+
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('never throws when the connection string cannot be parsed as a URL', () => {
+      const logger = { error: vi.fn() };
+
+      expect(() =>
+        createPostgresAdvisoryLock('not-a-valid-connection-string', { logger }),
+      ).not.toThrow();
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('release() unlock verification', () => {
+    it('logs an explicit error when pg_advisory_unlock returns false', async () => {
+      nextConnectClient!.query
+        .mockResolvedValueOnce({ rows: [{ acquired: true }] })
+        .mockResolvedValueOnce({ rows: [{ released: false }] });
+      const logger = { error: vi.fn() };
+
+      const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+        logger,
+      });
+      const lease = await lock.acquire();
+      await lease.release();
+
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.error.mock.calls[0]?.[0]).toContain('NOT');
+      expect(logger.error.mock.calls[0]?.[0]).toContain('released');
+    });
+
+    it('does not log an error when pg_advisory_unlock returns true', async () => {
+      nextConnectClient!.query
+        .mockResolvedValueOnce({ rows: [{ acquired: true }] })
+        .mockResolvedValueOnce({ rows: [{ released: true }] });
+      const logger = { error: vi.fn() };
+
+      const lock = createPostgresAdvisoryLock('postgres://user:pass@localhost:5432/tribunal', {
+        logger,
+      });
+      const lease = await lock.acquire();
+      await lease.release();
+
+      expect(logger.error).not.toHaveBeenCalled();
+    });
   });
 });

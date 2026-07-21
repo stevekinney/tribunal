@@ -67,6 +67,19 @@ Create or choose the production application database.
   migrations.
 - `WEFT_DATABASE_URL`: engine-owned durable review state database connection.
   This belongs only on `tribunal-engine`.
+- `ENGINE_SINGLETON_DATABASE_URL` (optional, `tribunal-engine` only): a
+  direct, UNPOOLED Neon connection string used only for the engine singleton
+  advisory lock (`applications/engine/src/workflows/postgres-advisory-lock.ts`).
+  It MUST be the direct URL, not a pooled one — `pg_try_advisory_lock`/
+  `pg_advisory_unlock` are session-level, and Neon's pooled endpoint
+  (PgBouncer in transaction pooling mode) assigns a server backend per
+  transaction rather than per session, so a session lock over that endpoint
+  is unsound: the acquiring backend and the releasing backend can differ, and
+  the lock leaks until PgBouncer reaps the connection. If this var is unset,
+  the engine falls back to `WEFT_DATABASE_URL` (pooled) so boot never
+  crash-loops on a missing secret, but singleton election stays degraded
+  (unsound) until the direct URL is provisioned — the engine logs a
+  prominent error on boot when it detects this.
 - Production endpoint scale-to-zero: set
   `suspend_timeout_seconds=300` for Neon project `flat-credit-58562329`,
   endpoint `ep-round-dew-ap98dps9`.
@@ -199,6 +212,7 @@ flyctl secrets set -a tribunal-web \
 flyctl secrets set -a tribunal-engine \
   DATABASE_URL="<pooled-neon-runtime-url>" \
   WEFT_DATABASE_URL="<pooled-neon-weft-url>" \
+  ENGINE_SINGLETON_DATABASE_URL="<direct-unpooled-neon-weft-url>" \
   ENCRYPTION_KEY="<64-hex-character-key>" \
   GITHUB_APP_ID="<github-app-id>" \
   TENSORLAKE_API_KEY="<tensorlake-api-key>" \

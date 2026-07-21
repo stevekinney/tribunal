@@ -1,4 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { createPostgresAdvisoryLockMock } = vi.hoisted(() => ({
+  createPostgresAdvisoryLockMock: vi.fn(() => ({ acquire: vi.fn() })),
+}));
+
+vi.mock('./workflows/postgres-advisory-lock', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./workflows/postgres-advisory-lock')>();
+  return {
+    ...actual,
+    createPostgresAdvisoryLock: createPostgresAdvisoryLockMock,
+  };
+});
+
 import {
   createEngineRuntimeWithSingletonRetry,
   createEngineServerOptions,
@@ -842,6 +855,35 @@ describe('createStorageConfigurationFromEnvironment', () => {
     expect(configuration.lockFactory).toBeTypeOf('function');
   });
 
+  it('uses WEFT_DATABASE_URL for the singleton lock when ENGINE_SINGLETON_DATABASE_URL is unset', () => {
+    createPostgresAdvisoryLockMock.mockClear();
+    const configuration = createStorageConfigurationFromEnvironment({
+      NODE_ENV: 'production',
+      WEFT_DATABASE_URL: 'postgres://user:password@weft-pooler.example.neon.tech/tribunal',
+    });
+
+    configuration.lockFactory?.();
+
+    expect(createPostgresAdvisoryLockMock).toHaveBeenCalledWith(
+      'postgres://user:password@weft-pooler.example.neon.tech/tribunal',
+    );
+  });
+
+  it('prefers ENGINE_SINGLETON_DATABASE_URL for the singleton lock when set', () => {
+    createPostgresAdvisoryLockMock.mockClear();
+    const configuration = createStorageConfigurationFromEnvironment({
+      NODE_ENV: 'production',
+      WEFT_DATABASE_URL: 'postgres://user:password@weft-pooler.example.neon.tech/tribunal',
+      ENGINE_SINGLETON_DATABASE_URL: 'postgres://user:password@direct.example.neon.tech/tribunal',
+    });
+
+    configuration.lockFactory?.();
+
+    expect(createPostgresAdvisoryLockMock).toHaveBeenCalledWith(
+      'postgres://user:password@direct.example.neon.tech/tribunal',
+    );
+  });
+
   it('requires durable storage in production unless explicitly enabled for tests', () => {
     const configuration = createStorageConfigurationFromEnvironment({
       NODE_ENV: 'production',
@@ -1103,6 +1145,33 @@ describe('createSignalShutdown', () => {
     expect(release).toHaveBeenCalledTimes(3);
     expect(harness.logger.error).toHaveBeenCalled();
     expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('does not log shutdown success and logs a distinct error when every release attempt fails', async () => {
+    const release = vi.fn(async () => {
+      throw new Error('lease already gone');
+    });
+    const harness = createHarness({ runtime: { release }, releaseAttempts: 3 });
+
+    await harness.shutdown();
+
+    expect(release).toHaveBeenCalledTimes(3);
+    expect(harness.logger.log).not.toHaveBeenCalledWith('[engine] shutdown complete');
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('shutdown completed WITHOUT releasing the singleton lease'),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('logs shutdown success when the release eventually succeeds', async () => {
+    const harness = createHarness();
+
+    await harness.shutdown();
+
+    expect(harness.logger.log).toHaveBeenCalledWith('[engine] shutdown complete');
+    expect(harness.logger.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('shutdown completed WITHOUT releasing the singleton lease'),
+    );
   });
 
   it('always attempts the release even when releaseAttempts is misconfigured', async () => {

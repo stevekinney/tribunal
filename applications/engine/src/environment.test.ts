@@ -122,6 +122,21 @@ describe('parseEngineEnvironment', () => {
     ).toBeUndefined();
   });
 
+  it('parses ENGINE_SINGLETON_DATABASE_URL when set', () => {
+    expect(
+      parseEngineEnvironment({
+        ...fullEnvironment,
+        ENGINE_SINGLETON_DATABASE_URL: 'https://direct.example.neon.tech/weft',
+      }).ENGINE_SINGLETON_DATABASE_URL,
+    ).toBe('https://direct.example.neon.tech/weft');
+  });
+
+  it('leaves ENGINE_SINGLETON_DATABASE_URL undefined and does not fail parsing when absent', () => {
+    const parsedEnvironment = parseEngineEnvironment(fullEnvironment);
+
+    expect(parsedEnvironment.ENGINE_SINGLETON_DATABASE_URL).toBeUndefined();
+  });
+
   it('allows missing Weft storage only when ephemeral storage is explicitly enabled', () => {
     const { WEFT_DATABASE_URL: _removed, ...ephemeralEnvironment } = fullEnvironment;
 
