@@ -28,7 +28,7 @@
     "database:migration:prepare": "bun run db:generate && bun run db:check && bun run check",
     "verify": "bun run scripts/verify.ts",
     "deploy:status": "bun run scripts/deploy.ts",
-    "test:coverage": "bun run --cwd applications/engine test:coverage && bun run --cwd applications/proxy test:coverage && bun run --cwd applications/web test:coverage && bun run --cwd packages/review-core test:coverage && bun run --cwd packages/agents test:coverage && bun run --cwd packages/sandbox test:coverage && bun run --cwd packages/cost test:coverage && bun run --cwd packages/github test:coverage && bun run --cwd packages/database test:coverage && bun run --cwd packages/test test:coverage && bun run --cwd scripts test:coverage && bun run --cwd runner test"
+    "test:coverage": "turbo run build --filter='!@tribunal/web' && bun run --cwd applications/engine test:coverage && bun run --cwd applications/proxy test:coverage && bun run --cwd applications/web test:coverage && bun run --cwd packages/review-core test:coverage && bun run --cwd packages/agents test:coverage && bun run --cwd packages/sandbox test:coverage && bun run --cwd packages/cost test:coverage && bun run --cwd packages/github test:coverage && bun run --cwd packages/database test:coverage && bun run --cwd packages/test test:coverage && bun run --cwd scripts test:coverage && bun run --cwd runner test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
