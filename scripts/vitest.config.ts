@@ -21,6 +21,16 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json'],
+      // Only the lib/** helpers are covered by this gate. The top-level
+      // scripts/*.ts files (e.g. deploy.ts, doctor.ts, check-migration-consistency.ts)
+      // are operational CLI tooling that shells out to Fly, GitHub, and Neon
+      // against live infrastructure; they are not exercisable under a unit-test
+      // gate the way lib/** logic is. This mirrors the documented
+      // `src/test/**` exclusion in packages/database/vitest.configuration.ts,
+      // which excludes that package's equivalent live-infrastructure tooling
+      // for the same reason. Coverage for these top-level CLIs (~2,900 lines)
+      // is tracked as a follow-up in stevekinney/tribunal#179 rather than
+      // silently included in or excluded from this gate's scope.
       include: ['lib/**/*.ts'],
       exclude: ['lib/**/*.test.ts'],
       thresholds: {

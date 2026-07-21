@@ -107,11 +107,17 @@ gate.
 
 Per-workspace scopes:
 
-- Node packages (`packages/*`, `applications/engine`, `applications/proxy`, `scripts`)
-  gate `src/**/*.ts` (or `lib/**/*.ts` for `scripts`) via `coverage.thresholds` in each
-  vitest configuration. Barrel and type-only files (`index.ts`, `types.ts`) and
-  `packages/database/src/test/**` (operational tooling that drives real Neon branches)
-  are excluded.
+- Node packages (`packages/*`, `applications/engine`, `applications/proxy`) gate
+  `src/**/*.ts` via `coverage.thresholds` in each vitest configuration. Barrel and
+  type-only files (`index.ts`, `types.ts`) and `packages/database/src/test/**`
+  (operational tooling that drives real Neon branches) are excluded.
+- `scripts` gates only `lib/**/*.ts` (the shared helper library). The ~2,900 lines of
+  top-level `scripts/*.ts` CLIs (`deploy.ts`, `doctor.ts`,
+  `check-migration-consistency.ts`, etc.) are operational tooling that shells out to
+  Fly, GitHub, and Neon against live infrastructure — the same rationale as the
+  `packages/database/src/test/**` exclusion above — and are not currently gated at
+  all. Tracked as a follow-up in
+  [stevekinney/tribunal#179](https://github.com/stevekinney/tribunal/issues/179).
 - `applications/web` gates per project: `test:coverage:server` covers `src/**/*.ts` in the
   Node server project; `test:coverage:client` covers `src/**/*.svelte` rendered in real
   Chromium. Components are measured only in the client project because the server project
@@ -120,7 +126,9 @@ Per-workspace scopes:
 - `packages/github` additionally keeps the narrower `test:coverage:review-engine` script,
   which overrides scope via CLI flags for the review-engine deploy gate.
 - `runner` runs its plain `test` script (a single Vitest file, no coverage
-  instrumentation).
+  instrumentation) and has no coverage gate at all — including for
+  `verify-image.mjs`, which currently has no test coverage of any kind. Also
+  tracked in [stevekinney/tribunal#179](https://github.com/stevekinney/tribunal/issues/179).
 
 When measuring locally alongside other running suites, pass a distinct
 `--coverage.reportsDirectory` — concurrent runs sharing one `coverage/.tmp` clobber each
