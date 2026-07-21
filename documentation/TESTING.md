@@ -94,8 +94,11 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
 
 ## Coverage Gates
 
-Every workspace enforces **100% lines and 100% functions** (branches are deliberately not
-gated). Run the full monorepo gate from the repository root:
+Every workspace with executable source enforces **100% lines and 100% functions**
+(branches are deliberately not gated), with the two scoped exceptions noted below
+(`scripts` top-level CLIs and `runner`). `packages/typescript` is a shared tsconfig-only
+package with no executable source and no test script. Run the full monorepo gate from the
+repository root:
 
 ```bash
 bun run test:coverage
@@ -108,9 +111,13 @@ gate.
 Per-workspace scopes:
 
 - Node packages (`packages/*`, `applications/engine`, `applications/proxy`) gate
-  `src/**/*.ts` via `coverage.thresholds` in each vitest configuration. Barrel and
-  type-only files (`index.ts`, `types.ts`) and `packages/database/src/test/**`
-  (operational tooling that drives real Neon branches) are excluded.
+  `src/**/*.ts` via `coverage.thresholds` in each vitest configuration. Every package
+  excludes its own `src/**/*.test.ts`; most also exclude barrel/type-only files
+  (`index.ts`, `types.ts`), and a few carve out additional package-specific files
+  (e.g. `packages/cost` excludes `src/usage-cost-api.ts`, `packages/review-core`
+  excludes `src/ports.ts`). `packages/database` additionally excludes
+  `src/test/**` (operational tooling that drives real Neon branches). Check each
+  package's `vitest.configuration.ts` for its exact `coverage.exclude` list.
 - `scripts` gates only `lib/**/*.ts` (the shared helper library). The ~2,900 lines of
   top-level `scripts/*.ts` CLIs (`deploy.ts`, `doctor.ts`,
   `check-migration-consistency.ts`, etc.) are operational tooling that shells out to
