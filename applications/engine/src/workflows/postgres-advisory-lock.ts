@@ -197,13 +197,19 @@ class PostgresAdvisoryLease implements EngineSingletonLease {
         [lockKey],
       );
       if (result.rows[0]?.released !== true) {
-        this.logger.error(
+        const message =
           '[engine] pg_advisory_unlock returned false; the singleton advisory lock was NOT ' +
-            'released by this session and will leak until reaped. This is likely a pooled ' +
-            '(PgBouncer transaction-mode) endpoint routing the unlock to a different backend ' +
-            'than the one that acquired the lock — set ENGINE_SINGLETON_DATABASE_URL to a ' +
-            'direct, unpooled connection string.',
-        );
+          'released by this session and will leak until reaped. This is likely a pooled ' +
+          '(PgBouncer transaction-mode) endpoint routing the unlock to a different backend ' +
+          'than the one that acquired the lock — set ENGINE_SINGLETON_DATABASE_URL to a ' +
+          'direct, unpooled connection string.';
+        this.logger.error(message);
+        // Must throw, not just log: a resolved release() would let
+        // `EngineRuntime.release()` and `createSignalShutdown` treat this as
+        // a successful handoff — logging "shutdown complete" and skipping
+        // retries — even though the lock is still held. Throwing keeps the
+        // caller's retry/failure-reporting path (see `index.ts`) truthful.
+        throw new Error(message);
       }
     } finally {
       this.client.release();

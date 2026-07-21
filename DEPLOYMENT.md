@@ -212,7 +212,6 @@ flyctl secrets set -a tribunal-web \
 flyctl secrets set -a tribunal-engine \
   DATABASE_URL="<pooled-neon-runtime-url>" \
   WEFT_DATABASE_URL="<pooled-neon-weft-url>" \
-  ENGINE_SINGLETON_DATABASE_URL="<direct-unpooled-neon-weft-url>" \
   ENCRYPTION_KEY="<64-hex-character-key>" \
   GITHUB_APP_ID="<github-app-id>" \
   TENSORLAKE_API_KEY="<tensorlake-api-key>" \
@@ -222,6 +221,13 @@ flyctl secrets set -a tribunal-engine \
   PROXY_SIGNING_KEY="<shared-proxy-signing-key>" \
   TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>" \
   ANTHROPIC_ADMIN_KEY="<anthropic-admin-key>"
+
+# Optional: sets the direct/unpooled connection used only for the singleton
+# advisory lock. Without it, singleton election falls back to the pooled
+# WEFT_DATABASE_URL above and stays degraded (unsound) — see
+# "Neon Setup" for why.
+flyctl secrets set -a tribunal-engine \
+  ENGINE_SINGLETON_DATABASE_URL="<direct-unpooled-neon-weft-url>"
 
 flyctl secrets set -a tribunal-engine \
   GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"

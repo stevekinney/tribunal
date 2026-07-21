@@ -259,7 +259,11 @@ describe('createPostgresAdvisoryLock', () => {
   });
 
   describe('release() unlock verification', () => {
-    it('logs an explicit error when pg_advisory_unlock returns false', async () => {
+    it('logs an explicit error and rejects when pg_advisory_unlock returns false', async () => {
+      // Must reject, not just log: a resolved release() would let
+      // EngineRuntime.release() / createSignalShutdown treat this as a
+      // successful handoff and log "shutdown complete" even though the lock
+      // is still held.
       nextConnectClient!.query
         .mockResolvedValueOnce({ rows: [{ acquired: true }] })
         .mockResolvedValueOnce({ rows: [{ released: false }] });
@@ -269,11 +273,14 @@ describe('createPostgresAdvisoryLock', () => {
         logger,
       });
       const lease = await lock.acquire();
-      await lease.release();
 
+      await expect(lease.release()).rejects.toThrow('pg_advisory_unlock returned false');
       expect(logger.error).toHaveBeenCalledTimes(1);
       expect(logger.error.mock.calls[0]?.[0]).toContain('NOT');
       expect(logger.error.mock.calls[0]?.[0]).toContain('released');
+      // The pool/client are still cleaned up even though the release failed.
+      expect(nextConnectClient!.release).toHaveBeenCalledTimes(1);
+      expect(poolInstances[0]?.end).toHaveBeenCalledTimes(1);
     });
 
     it('does not log an error when pg_advisory_unlock returns true', async () => {
