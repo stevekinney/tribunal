@@ -79,6 +79,28 @@ migrations:
 DATABASE_URL="<direct-neon-url>" bun run db:migrate
 ```
 
+### `ENGINE_SINGLETON_DATABASE_URL` (optional, `tribunal-engine` only)
+
+The engine's singleton election (`applications/engine/src/workflows/postgres-advisory-lock.ts`)
+uses Postgres session-level advisory locks (`pg_try_advisory_lock` /
+`pg_advisory_unlock`). Session locks are tied to the Postgres backend a
+connection is holding, not to the client connection itself — so they are
+unsound over a transaction-pooled endpoint. Neon's pooled endpoint (PgBouncer
+in transaction pooling mode) can hand different backends to the same client
+across different transactions, which means the backend that acquired the lock
+is not guaranteed to be the same one a later unlock lands on: the unlock can
+return `false` (not an error) while the lock stays held on the original
+backend, leaking until PgBouncer reaps that connection — an uncontrolled delay
+of minutes.
+
+Set `ENGINE_SINGLETON_DATABASE_URL` to a direct, unpooled Neon connection
+string so the lock runs over a real, stable session. It is optional: if
+unset, the engine falls back to `WEFT_DATABASE_URL` (pooled) so a deploy
+never crash-loops on a missing secret, but singleton election stays degraded
+(unsound — split-brain is possible) until the direct URL is provisioned. The
+engine logs a prominent error at boot when it detects it is using a pooled
+endpoint for the lock.
+
 The production Neon compute must be able to suspend after idle work drains:
 
 ```sh
@@ -89,13 +111,13 @@ curl -fsS -X PATCH \
   "https://console.neon.tech/api/v2/projects/flat-credit-58562329/endpoints/ep-round-dew-ap98dps9"
 ```
 
-Required secret groups:
+Required secret groups (required unless noted otherwise):
 
-| App               | Required secrets                                                                                                                                                                                                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tribunal-web`    | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `PUBLIC_NEON_AUTH_URL`, `NEON_AUTH_BASE_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`, `GITHUB_APP_ID`, `GITHUB_APP_NAME`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET`, `TRIBUNAL_ENGINE_CONTROL_TOKEN` |
-| `tribunal-engine` | `DATABASE_URL`, `WEFT_DATABASE_URL`, `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `TENSORLAKE_API_KEY`, `TRIBUNAL_SANDBOX_IMAGE`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_SIGNING_KEY`, `TRIBUNAL_ENGINE_CONTROL_TOKEN`, `ANTHROPIC_ADMIN_KEY`                 |
-| `tribunal-proxy`  | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_CA_CERT`, `PROXY_SIGNING_KEY`                                                                                           |
+| App               | Required secrets                                                                                                                                                                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tribunal-web`    | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `PUBLIC_NEON_AUTH_URL`, `NEON_AUTH_BASE_URL`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`, `GITHUB_APP_ID`, `GITHUB_APP_NAME`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET`, `TRIBUNAL_ENGINE_CONTROL_TOKEN`                             |
+| `tribunal-engine` | `DATABASE_URL`, `WEFT_DATABASE_URL`, `ENGINE_SINGLETON_DATABASE_URL` (optional), `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `TENSORLAKE_API_KEY`, `TRIBUNAL_SANDBOX_IMAGE`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_SIGNING_KEY`, `TRIBUNAL_ENGINE_CONTROL_TOKEN`, `ANTHROPIC_ADMIN_KEY` |
+| `tribunal-proxy`  | `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, `TRIBUNAL_PROXY_URL`, `TRIBUNAL_PROXY_CIDR`, `PROXY_CA_CERT`, `PROXY_SIGNING_KEY`                                                                                                                       |
 
 `TRIBUNAL_ENGINE_CONTROL_TOKEN` must match between web and engine.
 `PROXY_SIGNING_KEY` must match between engine and proxy.

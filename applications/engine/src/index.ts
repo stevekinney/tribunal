@@ -250,6 +250,7 @@ export function createStorageConfigurationFromEnvironment(environment: {
   NODE_ENV?: string;
   TRIBUNAL_ENGINE_ALLOW_EPHEMERAL_STORAGE?: string | boolean;
   WEFT_DATABASE_URL?: string;
+  ENGINE_SINGLETON_DATABASE_URL?: string;
 }): {
   storage: Storage | undefined;
   lockFactory?: () => EngineSingletonLock;
@@ -258,13 +259,20 @@ export function createStorageConfigurationFromEnvironment(environment: {
 } {
   if (environment.WEFT_DATABASE_URL) {
     const weftDatabaseUrl = environment.WEFT_DATABASE_URL;
+    // The singleton advisory lock must run on a direct (unpooled) connection —
+    // see `postgres-advisory-lock.ts`. `ENGINE_SINGLETON_DATABASE_URL` is that
+    // direct URL when the operator has provisioned it; otherwise this falls
+    // back to `WEFT_DATABASE_URL` (the same pooled endpoint the lock has
+    // always used) so boot never crash-loops on a missing optional secret.
+    const singletonLockConnectionString =
+      environment.ENGINE_SINGLETON_DATABASE_URL ?? weftDatabaseUrl;
     return {
       storage: new NeonStorage({ url: weftDatabaseUrl }),
       // A factory, not a shared instance: each singleton-retry cycle in
       // `createEngineRuntimeWithSingletonRetry` needs its own Pool, because a
       // prior cycle's lock ends its pool once its own bounded acquire budget
       // is exhausted (see `postgres-advisory-lock.ts`).
-      lockFactory: () => createPostgresAdvisoryLock(weftDatabaseUrl),
+      lockFactory: () => createPostgresAdvisoryLock(singletonLockConnectionString),
       allowEphemeralStorageForTests: false,
       healthDependencies: [
         { name: 'weft_database', ok: true },
@@ -603,9 +611,11 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     // release() is retryable — it clears its in-flight promise on failure — and
     // a prompt lease handoff, not a fall back to the lease TTL, is the whole
     // point of this handler.
+    let released = false;
     for (let attempt = 1; attempt <= releaseAttempts; attempt += 1) {
       try {
         await input.runtime.release();
+        released = true;
         break;
       } catch (error) {
         logger.error(
@@ -616,7 +626,18 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
       }
     }
 
-    logger.log('[engine] shutdown complete');
+    if (released) {
+      logger.log('[engine] shutdown complete');
+    } else {
+      // Every release attempt failed: do not claim success. The singleton
+      // lease/advisory lock is still held by this process and will only
+      // clear once the connection drops (or is reaped) — the exact silent
+      // failure mode this check exists to surface instead of hide.
+      logger.error(
+        '[engine] shutdown completed WITHOUT releasing the singleton lease; the lock will ' +
+          'leak until the connection is reaped',
+      );
+    }
     exit(0);
   };
 }
