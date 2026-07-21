@@ -12,7 +12,7 @@ describe('resolveRepositoryRoot', () => {
       return;
     }
 
-    const root = join((import.meta as { dir: string }).dir, '..', '..');
+    const root = resolveRepositoryRoot();
     expect(existsSync(join(root, 'package.json'))).toBe(true);
   });
 

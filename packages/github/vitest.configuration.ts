@@ -19,7 +19,10 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json'],
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts'],
+      // Barrel and type-only files match the database package's convention:
+      // they are currently covered transitively, but excluding them keeps the
+      // gate from failing spuriously if a test stops importing a barrel.
+      exclude: ['src/**/*.test.ts', 'src/**/index.ts', 'src/**/types.ts'],
       thresholds: {
         lines: 100,
         functions: 100,
