@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  createIssueCommentCreatedEvent,
+  createPullRequestReviewThreadResolvedEvent,
+  createCheckRunCompletedEvent,
+  createCheckSuiteCompletedEvent,
+} from 'github-webhook-schemas/fixtures';
 import { CACHE_KEYS } from '../cache-keys.js';
 import type { GithubServiceContext } from '../context.js';
+import type { WebhookPayload } from './types.js';
 
 // Mock repository lookup
 const mockGetRepositoryByOwnerAndName = vi.fn().mockResolvedValue(null);
@@ -164,6 +171,33 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         CACHE_KEYS.GITHUB_ISSUES_LIST_PATTERN(12345),
       );
     });
+
+    it('extracts issueNumber/pull_request via the typed guard for a schema-valid created comment', async () => {
+      // Unlike the hand-rolled payloads above (which fail the `isIssueCommentCreatedEvent`
+      // Zod guard and always fall through to the structural `else` branch),
+      // this exercises the typed-guard branch directly.
+      const data = createIssueCommentCreatedEvent({
+        issue: {
+          number: 10,
+          pull_request: { url: 'https://api.github.com/repos/acme/widgets/pulls/10' },
+        },
+        repository: {
+          id: 12345,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+        },
+      }) as unknown as WebhookPayload;
+
+      await invalidateGitHubResourceCacheForEvent(context, 'issue_comment', 'created', data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_ISSUE_DETAIL('acme', 'widgets', 10),
+      );
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 10),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -188,6 +222,37 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_ISSUES_LIST_PATTERN(12345),
       );
+    });
+
+    it('does nothing when pull_request.number is missing', async () => {
+      const data = makePayload({ action: 'opened' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'pull_request', 'opened', data);
+
+      expect(context.cache.deleteCache).not.toHaveBeenCalled();
+      expect(mockGetRepositoryByOwnerAndName).not.toHaveBeenCalled();
+    });
+
+    it('logs and continues (with a null repository) when the repository lookup fails', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockGetRepositoryByOwnerAndName.mockRejectedValueOnce(new Error('DB down'));
+      const data = makePayload({ action: 'opened', pull_request: { number: 5 } });
+
+      await expect(
+        invalidateGitHubResourceCacheForEvent(context, 'pull_request', 'opened', data),
+      ).resolves.toBeUndefined();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[resource-invalidation] Failed to look up repository acme/widgets:',
+        expect.any(Error),
+      );
+      // PR detail/pattern invalidation still happens even though the
+      // repository lookup (used only for list-cache invalidation) failed.
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 5),
+      );
+
+      consoleErrorSpy.mockRestore();
     });
   });
 
@@ -299,6 +364,46 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         expect.stringContaining('thread:'),
       );
     });
+
+    it('does nothing when neither pull_request nor thread is present', async () => {
+      const data = makePayload({ action: 'resolved' });
+
+      await invalidateGitHubResourceCacheForEvent(
+        context,
+        'pull_request_review_thread',
+        'resolved',
+        data,
+      );
+
+      expect(context.cache.deleteCache).not.toHaveBeenCalled();
+    });
+
+    it('extracts prNumber/threadNodeId via the typed guard for a schema-valid resolved event', async () => {
+      const data = createPullRequestReviewThreadResolvedEvent({
+        pull_request: { number: 15 },
+        thread: { node_id: 'PRRT_abc123' },
+        repository: {
+          id: 12345,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+        },
+      }) as unknown as WebhookPayload;
+
+      await invalidateGitHubResourceCacheForEvent(
+        context,
+        'pull_request_review_thread',
+        'resolved',
+        data,
+      );
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 15),
+      );
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_REVIEW_THREAD_VALIDATE('PRRT_abc123', 'acme', 'widgets'),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -318,6 +423,19 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_INSTALLATION_PATTERN(999),
       );
+    });
+
+    it('does nothing when the installation id is missing', async () => {
+      const data = makePayload({ action: 'added', installation: undefined });
+
+      await invalidateGitHubResourceCacheForEvent(
+        context,
+        'installation_repositories',
+        'added',
+        data,
+      );
+
+      expect(context.cache.deleteCacheByPattern).not.toHaveBeenCalled();
     });
   });
 
@@ -401,6 +519,27 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         expect.stringContaining('branch:'),
       );
     });
+
+    it('extracts head_sha/head_branch via the typed guard for a schema-valid completed event', async () => {
+      const data = createCheckRunCompletedEvent({
+        check_run: { head_sha: 'typed-sha', check_suite: { head_branch: 'main' } },
+        repository: {
+          id: 12345,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+        },
+      }) as unknown as WebhookPayload;
+
+      await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'typed-sha'),
+      );
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      );
+    });
   });
 
   describe('check_suite events', () => {
@@ -433,6 +572,27 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       expect(context.cache.deleteCache).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/phase-two'),
+      );
+    });
+
+    it('extracts head_sha/head_branch via the typed guard for a schema-valid completed event', async () => {
+      const data = createCheckSuiteCompletedEvent({
+        check_suite: { head_sha: 'typed-suite-sha', head_branch: 'feature/typed' },
+        repository: {
+          id: 12345,
+          owner: { login: 'acme' },
+          name: 'widgets',
+          full_name: 'acme/widgets',
+        },
+      }) as unknown as WebhookPayload;
+
+      await invalidateGitHubResourceCacheForEvent(context, 'check_suite', 'completed', data);
+
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'typed-suite-sha'),
+      );
+      expect(context.cache.deleteCache).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/typed'),
       );
     });
   });
@@ -569,6 +729,34 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       ).resolves.toBeUndefined();
 
       expect(context.cache.deleteCache).not.toHaveBeenCalled();
+    });
+
+    it('logs and continues when the list-cache invalidation itself fails (repository lookup succeeded)', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockGetRepositoryByOwnerAndName.mockResolvedValueOnce({ id: 12345 });
+      // Only the list-cache pattern (called from inside
+      // `invalidateExistingListCachesForRepository`) fails -- a blanket
+      // `mockRejectedValueOnce` would instead be consumed by the earlier,
+      // unrelated `deleteCacheByPattern(GITHUB_RESPONSE_ISSUE_PATTERN)` call
+      // in the same `Promise.all`.
+      vi.mocked(context.cache.deleteCacheByPattern).mockImplementation(async (key: string) => {
+        if (key === CACHE_KEYS.GITHUB_ISSUES_LIST_PATTERN(12345)) {
+          throw new Error('Redis down');
+        }
+        return 0;
+      });
+      const data = makePayload({ action: 'opened', issue: { number: 1 } });
+
+      await expect(
+        invalidateGitHubResourceCacheForEvent(context, 'issues', 'opened', data),
+      ).resolves.toBeUndefined();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[resource-invalidation] Failed to invalidate list caches for repository 12345:',
+        expect.any(Error),
+      );
+
+      consoleErrorSpy.mockRestore();
     });
   });
 });

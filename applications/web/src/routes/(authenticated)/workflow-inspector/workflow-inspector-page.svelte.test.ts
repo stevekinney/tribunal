@@ -140,4 +140,11 @@ describe('/workflow-inspector page', () => {
       .element(page.getByText('agent-review children visible').first())
       .toBeInTheDocument();
   });
+
+  it('shows empty states for recent runs and the child tree when no runs are recorded', async () => {
+    render(WorkflowInspectorPage, { data: { ...data, runs: [] } });
+
+    await expect.element(page.getByText('No review workflows recorded.')).toBeInTheDocument();
+    await expect.element(page.getByText('No child workflow records loaded.')).toBeInTheDocument();
+  });
 });

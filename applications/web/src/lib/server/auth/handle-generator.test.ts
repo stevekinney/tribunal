@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { validateHandleFormat, suggestHandle } from './handle-generator';
+import { afterAll, beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
+import { runWithDatabase } from '$lib/server/database';
+import {
+  validateHandleFormat,
+  suggestHandle,
+  isHandleAvailable,
+  validateHandle,
+} from './handle-generator';
 
 describe('handle-generator', () => {
   describe('validateHandleFormat', () => {
@@ -93,6 +101,67 @@ describe('handle-generator', () => {
     it('generates a padded handle for very short inputs', () => {
       const result = suggestHandle('ab', 'ab@example.com');
       expect(result.length).toBeGreaterThanOrEqual(3);
+    });
+  });
+
+  describe('isHandleAvailable / validateHandle', () => {
+    let testDb: TestDatabase;
+
+    beforeAll(async () => {
+      testDb = await createTestDatabase();
+    });
+
+    afterAll(async () => {
+      await testDb.close();
+    });
+
+    beforeEach(async () => {
+      await testDb.reset();
+      resetIdCounter();
+    });
+
+    function withTestDatabase<T>(operation: () => Promise<T>): Promise<T> {
+      return runWithDatabase(testDb.db as never, operation);
+    }
+
+    it('rejects an unavailable handle by format before touching the database', async () => {
+      await expect(withTestDatabase(() => isHandleAvailable('admin'))).resolves.toBe(false);
+    });
+
+    it('is available when no user has taken the handle', async () => {
+      await expect(withTestDatabase(() => isHandleAvailable('brand-new-handle'))).resolves.toBe(
+        true,
+      );
+    });
+
+    it('is unavailable once a user has taken the handle', async () => {
+      const userFactory = createUserFactory(testDb.db);
+      await userFactory.create({ username: 'taken-handle' });
+
+      await expect(withTestDatabase(() => isHandleAvailable('taken-handle'))).resolves.toBe(false);
+    });
+
+    it('validateHandle surfaces the format error without querying the database', async () => {
+      await expect(withTestDatabase(() => validateHandle('TooShort_'))).resolves.toEqual({
+        valid: false,
+        error: expect.stringContaining('lowercase'),
+      });
+    });
+
+    it('validateHandle reports an already-taken handle', async () => {
+      const userFactory = createUserFactory(testDb.db);
+      await userFactory.create({ username: 'already-taken' });
+
+      await expect(withTestDatabase(() => validateHandle('already-taken'))).resolves.toEqual({
+        valid: false,
+        error: 'This handle is already taken',
+      });
+    });
+
+    it('validateHandle passes for a well-formed, available handle', async () => {
+      await expect(
+        withTestDatabase(() => validateHandle('fresh-available-handle')),
+      ).resolves.toEqual({ valid: true });
     });
   });
 });

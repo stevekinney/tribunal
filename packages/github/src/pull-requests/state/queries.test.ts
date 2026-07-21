@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { GithubServiceContext } from '../../context.js';
-import { getDefaultBranchCiStatus, getFailingCheckCount, mapMergeableState } from './queries.js';
+import {
+  getAggregateReviewState,
+  getDefaultBranchCiStatus,
+  getFailingCheckCount,
+  mapMergeableState,
+} from './queries.js';
 
 function createMockContext(overrides?: Partial<GithubServiceContext>): GithubServiceContext {
   return {
@@ -51,6 +56,150 @@ describe('mapMergeableState', () => {
   });
 });
 
+describe('getAggregateReviewState', () => {
+  function createReviewOctokit(
+    reviews: Array<Record<string, unknown>>,
+    threadPages: Array<{
+      nodes: Array<{ isResolved: boolean }>;
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    }> = [{ nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }],
+  ) {
+    const listReviews = vi.fn().mockResolvedValueOnce({ data: reviews });
+    const graphql = vi.fn();
+    for (const page of threadPages) {
+      graphql.mockResolvedValueOnce({
+        repository: { pullRequest: { reviewThreads: page } },
+      });
+    }
+    return { rest: { pulls: { listReviews } }, graphql } as never;
+  }
+
+  it('computes approvalCount/changesRequestedCount and reviewStatus from the latest review per user', async () => {
+    const octokit = createReviewOctokit([
+      { user: { id: 1 }, state: 'CHANGES_REQUESTED' },
+      // A later review from the same user supersedes the earlier one.
+      { user: { id: 1 }, state: 'APPROVED' },
+      { user: { id: 2 }, state: 'APPROVED' },
+    ]);
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result).toEqual({
+      reviewStatus: 'approved',
+      approvalCount: 2,
+      changesRequestedCount: 0,
+      unresolvedThreadCount: 0,
+    });
+  });
+
+  it('reports changes_requested when at least one reviewer requested changes', async () => {
+    const octokit = createReviewOctokit([
+      { user: { id: 1 }, state: 'APPROVED' },
+      { user: { id: 2 }, state: 'CHANGES_REQUESTED' },
+    ]);
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.reviewStatus).toBe('changes_requested');
+    expect(result.changesRequestedCount).toBe(1);
+  });
+
+  it('reports pending when there are no reviews', async () => {
+    const octokit = createReviewOctokit([]);
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.reviewStatus).toBe('pending');
+  });
+
+  it('ignores a review with no user or no state', async () => {
+    const octokit = createReviewOctokit([{ user: null, state: 'APPROVED' }, { user: { id: 1 } }]);
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.approvalCount).toBe(0);
+  });
+
+  it('paginates reviews across more than one page', async () => {
+    // GitHub user ids are always positive; start at 1 rather than 0 so this
+    // fixture reflects a real payload (an id of exactly 0 would be dropped
+    // by the source's `!review.user?.id` falsy check, which is only ever
+    // true in that unreachable-in-practice case).
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({
+      user: { id: index + 1 },
+      state: 'APPROVED',
+    }));
+    const listReviews = vi.fn();
+    listReviews.mockResolvedValueOnce({ data: fullPage });
+    listReviews.mockResolvedValueOnce({ data: [{ user: { id: 999 }, state: 'APPROVED' }] });
+    const octokit = {
+      rest: { pulls: { listReviews } },
+      graphql: vi.fn().mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        },
+      }),
+    } as never;
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.approvalCount).toBe(101);
+    expect(listReviews).toHaveBeenCalledTimes(2);
+  });
+
+  it('sums unresolved thread counts across paginated GraphQL results', async () => {
+    const octokit = createReviewOctokit(
+      [],
+      [
+        {
+          nodes: [{ isResolved: false }, { isResolved: true }],
+          pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+        },
+        {
+          nodes: [{ isResolved: false }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      ],
+    );
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.unresolvedThreadCount).toBe(2);
+  });
+
+  it('logs and falls back to 0 unresolved threads when the GraphQL call fails', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const listReviews = vi.fn().mockResolvedValueOnce({ data: [] });
+    const octokit = {
+      rest: { pulls: { listReviews } },
+      graphql: vi.fn().mockRejectedValueOnce(new Error('GraphQL down')),
+    } as never;
+
+    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+
+    expect(result.unresolvedThreadCount).toBe(0);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      '[github-cache] getAggregateReviewState GraphQL thread count failed:',
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('caches results under the get-aggregate-review-state policy when a context is provided', async () => {
+    const context = createMockContext();
+    const octokit = createReviewOctokit([{ user: { id: 1 }, state: 'APPROVED' }]);
+
+    await getAggregateReviewState(context, octokit, 'acme', 'widgets', 42);
+
+    expect(context.cache.setCache).toHaveBeenCalledTimes(1);
+    const [cacheKey] = (context.cache.setCache as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(cacheKey).toBe('github:response:acme:widgets:pr:42:review-state');
+  });
+});
+
 describe('getFailingCheckCount', () => {
   it.each([
     ['passing', [{ status: 'completed', conclusion: 'success' }], 1],
@@ -63,6 +212,19 @@ describe('getFailingCheckCount', () => {
     const octokit = createMockOctokit([{ total_count: totalCount, check_runs: [...checkRuns] }]);
     const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
     expect(result.ciStatus).toBe(expected);
+  });
+
+  it('caches results under the get-failing-check-count policy when a context is provided', async () => {
+    expect.assertions(2);
+    const context = createMockContext();
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+
+    const result = await getFailingCheckCount(context, octokit, 'acme', 'widgets', 'sha-abc');
+
+    expect(result.ciStatus).toBe('passing');
+    expect(context.cache.setCache).toHaveBeenCalledTimes(1);
   });
 
   it('prioritizes failing over error and pending', async () => {
@@ -241,6 +403,37 @@ describe('getDefaultBranchCiStatus', () => {
     expect(result.ciStatus).toBe('failing');
   });
 
+  it('deletes the cache entry when the commit-mismatch refetch is itself budget-truncated', async () => {
+    expect.assertions(1);
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn().mockResolvedValue({
+          value: { ciStatus: 'passing', checkCount: 1, failingCount: 0, commitSha: 'old-sha' },
+          etag: undefined,
+          fetchedAt: Date.now(),
+          expiresAt: Date.now() + 30_000,
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+    // A budget that's already exhausted before the refetch starts -- the
+    // refetch for the new commit is immediately truncated.
+    const budget = { canSpend: vi.fn().mockReturnValue(false), spend: vi.fn() };
+
+    await getDefaultBranchCiStatus(context, octokit, 'owner', 'repo', 'main', 'new-sha', budget);
+
+    expect(context.cache.deleteCache).toHaveBeenCalledWith(
+      'github:response:owner:repo:branch:main:ci-status',
+    );
+  });
+
   it('spends one budget unit per check-run page fetched, plus one for the combined status read', async () => {
     expect.assertions(3);
     const page1 = Array.from({ length: 100 }, () => ({
@@ -359,6 +552,73 @@ describe('getDefaultBranchCiStatus', () => {
     );
 
     expect(result.ciStatus).toBe('passing');
+  });
+
+  it('reports error from an unfiltered commit-status context', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit(
+      [{ total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] }],
+      { total_count: 1, state: 'error' },
+    );
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+
+    expect(result.ciStatus).toBe('error');
+  });
+
+  it('reports pending from an unfiltered commit-status context', async () => {
+    expect.assertions(1);
+    const octokit = createMockOctokit(
+      [{ total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] }],
+      { total_count: 1, state: 'pending' },
+    );
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+    );
+
+    expect(result.ciStatus).toBe('pending');
+  });
+
+  it('reports unknown (truncated) when the budget runs out on the unfiltered combined-status read itself', async () => {
+    expect.assertions(2);
+    const octokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+    let calls = 0;
+    const budget = {
+      // Allow the single check-run page, then deny the combined-status read.
+      canSpend: vi.fn().mockImplementation(() => {
+        calls += 1;
+        return calls <= 1;
+      }),
+      spend: vi.fn(),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      undefined,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'sha',
+      budget,
+    );
+
+    expect(result.ciStatus).toBe('unknown');
+    expect(budget.spend).toHaveBeenCalledTimes(1);
   });
 
   it('does not read commit-status contexts for the PR-head CI path', async () => {
@@ -689,6 +949,116 @@ describe('getDefaultBranchCiStatus with required checks', () => {
     // check as never-reported (pending) rather than failing.
     expect(result.ciStatus).toBe('failing');
     expect(getCombinedStatusForRef).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls up error and pending legacy status states across two required-check status pages', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });
+    const statusPage1 = [
+      ...Array.from({ length: 99 }, (_, index) => ({
+        context: `context-${index}`,
+        state: 'success',
+      })),
+      { context: 'Required Error Status', state: 'error' },
+    ];
+    const statusPage2 = [{ context: 'Required Pending Status', state: 'pending' }];
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { total_count: 101, statuses: statusPage1 } })
+      .mockResolvedValueOnce({ data: { total_count: 101, statuses: statusPage2 } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+    const budget = { canSpend: vi.fn().mockReturnValue(true), spend: vi.fn() };
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      budget,
+      [
+        { context: 'Required Error Status', appId: null },
+        { context: 'Required Pending Status', appId: null },
+      ],
+    );
+
+    expect(result.ciStatus).toBe('error');
+    expect(getCombinedStatusForRef).toHaveBeenCalledTimes(2);
+    // 1 check-run page + 2 status pages.
+    expect(budget.spend).toHaveBeenCalledTimes(3);
+  });
+
+  it('never calls getCombinedStatusForRef (reports unknown) when the budget is exhausted before the status read starts', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });
+    const getCombinedStatusForRef = vi.fn();
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+    // Exactly enough budget for the (empty) check-run page and nothing left
+    // for the combined-status read.
+    let remaining = 1;
+    const budget = {
+      canSpend: vi.fn().mockImplementation((cost = 1) => remaining >= cost),
+      spend: vi.fn().mockImplementation((cost = 1) => {
+        remaining -= cost;
+      }),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      budget,
+      [{ context: 'Required Legacy Status', appId: null }],
+    );
+
+    expect(result.ciStatus).toBe('unknown');
+    expect(getCombinedStatusForRef).not.toHaveBeenCalled();
+  });
+
+  it('stops reading combined-status pages (reports unknown) when the budget runs out mid-pagination', async () => {
+    const context = createMockContext();
+    const listForRef = vi.fn().mockResolvedValue({ data: { total_count: 0, check_runs: [] } });
+    const statusPage1 = Array.from({ length: 100 }, (_, index) => ({
+      context: `context-${index}`,
+      state: 'success',
+    }));
+    const getCombinedStatusForRef = vi
+      .fn()
+      .mockResolvedValue({ data: { total_count: 101, statuses: statusPage1 } });
+    const octokit = {
+      rest: { checks: { listForRef }, repos: { getCombinedStatusForRef } },
+    } as never;
+    // Enough budget for the (empty) check-run page and the first status
+    // page, but not a second status page.
+    let remaining = 2;
+    const budget = {
+      canSpend: vi.fn().mockImplementation((cost = 1) => remaining >= cost),
+      spend: vi.fn().mockImplementation((cost = 1) => {
+        remaining -= cost;
+      }),
+    };
+
+    const result = await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      budget,
+      [{ context: 'Required Legacy Status', appId: null }],
+    );
+
+    expect(result.ciStatus).toBe('unknown');
+    expect(getCombinedStatusForRef).toHaveBeenCalledTimes(1);
   });
 
   it('reads a required check run on page 2 instead of spending the last budget unit on an early combined-status read', async () => {

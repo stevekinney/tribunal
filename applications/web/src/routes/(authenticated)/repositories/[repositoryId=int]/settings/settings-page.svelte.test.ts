@@ -412,6 +412,18 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['agent_1']);
   });
 
+  it('prompts to create an agent when none exist yet', async () => {
+    render(SettingsPage, {
+      data: { ...baseData, agents: [] },
+      form: null,
+      params: { repositoryId: '101' },
+    });
+
+    await expect
+      .element(page.getByText('Create an agent before assigning repository reviewers.'))
+      .toBeVisible();
+  });
+
   it('preserves the saved agent assignment for an already-configured repository', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 

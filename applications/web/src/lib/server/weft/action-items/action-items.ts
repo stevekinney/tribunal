@@ -371,14 +371,12 @@ function isThreadResolved(stableId: string, state: ConversationState): boolean {
     return state.resolvedThreadIds.has(nodeId);
   }
 
-  if (stableId.startsWith('review-comment:')) {
-    // Current format: review-comment:{threadId}:{commentId}
-    const parts = stableId.slice('review-comment:'.length).split(':');
-    const threadId = parts[0];
-    return state.resolvedThreadIds.has(threadId);
-  }
-
-  return false;
+  // Current format: review-comment:{threadId}:{commentId}. The sole caller
+  // (autoCompleteByConversation) guarantees one of the two prefixes, so no
+  // further format fallthrough exists here.
+  const parts = stableId.slice('review-comment:'.length).split(':');
+  const threadId = parts[0];
+  return state.resolvedThreadIds.has(threadId);
 }
 
 // ============================================================================

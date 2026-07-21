@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
     url: new URL('http://localhost/login?returnTo=/repositories'),
   },
   signInSocial: vi.fn(),
+  startGithubSignIn: vi.fn(),
 }));
 
 vi.mock('$app/state', () => ({
@@ -23,6 +24,17 @@ vi.mock('$lib/auth/neon-client', () => ({
   }),
 }));
 
+// The real startGithubSignIn always ends by navigating the browser for real
+// (window.location.href = ...), which would tear down this test's iframe.
+// Delegate to the real implementation by default (so the other assertions on
+// signInSocial's arguments still exercise real code), but allow a single
+// test to override it with a rejection that never navigates.
+vi.mock('$lib/auth/start-github-sign-in', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/auth/start-github-sign-in')>();
+  mocks.startGithubSignIn.mockImplementation(actual.startGithubSignIn);
+  return { startGithubSignIn: mocks.startGithubSignIn };
+});
+
 const keepGithubRedirectPending = () => {
   mocks.signInSocial.mockReturnValueOnce(new Promise(() => {}));
 };
@@ -32,6 +44,7 @@ describe('/login page', () => {
     mocks.svelteKitPage.data = { neonAuthConfigured: true };
     mocks.svelteKitPage.url = new URL('http://localhost/login?returnTo=/repositories');
     mocks.signInSocial.mockReset();
+    mocks.startGithubSignIn.mockClear();
   });
 
   it('starts Neon Auth GitHub sign-in with a sanitized callback URL', async () => {
@@ -89,5 +102,20 @@ describe('/login page', () => {
     );
     expect(document.body.textContent).not.toContain('Failed query');
     expect(document.body.textContent).not.toContain('select secret');
+  });
+
+  it('restores the button when starting GitHub sign-in fails', async () => {
+    // Reject via the wrapper directly (rather than signInSocial) so this
+    // never reaches the real implementation's `window.location.href`
+    // navigation, which would tear down the test's browser session.
+    mocks.startGithubSignIn.mockRejectedValueOnce(new Error('network down'));
+
+    render(LoginPage);
+
+    await browserPage.getByRole('button', { name: 'Continue with GitHub' }).click();
+
+    await expect
+      .element(browserPage.getByRole('button', { name: 'Continue with GitHub' }))
+      .toBeInTheDocument();
   });
 });

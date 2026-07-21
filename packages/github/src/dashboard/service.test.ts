@@ -936,6 +936,69 @@ describe('buildRepositoryDashboard', () => {
     expect(getInstallationOctokit).not.toHaveBeenCalled();
   });
 
+  it('renders no-installation when getInstallationOctokit resolves null for an installed repository', async () => {
+    expect.assertions(2);
+    const getInstallationOctokit = vi.fn().mockResolvedValue(null);
+    const context = createMockContext({ getInstallationOctokit });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository({ installationId: 100 })]);
+
+    expect(rows[0].dataStatus).toBe('unavailable');
+    expect(rows[0].unavailableReason).toBe('no-installation');
+  });
+
+  it('renders unknown default-branch status when the CI check-run fetch throws', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({ pullRequests: [], checksError: new Error('checks unavailable') });
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].defaultBranchStatus).toBe('unknown');
+  });
+
+  it('treats a malformed cached branch-head envelope (neither requiredChecks nor requiredCheckNames) as having no required checks', async () => {
+    expect.assertions(1);
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: {
+        total_count: 1,
+        check_runs: [{ name: 'Unit Tests', status: 'completed', conclusion: 'success' }],
+      },
+    });
+    const now = Date.now();
+    const context = createMockContext({
+      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+      db: withDbSelectResult([]),
+      cache: {
+        getCached: vi.fn(async (key: string) => {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+            return {
+              // Malformed envelope: no `requiredChecks` or `requiredCheckNames` field.
+              value: { sha: 'commit-sha-1' },
+              fetchedAt: now,
+              expiresAt: now + 30_000,
+              source: 'cache',
+            };
+          }
+          return null;
+        }),
+        setCache: vi.fn().mockResolvedValue(true),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    });
+
+    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+
+    expect(rows[0].defaultBranchStatus).toBe('passing');
+  });
+
   it('renders a github-error row when inventory list fails for one repository, without failing the build', async () => {
     expect.assertions(3);
     const failingOctokit = makeOctokit({ listPullsError: new Error('boom') });

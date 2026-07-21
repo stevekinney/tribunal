@@ -18,5 +18,25 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     environment: 'node',
     passWithNoTests: true,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json'],
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/index.ts',
+        'src/**/types.ts',
+        // Pure type declarations (no executable statements); v8 --all would
+        // report it as an empty 0% module.
+        'src/schema/workflow-artifacts.ts',
+        // Operational tooling that drives real Neon branches and live
+        // connections; not exercisable under the PGlite unit-test gate.
+        'src/test/**',
+      ],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+      },
+    },
   },
 });

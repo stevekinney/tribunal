@@ -5,7 +5,7 @@ import globals from 'globals';
 import ts from 'typescript-eslint';
 
 export default defineConfig(
-  { ignores: ['node_modules/**', '.tmp/**', 'tribunal-*.workflow.js'] },
+  { ignores: ['node_modules/**', '.tmp/**', 'coverage/**', 'tribunal-*.workflow.js'] },
   js.configs.recommended,
   ...ts.configs.recommended,
   prettier,

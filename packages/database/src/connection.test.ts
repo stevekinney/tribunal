@@ -54,4 +54,57 @@ describe('createDatabase', () => {
     expect(drizzleNodePostgres).toHaveBeenCalledOnce();
     expect(drizzleNeonHttp).not.toHaveBeenCalled();
   });
+
+  describe('deferred connection string', () => {
+    it('defers connecting until a property is first accessed', async () => {
+      const { createDatabase } = await import('./connection');
+      const resolveConnectionString = vi.fn(() => 'postgres://tribunal:tribunal@localhost:5432/db');
+
+      createDatabase(resolveConnectionString);
+
+      expect(resolveConnectionString).not.toHaveBeenCalled();
+      expect(drizzleNodePostgres).not.toHaveBeenCalled();
+    });
+
+    it('connects lazily on first property access and caches the connection', async () => {
+      const { createDatabase } = await import('./connection');
+      const resolveConnectionString = vi.fn(() => 'postgres://tribunal:tribunal@localhost:5432/db');
+
+      const database = createDatabase(resolveConnectionString) as unknown as { driver: string };
+
+      expect(database.driver).toBe('node-postgres');
+      expect(database.driver).toBe('node-postgres');
+      expect(resolveConnectionString).toHaveBeenCalledOnce();
+      expect(drizzleNodePostgres).toHaveBeenCalledOnce();
+    });
+
+    it('binds functions on the underlying database to the active instance', async () => {
+      drizzleNodePostgres.mockReturnValueOnce({
+        driver: 'node-postgres',
+        query() {
+          return this;
+        },
+      } as unknown as ReturnType<typeof drizzleNodePostgres>);
+
+      const { createDatabase } = await import('./connection');
+      const database = createDatabase(() => 'postgres://tribunal:tribunal@localhost:5432/db');
+
+      const boundQuery = (database as unknown as { query: () => unknown }).query;
+      expect(boundQuery()).toEqual({ driver: 'node-postgres', query: expect.any(Function) });
+    });
+
+    it('routes through an AsyncLocalStorage override installed by runWithDatabase', async () => {
+      const { createDatabase, runWithDatabase } = await import('./connection');
+      const resolveConnectionString = vi.fn(() => 'postgres://tribunal:tribunal@localhost:5432/db');
+      const database = createDatabase(resolveConnectionString) as unknown as { driver: string };
+      const overrideDatabase = { driver: 'override' } as unknown as ReturnType<
+        typeof createDatabase
+      >;
+
+      const result = runWithDatabase(overrideDatabase, () => database.driver);
+
+      expect(result).toBe('override');
+      expect(resolveConnectionString).not.toHaveBeenCalled();
+    });
+  });
 });

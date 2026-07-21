@@ -161,6 +161,21 @@ describe('GET /connect/github/callback', () => {
     mockUserInstallations.value = [{ id: 12345, account: { login: 'test-org' } }];
     mockUserInstallationPages.value = null;
     mockOctokitRequestError.value = null;
+    mockGithubApp.value = {
+      getInstallationOctokit: vi.fn().mockResolvedValue({
+        rest: {
+          apps: {
+            getInstallation: vi.fn().mockResolvedValue({
+              data: {
+                id: 12345,
+                account: { login: 'test-org', type: 'Organization', id: 99999, avatar_url: null },
+                repository_selection: 'all',
+              },
+            }),
+          },
+        },
+      }),
+    };
     vi.mocked(refreshInstallationRepositories).mockResolvedValue({
       repositoryCount: 2,
       deactivatedRepositoryCount: 0,
@@ -567,6 +582,81 @@ describe('GET /connect/github/callback', () => {
         const errorData = e as { status: number; type: string };
         expect(errorData.type).toBe('error');
         expect(errorData.status).toBe(403);
+      }
+    });
+  });
+
+  describe('GitHub Application not configured', () => {
+    it('returns 500 when the GitHub Application is not configured', async () => {
+      expect.assertions(2);
+
+      mockGithubApp.value = null as unknown as (typeof mockGithubApp)['value'];
+      const request = createRequest({
+        installation_id: '12345',
+        state: 'valid-nonce-123',
+      });
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const errorData = e as { status: number; type: string };
+        expect(errorData.type).toBe('error');
+        expect(errorData.status).toBe(500);
+      }
+    });
+  });
+
+  describe('Account info extraction', () => {
+    it("falls back to the account's name when login is absent", async () => {
+      expect.assertions(1);
+
+      mockGithubApp.value.getInstallationOctokit = vi.fn().mockResolvedValue({
+        rest: {
+          apps: {
+            getInstallation: vi.fn().mockResolvedValue({
+              data: {
+                id: 12345,
+                account: { name: 'Bot Account', type: 'Bot', id: 99999, avatar_url: null },
+                repository_selection: 'all',
+              },
+            }),
+          },
+        },
+      });
+      const request = createRequest({
+        installation_id: '12345',
+        state: 'valid-nonce-123',
+      });
+
+      try {
+        await GET(request);
+      } catch {
+        // Expected redirect
+      }
+
+      expect(upsertInstallation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ accountLogin: 'Bot Account', accountType: 'Bot' }),
+      );
+    });
+  });
+
+  describe('Unexpected installation errors', () => {
+    it('returns 400 when binding the installation throws an unexpected error', async () => {
+      expect.assertions(2);
+
+      vi.mocked(upsertInstallation).mockRejectedValueOnce(new Error('unexpected db failure'));
+      const request = createRequest({
+        installation_id: '12345',
+        state: 'valid-nonce-123',
+      });
+
+      try {
+        await GET(request);
+      } catch (e) {
+        const errorData = e as { status: number; type: string };
+        expect(errorData.type).toBe('error');
+        expect(errorData.status).toBe(400);
       }
     });
   });

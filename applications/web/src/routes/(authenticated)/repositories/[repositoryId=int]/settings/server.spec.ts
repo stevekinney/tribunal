@@ -69,6 +69,15 @@ describe('/repositories/[repositoryId]/settings server load', () => {
     } as Parameters<typeof load>[0];
   }
 
+  it('redirects unauthenticated requests to login', async () => {
+    const event = {
+      params: { repositoryId: '101' },
+      locals: {},
+    } as Parameters<typeof load>[0];
+
+    await expect(load(event)).rejects.toMatchObject({ status: 302, location: '/login' });
+  });
+
   it('returns 404 when the repository does not exist', async () => {
     mockGetRepositoryById.mockResolvedValue(null);
 
@@ -152,6 +161,19 @@ describe('/repositories/[repositoryId]/settings server action', () => {
       request: { formData: () => Promise.resolve(formData) },
     } as unknown as Parameters<(typeof actions)['default']>[0];
   }
+
+  it('redirects unauthenticated submissions to login', async () => {
+    const event = {
+      params: { repositoryId: '101' },
+      locals: {},
+      request: { formData: () => Promise.resolve(new FormData()) },
+    } as unknown as Parameters<(typeof actions)['default']>[0];
+
+    await expect(actions.default(event)).rejects.toMatchObject({
+      status: 302,
+      location: '/login',
+    });
+  });
 
   it('delegates the submitted form to submitRepositorySettingsForm for the authorized user and repository', async () => {
     const formData = new FormData();

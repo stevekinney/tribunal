@@ -154,6 +154,33 @@ describe('/webhooks server load', () => {
     expect(mockListWebhookEvents).not.toHaveBeenCalled();
   });
 
+  it('sorts repositories by owner/name, including a tie', async () => {
+    mockRepositoriesResult.value = {
+      ok: true,
+      repositories: [
+        {
+          repository: { id: 2, owner: 'zzz-org', name: 'zeta' },
+          installation: { installationId: 2, accountLogin: 'zzz-org', accountAvatarUrl: null },
+        },
+        {
+          repository: { id: 1, owner: 'aaa-org', name: 'alpha' },
+          installation: { installationId: 1, accountLogin: 'aaa-org', accountAvatarUrl: null },
+        },
+        {
+          repository: { id: 3, owner: 'aaa-org', name: 'alpha' },
+          installation: { installationId: 1, accountLogin: 'aaa-org', accountAvatarUrl: null },
+        },
+      ],
+      installations: [],
+    };
+
+    const result = (await load(createEvent())) as {
+      repositories: Array<{ id: number; owner: string; name: string }>;
+    };
+
+    expect(result.repositories.map((r) => r.id)).toEqual([1, 3, 2]);
+  });
+
   it('surfaces a load error distinct from "no repositories" when GitHub is unreachable', async () => {
     mockRepositoriesResult.value = {
       ok: false,

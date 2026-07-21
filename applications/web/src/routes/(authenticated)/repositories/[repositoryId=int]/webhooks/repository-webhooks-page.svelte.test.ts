@@ -1,9 +1,24 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import RepositoryWebhooksPage from './+page.svelte';
 import type { PageData } from './$types';
 import type { WebhookEventRow } from '$lib/server/webhook-events';
+
+const mocks = vi.hoisted(() => ({
+  svelteKitPage: {
+    url: new URL('http://localhost/repositories/42/webhooks'),
+  },
+  goto: vi.fn(),
+}));
+
+vi.mock('$app/state', () => ({
+  page: mocks.svelteKitPage,
+}));
+
+vi.mock('$app/navigation', () => ({
+  goto: mocks.goto,
+}));
 
 function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow {
   return {
@@ -62,6 +77,11 @@ function createData(overrides: Partial<PageData> = {}): PageData {
 }
 
 describe('/repositories/[repositoryId]/webhooks page', () => {
+  beforeEach(() => {
+    mocks.svelteKitPage.url = new URL('http://localhost/repositories/42/webhooks');
+    mocks.goto.mockReset();
+  });
+
   afterEach(() => cleanup());
 
   it('lists events for the route repository without a repository filter column', async () => {
@@ -92,5 +112,63 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
       .element(page.getByText("This event's stored payload was not valid JSON.", { exact: false }))
       .toBeInTheDocument();
     await expect.element(page.getByText('not valid json {{{')).toBeInTheDocument();
+  });
+
+  it('collapses an expanded row back down when Hide details is clicked', async () => {
+    render(RepositoryWebhooksPage, { data: createData() });
+
+    const toggleButton = page.getByRole('button', { name: /Show details/ }).first();
+    await toggleButton.click();
+    await expect
+      .element(page.getByRole('button', { name: /Hide details/ }).first())
+      .toBeInTheDocument();
+
+    await page
+      .getByRole('button', { name: /Hide details/ })
+      .first()
+      .click();
+
+    await expect
+      .element(page.getByRole('button', { name: /Show details/ }).first())
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText("This event's stored payload was not valid JSON.", { exact: false }))
+      .not.toBeInTheDocument();
+  });
+
+  it('shows the related issue number when a webhook event references an issue', async () => {
+    render(RepositoryWebhooksPage, {
+      data: createData({
+        events: [createEvent({ prNumber: null, issueNumber: 7, ref: null, commitSha: null })],
+      }),
+    });
+
+    await expect.element(page.getByText('Issue #7')).toBeInTheDocument();
+  });
+
+  it('renders the action filter options from the loaded filter options', async () => {
+    render(RepositoryWebhooksPage, {
+      data: createData({ filterOptions: { eventTypes: ['push'], actions: ['opened', 'closed'] } }),
+    });
+
+    await expect.element(page.getByRole('option', { name: 'opened' })).toBeInTheDocument();
+    await expect.element(page.getByRole('option', { name: 'closed' })).toBeInTheDocument();
+  });
+
+  it('navigates to the next page while preserving the current URL and filters', async () => {
+    mocks.svelteKitPage.url = new URL(
+      'http://localhost/repositories/42/webhooks?webhook_event_type=push',
+    );
+    render(RepositoryWebhooksPage, {
+      data: createData({ totalCount: 60, perPage: 25, page: 1 }),
+    });
+
+    await page.getByRole('button', { name: 'Go to next page' }).click();
+
+    expect(mocks.goto).toHaveBeenCalledTimes(1);
+    const [url, options] = mocks.goto.mock.calls[0];
+    expect(new URL(url).searchParams.get('webhook_page')).toBe('2');
+    expect(new URL(url).searchParams.get('webhook_event_type')).toBe('push');
+    expect(options).toEqual({ keepFocus: true, noScroll: true });
   });
 });

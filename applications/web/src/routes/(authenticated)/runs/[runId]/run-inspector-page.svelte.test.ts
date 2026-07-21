@@ -316,4 +316,172 @@ describe('/runs/[runId] page', () => {
       .element(page.getByRole('link', { name: 'Superseded by a newer run' }))
       .toHaveAttribute('href', '/runs/run_2');
   });
+
+  it('shows a plain label for a superseded run with no known replacement', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          status: 'superseded',
+          replacementRunId: null,
+        },
+      },
+    });
+
+    await expect.element(page.getByText('Superseded by a newer run')).toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Superseded by a newer run' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('shows a top-level alert when the run recorded an error', async () => {
+    render(RunInspectorPage, {
+      data: { ...data, run: { ...data.run, error: 'The sandbox crashed unexpectedly.' } },
+    });
+
+    await expect.element(page.getByText('The sandbox crashed unexpectedly.')).toBeVisible();
+  });
+
+  it('shows a dash for the check run stat when no check run id is recorded', async () => {
+    render(RunInspectorPage, {
+      data: { ...data, run: { ...data.run, checkRunId: null } },
+    });
+
+    await expect.element(page.getByText('—')).toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Open GitHub Check Run' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('classifies a non-tool_pre event by its kind and falls back to info', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              events: [
+                { ...data.run.agentRuns[0].events[0], kind: 'run_failed', tool: null },
+                { ...data.run.agentRuns[0].events[1], kind: 'log', tool: null },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    await expect.element(page.getByText('run_failed').first()).toBeInTheDocument();
+    await expect.element(page.getByText('log').first()).toBeInTheDocument();
+  });
+
+  it('renders run status, agent status, and finding severity badges across their full range', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          status: 'failed',
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              id: 'agent_run_1',
+              status: 'succeeded',
+              durationMs: 65_000,
+              findings: [
+                { ...data.run.agentRuns[0].findings[0], id: 'finding_error', severity: 'error' },
+                { ...data.run.agentRuns[0].findings[0], id: 'finding_note', severity: 'note' },
+              ],
+            },
+            { ...data.run.agentRuns[0], id: 'agent_run_2', status: 'queued', findings: [] },
+            { ...data.run.agentRuns[0], id: 'agent_run_3', status: 'stopped', findings: [] },
+            { ...data.run.agentRuns[0], id: 'agent_run_4', status: 'failed', findings: [] },
+          ],
+        },
+      },
+    });
+
+    await expect.element(page.getByText('Failed').first()).toBeVisible();
+    await expect.element(page.getByText('Succeeded')).toBeVisible();
+    await expect.element(page.getByText('Queued')).toBeVisible();
+    await expect.element(page.getByText('Stopped')).toBeVisible();
+    await expect.element(page.getByText('Error').first()).toBeVisible();
+    await expect.element(page.getByText('Note')).toBeVisible();
+    // durationMs=65_000 formats as "1m 5s" via formatDurationMs/agentMetaSummary.
+    await expect.element(page.getByText('1m 5s')).toBeVisible();
+    // agent_run_2 and agent_run_3 have no findings recorded.
+    await expect.element(page.getByText('No findings recorded.').first()).toBeVisible();
+  });
+
+  it('quota-blocked runs render a warning status badge', async () => {
+    render(RunInspectorPage, {
+      data: { ...data, run: { ...data.run, status: 'quota_blocked' } },
+    });
+
+    await expect.element(page.getByText('Quota blocked')).toBeVisible();
+  });
+
+  it('falls back to a disconnected stream when EventSource is unavailable', async () => {
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+    vi.stubGlobal('EventSource', undefined);
+
+    const rendered = render(RunInspectorPage, { data });
+
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('disconnected');
+
+    rendered.unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it('ignores late onopen/onerror callbacks after the stream is torn down', async () => {
+    const eventSources: Array<{
+      url: string;
+      onopen: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+    }> = [];
+
+    vi.stubGlobal(
+      'EventSource',
+      class {
+        url: string;
+        onopen: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        constructor(url: string) {
+          this.url = url;
+          eventSources.push(this);
+        }
+
+        addEventListener() {}
+
+        close = vi.fn();
+      },
+    );
+
+    const rendered = render(RunInspectorPage, { data });
+    const source = eventSources[0];
+
+    // Trigger the live onerror path first (connectionState -> disconnected).
+    source.onerror?.();
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('disconnected');
+
+    // Tearing the run down (no longer stoppable) closes the stream and flips
+    // streamIsActive to false, so late callbacks on the stale EventSource
+    // must be no-ops.
+    await rendered.rerender({ data: { ...data, run: { ...data.run, status: 'posted' } } });
+    expect(source.close).toHaveBeenCalledOnce();
+
+    source.onopen?.();
+    source.onerror?.();
+    await expect
+      .element(page.getByLabelText('Run event stream state'))
+      .toHaveTextContent('disconnected');
+  });
 });

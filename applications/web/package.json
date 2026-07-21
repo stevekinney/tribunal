@@ -16,7 +16,10 @@
     "test:unit:client": "vitest run --project client --passWithNoTests",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write --ignore-path ../../.prettierignore .",
-    "format:check": "prettier --check --ignore-path ../../.prettierignore ."
+    "format:check": "prettier --check --ignore-path ../../.prettierignore .",
+    "test:coverage": "bun run test:coverage:server && bun run test:coverage:client",
+    "test:coverage:server": "vitest run --project server --coverage --coverage.include='src/**/*.ts' --coverage.exclude='src/**/*.test.ts' --coverage.exclude='src/**/*.spec.ts' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100",
+    "test:coverage:client": "vitest run --project client --coverage --coverage.include='src/**/*.svelte' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100"
   },
   "dependencies": {
     "@lostgradient/cinder": "0.16.1",
@@ -55,6 +58,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^25",
     "@vitest/browser-playwright": "^4.0.16",
+    "@vitest/coverage-istanbul": "4.0.16",
     "drizzle-orm": "^0.45.1",
     "playwright": "^1.57.0",
     "svelte": "5.56.4",

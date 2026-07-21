@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import EventsPage from './+page.svelte';
@@ -203,5 +203,47 @@ describe('/repositories/[repositoryId]/events page', () => {
     });
 
     await expect.element(page.getByText('Select an agent.')).toBeVisible();
+  });
+
+  it('shows a top-level error alert when not editing a listener', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: { error: 'Could not delete the listener.' },
+    });
+
+    await expect.element(page.getByText('Could not delete the listener.')).toBeVisible();
+  });
+
+  it('submits the enabled-toggle form when a listener toggle is flipped', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: null,
+    });
+
+    const form = document.getElementById('listener-listener_1-enabled-form') as HTMLFormElement;
+    const submitSpy = vi.spyOn(form, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('switch', { name: 'Event listener Triage issues enabled' }).click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits the delete form and closes the dialog when the deletion is confirmed', async () => {
+    render(EventsPage, {
+      data: createData({ listeners: [createListenerRow()] }),
+      form: null,
+    });
+
+    const form = document.getElementById('listener-listener_1-delete-form') as HTMLFormElement;
+    const submitSpy = vi.spyOn(form, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('button', { name: 'Delete Triage issues' }).click();
+    await page.getByLabelText('Type "Triage issues" to confirm').fill('Triage issues');
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+    await expect
+      .element(page.getByRole('dialog', { name: 'Delete event listener' }))
+      .not.toBeInTheDocument();
   });
 });

@@ -188,6 +188,4 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
     console.error('GitHub Application installation callback error:', e);
     error(400, 'Failed to complete GitHub Application installation');
   }
-
-  redirect(302, '/repositories');
 };

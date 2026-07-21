@@ -1,5 +1,10 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { AUTH_PROVIDERS, getGithubRedirectUri } from './providers';
+import {
+  AUTH_PROVIDERS,
+  getGithubRedirectUri,
+  getProviderClient,
+  getProviderInfo,
+} from './providers';
 import { AUTH_PROVIDER_LIST } from '$lib/constants/authorization-providers';
 
 const mocks = vi.hoisted(() => ({
@@ -57,5 +62,30 @@ describe('AUTH_PROVIDERS sync', () => {
     mocks.dev.value = false;
 
     expect(getGithubRedirectUri()).toBeNull();
+  });
+
+  it('returns display info for a provider', () => {
+    expect(getProviderInfo('github')).toEqual({ name: 'GitHub', icon: 'github' });
+  });
+
+  it('lazily creates and caches a single OAuth client instance per provider', () => {
+    const first = getProviderClient('github');
+    const second = getProviderClient('github');
+
+    expect(first).toBe(second);
+  });
+});
+
+describe('AUTH_PROVIDERS drift assertion (dev-only)', () => {
+  it('throws at import time in dev when the shared provider list has drifted', async () => {
+    vi.resetModules();
+    vi.doMock('$lib/constants/authorization-providers', () => ({
+      AUTH_PROVIDER_LIST: ['github', 'gitlab'],
+    }));
+
+    await expect(import('./providers')).rejects.toThrow('AUTH_PROVIDERS mismatch!');
+
+    vi.doUnmock('$lib/constants/authorization-providers');
+    vi.resetModules();
   });
 });

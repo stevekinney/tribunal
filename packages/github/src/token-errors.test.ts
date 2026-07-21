@@ -165,6 +165,28 @@ describe('classifyTokenError', () => {
       expect(result.code).toBe('server_error');
       expect(result.installationId).toBe(installationId);
     });
+
+    it('classifies 5xx Octokit errors as server_error (retryable)', () => {
+      expect.assertions(3);
+      const error = Object.assign(new Error('Bad Gateway'), { status: 502 });
+
+      const result = classifyTokenError(error, installationId);
+
+      expect(result.code).toBe('server_error');
+      expect(result.installationId).toBe(installationId);
+      expect(result.message).toContain('GitHub server error (502)');
+    });
+
+    it('defaults unrecognized Octokit status codes to auth_failed', () => {
+      expect.assertions(3);
+      const error = Object.assign(new Error('Payment Required'), { status: 402 });
+
+      const result = classifyTokenError(error, installationId);
+
+      expect(result.code).toBe('auth_failed');
+      expect(result.installationId).toBe(installationId);
+      expect(result.message).toContain('Failed to authenticate');
+    });
   });
 });
 

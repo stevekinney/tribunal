@@ -10,7 +10,11 @@ import './register-access-mocks';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // 3. Module under test
-import { verifyGitHubRepositoryAccess, type GitHubAccessResult } from '../../access';
+import {
+  shouldCacheDenial,
+  verifyGitHubRepositoryAccess,
+  type GitHubAccessResult,
+} from '../../access';
 
 // 4. Test utilities
 import {
@@ -238,6 +242,38 @@ describe('Cache decision matrix', () => {
   });
 });
 
+describe('shouldCacheDenial (defensive arms unreachable via the public flow)', () => {
+  const fullScopes = {
+    hasRepo: true,
+    hasPublicRepo: false,
+    hasNone: false,
+    unknown: false,
+  };
+
+  it('never caches an invalid_token denial', () => {
+    expect(shouldCacheDenial('invalid_token', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
+  });
+
+  it('never caches a no_token denial', () => {
+    expect(shouldCacheDenial('no_token', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
+  });
+
+  it('never caches an unrecognized denial reason', () => {
+    const unrecognized = 'not-a-real-reason' as Parameters<typeof shouldCacheDenial>[0];
+
+    expect(shouldCacheDenial(unrecognized, fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
+  });
+});
+
 describe('Cache edge cases', () => {
   const { USER: baseUserId, REPO: baseRepoId } = TEST_ID_RANGES.CACHE_DECISIONS;
 
@@ -299,5 +335,61 @@ describe('Cache edge cases', () => {
 
     expect(result.allowed).toBe(true);
     expect(global.fetch).toHaveBeenCalled();
+  });
+
+  it('does NOT cache a fresh no_access denial when the user had recent success (GitHub wobble)', async () => {
+    const cacheUserId = baseUserId + 20;
+    const cacheRepoId = baseRepoId + 20;
+
+    expect.assertions(2);
+
+    setupMockDbForRepo(cacheRepoId, TEST_OWNER, TEST_REPO);
+    mockGetOAuthConnection.mockResolvedValue({
+      accessToken: TEST_TOKEN,
+      scope: 'repo, user:email',
+    });
+    // skipCache bypasses the top-level cached-result short-circuit while
+    // still exercising resolveAndVerifyAccess's own lastSuccessAt lookup from
+    // the same cache entry.
+    mockGetCached.mockResolvedValue({
+      result: { allowed: false, reason: 'no_access', message: 'Cached denial' },
+      cachedAt: Date.now(),
+      lastSuccessAt: Date.now() - 60_000, // 1 minute ago — well within the hour window
+    });
+    mockGlobalFetch()
+      .mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers() })
+      .mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers() });
+
+    const result = await verifyGitHubRepositoryAccess(cacheUserId, cacheRepoId, {
+      skipCache: true,
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(mockSetCache).not.toHaveBeenCalled();
+  });
+
+  it('does NOT cache a no_access denial when the user also holds public_repo scope (minimal-scope upgrade path)', async () => {
+    const cacheUserId = baseUserId + 21;
+    const cacheRepoId = baseRepoId + 21;
+
+    expect.assertions(2);
+
+    setupMockDbForRepo(cacheRepoId, TEST_OWNER, TEST_REPO);
+    // Holds both 'repo' and 'public_repo' -- hasMinimalScope is true even
+    // though hasRepo is also true, so the denial might resolve with a scope
+    // upgrade and must not be cached as definitive.
+    mockGetOAuthConnection.mockResolvedValue({
+      accessToken: TEST_TOKEN,
+      scope: 'repo, public_repo, user:email',
+    });
+    mockGetCached.mockResolvedValue(null);
+    mockGlobalFetch()
+      .mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers() })
+      .mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers() });
+
+    const result = await verifyGitHubRepositoryAccess(cacheUserId, cacheRepoId);
+
+    expect(result.allowed).toBe(false);
+    expect(mockSetCache).not.toHaveBeenCalled();
   });
 });

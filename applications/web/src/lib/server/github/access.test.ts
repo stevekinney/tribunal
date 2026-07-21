@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseScopes, parseSsoHeader, type UserScopes, type GitHubAccessResult } from './access';
+import {
+  parseScopes,
+  parseSsoHeader,
+  shouldCacheDenial,
+  type UserScopes,
+  type GitHubAccessResult,
+  type GitHubAccessDenialReason,
+} from './access';
 
 // Mock external dependencies
 vi.mock('$env/dynamic/private', () => ({
@@ -238,269 +245,131 @@ describe('UserScopes types', () => {
   });
 });
 
-describe('Cache key patterns', () => {
-  it('generates correct user+repo cache key format', () => {
-    expect.assertions(1);
-    // The cache key format is: github-access:{userId}:{repositoryId}
-    // Verify the pattern indirectly through the module behavior
-    // This ensures the keys follow the expected format for Redis pattern matching
-    const userId = 'user-123';
-    const repoId = 456;
-    const expectedPattern = `github-access:${userId}:${repoId}`;
-    expect(expectedPattern).toBe('github-access:user-123:456');
-  });
+describe('shouldCacheDenial', () => {
+  const fullScopes: UserScopes = {
+    hasRepo: true,
+    hasPublicRepo: false,
+    hasNone: false,
+    unknown: false,
+  };
+  const minimalScopes: UserScopes = {
+    hasRepo: false,
+    hasPublicRepo: true,
+    hasNone: false,
+    unknown: false,
+  };
+  const noScopes: UserScopes = {
+    hasRepo: false,
+    hasPublicRepo: false,
+    hasNone: true,
+    unknown: false,
+  };
+  const unknownScopes: UserScopes = {
+    hasRepo: false,
+    hasPublicRepo: false,
+    hasNone: false,
+    unknown: true,
+  };
 
-  it('generates correct user pattern for cache invalidation', () => {
-    expect.assertions(1);
-    const userId = 'user-123';
-    const expectedPattern = `github-access:${userId}:*`;
-    expect(expectedPattern).toBe('github-access:user-123:*');
-  });
-
-  it('generates correct repo pattern for cache invalidation', () => {
-    expect.assertions(1);
-    const repoId = 456;
-    const expectedPattern = `github-access:*:${repoId}`;
-    expect(expectedPattern).toBe('github-access:*:456');
-  });
-});
-
-describe('Denial reason handling', () => {
-  const denialReasons = [
-    'no_token',
-    'invalid_token',
-    'insufficient_scope',
-    'sso_required',
-    'no_access',
-    'rate_limited',
-    'repository_blocked',
-  ] as const;
-
-  it.each(denialReasons)('recognizes %s as a valid denial reason', (reason) => {
-    expect.assertions(1);
-    const result: GitHubAccessResult = {
-      allowed: false,
-      reason,
-      message: `Test message for ${reason}`,
-    };
-    expect(result.reason).toBe(reason);
-  });
-});
-
-describe('Circuit breaker behavior', () => {
-  /**
-   * Circuit breaker prevents repeated calls to a failing GitHub API endpoint.
-   * - Tracks failures per user
-   * - Opens circuit after CIRCUIT_FAILURE_THRESHOLD (3) failures
-   * - Circuit stays open for CIRCUIT_RESET_MS (60s)
-   * - Returns cached denial when circuit is open
-   */
-
-  const CIRCUIT_FAILURE_THRESHOLD = 3;
-  const CIRCUIT_RESET_MS = 60_000;
-
-  it('circuit stays closed with fewer than threshold failures', () => {
-    expect.assertions(1);
-    const failures = 2;
-    const isOpen = failures >= CIRCUIT_FAILURE_THRESHOLD;
-    expect(isOpen).toBe(false);
-  });
-
-  it('circuit opens after threshold failures', () => {
-    expect.assertions(1);
-    const failures = 3;
-    const isOpen = failures >= CIRCUIT_FAILURE_THRESHOLD;
-    expect(isOpen).toBe(true);
-  });
-
-  it('circuit resets after timeout', () => {
-    expect.assertions(1);
-    const openUntil = Date.now() - 1000; // 1 second ago
-    const now = Date.now();
-    const shouldReset = now > openUntil;
-    expect(shouldReset).toBe(true);
-  });
-
-  it('circuit stays open during timeout window', () => {
-    expect.assertions(1);
-    const openUntil = Date.now() + CIRCUIT_RESET_MS;
-    const now = Date.now();
-    const isStillOpen = now < openUntil;
-    expect(isStillOpen).toBe(true);
-  });
-
-  it('failure increments counter', () => {
-    expect.assertions(1);
-    const state = { failures: 1, lastFailure: Date.now(), openUntil: 0 };
-    state.failures++;
-    expect(state.failures).toBe(2);
-  });
-
-  it('success resets failure counter', () => {
-    expect.assertions(1);
-    const state = { failures: 2, lastFailure: Date.now(), openUntil: 0 };
-    // On success, reset failures
-    state.failures = 0;
-    expect(state.failures).toBe(0);
-  });
-});
-
-describe('Cache decision matrix', () => {
-  /**
-   * Conservative caching rules:
-   * 1. Cache successful accesses (allowed: true)
-   * 2. Cache definitive denials (invalid_token, no_access with full scope)
-   * 3. DON'T cache uncertain denials (no_access with unknown/minimal scope)
-   * 4. Cache SSO denials briefly (1 min) since user might complete SSO
-   * 5. Don't cache rate_limited (transient)
-   */
-
-  const GITHUB_ACCESS_CACHE_TTL = 300; // 5 min
-  const GITHUB_ACCESS_SSO_CACHE_TTL = 60; // 1 min
-
-  describe('when result is allowed', () => {
-    it('should cache with standard TTL', () => {
-      expect.assertions(1);
-      const shouldCache = true;
-      const ttl = GITHUB_ACCESS_CACHE_TTL;
-      expect(shouldCache && ttl === 300).toBe(true);
-    });
-
-    it('should preserve lastSuccessAt timestamp', () => {
-      expect.assertions(1);
-      const now = Date.now();
-      const entry = { result: { allowed: true }, cachedAt: now, lastSuccessAt: now };
-      expect(entry.lastSuccessAt).toBe(now);
+  it('never caches an invalid_token denial (user may reauth)', () => {
+    expect(shouldCacheDenial('invalid_token', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
 
-  describe('when result is no_access with full repo scope', () => {
-    it('should cache because denial is definitive', () => {
-      expect.assertions(1);
-      const userHasRepoScope = true;
-      const reason = 'no_access';
-      // User has full scope and still no access = genuinely no permission
-      const shouldCache = userHasRepoScope && reason === 'no_access';
-      expect(shouldCache).toBe(true);
+  it('never caches a rate_limited denial (transient)', () => {
+    expect(shouldCacheDenial('rate_limited', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
 
-  describe('when result is no_access with unknown/minimal scope', () => {
-    it('should NOT cache because denial might resolve with scope upgrade', () => {
-      expect.assertions(1);
-      const userHasRepoScope = false;
-      const scopeUnknown = true;
-      const reason = 'no_access';
-      // If we don't know the scope, we can't be sure the denial is permanent
-      const shouldCache = userHasRepoScope && reason === 'no_access' && !scopeUnknown;
-      expect(shouldCache).toBe(false);
+  it('caches an sso_required denial with the short SSO TTL', () => {
+    expect(shouldCacheDenial('sso_required', fullScopes, undefined)).toEqual({
+      cache: true,
+      ttl: 60,
     });
   });
 
-  describe('when result is sso_required', () => {
-    it('should cache with short TTL (1 min)', () => {
-      expect.assertions(1);
-      const ttl = GITHUB_ACCESS_SSO_CACHE_TTL;
-      expect(ttl).toBe(60);
-    });
-
-    it('should include ssoUrl for user to complete authentication', () => {
-      expect.assertions(1);
-      const result: GitHubAccessResult = {
-        allowed: false,
-        reason: 'sso_required',
-        message: 'SSO required',
-        ssoUrl: 'https://github.com/orgs/acme/sso',
-        ssoOrgLogin: 'acme',
-      };
-      expect(result.ssoUrl).toBeDefined();
+  it('never caches an insufficient_scope denial (user may upgrade)', () => {
+    expect(shouldCacheDenial('insufficient_scope', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
 
-  describe('when result is invalid_token', () => {
-    it('should NOT cache (and should mark token invalid in DB)', () => {
-      expect.assertions(1);
-      // Invalid token triggers DB update and cache clear, not caching
-      const shouldCacheInvalidToken = false;
-      expect(shouldCacheInvalidToken).toBe(false);
+  it('does not cache no_access when there was a recent success (GitHub wobble)', () => {
+    const lastSuccessAt = Date.now() - 1000;
+    expect(shouldCacheDenial('no_access', fullScopes, lastSuccessAt)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
 
-  describe('when result is rate_limited', () => {
-    it('should NOT cache (transient condition)', () => {
-      expect.assertions(1);
-      const reason = 'rate_limited';
-      const shouldCache = reason !== 'rate_limited';
-      expect(shouldCache).toBe(false);
-    });
-
-    it('should include retryAfter for client backoff', () => {
-      expect.assertions(1);
-      const result: GitHubAccessResult = {
-        allowed: false,
-        reason: 'rate_limited',
-        message: 'Rate limited',
-        retryAfter: 60,
-      };
-      expect(result.retryAfter).toBe(60);
+  it('does not cache no_access when scope is minimal/unknown (might need upgrade)', () => {
+    expect(shouldCacheDenial('no_access', minimalScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
 
-  describe('lastSuccessAt preservation ("recent success" wobble protection)', () => {
-    it('should preserve lastSuccessAt through cache updates', () => {
-      expect.assertions(1);
-      const originalSuccessAt = Date.now() - 60_000; // 1 min ago
-      const newCachedAt = Date.now();
-
-      // When re-caching, preserve the original success timestamp
-      const entry = {
-        result: { allowed: true },
-        cachedAt: newCachedAt,
-        lastSuccessAt: originalSuccessAt, // Preserved from original entry
-      };
-
-      expect(entry.lastSuccessAt).toBe(originalSuccessAt);
-    });
-
-    it('should use lastSuccessAt to detect recent valid access', () => {
-      expect.assertions(1);
-      const RECENT_SUCCESS_THRESHOLD_MS = 5 * 60 * 1000; // 5 min
-      const lastSuccessAt = Date.now() - 2 * 60 * 1000; // 2 min ago
-      const now = Date.now();
-
-      const hadRecentSuccess = now - lastSuccessAt < RECENT_SUCCESS_THRESHOLD_MS;
-      expect(hadRecentSuccess).toBe(true);
+  it('does not cache no_access when the user has no scopes at all', () => {
+    expect(shouldCacheDenial('no_access', noScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
     });
   });
-});
 
-describe('Request deduplication', () => {
-  /**
-   * Concurrent checks for the same user+repo should share a single
-   * in-flight request rather than making multiple API calls.
-   */
-
-  it('generates consistent dedup key for user+repo', () => {
-    expect.assertions(1);
-    const userId = 'user-123';
-    const repoId = 456;
-    const key1 = `${userId}:${repoId}`;
-    const key2 = `${userId}:${repoId}`;
-    expect(key1).toBe(key2);
+  it('does not cache no_access when scope could not be determined', () => {
+    expect(shouldCacheDenial('no_access', unknownScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
   });
 
-  it('different users have different dedup keys', () => {
-    expect.assertions(1);
-    const key1 = 'user-123:456';
-    const key2 = 'user-456:456';
-    expect(key1).not.toBe(key2);
+  it('caches no_access with the standard TTL when scope is full and there was no recent success', () => {
+    expect(shouldCacheDenial('no_access', fullScopes, undefined)).toEqual({
+      cache: true,
+      ttl: 300,
+    });
   });
 
-  it('different repos have different dedup keys', () => {
-    expect.assertions(1);
-    const key1 = 'user-123:456';
-    const key2 = 'user-123:789';
-    expect(key1).not.toBe(key2);
+  it('treats a stale lastSuccessAt (over an hour ago) as not a recent success', () => {
+    const lastSuccessAt = Date.now() - 3600_001;
+    expect(shouldCacheDenial('no_access', fullScopes, lastSuccessAt)).toEqual({
+      cache: true,
+      ttl: 300,
+    });
+  });
+
+  it('caches a repository_blocked denial for 5 minutes', () => {
+    expect(shouldCacheDenial('repository_blocked', fullScopes, undefined)).toEqual({
+      cache: true,
+      ttl: 300,
+    });
+  });
+
+  it('caches an account_suspended denial for 5 minutes', () => {
+    expect(shouldCacheDenial('account_suspended', fullScopes, undefined)).toEqual({
+      cache: true,
+      ttl: 300,
+    });
+  });
+
+  it('never caches a no_token denial (user may connect)', () => {
+    expect(shouldCacheDenial('no_token', fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
+  });
+
+  it('never caches an unrecognized denial reason', () => {
+    const unrecognized = 'not-a-real-reason' as GitHubAccessDenialReason;
+    expect(shouldCacheDenial(unrecognized, fullScopes, undefined)).toEqual({
+      cache: false,
+      ttl: 0,
+    });
   });
 });
 
@@ -559,6 +428,76 @@ describe('markGitHubTokensInvalidByProviderUserId', () => {
 
     expect(result).toEqual([]);
     expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+});
+
+describe('invalidateAllAccessCacheForRepo', () => {
+  it('deletes every cached access entry for the repository across all users', async () => {
+    const { deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCacheByPattern).mockResolvedValue(0);
+
+    const { invalidateAllAccessCacheForRepo } = await import('./access');
+    await invalidateAllAccessCacheForRepo(42);
+
+    expect(deleteCacheByPattern).toHaveBeenCalledWith('github-access:*:42');
+  });
+});
+
+describe('invalidateGitHubAccessCache', () => {
+  it('deletes only the specific user+repo cache entry when a repositoryId is given', async () => {
+    const { deleteCache, deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCache).mockReset().mockResolvedValue(true);
+    vi.mocked(deleteCacheByPattern).mockReset().mockResolvedValue(0);
+
+    const { invalidateGitHubAccessCache } = await import('./access');
+    await invalidateGitHubAccessCache(7, 42);
+
+    expect(deleteCache).toHaveBeenCalledWith('github-access:7:42');
+    expect(deleteCacheByPattern).not.toHaveBeenCalled();
+  });
+
+  it('deletes every cached entry for the user when no repositoryId is given', async () => {
+    const { deleteCache, deleteCacheByPattern } = await import('../redis');
+    vi.mocked(deleteCache).mockReset().mockResolvedValue(true);
+    vi.mocked(deleteCacheByPattern).mockReset().mockResolvedValue(0);
+
+    const { invalidateGitHubAccessCache } = await import('./access');
+    await invalidateGitHubAccessCache(7);
+
+    expect(deleteCacheByPattern).toHaveBeenCalledWith('github-access:7:*');
+    expect(deleteCache).not.toHaveBeenCalled();
+  });
+});
+
+describe('markGitHubTokenInvalid', () => {
+  it('marks the connection invalid', async () => {
+    const { db } = await import('../database');
+    const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setMock } as unknown as ReturnType<
+      typeof db.update
+    >);
+
+    const { markGitHubTokenInvalid } = await import('./access');
+    await markGitHubTokenInvalid(1);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
+  });
+
+  it('logs but does not throw when the update fails', async () => {
+    const { db } = await import('../database');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(db.update).mockImplementation(() => {
+      throw new Error('database unavailable');
+    });
+
+    const { markGitHubTokenInvalid } = await import('./access');
+    await expect(markGitHubTokenInvalid(1)).resolves.toBeUndefined();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'Failed to mark GitHub token as invalid:',
+      expect.any(Error),
+    );
     consoleSpy.mockRestore();
   });
 });

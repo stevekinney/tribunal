@@ -50,7 +50,11 @@ describe('checkWithUserToken response mapping', () => {
 
     expect.assertions(2);
 
-    mockGlobalFetch().mockResolvedValue({
+    const globalFetch = mockGlobalFetch();
+    // Bun's fetch type carries a static `preconnect` method; the stub's
+    // no-op satisfies the type, exercised here for completeness.
+    (globalFetch as unknown as { preconnect: () => void }).preconnect();
+    globalFetch.mockResolvedValue({
       ok: true,
       status: 200,
       headers: new Headers(),
@@ -430,5 +434,83 @@ describe('SSO header edge cases', () => {
       expect(result.reason).toBe('sso_required');
       expect(result.ssoUrl).toBe(ssoUrl);
     }
+  });
+
+  it('treats an unrecognized non-ok status (e.g. 500) as a transient no_access denial', async () => {
+    const userId = baseUserId + 30;
+    const repoId = baseRepoId + 30;
+    setupMockDbForRepo(repoId, TEST_OWNER, TEST_REPO);
+
+    expect.assertions(2);
+
+    mockGlobalFetch()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        headers: new Headers(),
+      });
+
+    const result = await verifyGitHubRepositoryAccess(userId, repoId);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.message).toBe('Unable to verify access');
+    }
+  });
+
+  it('falls through to the authenticated check when the public repo probe throws a network error', async () => {
+    const userId = baseUserId + 31;
+    const repoId = baseRepoId + 31;
+    setupMockDbForRepo(repoId, TEST_OWNER, TEST_REPO);
+
+    expect.assertions(2);
+
+    mockGlobalFetch()
+      .mockRejectedValueOnce(new Error('DNS lookup failed'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: vi.fn().mockResolvedValue({ private: false }),
+      });
+
+    const result = await verifyGitHubRepositoryAccess(userId, repoId);
+
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.visibility).toBe('public');
+    }
+  });
+
+  it('does not retry a non-network, non-gateway error from the authenticated check', async () => {
+    const userId = baseUserId + 32;
+    const repoId = baseRepoId + 32;
+    setupMockDbForRepo(repoId, TEST_OWNER, TEST_REPO);
+
+    expect.assertions(2);
+
+    let callCount = 0;
+    mockGlobalFetch().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { ok: false, status: 404, headers: new Headers() };
+      }
+      // A plain Error is neither a TypeError (network) nor a GatewayError
+      // (502/503/504), so the retry predicate's final `return false` fires
+      // and withRetry must not retry it. checkWithUserToken's outer catch
+      // turns it into a graceful no_access denial rather than propagating.
+      throw new Error('Unexpected non-retriable failure');
+    });
+
+    const result = await verifyGitHubRepositoryAccess(userId, repoId);
+
+    expect(result.allowed).toBe(false);
+    // Public check (1) + one authenticated attempt, no retry.
+    expect(callCount).toBe(2);
   });
 });

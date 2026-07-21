@@ -757,6 +757,42 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     expect(failedWrites).toHaveLength(0);
   });
 
+  it('claims and completes without owner tokens when called with no context at all', async () => {
+    dbUpdates.length = 0;
+
+    const result = await syncRepositories({ installationId: 42 });
+
+    expect(result).toEqual({ repositoryCount: 3, deactivatedRepositoryCount: 0 });
+    expect(
+      (dbUpdates[0].set as { syncWorkflowExecutionToken?: string | null })
+        .syncWorkflowExecutionToken,
+    ).toBeNull();
+    expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
+  });
+
+  it('writes a failed status without owner tokens when called with no context and the fetch fails', async () => {
+    dbUpdates.length = 0;
+    mockRefresh.mockRejectedValue(new Error('GitHub API error'));
+
+    await expect(syncRepositories({ installationId: 42 })).rejects.toThrow('GitHub API error');
+
+    const failedWrite = dbUpdates.find(
+      (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
+    );
+    expect(failedWrite).toBeDefined();
+    expect(failedWrite?.whereArgs.length).toBeGreaterThan(0);
+  });
+
+  it('reconcileSyncStatusOnTeardown uses an unscoped predicate when called with no context at all', async () => {
+    dbUpdates.length = 0;
+
+    await reconcileSyncStatusOnTeardown({ installationId: 42, workflowStartedAt: Date.now() });
+
+    expect(dbUpdates).toHaveLength(1);
+    expect((dbUpdates[0].set as { syncStatus?: string }).syncStatus).toBe('failed');
+    expect(dbUpdates[0].whereArgs.length).toBeGreaterThan(0);
+  });
+
   it('syncRepositories passes owner tokens to the success write fence', async () => {
     dbUpdates.length = 0;
 

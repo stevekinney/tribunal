@@ -12,8 +12,68 @@ vi.mock('@tribunal/github/webhooks/verify-webhook-signature', () => ({
   verifyWebhookSignature: vi.fn(),
 }));
 
-import { verifySignature } from './request';
+import { validateRequest, verifySignature } from './request';
 import { verifyWebhookSignature } from '@tribunal/github/webhooks/verify-webhook-signature';
+
+function createRequest(body: string, headers: Record<string, string> = {}): Request {
+  return new Request('https://tribunal.dev/api/webhooks/github', {
+    method: 'POST',
+    headers: {
+      'x-github-event': 'push',
+      'x-github-delivery': 'delivery-1',
+      'x-hub-signature-256': 'sha256=abc',
+      ...headers,
+    },
+    body,
+  });
+}
+
+describe('validateRequest', () => {
+  it('extracts payload, signature, event type, and delivery id from the request', async () => {
+    const request = createRequest('{"ref":"refs/heads/main"}');
+
+    const result = await validateRequest(request);
+
+    expect(result).toEqual({
+      payload: '{"ref":"refs/heads/main"}',
+      signature: 'sha256=abc',
+      eventType: 'push',
+      deliveryId: 'delivery-1',
+    });
+  });
+
+  it('defaults signature, event type, and delivery id to null when headers are absent', async () => {
+    const request = new Request('https://tribunal.dev/api/webhooks/github', {
+      method: 'POST',
+      body: '{}',
+    });
+
+    const result = await validateRequest(request);
+
+    expect(result).toEqual({
+      payload: '{}',
+      signature: null,
+      eventType: null,
+      deliveryId: null,
+    });
+  });
+
+  it('rejects a request whose Content-Length header exceeds the max payload size', async () => {
+    const request = createRequest('{}', { 'content-length': String(30 * 1024 * 1024) });
+
+    await expect(validateRequest(request)).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('rejects a request whose actual body size exceeds the max payload size even without a Content-Length header', async () => {
+    // Content-Length is spoofed/absent; the actual body is what's measured.
+    const request = new Request('https://tribunal.dev/api/webhooks/github', {
+      method: 'POST',
+      body: 'a'.repeat(30 * 1024 * 1024),
+    });
+
+    await expect(validateRequest(request)).rejects.toMatchObject({ status: 413 });
+  });
+});
 
 describe('verifySignature', () => {
   beforeEach(() => {

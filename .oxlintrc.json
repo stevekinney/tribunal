@@ -17,6 +17,7 @@
     "**/.vercel/**",
     "**/build/**",
     "**/dist/**",
+    "**/coverage/**",
     "**/__fixtures__/**"
   ],
   "rules": {

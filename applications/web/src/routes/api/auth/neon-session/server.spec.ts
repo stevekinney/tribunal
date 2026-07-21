@@ -135,6 +135,63 @@ describe('POST /api/auth/neon-session', () => {
     expect.assertions(2);
   });
 
+  it('rejects a malformed JSON body', async () => {
+    const event = createMockRequestEvent({
+      url: 'http://localhost/api/auth/neon-session',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    event.request = new Request('http://localhost/api/auth/neon-session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+
+    const { POST } = await import('./+server');
+
+    await expect(
+      runWithDatabase(testDb.db as never, () => POST(event as Parameters<typeof POST>[0])),
+    ).rejects.toMatchObject({ status: 400, body: { message: 'Expected JSON request body' } });
+  });
+
+  it('rejects a request body missing a token', async () => {
+    const event = createMockRequestEvent({
+      url: 'http://localhost/api/auth/neon-session',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    event.request = new Request('http://localhost/api/auth/neon-session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    const { POST } = await import('./+server');
+
+    await expect(
+      runWithDatabase(testDb.db as never, () => POST(event as Parameters<typeof POST>[0])),
+    ).rejects.toMatchObject({ status: 400, body: { message: 'Missing Neon Auth token' } });
+  });
+
+  it('rejects a request body with an empty token', async () => {
+    const event = createMockRequestEvent({
+      url: 'http://localhost/api/auth/neon-session',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    event.request = new Request('http://localhost/api/auth/neon-session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: '' }),
+    });
+
+    const { POST } = await import('./+server');
+
+    await expect(
+      runWithDatabase(testDb.db as never, () => POST(event as Parameters<typeof POST>[0])),
+    ).rejects.toMatchObject({ status: 400, body: { message: 'Missing Neon Auth token' } });
+  });
+
   it('preserves the SvelteKit HttpError status and message for invalid tokens', async () => {
     const { response } = await postToken('not-a-jwt');
     const body = (await response.json()) as { error: { message: string } };

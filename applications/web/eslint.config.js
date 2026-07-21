@@ -11,6 +11,7 @@ export default defineConfig(
   {
     ignores: [
       'build/**',
+      'coverage/**',
       'drizzle/**',
       'static/**',
       'node_modules/**',

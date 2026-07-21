@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import AgentDetailPage from './+page.svelte';
@@ -45,7 +45,7 @@ describe('/agents/[agentId] page', () => {
   it('renders identity before the prompt editor and a danger zone with delete', async () => {
     render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
 
-    const headings = await page.getByRole('heading', { level: 2 }).all();
+    const headings = page.getByRole('heading', { level: 2 }).all();
     const headingTexts = await Promise.all(
       headings.map((heading) => heading.element().textContent),
     );
@@ -63,5 +63,17 @@ describe('/agents/[agentId] page', () => {
     const dialog = page.getByRole('dialog');
     await expect.element(dialog.getByRole('heading', { name: 'Delete security?' })).toBeVisible();
     await expect.element(dialog.getByRole('button', { name: 'Delete agent' })).toBeVisible();
+  });
+
+  it('submits the delete form when the confirmation dialog is confirmed', async () => {
+    render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
+
+    const deleteForm = document.querySelector<HTMLFormElement>('form[action="?/delete"]')!;
+    const submitSpy = vi.spyOn(deleteForm, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('button', { name: 'Delete agent' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete agent' }).click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
   });
 });

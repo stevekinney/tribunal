@@ -27,6 +27,14 @@ describe('mintInstallationAccessToken', () => {
     vi.clearAllMocks();
   });
 
+  it('throws ValidationError when the context does not provide getGithubApplication', async () => {
+    const context = createMockContext({ getGithubApplication: undefined });
+
+    await expect(
+      installationTokens.mintInstallationAccessToken(context, { installationId: 42 }),
+    ).rejects.toThrow('The context does not provide getGithubApplication');
+  });
+
   it('throws ValidationError when getGithubApplication() returns null', async () => {
     const context = createMockContext({
       getGithubApplication: vi.fn().mockReturnValue(null),

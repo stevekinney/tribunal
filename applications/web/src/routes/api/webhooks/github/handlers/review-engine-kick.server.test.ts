@@ -60,6 +60,21 @@ describe('review engine kick webhook helper', () => {
       'Review engine kick failed with status 503.',
     );
   });
+
+  it('rethrows the underlying Error when the kick request itself failed', async () => {
+    const cause = new Error('connection reset');
+    kickReviewEngineMock.mockResolvedValue({ status: 'failed', error: cause });
+
+    await expect(kickReviewEngineAfterDurableIntentCount(1, createLogger())).rejects.toBe(cause);
+  });
+
+  it('wraps a non-Error failure cause in a new Error', async () => {
+    kickReviewEngineMock.mockResolvedValue({ status: 'failed', error: 'timeout' });
+
+    await expect(kickReviewEngineAfterDurableIntentCount(1, createLogger())).rejects.toThrow(
+      'timeout',
+    );
+  });
 });
 
 function createLogger(): WebhookLogger {

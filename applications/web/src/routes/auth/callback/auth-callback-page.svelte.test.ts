@@ -90,4 +90,32 @@ describe('/auth/callback page', () => {
     expect(mocks.goto).not.toHaveBeenCalledWith(expect.stringContaining('Failed query'));
     expect(mocks.goto).not.toHaveBeenCalledWith(expect.stringContaining('neon_auth_user_id'));
   });
+
+  it('redirects with a missing-token error when the callback URL has no session verifier', async () => {
+    mocks.svelteKitPage.url = new URL('http://localhost/auth/callback?returnTo=/repositories');
+
+    render(AuthCallbackPage);
+
+    await vi.waitFor(() => {
+      expect(mocks.getSession).not.toHaveBeenCalled();
+      expect(mocks.goto).toHaveBeenCalledWith(
+        '/login?error=neon_auth_token_missing&returnTo=%2Frepositories',
+      );
+    });
+  });
+
+  it('redirects with a missing-token error when Neon Auth returns no session token', async () => {
+    mocks.getSession.mockResolvedValueOnce({
+      data: { session: null },
+      error: { message: 'no session' },
+    });
+
+    render(AuthCallbackPage);
+
+    await vi.waitFor(() => {
+      expect(mocks.goto).toHaveBeenCalledWith(
+        '/login?error=neon_auth_token_missing&returnTo=%2Frepositories',
+      );
+    });
+  });
 });

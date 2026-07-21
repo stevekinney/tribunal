@@ -250,6 +250,23 @@ describe('rate-limits', () => {
       }
     });
 
+    it('fails open when reading the cached state throws after retrieval', async () => {
+      expect.assertions(1);
+      // getRateLimitState itself fails open on a getCached rejection (returning
+      // null), so checkRateLimitState's own catch only fires when the retrieved
+      // state blows up during use — simulate that with a throwing accessor.
+      const explosiveState = {
+        get resetAt(): number {
+          throw new Error('corrupt state');
+        },
+      };
+      vi.mocked(context.cache.getCached).mockResolvedValue(explosiveState);
+
+      const result = await checkRateLimitState(context, installationId);
+
+      expect(result).toEqual({ limited: false });
+    });
+
     it('fails open when Redis throws', async () => {
       expect.assertions(1);
       vi.mocked(context.cache.getCached).mockRejectedValue(new Error('Redis connection failed'));
@@ -328,6 +345,22 @@ describe('rate-limits', () => {
       await decrementRateLimitRemaining(context, installationId);
 
       expect(context.cache.setCache).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the write to Redis throws', async () => {
+      expect.assertions(1);
+      const state: RateLimitState = {
+        remaining: 100,
+        limit: 5000,
+        resetAt: Math.floor(Date.now() / 1000) + 3600,
+        lastUpdated: Date.now(),
+        isSecondaryLimit: false,
+      };
+      vi.mocked(context.cache.getCached).mockResolvedValue(state);
+      vi.mocked(context.cache.setCache).mockRejectedValue(new Error('Redis connection failed'));
+
+      // Should not throw
+      await expect(decrementRateLimitRemaining(context, installationId)).resolves.toBeUndefined();
     });
   });
 

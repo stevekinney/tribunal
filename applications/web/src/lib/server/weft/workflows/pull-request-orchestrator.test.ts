@@ -89,7 +89,12 @@ let engine: Engine | undefined;
 let client: LocalClient;
 
 // Tiny per-run timing overrides delivered through `services`.
-const TEST_SERVICES = { debounceDuration: '20ms', idleDuration: '40ms' } as const;
+// idleDuration is deliberately LONG here: tests that signal close/events would
+// otherwise race the idle timer (a 40ms idle lost that race intermittently
+// under coverage instrumentation). Tests that exercise the idle branch inject
+// their own short idleDuration and deliver no competing signals, which makes
+// the idle race deterministic.
+const TEST_SERVICES = { debounceDuration: '20ms', idleDuration: '30s' } as const;
 
 beforeEach(async () => {
   analyzeMock.mockClear();
@@ -193,6 +198,30 @@ async function waitForCalls(n: number, budgetMs: number) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('pull-request-orchestrator (behavioral, real engine)', () => {
+  /**
+   * FIX 5 — the 7-day idle timer completes a run that never receives an event.
+   *
+   * Deterministic by construction: no event or close signal is ever delivered,
+   * so the phase (A) race has exactly one branch that can resolve — the
+   * (shortened) idle sleep. No wall-clock coin flip is involved.
+   */
+  it('completes with completionReason idle_timeout when no event ever arrives', async () => {
+    await engine!.start('pull-request-orchestrator', BASE_INPUT, {
+      id: WORKFLOW_ID,
+      services: { debounceDuration: '20ms', idleDuration: '40ms' },
+    });
+
+    const finalState = await awaitTerminal(WORKFLOW_ID);
+    expect(finalState.status).toBe('completed');
+
+    const output = finalState.result as PullRequestOrchestratorOutput;
+    expect(output.completed).toBe(true);
+    expect(output.completionReason).toBe('idle_timeout');
+    // No analysis ever ran — idle completes without a final analysis.
+    expect(output.analysisCount).toBe(0);
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
   /**
    * FIX 1 + close-terminates-loop.
    *
@@ -452,5 +481,82 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
     expect(output.completionReason).toBe('pr_merged');
     expect(analyzeMock).toHaveBeenCalled();
     expect(output.analysisCount).toBe(0);
+  });
+
+  /**
+   * The main-loop analysis (phase C) can ALSO come back generation-fenced when
+   * it wins the race cleanly (no supersede, no close) -- a distinct code path
+   * from the final-analysis fence tested above. A fenced main-loop cycle must
+   * not count, and the workflow must loop back to phase (A) for the next event
+   * rather than terminate.
+   */
+  it('does not count a generation-fenced analysis that completes normally in the main loop', async () => {
+    // First (main-loop) analysis: fenced, no write.
+    analyzeMock.mockResolvedValueOnce({
+      updated: false,
+      actionItemCount: 0,
+      persisted: false,
+      generationFenced: true,
+    });
+    // Final (close) analysis: a genuine write, so its increment is visible in
+    // the output and proves the earlier fenced cycle contributed nothing.
+    analyzeMock.mockResolvedValue({ updated: true, actionItemCount: 1, persisted: true });
+
+    await startWithFastTimers();
+    await waitForCalls(1, 1_000);
+
+    // Fenced but not closed/superseded -- the workflow must NOT terminate; it
+    // loops back to (A). Confirm it is still running before closing it out.
+    await wait(50);
+    expect((await client.get(WORKFLOW_ID))?.status).toBe('running');
+
+    await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(false));
+    const finalState = await awaitTerminal(WORKFLOW_ID);
+
+    expect(finalState.status).toBe('completed');
+    const output = finalState.result as PullRequestOrchestratorOutput;
+    expect(output.completionReason).toBe('pr_closed');
+    // Only the final (non-fenced) analysis counted.
+    expect(output.analysisCount).toBe(1);
+    expect(analyzeMock).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * FIX 1 -- the analysis-phase race (C) can also be won by the close signal
+   * directly (not just the debounce-phase race in the "terminates with
+   * completionReason pr_closed/pr_merged" tests above). This exercises the
+   * `analysisRaceResult.key === 'closed'` branch distinct from the debounce
+   * (B) and final-analysis (D) close paths already covered.
+   */
+  it('breaks out of the main loop when a close signal wins the in-flight analysis race', async () => {
+    // Hang the first (main-loop) analysis so it is genuinely in flight in
+    // phase (C) when the close signal arrives.
+    let releaseAnalysis: (() => void) | undefined;
+    const analysisHang = new Promise<void>((resolve) => {
+      releaseAnalysis = resolve;
+    });
+    analyzeMock.mockImplementationOnce(async () => {
+      await analysisHang;
+      return { updated: true, actionItemCount: 1, persisted: true };
+    });
+    // The final analysis (after close) resolves normally once reached.
+    analyzeMock.mockResolvedValue({ updated: true, actionItemCount: 1, persisted: true });
+
+    await startWithFastTimers();
+    await waitForCalls(1, 1_000); // in phase (C), first analysis in flight
+
+    await client.signal(WORKFLOW_ID, 'pull_request_closed', makeClose(true, 'octocat'));
+    // Release the now-superseded (losing) in-flight analysis; its result must
+    // be discarded rather than completing the workflow.
+    releaseAnalysis?.();
+
+    const finalState = await awaitTerminal(WORKFLOW_ID);
+    expect(finalState.status).toBe('completed');
+    const output = finalState.result as PullRequestOrchestratorOutput;
+    expect(output.completionReason).toBe('pr_merged');
+    // The losing in-flight analysis must not count; only the final analysis
+    // (run after breaking out to phase D) does.
+    expect(output.analysisCount).toBe(1);
+    expect(analyzeMock).toHaveBeenCalledTimes(2);
   });
 });

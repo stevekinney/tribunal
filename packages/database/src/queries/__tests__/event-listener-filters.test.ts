@@ -94,4 +94,10 @@ describe('parseEventListenerFilters', () => {
     expect(parseEventListenerFilters(JSON.stringify({ ref: 123 }))).toBeNull();
     expect(parseEventListenerFilters(JSON.stringify({ ref: '' }))).toBeNull();
   });
+
+  it('ignores an explicit null on a supported key instead of failing closed', () => {
+    expect(parseEventListenerFilters(JSON.stringify({ ref: null, prNumber: 5 }))).toEqual({
+      prNumber: 5,
+    });
+  });
 });

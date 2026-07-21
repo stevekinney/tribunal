@@ -4,6 +4,12 @@ import { render } from 'vitest-browser-svelte';
 import RepositoriesPage from './+page.svelte';
 import type { PageData } from './$types';
 
+const invalidateAllMock = vi.hoisted(() => vi.fn());
+
+vi.mock('$app/navigation', () => ({
+  invalidateAll: invalidateAllMock,
+}));
+
 const enhancedFormTesting = vi.hoisted(() => {
   function createDeferred() {
     let resolve!: () => void;
@@ -200,6 +206,7 @@ const baseData: PageData = {
 describe('/repositories page', () => {
   beforeEach(() => {
     enhancedFormTesting.reset();
+    invalidateAllMock.mockReset();
   });
 
   it('prompts users to install the GitHub App when no installation exists', async () => {
@@ -738,5 +745,207 @@ describe('/repositories page', () => {
     await page.getByRole('switch', { name: 'Repository watched' }).click();
     await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
     expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
+  });
+
+  it('shows a top-level alert when the page failed to load some data', async () => {
+    render(RepositoriesPage, {
+      data: { ...baseData, loadError: 'Could not reach GitHub. Showing cached data.' },
+      form: null,
+      params: {},
+    });
+
+    await expect
+      .element(page.getByText('Could not reach GitHub. Showing cached data.'))
+      .toBeVisible();
+  });
+
+  it('shows a top-level alert when the form action reports an error', async () => {
+    render(RepositoriesPage, {
+      data: baseData,
+      form: { error: 'Could not add repository.' },
+      params: {},
+    });
+
+    await expect.element(page.getByText('Could not add repository.')).toBeVisible();
+  });
+
+  it('filters the repository table by search query', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [
+          makeRepository(),
+          makeRepository({
+            id: 202,
+            owner: 'other-org',
+            name: 'widgets',
+            dashboard: makeDashboardRow({
+              repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
+            }),
+          }),
+        ],
+        summary: okSummaryForOne,
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('searchbox', { name: 'Search repositories' }).fill('widgets');
+
+    await expect.element(page.getByText('other-org/widgets')).toBeInTheDocument();
+    await expect.element(page.getByText('test-org/review-target')).not.toBeInTheDocument();
+  });
+
+  it('shows a no-matches hint when the search query matches no repository', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: okSummaryForOne,
+      },
+      form: null,
+      params: {},
+    });
+
+    await page.getByRole('searchbox', { name: 'Search repositories' }).fill('no-such-repo');
+
+    await expect.element(page.getByText('No repositories matching "no-such-repo".')).toBeVisible();
+  });
+
+  it('renders the full range of attention CI and merge status badges', async () => {
+    const attentionPullRequestBase = {
+      repositoryId: 101,
+      author: { login: 'octocat', htmlUrl: 'https://github.com/octocat' },
+      draft: false,
+      headRef: 'branch',
+      baseRef: 'main',
+      headSha: 'abc123',
+      ciUpdatedAt: '2026-07-09T00:00:00.000Z',
+      mergeUpdatedAt: '2026-07-09T00:00:00.000Z',
+      unresolvedThreadCount: null,
+      reviewUpdatedAt: '2026-07-09T00:00:00.000Z',
+      updatedAt: '2026-07-09T00:00:00.000Z',
+      repositoryOwner: 'test-org',
+      repositoryName: 'review-target',
+    };
+
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: okSummaryForOne,
+        attentionPullRequests: [
+          {
+            ...attentionPullRequestBase,
+            number: 1,
+            title: 'Pending CI, blocked merge',
+            htmlUrl: 'https://github.com/test-org/review-target/pull/1',
+            ciStatus: 'pending',
+            mergeStatus: 'blocked',
+          },
+          {
+            ...attentionPullRequestBase,
+            number: 2,
+            title: 'Unknown CI, unknown merge',
+            htmlUrl: 'https://github.com/test-org/review-target/pull/2',
+            ciStatus: 'unknown',
+            mergeStatus: 'unknown',
+          },
+          {
+            ...attentionPullRequestBase,
+            number: 3,
+            title: 'Passing CI, clean merge',
+            htmlUrl: 'https://github.com/test-org/review-target/pull/3',
+            ciStatus: 'passing',
+            mergeStatus: 'clean',
+          },
+        ],
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect.element(page.getByText('Pending', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Blocked', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Unknown', { exact: true }).first()).toBeVisible();
+    await expect.element(page.getByText('Unresolved threads unknown').first()).toBeVisible();
+    await expect.element(page.getByText('Passing', { exact: true }).nth(1)).toBeVisible();
+    await expect.element(page.getByText('Mergeable')).toBeVisible();
+  });
+
+  it('prompts the user to connect GitHub before installing the app', async () => {
+    render(RepositoriesPage, {
+      data: { ...baseData, needsConnect: true },
+      form: null,
+      params: {},
+    });
+
+    await expect
+      .element(page.getByRole('heading', { name: 'Connect GitHub to get started' }))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('link', { name: 'Connect GitHub' }))
+      .toHaveAttribute('href', '/connect/github/account');
+  });
+
+  it('falls back to a fetch-based watch submission and refreshes when the row form has been removed from the DOM', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(RepositoriesPage, {
+        data: {
+          ...baseData,
+          installations: [
+            { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+          ],
+          repositories: [
+            makeRepository({
+              review: {
+                hasSavedSettings: true,
+                watched: true,
+                lastRunStatus: null,
+                estimatedCostLast30DaysUsd: 0,
+                ignoreGlobs: [],
+                agents: [{ id: '1', slug: 'security', enabled: true }],
+              },
+            }),
+          ],
+          summary: okSummaryForOne,
+        },
+        form: null,
+        params: {},
+      });
+
+      // First toggle starts a submission; the second (while it's in flight)
+      // is queued instead of submitted immediately.
+      await page.getByRole('switch', { name: 'Repository watched' }).click();
+      await page.getByRole('switch', { name: 'Repository watched' }).click();
+      expect(enhancedFormTesting.submissions).toHaveLength(1);
+
+      // Filtering the table removes the row's form from the DOM before the
+      // first submission settles, so the queued re-toggle can no longer find
+      // it via document.getElementById and must fall back to a direct fetch.
+      await page.getByRole('searchbox', { name: 'Search repositories' }).fill('no-match');
+
+      enhancedFormTesting.submissions[0]?.resolveResult();
+      enhancedFormTesting.submissions[0]?.resolveUpdate();
+
+      await expect
+        .poll(() => fetchMock)
+        .toHaveBeenCalledWith('?/watch', expect.objectContaining({ method: 'POST' }));
+      await expect.poll(() => invalidateAllMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

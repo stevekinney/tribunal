@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OAuth2Tokens } from 'arctic';
 
 vi.mock('$env/dynamic/private', () => ({
@@ -47,14 +47,26 @@ vi.mock('$lib/server/encryption', () => ({
   decrypt: mockDecrypt,
 }));
 
+const { mockGetProviderClient } = vi.hoisted(() => ({
+  mockGetProviderClient: vi.fn(),
+}));
+
+vi.mock('./providers', () => ({
+  getProviderClient: mockGetProviderClient,
+}));
+
 const {
   consumeOAuthStateCookie,
   createOAuthState,
+  deleteOAuthConnection,
   getOAuthConnection,
   readAccessTokenExpiresAt,
+  refreshGitHubTokenIfNeeded,
   sanitizeReturnTo,
   setOAuthStateCookie,
+  shouldCheckHealth,
   upsertOAuthConnection,
+  validateAndUpdateConnectionHealth,
 } = await import('./authentication');
 
 describe('authentication GitHub connection helpers', () => {
@@ -63,6 +75,10 @@ describe('authentication GitHub connection helpers', () => {
     mockWhere.mockResolvedValue([]);
     mockOnConflictDoUpdate.mockResolvedValue(undefined);
     mockDeleteWhere.mockResolvedValue({ rowCount: 1 });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('returns null when an OAuth connection does not exist', async () => {
@@ -212,5 +228,243 @@ describe('authentication GitHub connection helpers', () => {
 
     vi.useRealTimers();
     expect.assertions(2);
+  });
+
+  it('returns null and deletes the cookie when no OAuth state cookie is present', () => {
+    const cookies = {
+      get: () => undefined,
+      set: vi.fn(),
+      delete: vi.fn(),
+    } as unknown as import('@sveltejs/kit').Cookies;
+
+    expect(consumeOAuthStateCookie(cookies, 'expected-nonce', 1)).toBeNull();
+    expect(cookies.delete).toHaveBeenCalledWith('oauth_state', { path: '/' });
+    expect.assertions(2);
+  });
+
+  it('returns null for a nonce mismatch, wrong intent, wrong user, expired state, or malformed JSON', () => {
+    function cookiesWithRawValue(raw: string) {
+      return {
+        get: () => raw,
+        set: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as import('@sveltejs/kit').Cookies;
+    }
+
+    const basePayload = {
+      nonce: 'correct-nonce',
+      provider: 'github',
+      intent: 'connect',
+      returnTo: '/repositories',
+      createdAt: Date.now(),
+      userId: 1,
+    };
+
+    expect(
+      consumeOAuthStateCookie(cookiesWithRawValue(JSON.stringify(basePayload)), 'wrong-nonce', 1),
+    ).toBeNull();
+    expect(
+      consumeOAuthStateCookie(
+        cookiesWithRawValue(JSON.stringify({ ...basePayload, intent: 'not-connect' })),
+        'correct-nonce',
+        1,
+      ),
+    ).toBeNull();
+    expect(
+      consumeOAuthStateCookie(
+        cookiesWithRawValue(JSON.stringify(basePayload)),
+        'correct-nonce',
+        999,
+      ),
+    ).toBeNull();
+    expect(
+      consumeOAuthStateCookie(
+        cookiesWithRawValue(
+          JSON.stringify({ ...basePayload, createdAt: Date.now() - 11 * 60 * 1000 }),
+        ),
+        'correct-nonce',
+        1,
+      ),
+    ).toBeNull();
+    expect(consumeOAuthStateCookie(cookiesWithRawValue('not-json'), 'correct-nonce', 1)).toBeNull();
+    expect.assertions(5);
+  });
+
+  it('deletes an OAuth connection', async () => {
+    await deleteOAuthConnection(1, 'github');
+
+    expect(mockDelete).toHaveBeenCalledTimes(1);
+    expect(mockDeleteWhere).toHaveBeenCalledTimes(1);
+    expect.assertions(2);
+  });
+
+  it('never needs a health check when never checked, and needs one after 24 hours', () => {
+    expect(shouldCheckHealth(null)).toBe(true);
+    expect(shouldCheckHealth(new Date(Date.now() - 25 * 60 * 60 * 1000))).toBe(true);
+    expect(shouldCheckHealth(new Date(Date.now() - 1 * 60 * 60 * 1000))).toBe(false);
+    expect.assertions(3);
+  });
+
+  it('marks a GitHub connection active when the token validates against the API', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true } as Response));
+
+    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
+
+    expect(isValid).toBe(true);
+    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'active' }));
+    expect.assertions(2);
+  });
+
+  it('marks a GitHub connection invalid when the API responds not-ok', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false } as Response));
+
+    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
+
+    expect(isValid).toBe(false);
+    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
+    expect.assertions(2);
+  });
+
+  it('marks a GitHub connection invalid when the health-check fetch throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+
+    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
+
+    expect(isValid).toBe(false);
+    expect.assertions(1);
+  });
+
+  it('does not check other providers (isValid stays false, still updates the row)', async () => {
+    const isValid = await validateAndUpdateConnectionHealth(1, 'not-github' as never, 'a-token');
+
+    expect(isValid).toBe(false);
+    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
+    expect.assertions(2);
+  });
+
+  describe('refreshGitHubTokenIfNeeded', () => {
+    it('returns null when there is no OAuth connection', async () => {
+      mockWhere.mockResolvedValueOnce([]);
+
+      await expect(refreshGitHubTokenIfNeeded(1)).resolves.toBeNull();
+      expect.assertions(1);
+    });
+
+    it('returns the current access token when the connection never expires', async () => {
+      mockWhere.mockResolvedValueOnce([
+        {
+          id: 1,
+          userId: 1,
+          provider: 'github',
+          providerUserId: '123',
+          accessToken: 'encrypted:current-token',
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          status: 'active',
+        },
+      ]);
+
+      await expect(refreshGitHubTokenIfNeeded(1)).resolves.toBe('current-token');
+      expect.assertions(1);
+    });
+
+    it('returns the current access token when it is not close to expiring', async () => {
+      mockWhere.mockResolvedValueOnce([
+        {
+          id: 1,
+          userId: 1,
+          provider: 'github',
+          providerUserId: '123',
+          accessToken: 'encrypted:current-token',
+          refreshToken: 'encrypted:refresh-token',
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          scope: null,
+          status: 'active',
+        },
+      ]);
+
+      await expect(refreshGitHubTokenIfNeeded(1)).resolves.toBe('current-token');
+      expect.assertions(1);
+    });
+
+    it('returns null and warns when the token is expiring soon with no refresh token', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockWhere.mockResolvedValueOnce([
+        {
+          id: 1,
+          userId: 1,
+          provider: 'github',
+          providerUserId: '123',
+          accessToken: 'encrypted:current-token',
+          refreshToken: null,
+          expiresAt: new Date(Date.now() + 60 * 1000),
+          scope: null,
+          status: 'active',
+        },
+      ]);
+
+      await expect(refreshGitHubTokenIfNeeded(1)).resolves.toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('no refresh token is available'),
+      );
+      expect.assertions(2);
+    });
+
+    it('refreshes and persists a new access token when the current one is expiring soon', async () => {
+      mockWhere.mockResolvedValueOnce([
+        {
+          id: 1,
+          userId: 1,
+          provider: 'github',
+          providerUserId: '123',
+          accessToken: 'encrypted:current-token',
+          refreshToken: 'encrypted:refresh-token',
+          expiresAt: new Date(Date.now() + 60 * 1000),
+          scope: 'repo',
+          status: 'active',
+        },
+      ]);
+      const newExpiry = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      mockGetProviderClient.mockReturnValue({
+        refreshAccessToken: vi.fn().mockResolvedValue({
+          accessToken: () => 'new-access-token',
+          hasRefreshToken: () => true,
+          refreshToken: () => 'new-refresh-token',
+          accessTokenExpiresAt: () => newExpiry,
+        }),
+      });
+
+      const result = await refreshGitHubTokenIfNeeded(1);
+
+      expect(result).toBe('new-access-token');
+      expect(mockEncrypt).toHaveBeenCalledWith('new-access-token');
+      expect(mockOnConflictDoUpdate).toHaveBeenCalledTimes(1);
+      expect.assertions(3);
+    });
+
+    it('returns null and logs when the refresh request fails', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockWhere.mockResolvedValueOnce([
+        {
+          id: 1,
+          userId: 1,
+          provider: 'github',
+          providerUserId: '123',
+          accessToken: 'encrypted:current-token',
+          refreshToken: 'encrypted:refresh-token',
+          expiresAt: new Date(Date.now() + 60 * 1000),
+          scope: 'repo',
+          status: 'active',
+        },
+      ]);
+      mockGetProviderClient.mockReturnValue({
+        refreshAccessToken: vi.fn().mockRejectedValue(new Error('refresh failed')),
+      });
+
+      await expect(refreshGitHubTokenIfNeeded(1)).resolves.toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith('Failed to refresh GitHub token:', expect.any(Error));
+      expect.assertions(2);
+    });
   });
 });
