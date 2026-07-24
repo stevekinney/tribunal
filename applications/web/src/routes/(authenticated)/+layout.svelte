@@ -157,12 +157,9 @@
             <StatusDot
               status={data.reviewsEnabled ? 'success' : 'neutral'}
               label={data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}
-              showLabel={false}
+              showLabel
               size="sm"
             />
-            <span class="status-text"
-              >{data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}</span
-            >
           </div>
           {#if data.user}
             <UserMenu id="sidebar-user-menu" user={data.user} menuPlacement="sidebar-footer" />
@@ -280,12 +277,6 @@
     font-size: var(--text-xs);
   }
 
-  .status-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .mobile-brand-link {
     display: flex;
     align-items: center;
@@ -300,11 +291,5 @@
 
   .brand-link:hover {
     opacity: 0.8;
-  }
-
-  .status-text {
-    font-size: var(--text-xs);
-    font-weight: var(--font-medium);
-    color: var(--cinder-text);
   }
 </style>
