@@ -209,6 +209,56 @@ describe('/webhooks page', () => {
     expect(detailText).toContain('delivery-1');
   });
 
+  it('renders valid payloads with the Cinder payload inspector label', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [
+          createEvent({
+            payload: {
+              repository: {
+                owner: {
+                  login: 'acme',
+                },
+              },
+            },
+            rawPayload: '{"repository":{"owner":{"login":"acme"}}}',
+          }),
+        ],
+      }),
+    });
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+
+    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Copy Webhook payload' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('repository:', { exact: true })).toBeInTheDocument();
+    await expect.element(page.getByText('"acme"')).not.toBeInTheDocument();
+  });
+
+  it('renders raw invalid payloads through the Cinder payload inspector', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        events: [
+          createEvent({
+            payload: null,
+            rawPayload: 'not valid json {{{',
+            payloadParseError: true,
+          }),
+        ],
+      }),
+    });
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+
+    await expect
+      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
+    await expect.element(page.getByText('not valid json {{{', { exact: true })).toBeInTheDocument();
+  });
+
   it('shows a matched listener and its status badge, without a link to its run', async () => {
     // `/runs/[runId]` only supports pull-request-review runs today, and a
     // listener match's run is always a `webhook_event_handler` run --

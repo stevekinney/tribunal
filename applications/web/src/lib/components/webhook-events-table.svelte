@@ -7,8 +7,7 @@
   import { Link } from '@lostgradient/cinder/link';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { JsonViewer } from '@lostgradient/cinder/json-viewer';
-  import { CodeBlock } from '@lostgradient/cinder/code-block';
+  import { PayloadInspector } from '@lostgradient/cinder/payload-inspector';
   import { DescriptionList } from '@lostgradient/cinder/description-list';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
@@ -210,14 +209,11 @@
                     {/if}
                   </div>
 
-                  {#if event.payloadParseError}
-                    <Alert variant="warning">
-                      This event's stored payload was not valid JSON. Showing the raw text instead.
-                    </Alert>
-                    <CodeBlock code={event.rawPayload} language="text" copyable />
-                  {:else}
-                    <JsonViewer value={event.payload} initialDepth={2} />
-                  {/if}
+                  <PayloadInspector
+                    value={event.payloadParseError ? event.rawPayload : event.payload}
+                    label="Webhook payload"
+                    parse={JSON.parse}
+                  />
                 </div>
               </td>
             </Table.Row>
