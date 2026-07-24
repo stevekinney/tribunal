@@ -2,6 +2,7 @@
   import type { LayoutProps } from './$types';
   import { page } from '$app/state';
   import { MediaQuery } from 'svelte/reactivity';
+  import { Button } from '@lostgradient/cinder/button';
   import { SIDEBAR_MOBILE_MEDIA_QUERY, Sidebar } from '@lostgradient/cinder/sidebar';
   import { SideNavigation } from '@lostgradient/cinder/side-navigation';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
@@ -79,16 +80,18 @@
     a Drawer overlay. The hamburger button opens the drawer by setting
     collapsed=false; the Drawer's built-in close button sets it back to true.
   -->
-  <div class="mobile-topbar">
-    <button
-      class="mobile-menu-button"
+  <div class="mobile-topbar" data-theme="dark">
+    <Button
+      variant="ghost"
+      size="md"
+      iconOnly
+      label="Open navigation menu"
       onclick={() => (collapsed = false)}
-      aria-label="Open navigation menu"
       aria-controls="app-sidebar"
       aria-expanded={!collapsed}
     >
       <Menu size={20} aria-hidden="true" />
-    </button>
+    </Button>
     <a href="/repositories" class="mobile-brand-link">
       <span class="mobile-brand-name">Tribunal</span>
     </a>
@@ -213,25 +216,6 @@
     flex-shrink: 0;
   }
 
-  .mobile-menu-button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--space-8);
-    height: var(--space-8);
-    padding: 0;
-    border: none;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: oklch(92% 0.02 245);
-    cursor: pointer;
-    transition: background var(--duration) var(--ease-standard);
-  }
-
-  .mobile-menu-button:hover {
-    background: oklch(92% 0.02 245 / 12%);
-  }
-
   .brand-link {
     display: inline-flex;
     align-items: center;
@@ -267,11 +251,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .mobile-menu-button:focus-visible {
-    outline: var(--ring-width) solid oklch(72% 0.14 270);
-    outline-offset: var(--ring-offset);
   }
 
   .mobile-brand-link {

@@ -130,10 +130,11 @@ describe('(authenticated) layout', () => {
     await expect.element(browserPage.getByText('Routed content')).toBeVisible();
   });
 
-  it('opens the mobile drawer when the hamburger button is clicked', async () => {
+  it('opens the mobile drawer from the Cinder mobile trigger', async () => {
     render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
 
     const menuButton = browserPage.getByRole('button', { name: 'Open navigation menu' });
+    await expect.element(menuButton).toHaveAttribute('aria-controls', 'app-sidebar');
     await expect.element(menuButton).toHaveAttribute('aria-expanded', 'false');
 
     await menuButton.click();
