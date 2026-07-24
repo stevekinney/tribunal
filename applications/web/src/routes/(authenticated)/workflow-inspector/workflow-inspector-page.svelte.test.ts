@@ -143,7 +143,7 @@ describe('/workflow-inspector page', () => {
     expect(metadataText).toContain('Failed or stopped');
     expect(metadataText).toContain('2');
     expect(metadataText).toContain('Latest timer');
-    expect(metadataText).toContain('6/17/2026');
+    expect(metadataText).toContain(new Date('2026-06-17T12:00:00Z').toLocaleString());
     await expect.element(page.getByLabelText('Failed or stopped count')).toHaveTextContent('2');
     await expect
       .element(page.getByText('agent-review children visible').first())
