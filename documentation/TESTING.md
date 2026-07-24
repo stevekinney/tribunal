@@ -95,8 +95,8 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
 ## Coverage Gates
 
 Every workspace with executable source enforces **100% lines and 100% functions**
-(branches are deliberately not gated), with the two scoped exceptions noted below
-(`scripts` top-level CLIs and `runner`). `packages/typescript` is a shared tsconfig-only
+(branches are deliberately not gated), with the scoped `scripts` top-level CLI
+exception noted below. `packages/typescript` is a shared tsconfig-only
 package with no executable source and no test script. Run the full monorepo gate from the
 repository root:
 
@@ -118,13 +118,11 @@ Per-workspace scopes:
   excludes `src/ports.ts`). `packages/database` additionally excludes
   `src/test/**` (operational tooling that drives real Neon branches). Check each
   package's `vitest.configuration.ts` for its exact `coverage.exclude` list.
-- `scripts` gates only `lib/**/*.ts` (the shared helper library). The ~2,900 lines of
-  top-level `scripts/*.ts` CLIs (`deploy.ts`, `doctor.ts`,
-  `check-migration-consistency.ts`, etc.) are operational tooling that shells out to
-  Fly, GitHub, and Neon against live infrastructure — the same rationale as the
-  `packages/database/src/test/**` exclusion above — and are not currently gated at
-  all. Tracked as a follow-up in
-  [stevekinney/tribunal#179](https://github.com/stevekinney/tribunal/issues/179).
+- `scripts` gates `lib/**/*.ts` (the shared helper library). Top-level
+  `scripts/*.ts` files are classified in `scripts/OWNERSHIP.md`: deterministic
+  helpers belong in `scripts/lib/**` and live Fly, GitHub, Neon, hook, and
+  repository-orchestration entrypoints remain intentionally excluded from the
+  unit coverage gate.
 - `applications/web` gates per project: `test:coverage:server` covers `src/**/*.ts` in the
   Node server project; `test:coverage:client` covers `src/**/*.svelte` rendered in real
   Chromium. Components are measured only in the client project because the server project
@@ -132,10 +130,10 @@ Per-workspace scopes:
   component measured in two compile shapes cannot merge into one honest number.
 - `packages/github` additionally keeps the narrower `test:coverage:review-engine` script,
   which overrides scope via CLI flags for the review-engine deploy gate.
-- `runner` runs its plain `test` script (a single Vitest file, no coverage
-  instrumentation) and has no coverage gate at all — including for
-  `verify-image.mjs`, which currently has no test coverage of any kind. Also
-  tracked in [stevekinney/tribunal#179](https://github.com/stevekinney/tribunal/issues/179).
+- `runner` gates `run-agent.mjs` and `verify-image-checks.mjs` with 100% lines
+  and functions through `bun run --cwd runner test:coverage`. `verify-image.mjs`
+  is a thin process-exit wrapper over the tested `verify-image-checks.mjs`
+  behavior.
 
 When measuring locally alongside other running suites, pass a distinct
 `--coverage.reportsDirectory` — concurrent runs sharing one `coverage/.tmp` clobber each

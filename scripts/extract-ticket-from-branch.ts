@@ -9,14 +9,7 @@
 //   - Outputs JSON with ticket info
 
 import { error } from './lib/colors';
-
-type TicketInfo = {
-  found: boolean;
-  ticketId: string | null;
-  teamKey: string | null;
-  ticketNumber: number | null;
-  branch: string;
-};
+import { extractTicketFromBranch } from './lib/ticket-from-branch';
 
 async function sh(cmd: string, args: string[]): Promise<string> {
   let proc: ReturnType<typeof Bun.spawn>;
@@ -53,36 +46,6 @@ async function getCurrentBranch(): Promise<string> {
     throw new Error('Could not determine current branch (detached HEAD?).');
   }
   return branch;
-}
-
-function extractTicketFromBranch(branch: string): TicketInfo {
-  // Match patterns like:
-  // -, dep-123 (case-insensitive for branch names)
-  // --some-description
-  // - feature/-foo
-  // - fix/
-  // - claude/-bar
-  const pattern = /\b([A-Za-z]{2,10})-(\d+)\b/i;
-  const match = branch.match(pattern);
-
-  if (match) {
-    const [ticketId, teamKey, numberStr] = match;
-    return {
-      found: true,
-      ticketId,
-      teamKey,
-      ticketNumber: parseInt(numberStr, 10),
-      branch,
-    };
-  }
-
-  return {
-    found: false,
-    ticketId: null,
-    teamKey: null,
-    ticketNumber: null,
-    branch,
-  };
 }
 
 async function getRecentCommitTickets(): Promise<string[]> {

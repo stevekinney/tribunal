@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events';
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import {
   createTribunalMcpServer,
+  createGitBaseFileReader,
   isAgentSlug,
   isMainModule,
   main,
@@ -345,6 +347,33 @@ describe('runner agent wiring', () => {
     expect(queryOptions.maxBudgetUsd).toBeUndefined();
   });
 
+  it('uses default SDK result and collected findings callbacks when callers omit them', async () => {
+    const captured = createFakeSdk();
+
+    await expect(
+      runClaudeReview({
+        agentSlug: 'security-review',
+        repositoryPath: '/workspace/repository',
+        model: 'sonnet',
+        effort: null,
+        agentDescription: 'Find security defects.',
+        agentBody: 'Only report confirmed findings.',
+        guidelines: 'Prefer concrete evidence.',
+        diffContext,
+        createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
+        queryClient: async function* ({ options }) {
+          await options.canUseTool('Read', { file_path: '../secret.env' }, { toolUseID: 'tool_1' });
+          yield {
+            type: 'result',
+            structured_output: { findings: [] },
+            usage: {},
+            total_cost_usd: 0,
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ findings: [] });
+  });
+
   it('parses maxBudgetUsd from environment strings, rejecting non-positive values', () => {
     expect(parseMaxBudgetUsd('2.5')).toBe(2.5);
     expect(parseMaxBudgetUsd('0')).toBeUndefined();
@@ -373,6 +402,61 @@ describe('runner agent wiring', () => {
 
     expect(queryOptions.settingSources).toEqual([]);
     expect(queryOptions.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+  });
+
+  it('rejects missing or invalid CLI inputs before starting a review', async () => {
+    const invalidSlugError = createWritable();
+    const missingTokenError = createWritable();
+    const invalidSlugExit = vi.fn();
+    const missingTokenExit = vi.fn();
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs'],
+      environment: baseEnvironment,
+      stdout: createWritable(),
+      stderr: invalidSlugError,
+      exit: invalidSlugExit,
+    });
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: {},
+      stdout: createWritable(),
+      stderr: missingTokenError,
+      exit: missingTokenExit,
+    });
+
+    expect(invalidSlugError.text()).toBe('Missing or invalid agent slug.\n');
+    expect(invalidSlugExit).toHaveBeenCalledWith(1);
+    expect(missingTokenError.text()).toBe('Missing TRIBUNAL_RUN_TOKEN.\n');
+    expect(missingTokenExit).toHaveBeenCalledWith(1);
+  });
+
+  it('writes an error result when the SDK review fails', async () => {
+    const stdout = createWritable();
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: baseEnvironment,
+      stdout,
+      stderr: createWritable(),
+      exit: vi.fn(),
+      performanceNow: vi.fn().mockReturnValueOnce(10).mockReturnValue(35),
+      queryClient: async function* () {
+        throw new Error('SDK unavailable');
+      },
+    });
+
+    expect(stdout.records().at(-1)).toMatchObject({
+      type: 'result',
+      result: {
+        agentSlug: 'security-review',
+        modelUsed: 'sonnet',
+        effortUsed: 'xhigh',
+        findings: [],
+        durationMs: 25,
+        error: 'SDK unavailable',
+      },
+    });
   });
 
   it('runs the triage role with its own prompt and structured output schema', async () => {
@@ -469,6 +553,168 @@ describe('runner agent wiring', () => {
     expect(isMainModule(moduleUrl, ['bun', 'runner/other-agent.mjs'], cwd)).toBe(false);
   });
 
+  it('executes every MCP tool wrapper through JSON tool results', async () => {
+    const reviewTools = createReviewTools();
+    const captured = createFakeSdk();
+
+    createTribunalMcpServer(reviewTools, captured.sdk);
+    const tools = Object.fromEntries(captured.server.tools.map((tool) => [tool.name, tool]));
+
+    expect(parseToolResult(await tools.get_changed_files.execute({}))).toEqual({
+      changedFiles: [],
+      changedSinceLast: [],
+    });
+    expect(parseToolResult(await tools.get_pr_context.execute({}))).toEqual({
+      pullRequest: diffContext.pr,
+      headSha: 'head',
+      baseSha: 'base',
+    });
+    expect(parseToolResult(await tools.get_review_guidelines.execute({}))).toEqual({
+      guidelines: 'Prefer concrete evidence.',
+    });
+  });
+
+  it('falls back to changed file environment when diff context JSON is absent or invalid', async () => {
+    let queryOptions;
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: {
+        ...baseEnvironment,
+        TRIBUNAL_DIFF_CONTEXT: 'not-json',
+        TRIBUNAL_CHANGED_FILES: JSON.stringify(['src/auth.ts', 42, 'src/session.ts']),
+        TRIBUNAL_HEAD_SHA: 'head-sha',
+        TRIBUNAL_BASE_SHA: 'base-sha',
+        TRIBUNAL_PULL_REQUEST_NUMBER: '99',
+      },
+      stdout: createWritable(),
+      stderr: createWritable(),
+      exit: vi.fn(),
+      queryClient: (arguments_) => {
+        queryOptions = arguments_.options;
+        return streamMessages([
+          { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 },
+        ]);
+      },
+    });
+
+    expect(queryOptions.cwd).toBe('/workspace/repository');
+    expect(queryOptions.mcpServers.tribunal).toBeTruthy();
+  });
+
+  it('normalizes malformed diff context fields before building review tools', async () => {
+    let queryOptions;
+    const malformedDiffContext = {
+      headSha: 123,
+      baseSha: false,
+      prevHeadSha: 'previous-head',
+      changedSinceLast: [{ path: 'src/session.ts', status: 'added' }, null],
+      changedFiles: [
+        null,
+        { path: 42 },
+        {
+          path: 'src/auth.ts',
+          status: 'unexpected',
+          patch: 12,
+          commentableLines: [
+            null,
+            { side: 'BASE', line: 1 },
+            { side: 'RIGHT', line: 0 },
+            { side: 'LEFT', line: 3 },
+          ],
+        },
+      ],
+      pr: {
+        number: '13',
+        title: 13,
+        body: null,
+        labels: ['security', 42],
+        author: false,
+      },
+    };
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: {
+        ...baseEnvironment,
+        TRIBUNAL_DIFF_CONTEXT: JSON.stringify(malformedDiffContext),
+      },
+      stdout: createWritable(),
+      stderr: createWritable(),
+      exit: vi.fn(),
+      queryClient: (arguments_) => {
+        queryOptions = arguments_.options;
+        return streamMessages([
+          { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 },
+        ]);
+      },
+    });
+
+    expect(queryOptions.mcpServers.tribunal).toBeTruthy();
+  });
+
+  it('falls back to no changed files when changed file JSON is malformed', async () => {
+    let queryOptions;
+
+    await main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: {
+        ...baseEnvironment,
+        TRIBUNAL_DIFF_CONTEXT: 'not-json',
+        TRIBUNAL_CHANGED_FILES: 'not-json',
+      },
+      stdout: createWritable(),
+      stderr: createWritable(),
+      exit: vi.fn(),
+      queryClient: (arguments_) => {
+        queryOptions = arguments_.options;
+        return streamMessages([
+          { type: 'result', structured_output: { findings: [] }, usage: {}, total_cost_usd: 0 },
+        ]);
+      },
+    });
+
+    expect(queryOptions.mcpServers.tribunal).toBeTruthy();
+  });
+
+  it('guards base-file reads by path, changed file membership, and git revision shape', () => {
+    const reader = createGitBaseFileReader({
+      repositoryPath: '/workspace/repository',
+      diffContext,
+      readGitObject: () => 'base contents',
+    });
+    const invalidRevisionReader = createGitBaseFileReader({
+      repositoryPath: '/workspace/repository',
+      diffContext: { ...diffContext, baseSha: 'not a revision' },
+      readGitObject: () => 'base contents',
+    });
+
+    expect(reader('../secret.env')).toBeNull();
+    expect(reader('src/missing.ts')).toBeNull();
+    expect(invalidRevisionReader('src/auth.ts')).toBeNull();
+  });
+
+  it('reads changed base files from git and returns null when git cannot resolve them', () => {
+    const repositoryPath = new URL('..', import.meta.url).pathname;
+    const headSha = execFileSync('git', ['-C', repositoryPath, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    const reader = createGitBaseFileReader({
+      repositoryPath,
+      diffContext: {
+        ...diffContext,
+        baseSha: headSha,
+        changedFiles: [
+          { path: 'runner/run-agent.mjs', status: 'modified', commentableLines: [] },
+          { path: 'runner/does-not-exist.mjs', status: 'modified', commentableLines: [] },
+        ],
+      },
+    });
+
+    expect(reader('runner/run-agent.mjs')).toContain('export async function main');
+    expect(reader('runner/does-not-exist.mjs')).toBeNull();
+  });
+
   it('accepts digit-leading agent slugs allowed by the shared agent schema', () => {
     expect(isAgentSlug('1-security-review')).toBe(true);
     expect(isAgentSlug('security-review')).toBe(true);
@@ -520,6 +766,31 @@ describe('runner agent wiring', () => {
     });
   });
 
+  it('still exits after SIGTERM when the partial result write fails', async () => {
+    const signalSource = new EventEmitter();
+    const exit = vi.fn();
+    let releaseQuery;
+
+    const run = main({
+      argv: ['bun', 'runner/run-agent.mjs', 'security-review'],
+      environment: baseEnvironment,
+      stdout: createWritableThatFailsFirstResult(),
+      stderr: createWritable(),
+      exit,
+      signalSource,
+      queryClient: async function* () {
+        signalSource.emit('SIGTERM');
+        yield await new Promise((resolve) => {
+          releaseQuery = () => resolve({ type: 'system', subtype: 'done' });
+        });
+      },
+    });
+
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(143));
+    releaseQuery();
+    await run;
+  });
+
   it('removes the SIGTERM listener after normal completion', async () => {
     const signalSource = new EventEmitter();
 
@@ -561,6 +832,45 @@ describe('runner agent wiring', () => {
 
     expect(stdout.records()).toEqual([{ type: 'result', result }]);
   });
+
+  it('does not write duplicate results while a result is already written or in flight', async () => {
+    const result = {
+      agentSlug: 'security-review',
+      findings: [],
+      modelUsed: 'sonnet',
+      effortUsed: null,
+      usage: {},
+      costEstimateUsd: 0,
+      durationMs: 0,
+    };
+    const alreadyWritten = { written: true };
+    const inFlight = { written: false, promise: Promise.resolve('existing') };
+    const stdout = createWritable();
+
+    await expect(writeResult(stdout, alreadyWritten, result)).resolves.toBeUndefined();
+    await expect(writeResult(stdout, inFlight, result)).resolves.toBe('existing');
+
+    expect(stdout.records()).toEqual([]);
+  });
+
+  it('rejects write callback errors and synchronous write failures', async () => {
+    const result = {
+      agentSlug: 'security-review',
+      findings: [],
+      modelUsed: 'sonnet',
+      effortUsed: null,
+      usage: {},
+      costEstimateUsd: 0,
+      durationMs: 0,
+    };
+
+    await expect(
+      writeResult(createWritableWithCallbackError(), { written: false }, result),
+    ).rejects.toThrow('callback failed');
+    await expect(writeResult(createThrowingWritable(), { written: false }, result)).rejects.toThrow(
+      'write threw',
+    );
+  });
 });
 
 function createWritable() {
@@ -579,6 +889,29 @@ function createWritable() {
         .filter(Boolean)
         .map((line) => JSON.parse(line));
     },
+    text() {
+      return value;
+    },
+  };
+}
+
+function createWritableWithCallbackError() {
+  return {
+    write(_chunk, callback) {
+      callback?.(new Error('callback failed'));
+    },
+    once: vi.fn(),
+    off: vi.fn(),
+  };
+}
+
+function createThrowingWritable() {
+  return {
+    write() {
+      throw new Error('write threw');
+    },
+    once: vi.fn(),
+    off: vi.fn(),
   };
 }
 
