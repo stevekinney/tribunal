@@ -18,15 +18,18 @@ describe('authenticated layout sidebar styles', () => {
     expect(layout).not.toContain('cinder-sidebar--mobile');
   });
 
-  it('connects the app-owned mobile trigger to the Cinder Sidebar', () => {
-    const buttonClassIndex = layout.indexOf('class="mobile-menu-button"');
-    const buttonStartIndex = layout.lastIndexOf('<button', buttonClassIndex);
+  it('connects the Cinder mobile trigger to the Cinder Sidebar', () => {
+    const buttonStartIndex = layout.indexOf('<Button');
     const buttonEndIndex =
       layout.indexOf('>', layout.indexOf('aria-expanded', buttonStartIndex)) + 1;
     const mobileMenuButton = layout.slice(buttonStartIndex, buttonEndIndex);
 
+    expect(layout).toContain("import { Button } from '@lostgradient/cinder/button';");
+    expect(mobileMenuButton).toContain('iconOnly');
+    expect(mobileMenuButton).toContain('label="Open navigation menu"');
     expect(mobileMenuButton).toContain('aria-controls="app-sidebar"');
     expect(mobileMenuButton).toContain('aria-expanded={!collapsed}');
+    expect(layout).not.toContain('mobile-menu-button');
     expect(layout).toMatch(/<Sidebar[\s\S]*id="app-sidebar"/);
   });
 });
