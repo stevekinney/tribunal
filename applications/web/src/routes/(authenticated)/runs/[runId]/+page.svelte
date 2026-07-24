@@ -8,6 +8,7 @@
   import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
   import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
   import { Link } from '@lostgradient/cinder/link';
+  import { StatGroup } from '@lostgradient/cinder/stat-group';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
   import { VisuallyHidden } from '@lostgradient/cinder/visually-hidden';
@@ -63,6 +64,7 @@
   const totalFindings = $derived(
     run.agentRuns.reduce((sum, agentRun) => sum + agentRun.findings.length, 0),
   );
+  const estimatedCost = $derived(`$${Number(run.costEstimateUsd).toFixed(2)}`);
 
   function isDeniedToolEvent(detail: unknown): boolean {
     return (
@@ -280,39 +282,26 @@
     {/if}
   </div>
 
-  <div class="summary-strip" aria-label="Run summary statistics">
+  <div class="run-summary">
+    <StatGroup label="Run summary statistics" columns={3} variant="cards">
+      <StatGroup.Stat label="Agents" value={run.agentRuns.length} />
+      <StatGroup.Stat label="Est. cost" value={estimatedCost} />
+      <StatGroup.Stat label="Findings" value={totalFindings} />
+    </StatGroup>
     <Card padding="none">
-      <div class="stat">
-        <span class="stat-label">Agents</span>
-        <span class="stat-value">{run.agentRuns.length}</span>
-      </div>
-    </Card>
-    <Card padding="none">
-      <div class="stat">
-        <span class="stat-label">Est. cost</span>
-        <span class="stat-value mono">${Number(run.costEstimateUsd).toFixed(2)}</span>
-      </div>
-    </Card>
-    <Card padding="none">
-      <div class="stat">
-        <span class="stat-label">Findings</span>
-        <span class="stat-value">{totalFindings}</span>
-      </div>
-    </Card>
-    <Card padding="none">
-      <div class="stat">
+      <div class="run-summary-detail">
         {#if run.runKind === 'pull_request_review'}
-          <span class="stat-label">Check run</span>
+          <span class="run-summary-detail-label">Check run</span>
           {#if checkRunHref}
-            <span class="stat-check-link">
+            <span class="run-summary-detail-link-value">
               <Link href={checkRunHref} external>Open GitHub Check Run</Link>
             </span>
           {:else}
-            <span class="stat-dash">—</span>
+            <span class="run-summary-detail-dash">—</span>
           {/if}
         {:else}
-          <span class="stat-label">Webhook event</span>
-          <span class="stat-value">#{run.webhookEventId}</span>
+          <span class="run-summary-detail-label">Webhook event</span>
+          <span class="run-summary-detail-value">#{run.webhookEventId}</span>
         {/if}
       </div>
     </Card>
@@ -428,21 +417,23 @@
     font-size: var(--text-sm);
   }
 
-  /* ---- Summary strip ---- */
-  .summary-strip {
+  /* ---- Run summary ---- */
+  .run-summary {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: minmax(0, 3fr) minmax(12rem, 1fr);
     gap: var(--space-3);
+    align-items: stretch;
   }
 
-  .stat {
+  .run-summary-detail {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-3) var(--space-4);
+    height: 100%;
   }
 
-  .stat-label {
+  .run-summary-detail-label {
     font-size: var(--text-2xs);
     color: var(--text-subtle);
     text-transform: uppercase;
@@ -450,27 +441,24 @@
     font-weight: var(--font-medium);
   }
 
-  .stat-value {
+  .run-summary-detail-value {
     font-size: var(--text-lg);
     font-weight: var(--font-semibold);
     color: var(--text);
     line-height: 1.2;
   }
 
-  .stat-dash {
+  .run-summary-detail-dash {
     font-size: var(--text-lg);
     font-weight: var(--font-semibold);
     color: var(--text-muted);
     line-height: 1.2;
   }
 
-  .stat-check-link {
+  .run-summary-detail-link-value {
     font-size: var(--text-sm);
     font-weight: var(--font-medium);
-  }
-
-  .mono {
-    font-family: var(--font-mono);
+    line-height: 1.2;
   }
 
   /* ---- Agent grid ---- */
@@ -591,18 +579,14 @@
 
   /* ---- Responsive ---- */
   @media (max-width: 768px) {
-    .summary-strip {
-      grid-template-columns: repeat(2, 1fr);
-    }
-
     .agent-grid {
       grid-template-columns: 1fr;
     }
   }
 
   @media (max-width: 480px) {
-    .summary-strip {
-      grid-template-columns: 1fr 1fr;
+    .run-summary {
+      grid-template-columns: 1fr;
     }
   }
 </style>

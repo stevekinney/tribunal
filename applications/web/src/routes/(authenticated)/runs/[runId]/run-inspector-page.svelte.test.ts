@@ -127,6 +127,10 @@ describe('/runs/[runId] page', () => {
   it('renders blocked tool calls and stop control', async () => {
     render(RunInspectorPage, { data });
 
+    await expect.element(page.getByRole('group', { name: 'Run summary statistics' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Agents 1' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Est. cost $1.00' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Findings 1' })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: 'Stop security' })).toBeInTheDocument();
     await expect
