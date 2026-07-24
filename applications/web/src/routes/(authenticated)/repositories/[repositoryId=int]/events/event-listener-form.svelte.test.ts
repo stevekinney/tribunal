@@ -106,4 +106,23 @@ describe('event-listener-form', () => {
       container.querySelector<HTMLInputElement>('input[name="acknowledgeFiltersReset"]')?.value,
     ).toBe('true');
   });
+
+  it('submits edited instructions markdown through the existing instructions field', async () => {
+    const { container } = render(EventListenerForm, {
+      mode: 'new',
+      listener: null,
+      listenerFilters: {},
+      agents,
+      eventTypeOptions,
+      actionsByEventType,
+      form: null,
+      cancelHref: '/repositories/42/events',
+    });
+
+    await page.getByLabelText('Instructions').fill('Summarize the event and assign a label.');
+
+    expect(
+      container.querySelector<HTMLInputElement>('input[name="instructionsMarkdown"]')?.value,
+    ).toBe('Summarize the event and assign a label.');
+  });
 });
