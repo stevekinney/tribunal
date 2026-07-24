@@ -96,6 +96,14 @@ describe('/repositories/[repositoryId]/issues page', () => {
     await expect.element(browserPage.getByRole('cell', { name: '3', exact: true })).toBeVisible();
   });
 
+  it('wraps the issues table in a named, focusable scroll region', async () => {
+    render(IssuesPage, { data: { ...baseData, issues: [sampleIssue] } });
+
+    const scrollRegion = browserPage.getByRole('region', { name: 'Repository issues' });
+    await expect.element(scrollRegion).toBeInTheDocument();
+    await expect.element(scrollRegion).toHaveAttribute('tabindex', '0');
+  });
+
   it('shows an honest, non-exact issue count summary', async () => {
     render(IssuesPage, { data: { ...baseData, issues: [sampleIssue] } });
 
