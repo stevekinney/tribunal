@@ -135,6 +135,15 @@ describe('/workflow-inspector page', () => {
     await expect.element(page.getByText('quota_blocked')).toBeInTheDocument();
     await expect.element(page.getByText('Active signals')).toBeInTheDocument();
     await expect.element(page.getByText('Failed or stopped')).toBeInTheDocument();
+    const metadataList = document.querySelector('.cinder-description-list');
+    expect(metadataList).not.toBeNull();
+    const metadataText = metadataList?.textContent ?? '';
+    expect(metadataText).toContain('Active signals');
+    expect(metadataText).toContain('2');
+    expect(metadataText).toContain('Failed or stopped');
+    expect(metadataText).toContain('2');
+    expect(metadataText).toContain('Latest timer');
+    expect(metadataText).toContain(new Date('2026-06-17T12:00:00Z').toLocaleString());
     await expect.element(page.getByLabelText('Failed or stopped count')).toHaveTextContent('2');
     await expect
       .element(page.getByText('agent-review children visible').first())

@@ -3,6 +3,7 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
+  import { DescriptionList } from '@lostgradient/cinder/description-list';
   import { Feed } from '@lostgradient/cinder/feed';
   import type { PageData } from './$types';
 
@@ -34,6 +35,10 @@
     return status === 'failed' || status === 'cancelled' || status === 'quota_blocked';
   }
 </script>
+
+{#snippet failedRunsDefinition()}
+  <span aria-label="Failed or stopped count">{failedRuns.length}</span>
+{/snippet}
 
 <Page title="Workflow Inspector" subtitle="Durable Weft workflow state">
   {#if !data.enabled}
@@ -84,20 +89,17 @@
       </Card>
       <Card>
         <h2>Signals and timers</h2>
-        <dl>
-          <div>
-            <dt>Active signals</dt>
-            <dd>{activeRuns.length}</dd>
-          </div>
-          <div>
-            <dt>Failed or stopped</dt>
-            <dd aria-label="Failed or stopped count">{failedRuns.length}</dd>
-          </div>
-          <div>
-            <dt>Latest timer</dt>
-            <dd>{latestRun?.startedAt ? toTimestamp(latestRun.startedAt) : 'none'}</dd>
-          </div>
-        </dl>
+        <DescriptionList
+          variant="two-column"
+          items={[
+            { term: 'Active signals', definition: String(activeRuns.length) },
+            { term: 'Failed or stopped', definition: failedRunsDefinition },
+            {
+              term: 'Latest timer',
+              definition: latestRun?.startedAt ? toTimestamp(latestRun.startedAt) : 'none',
+            },
+          ]}
+        />
       </Card>
       <Card>
         <h2>Child tree</h2>
@@ -167,27 +169,8 @@
     gap: var(--space-2);
   }
 
-  dl {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  dl div {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-
-  dt,
   .muted {
     color: var(--text-muted);
-  }
-
-  dd {
-    margin: 0;
-    font-weight: var(--font-semibold);
-    color: var(--text);
   }
 
   small {

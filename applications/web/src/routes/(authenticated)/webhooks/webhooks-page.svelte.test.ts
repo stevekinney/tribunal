@@ -189,11 +189,24 @@ describe('/webhooks page', () => {
     await page.getByRole('button', { name: /Show details/ }).click();
 
     await expect.poll(() => document.getElementById('webhook-event-detail-1')).not.toBeNull();
-    const detailText = document.getElementById('webhook-event-detail-1')?.textContent ?? '';
+    const detail = document.getElementById('webhook-event-detail-1');
+    const metadataList = detail?.querySelector('.cinder-description-list');
+    expect(metadataList).not.toBeNull();
+    const detailText = detail?.textContent ?? '';
+    expect(detailText).toContain('Event');
+    expect(detailText).toContain('pull_request · opened');
+    expect(detailText).toContain('Repository');
+    expect(detailText).toContain('acme/widgets');
     expect(detailText).toContain('Installation ID');
     expect(detailText).toContain('99');
+    expect(detailText).toContain('Sender');
+    expect(detailText).toContain('octocat');
     expect(detailText).toContain('Related object');
+    expect(detailText).toContain('PR #7');
     expect(detailText).toContain('GitHub timestamp');
+    expect(detailText).toContain('Received');
+    expect(detailText).toContain('Delivery ID');
+    expect(detailText).toContain('delivery-1');
   });
 
   it('shows a matched listener and its status badge, without a link to its run', async () => {
