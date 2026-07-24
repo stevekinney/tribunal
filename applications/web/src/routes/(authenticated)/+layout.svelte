@@ -52,6 +52,14 @@
       display: flex;
     }
 
+    #authenticated-shell > .desktop-sidebar-shell {
+      display: contents;
+    }
+
+    #authenticated-shell .desktop-brand-link {
+      display: none;
+    }
+
     #authenticated-shell .app-sidebar {
       inline-size: auto;
     }
@@ -102,67 +110,67 @@
     (breakpoint handled inside the Cinder Sidebar component via MediaQuery).
     data-theme="dark" is forwarded via rest props to the underlying element.
   -->
-  <Sidebar id="app-sidebar" bind:collapsed label="Tribunal" class="app-sidebar" data-theme="dark">
-    {#snippet brand()}
-      <a href="/repositories" class="brand-link">
-        <span class="brand-name">Tribunal</span>
-      </a>
-    {/snippet}
+  <div class="desktop-sidebar-shell" data-theme="dark" data-collapsed={collapsed}>
+    <a href="/repositories" class="brand-link desktop-brand-link">
+      <span class="brand-name">Tribunal</span>
+    </a>
 
-    {#snippet navigation()}
-      <SideNavigation ariaLabel="Tribunal navigation">
-        <SideNavigation.Item href="/repositories" active={repositoriesActive}>
-          <FolderGit2 size={16} aria-hidden="true" />
-          Repositories
-        </SideNavigation.Item>
-        <SideNavigation.Item href="/agents" active={agentsActive}>
-          <Bot size={16} aria-hidden="true" />
-          Agents
-        </SideNavigation.Item>
-        <SideNavigation.Item href="/runs" active={runsActive}>
-          <Activity size={16} aria-hidden="true" />
-          Runs
-        </SideNavigation.Item>
-        <SideNavigation.Item href="/webhooks" active={webhooksActive}>
-          <WebhookIcon size={16} aria-hidden="true" />
-          Webhooks
-        </SideNavigation.Item>
-        <SideNavigation.Item href="/costs" active={costsActive}>
-          <CircleDollarSign size={16} aria-hidden="true" />
-          Costs
-        </SideNavigation.Item>
-        <SideNavigation.Item href="/settings" active={settingsActive}>
-          <SettingsIcon size={16} aria-hidden="true" />
-          Settings
-        </SideNavigation.Item>
-        {#if data.user?.isPlatformAdministrator}
-          <SideNavigation.Item href="/workflow-inspector" active={workflowInspectorActive}>
-            <Workflow size={16} aria-hidden="true" />
-            Workflows
+    <Sidebar id="app-sidebar" bind:collapsed label="Tribunal" class="app-sidebar" data-theme="dark">
+      {#snippet navigation()}
+        <SideNavigation ariaLabel="Tribunal navigation">
+          <SideNavigation.Item href="/repositories" active={repositoriesActive}>
+            <FolderGit2 size={16} aria-hidden="true" />
+            Repositories
           </SideNavigation.Item>
-        {/if}
-      </SideNavigation>
-    {/snippet}
+          <SideNavigation.Item href="/agents" active={agentsActive}>
+            <Bot size={16} aria-hidden="true" />
+            Agents
+          </SideNavigation.Item>
+          <SideNavigation.Item href="/runs" active={runsActive}>
+            <Activity size={16} aria-hidden="true" />
+            Runs
+          </SideNavigation.Item>
+          <SideNavigation.Item href="/webhooks" active={webhooksActive}>
+            <WebhookIcon size={16} aria-hidden="true" />
+            Webhooks
+          </SideNavigation.Item>
+          <SideNavigation.Item href="/costs" active={costsActive}>
+            <CircleDollarSign size={16} aria-hidden="true" />
+            Costs
+          </SideNavigation.Item>
+          <SideNavigation.Item href="/settings" active={settingsActive}>
+            <SettingsIcon size={16} aria-hidden="true" />
+            Settings
+          </SideNavigation.Item>
+          {#if data.user?.isPlatformAdministrator}
+            <SideNavigation.Item href="/workflow-inspector" active={workflowInspectorActive}>
+              <Workflow size={16} aria-hidden="true" />
+              Workflows
+            </SideNavigation.Item>
+          {/if}
+        </SideNavigation>
+      {/snippet}
 
-    {#snippet footer()}
-      <div class="footer-content">
-        <div class={['reviews-status', { paused: !data.reviewsEnabled }]}>
-          <StatusDot
-            status={data.reviewsEnabled ? 'success' : 'neutral'}
-            label={data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}
-            showLabel={false}
-            size="sm"
-          />
-          <span class="status-text"
-            >{data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}</span
-          >
+      {#snippet footer()}
+        <div class="footer-content">
+          <div class={['reviews-status', { paused: !data.reviewsEnabled }]}>
+            <StatusDot
+              status={data.reviewsEnabled ? 'success' : 'neutral'}
+              label={data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}
+              showLabel={false}
+              size="sm"
+            />
+            <span class="status-text"
+              >{data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}</span
+            >
+          </div>
+          {#if data.user}
+            <UserMenu id="sidebar-user-menu" user={data.user} menuPlacement="sidebar-footer" />
+          {/if}
         </div>
-        {#if data.user}
-          <UserMenu id="sidebar-user-menu" user={data.user} menuPlacement="sidebar-footer" />
-        {/if}
-      </div>
-    {/snippet}
-  </Sidebar>
+      {/snippet}
+    </Sidebar>
+  </div>
 
   <main id="main-content">
     {@render children()}
@@ -170,8 +178,25 @@
 </div>
 
 <style>
-  .app-layout :global(.app-sidebar) {
+  .desktop-sidebar-shell {
+    display: flex;
+    flex-direction: column;
     inline-size: 13.5rem;
+    flex-shrink: 0;
+    min-block-size: 0;
+    background: var(--cinder-surface);
+    border-inline-end: 1px solid var(--cinder-border);
+  }
+
+  .desktop-sidebar-shell[data-collapsed='true'] {
+    inline-size: 4rem;
+  }
+
+  .app-layout :global(.app-sidebar) {
+    inline-size: 100%;
+    flex: 1 1 0;
+    min-block-size: 0;
+    border-inline-end: 0;
   }
 
   /* ============================================================
@@ -230,6 +255,14 @@
     color: var(--cinder-text);
   }
 
+  .desktop-brand-link {
+    padding-block: var(--cinder-space-4);
+    padding-inline: var(--cinder-space-4);
+    border-block-end: 1px solid var(--cinder-border);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+
   .footer-content {
     display: flex;
     align-items: center;
@@ -264,10 +297,6 @@
     font-weight: var(--font-semibold);
     color: oklch(92% 0.02 245);
   }
-
-  /* ============================================================
-   * Sidebar brand region
-   * ============================================================ */
 
   .brand-link:hover {
     opacity: 0.8;
