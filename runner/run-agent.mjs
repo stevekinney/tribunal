@@ -17,6 +17,7 @@ import {
 } from '@tribunal/agents';
 import { redactRuntimeValue } from '@tribunal/review-core/redaction';
 
+/* v8 ignore next 3 -- CLI process entrypoint; unit coverage gates the importable runner behavior. */
 if (isMainModule()) {
   await main();
 }
@@ -719,7 +720,7 @@ export function isAgentSlug(value) {
   return typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value);
 }
 
-function elapsedMilliseconds(startedAt, performanceNow = () => performance.now()) {
+function elapsedMilliseconds(startedAt, performanceNow) {
   return Math.max(0, Math.round(performanceNow() - startedAt));
 }
 

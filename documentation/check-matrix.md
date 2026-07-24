@@ -14,6 +14,7 @@ Every automated check that runs across git hooks and CI, with its authoritative 
 | Unit tests (server + client) | `HOOKS_STRICT=1` only            | —                     | `bunx turbo run test` (packages) + `applications/web test:unit:server`/`test:unit:client` | Changed / Full            | Always (browser gated on relevant changes)  |
 | E2E tests                    | —                                | —                     | `bun run --cwd applications/web test:e2e`                                                 | `applications/web`        | Browser-testable paths changed              |
 | Build verification           | —                                | `HOOKS_STRICT=1` only | `bunx turbo run build`                                                                    | Full                      | Always (turbo `--affected` on PRs)          |
+| Coverage gates               | —                                | —                     | `bun run test:coverage`                                                                   | Executable workspaces     | Always                                      |
 | Migration consistency        | Schema files staged              | —                     | `bun run db:check` + apply loop + structure verify + drift check                          | `packages/database/`      | Always (push check gated on schema changes) |
 | Container image smoke        | —                                | —                     | Docker build/boot for web, engine, proxy, reviewer                                        | Deployment images         | Always                                      |
 | Production deploy            | —                                | —                     | `.github/workflows/deploy-production.yml` after `CI` succeeds on `main`                   | Fly production apps       | `main` only                                 |
@@ -56,6 +57,12 @@ Change detection uses Turborepo's `--affected` flag (dependency-graph-aware) for
 The `migration` job applies every numbered SQL file in `packages/database/drizzle/` against a Postgres service container, verifies the resulting schema structure (table count and applied-file-count vs. the journal), and replays historical rename/missing-table scenarios to guard against regressions in migration ordering. It finishes with a drift check (`bun run --cwd packages/database check:migrations`) that fails if the committed migrations diverge from the schema definitions.
 
 The `container-images` job builds the web, engine, proxy, and reviewer images. The reviewer image runs `runner/verify-image.mjs`, which checks system binaries and imports the runtime packages used by `runner/run-agent.mjs` (`@anthropic-ai/claude-agent-sdk` and `@tribunal/agents`) before an agent run can fail later from a missing package.
+
+The `coverage` job runs `bun run test:coverage`, which now includes the runner
+coverage gate (`bun run --cwd runner test:coverage`) and the scripts helper
+coverage gate (`bun run --cwd scripts test:coverage`). Top-level operational
+scripts remain classified in `scripts/OWNERSHIP.md` rather than silently counted
+as covered.
 
 The `Deploy Production` workflow is separate from CI. It is triggered by a
 successful `CI` workflow run on `main`, publishes a fresh Tensorlake reviewer
