@@ -214,6 +214,7 @@
   onDestroy(() => clearTimeout(labelsDebounceHandle));
 
   function handlePageChange(nextPage: number): void {
+    if (nextPage === data.filters.page) return;
     updateFilters({ issue_page: String(nextPage) }, { resetPage: false });
   }
 </script>

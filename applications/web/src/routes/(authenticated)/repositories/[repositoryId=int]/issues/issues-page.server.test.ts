@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const {
   mockGetRepositoryById,
@@ -42,6 +45,9 @@ vi.mock('$lib/server/repositories', () => ({
 }));
 
 import { load } from './+page.server';
+
+const directory = dirname(fileURLToPath(import.meta.url));
+const pageSource = readFileSync(resolve(directory, './+page.svelte'), 'utf-8');
 
 const defaultFilters = {
   state: 'open' as const,
@@ -256,5 +262,18 @@ describe('repository issues page load', () => {
     await runLoad();
 
     expect(mockListIssues).toHaveBeenCalledWith({}, octokit, 'acme', 'widgets', defaultFilters, 1);
+  });
+});
+
+describe('repository issues page interactions', () => {
+  it('guards same-page pagination updates before navigating', () => {
+    const handlerStart = pageSource.indexOf('function handlePageChange(nextPage: number): void');
+    const handlerEnd = pageSource.indexOf('</script>', handlerStart);
+    const handlerSource = pageSource.slice(handlerStart, handlerEnd);
+
+    expect(handlerSource).toContain('if (nextPage === data.filters.page) return;');
+    expect(handlerSource.indexOf('if (nextPage === data.filters.page) return;')).toBeLessThan(
+      handlerSource.indexOf('updateFilters({ issue_page: String(nextPage) }'),
+    );
   });
 });
