@@ -129,9 +129,10 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
     expect(detailText).toContain('Delivery ID');
     expect(detailText).toContain('delivery-1');
     await expect
-      .element(page.getByText("This event's stored payload was not valid JSON.", { exact: false }))
+      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
       .toBeInTheDocument();
-    await expect.element(page.getByText('not valid json {{{')).toBeInTheDocument();
+    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
+    await expect.element(page.getByText('not valid json {{{', { exact: true })).toBeInTheDocument();
   });
 
   it('collapses an expanded row back down when Hide details is clicked', async () => {
@@ -152,7 +153,7 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
       .element(page.getByRole('button', { name: /Show details/ }).first())
       .toBeInTheDocument();
     await expect
-      .element(page.getByText("This event's stored payload was not valid JSON.", { exact: false }))
+      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
       .not.toBeInTheDocument();
   });
 
