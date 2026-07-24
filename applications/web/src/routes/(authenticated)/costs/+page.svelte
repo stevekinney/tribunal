@@ -6,6 +6,7 @@
   import { Meter } from '@lostgradient/cinder/meter';
   import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
   import { Segment } from '@lostgradient/cinder/segment';
+  import { Sparkbar } from '@lostgradient/cinder/sparkbar';
 
   let { data }: PageProps = $props();
 
@@ -19,6 +20,10 @@
 
   function isDimensionKey(value: string): value is DimensionKey {
     return dimensions.some((d) => d.key === value);
+  }
+
+  function formatUsd(amountUsd: number) {
+    return `$${amountUsd.toFixed(2)}`;
   }
 
   let activeDimension = $state<DimensionKey>('byAgent');
@@ -145,13 +150,17 @@
     {:else}
       <div class="breakdown-rows">
         {#each activeRows as row (row.label)}
-          <div class="breakdown-row">
-            <span class="breakdown-label" title={row.label}>{row.label}</span>
-            <div class="bar-track" aria-hidden="true">
-              <div class="bar-fill" style:width="{(row.amountUsd / maxRowAmount) * 100}%"></div>
-            </div>
-            <span class="breakdown-amount">${row.amountUsd.toFixed(2)}</span>
-          </div>
+          {@const formattedAmount = formatUsd(row.amountUsd)}
+          <Sparkbar
+            value={row.amountUsd}
+            max={maxRowAmount}
+            label={row.label}
+            trailing={formattedAmount}
+            size="md"
+            title={row.label}
+            ariaLabel={`${row.label}, ${formattedAmount}`}
+            ariaValueText={formattedAmount}
+          />
         {/each}
       </div>
     {/if}
@@ -272,48 +281,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-  }
-
-  .breakdown-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .breakdown-label {
-    width: 160px;
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .bar-track {
-    flex: 1;
-    height: 14px;
-    border-radius: var(--radius-sm);
-    background: var(--cinder-surface-inset);
-    overflow: hidden;
-  }
-
-  .bar-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: var(--radius-sm);
-    transition: width 0.2s ease;
-  }
-
-  .breakdown-amount {
-    width: 72px;
-    text-align: right;
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-    color: var(--text);
-    flex-shrink: 0;
   }
 
   .empty-note {

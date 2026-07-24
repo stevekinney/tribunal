@@ -110,6 +110,50 @@ describe('/costs page', () => {
     await expect.element(page.getByText('security', { exact: true })).not.toBeInTheDocument();
   });
 
+  it('exposes accessible breakdown meters that update when the dimension changes', async () => {
+    render(CostsPage, {
+      data: {
+        ...data,
+        costs: {
+          ...data.costs,
+          rollups: {
+            ...data.costs.rollups,
+            byAgent: [
+              { label: 'security', amountUsd: 2.5 },
+              { label: 'accessibility', amountUsd: 0 },
+            ],
+            byRepository: [
+              { label: 'lost-gradient/tribunal', amountUsd: 1.75 },
+              { label: 'lost-gradient/cinder', amountUsd: 0.75 },
+            ],
+          },
+        },
+      },
+      params: {},
+      form: null,
+    });
+
+    const agentMeter = page.getByRole('meter', { name: 'security, $2.50' });
+    await expect.element(agentMeter).toHaveAttribute('aria-valuemin', '0');
+    await expect.element(agentMeter).toHaveAttribute('aria-valuemax', '2.5');
+    await expect.element(agentMeter).toHaveAttribute('aria-valuenow', '2.5');
+    await expect.element(agentMeter).toHaveAttribute('aria-valuetext', '$2.50');
+
+    const zeroValueMeter = page.getByRole('meter', { name: 'accessibility, $0.00' });
+    await expect.element(zeroValueMeter).toHaveAttribute('aria-valuenow', '0');
+
+    await page.getByRole('radio', { name: 'Repository' }).click();
+
+    const repositoryMeter = page.getByRole('meter', {
+      name: 'lost-gradient/tribunal, $1.75',
+    });
+    await expect.element(repositoryMeter).toHaveAttribute('aria-valuemax', '1.75');
+    await expect.element(repositoryMeter).toHaveAttribute('aria-valuenow', '1.75');
+    await expect
+      .element(page.getByRole('meter', { name: 'security, $2.50' }))
+      .not.toBeInTheDocument();
+  });
+
   it('shows an empty note when the active dimension has no cost rows', async () => {
     render(CostsPage, {
       data: { ...data, costs: { ...data.costs, rollups: { ...data.costs.rollups, byAgent: [] } } },

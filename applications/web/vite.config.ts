@@ -55,6 +55,7 @@ export default defineConfig({
       // node_modules resolves through a symlink (e.g. git worktrees).
       '@vitest/coverage-istanbul',
       '@lostgradient/cinder/meter',
+      '@lostgradient/cinder/sparkbar',
       'lucide-svelte/icons/pencil',
       'lucide-svelte/icons/plus',
       'lucide-svelte/icons/trash-2',
