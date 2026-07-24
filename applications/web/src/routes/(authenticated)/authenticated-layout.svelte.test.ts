@@ -47,7 +47,10 @@ const openMobileDrawer = async () => {
 };
 
 describe('(authenticated) layout', () => {
-  afterEach(() => cleanup());
+  afterEach(async () => {
+    cleanup();
+    await browserPage.viewport(375, 667);
+  });
 
   it('marks the repositories nav item active on the repositories route', async () => {
     mocks.svelteKitPage.url = new URL('http://localhost/repositories');
@@ -128,6 +131,23 @@ describe('(authenticated) layout', () => {
     render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
 
     await expect.element(browserPage.getByText('Routed content')).toBeVisible();
+  });
+
+  it('renders app-owned shell branding outside the Cinder Sidebar', async () => {
+    await browserPage.viewport(1280, 720);
+
+    render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
+
+    const desktopBrand = document.querySelector('.desktop-sidebar-shell > .desktop-brand-link');
+
+    if (!desktopBrand) {
+      throw new Error('Expected desktop shell brand link.');
+    }
+
+    expect(desktopBrand.getAttribute('href')).toBe('/repositories');
+    expect(desktopBrand.textContent?.trim()).toBe('Tribunal');
+    expect(desktopBrand.closest('.cinder-sidebar')).toBeNull();
+    await expect.element(browserPage.elementLocator(desktopBrand)).toBeVisible();
   });
 
   it('opens the mobile drawer from the Cinder mobile trigger', async () => {
