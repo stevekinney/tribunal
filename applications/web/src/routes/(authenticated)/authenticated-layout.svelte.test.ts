@@ -46,6 +46,12 @@ const openMobileDrawer = async () => {
   await browserPage.getByRole('button', { name: 'Open navigation menu' }).click();
 };
 
+const expectSidebarReviewStatus = (label: string) => {
+  const labels = document.querySelectorAll('.reviews-status .cinder-status-dot__label');
+  expect(labels).toHaveLength(1);
+  expect(labels[0]?.textContent).toBe(label);
+};
+
 describe('(authenticated) layout', () => {
   afterEach(async () => {
     cleanup();
@@ -113,7 +119,7 @@ describe('(authenticated) layout', () => {
     render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
     await openMobileDrawer();
 
-    await expect.element(browserPage.getByText('Reviews active').first()).toBeVisible();
+    expectSidebarReviewStatus('Reviews active');
   });
 
   it('shows reviews paused status when reviews are disabled', async () => {
@@ -124,7 +130,7 @@ describe('(authenticated) layout', () => {
     });
     await openMobileDrawer();
 
-    await expect.element(browserPage.getByText('Reviews paused').first()).toBeVisible();
+    expectSidebarReviewStatus('Reviews paused');
   });
 
   it('renders the routed children inside the main landmark', async () => {
