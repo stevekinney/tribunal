@@ -132,4 +132,21 @@ describe('agent editor', () => {
       .element(page.getByRole('toolbar', { name: 'Formatting toolbar' }))
       .toBeInTheDocument();
   });
+
+  it('submits edited prompt markdown through the existing body field', async () => {
+    const { container } = render(AgentEditor, {
+      agent: baseAgent,
+      defaultModel: 'sonnet',
+      modelOptions,
+      effortOptions,
+      form: null,
+      submitLabel: 'Save changes',
+    });
+
+    await page.getByLabelText('System prompt').fill('Review authz changes carefully.');
+
+    expect(container.querySelector<HTMLInputElement>('input[name="body"]')?.value).toBe(
+      'Review authz changes carefully.',
+    );
+  });
 });

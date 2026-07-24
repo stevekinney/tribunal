@@ -5,7 +5,7 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Input } from '@lostgradient/cinder/input';
-  import { MarkdownEditor } from '@lostgradient/cinder/markdown-editor';
+  import { MarkdownEditor } from '@lostgradient/editor/markdown-editor';
   import { Select } from '@lostgradient/cinder/select';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import { Toggle } from '@lostgradient/cinder/toggle';

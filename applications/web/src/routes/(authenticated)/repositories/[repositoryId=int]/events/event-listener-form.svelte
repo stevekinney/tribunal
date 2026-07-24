@@ -5,7 +5,7 @@
   import { Card } from '@lostgradient/cinder/card';
   import { Checkbox } from '@lostgradient/cinder/checkbox';
   import { Input } from '@lostgradient/cinder/input';
-  import { MarkdownEditor } from '@lostgradient/cinder/markdown-editor';
+  import { MarkdownEditor } from '@lostgradient/editor/markdown-editor';
   import { Select } from '@lostgradient/cinder/select';
   import Save from 'lucide-svelte/icons/save';
   import { untrack } from 'svelte';
@@ -60,19 +60,9 @@
     eventTypeOptions.map((value) => ({ value, label: value })),
   );
 
-  // Reset the selected action whenever the user changes the event type --
-  // an action valid for the previous event type (e.g. "synchronize" for
-  // pull_request) is meaningless once the event type changes (e.g. to
-  // issues), and must not silently persist into the submitted listener.
-  // Skipped on the very first run so an existing listener's stored
-  // event type/action pairing is preserved when the form first mounts.
-  let previousEventType = untrack(() => eventType);
-  $effect(() => {
-    if (eventType !== previousEventType) {
-      selectedAction = '';
-      previousEventType = eventType;
-    }
-  });
+  function resetActionForEventTypeChange() {
+    selectedAction = '';
+  }
 
   // Editing an existing listener whose stored action is not among the
   // observed/selectable actions for its event type must still show that
@@ -124,6 +114,7 @@
         label="Event type"
         bind:value={eventType}
         options={eventTypeSelectOptions}
+        onchange={resetActionForEventTypeChange}
         description="Populated from subscribed GitHub App events and events already received for this repository."
       />
       <Select
