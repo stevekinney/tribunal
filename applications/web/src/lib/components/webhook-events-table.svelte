@@ -9,6 +9,7 @@
   import { Alert } from '@lostgradient/cinder/alert';
   import { JsonViewer } from '@lostgradient/cinder/json-viewer';
   import { CodeBlock } from '@lostgradient/cinder/code-block';
+  import { DescriptionList } from '@lostgradient/cinder/description-list';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Webhook from 'lucide-svelte/icons/webhook';
@@ -147,46 +148,35 @@
           </Table.Row>
           {#if expanded}
             <Table.Row>
-              <Table.Cell colspan={columnCount}>
+              <td colspan={columnCount} class="detail-cell">
                 <div id={`webhook-event-detail-${event.id}`} class="detail-panel">
-                  <dl class="detail-summary">
-                    <div>
-                      <dt>Event</dt>
-                      <dd>{event.eventType}{event.action ? ` · ${event.action}` : ''}</dd>
-                    </div>
-                    <div>
-                      <dt>Repository</dt>
-                      <dd>{event.repositoryOwner}/{event.repositoryName}</dd>
-                    </div>
-                    <div>
-                      <dt>Installation ID</dt>
-                      <dd>{event.installationId ?? 'Unknown'}</dd>
-                    </div>
-                    <div>
-                      <dt>Sender</dt>
-                      <dd>{event.senderLogin ?? '—'}</dd>
-                    </div>
-                    <div>
-                      <dt>Related object</dt>
-                      <dd>{relatedObjectLabel(event) ?? '—'}</dd>
-                    </div>
-                    <div>
-                      <dt>GitHub timestamp</dt>
-                      <dd>
-                        {event.githubCreatedAt
+                  <DescriptionList
+                    variant="two-column"
+                    items={[
+                      {
+                        term: 'Event',
+                        definition: `${event.eventType}${event.action ? ` · ${event.action}` : ''}`,
+                      },
+                      {
+                        term: 'Repository',
+                        definition: `${event.repositoryOwner}/${event.repositoryName}`,
+                      },
+                      {
+                        term: 'Installation ID',
+                        definition: String(event.installationId ?? 'Unknown'),
+                      },
+                      { term: 'Sender', definition: event.senderLogin ?? '—' },
+                      { term: 'Related object', definition: relatedObjectLabel(event) ?? '—' },
+                      {
+                        term: 'GitHub timestamp',
+                        definition: event.githubCreatedAt
                           ? formatReceivedAt(event.githubCreatedAt)
-                          : 'Unknown'}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Received</dt>
-                      <dd>{formatReceivedAt(event.receivedAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Delivery ID</dt>
-                      <dd>{event.deliveryId ?? 'Unknown'}</dd>
-                    </div>
-                  </dl>
+                          : 'Unknown',
+                      },
+                      { term: 'Received', definition: formatReceivedAt(event.receivedAt) },
+                      { term: 'Delivery ID', definition: event.deliveryId ?? 'Unknown' },
+                    ]}
+                  />
 
                   <div class="listener-progress-detail">
                     <h3>Event listener progress</h3>
@@ -229,7 +219,7 @@
                     <JsonViewer value={event.payload} initialDepth={2} />
                   {/if}
                 </div>
-              </Table.Cell>
+              </td>
             </Table.Row>
           {/if}
         {/each}
@@ -293,20 +283,7 @@
     padding: var(--space-3) 0;
   }
 
-  .detail-summary {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
-    gap: var(--space-3);
-    margin: 0;
-  }
-
-  .detail-summary dt {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .detail-summary dd {
-    margin: 0;
-    font-weight: var(--font-medium);
+  .detail-cell {
+    padding: var(--space-3) var(--space-4);
   }
 </style>

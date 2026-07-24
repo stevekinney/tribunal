@@ -108,6 +108,26 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
 
     await page.getByRole('button', { name: /Show details/ }).click();
 
+    await expect.poll(() => document.getElementById('webhook-event-detail-1')).not.toBeNull();
+    const detail = document.getElementById('webhook-event-detail-1');
+    const metadataList = detail?.querySelector('.cinder-description-list');
+    expect(metadataList).not.toBeNull();
+    const detailText = detail?.textContent ?? '';
+    expect(detailText).toContain('Event');
+    expect(detailText).toContain('push');
+    expect(detailText).toContain('Repository');
+    expect(detailText).toContain('acme/widgets');
+    expect(detailText).toContain('Installation ID');
+    expect(detailText).toContain('99');
+    expect(detailText).toContain('Sender');
+    expect(detailText).toContain('octocat');
+    expect(detailText).toContain('Related object');
+    expect(detailText).toContain('refs/heads/main · abc1234');
+    expect(detailText).toContain('GitHub timestamp');
+    expect(detailText).toContain('Unknown');
+    expect(detailText).toContain('Received');
+    expect(detailText).toContain('Delivery ID');
+    expect(detailText).toContain('delivery-1');
     await expect
       .element(page.getByText("This event's stored payload was not valid JSON.", { exact: false }))
       .toBeInTheDocument();
