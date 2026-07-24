@@ -213,13 +213,9 @@
 
   onDestroy(() => clearTimeout(labelsDebounceHandle));
 
-  let currentPage = $derived(data.filters.page);
-
-  $effect(() => {
-    if (currentPage !== data.filters.page) {
-      updateFilters({ issue_page: String(currentPage) }, { resetPage: false });
-    }
-  });
+  function handlePageChange(nextPage: number): void {
+    updateFilters({ issue_page: String(nextPage) }, { resetPage: false });
+  }
 </script>
 
 {#snippet assigneeControl({
@@ -281,7 +277,11 @@
     </Card>
   {:else}
     <Card padding="none">
-      <Table density="comfortable">
+      <Table
+        scrollable
+        scrollContainerProps={{ 'aria-label': 'Repository issues' }}
+        density="comfortable"
+      >
         <Table.Header>
           <Table.Row>
             <Table.HeaderCell>Issue</Table.HeaderCell>
@@ -354,7 +354,7 @@
       render zero issues while a later page still has real issues (hasNextPage).
     -->
     <Pagination
-      bind:currentPage
+      bind:currentPage={() => data.filters.page, handlePageChange}
       hasNextPage={data.hasNextPage}
       hasPreviousPage={data.filters.page > 1}
     />
