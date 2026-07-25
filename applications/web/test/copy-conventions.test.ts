@@ -64,21 +64,171 @@ function stripNonProse(source: string): string {
 }
 
 /**
+ * Returns the index just past the closing delimiter of a string or template
+ * literal that starts at `source[start]` (a `"`, `'`, or `` ` ``).
+ *
+ * A plain quote just scans for the next unescaped matching quote. A
+ * backtick is scanned char-by-char instead of with a single regex: a
+ * `${...}` interpolation can itself contain nested template literals
+ * (`` `${a ? `PR #${n}` : ''}` ``), and a regex that stops at the first
+ * unescaped backtick would treat that nested literal's opening backtick as
+ * the outer literal's close. `findInterpolationEnd` (below) walks past each
+ * interpolation as a balanced unit so this only ever sees the true closing
+ * backtick.
+ */
+function findLiteralEnd(source: string, start: number): number {
+  const quote = source[start];
+  let index = start + 1;
+
+  while (index < source.length) {
+    const char = source[index];
+
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+
+    if (char === quote) {
+      return index + 1;
+    }
+
+    if (quote === '`' && char === '$' && source[index + 1] === '{') {
+      index = findInterpolationEnd(source, index + 2);
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return index;
+}
+
+/**
+ * Returns the index just past the `}` that closes a `${...}` interpolation
+ * whose content starts at `source[start]` (right after its `${`). Tracks
+ * brace depth so a nested object literal (`${ { a: 1 } }`) doesn't close it
+ * early, and defers to `findLiteralEnd` for any nested quote/backtick so
+ * that literal's own braces and quotes are skipped rather than counted.
+ */
+function findInterpolationEnd(source: string, start: number): number {
+  let depth = 0;
+  let index = start;
+
+  while (index < source.length) {
+    const char = source[index];
+
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      index = findLiteralEnd(source, index);
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      if (depth === 0) return index + 1;
+      depth -= 1;
+    }
+
+    index += 1;
+  }
+
+  return index;
+}
+
+/** Finds every top-level (unnested) string/template literal in `source`. */
+function findTopLevelLiterals(source: string): string[] {
+  const literals: string[] = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const char = source[index];
+
+    if (char === '"' || char === "'" || char === '`') {
+      const end = findLiteralEnd(source, index);
+      literals.push(source.slice(index, end));
+      index = end;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return literals;
+}
+
+/**
+ * Splits a template literal's raw text (including its backticks) into its
+ * non-interpolated text (`stripped`) and the raw expression text of each
+ * `${...}` interpolation, so callers can recurse into the interpolations
+ * separately instead of discarding them.
+ */
+function splitTemplateLiteral(literal: string): { stripped: string; interpolations: string[] } {
+  const interpolations: string[] = [];
+  let stripped = '';
+  let index = 0;
+
+  while (index < literal.length) {
+    const char = literal[index];
+
+    if (char === '\\') {
+      stripped += literal.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
+
+    if (char === '$' && literal[index + 1] === '{') {
+      const contentStart = index + 2;
+      const contentEnd = findInterpolationEnd(literal, contentStart) - 1;
+      interpolations.push(literal.slice(contentStart, contentEnd));
+      index = contentEnd + 1;
+      continue;
+    }
+
+    stripped += char;
+    index += 1;
+  }
+
+  return { stripped, interpolations };
+}
+
+/**
+ * Recursively finds every string/template literal in `source`, including
+ * ones nested inside a template literal's `${...}` interpolations —
+ * arbitrarily deep, since an interpolation can itself contain another
+ * template literal with its own interpolations. Each template literal is
+ * returned with its interpolations blanked (bare identifiers and member
+ * access inside them, like loop variables or `run.prNumber`, are never
+ * authored prose), while each interpolation's own literals are returned
+ * separately, un-blanked, so authored prose hiding inside them — a plural
+ * ternary like `` `${count} ${count === 1 ? 'repository' : 'repositories'}` ``,
+ * or a nested template like `` `${cond ? `PR #${n}` : ''}` `` — is still
+ * checked.
+ */
+function collectLiterals(source: string): string[] {
+  return findTopLevelLiterals(source).flatMap((literal) => {
+    if (literal[0] !== '`') return [literal];
+
+    const { stripped, interpolations } = splitTemplateLiteral(literal);
+    return [stripped, ...interpolations.flatMap(collectLiterals)];
+  });
+}
+
+/**
  * Returns every string/template literal in the file (script or template
  * attribute) plus the plain text nodes of the markup. Together these cover
  * both authored prose sitting directly in the template and copy assembled in
  * `<script>` (derived subtitles, formatted labels, and the like) — the class
  * of violation that a template-only scan would miss entirely.
  *
- * Template-literal interpolations (`${...}`) and Svelte mustache expressions
- * (`{...}`) are blanked from the outer literal/text before matching: they
- * hold identifiers and expressions (loop variables like `repo`, member access
- * like `run.prNumber`), never authored prose, so leaving them in would flag
- * variable names instead of copy. But an interpolation can itself embed
- * authored string literals — a plural ternary like
- * `` `${count} ${count === 1 ? 'repository' : 'repositories'}` `` — so each
- * interpolation's contents are separately re-scanned for nested string
- * literals instead of being discarded wholesale.
+ * Svelte mustache expressions (`{...}`) are blanked from the text-node pass:
+ * they hold identifiers and expressions (loop variables like `repo`, member
+ * access like `run.prNumber`), never authored prose, so leaving them in
+ * would flag variable names instead of copy.
  *
  * The plain-text-node pass additionally drops entire `<script>` blocks
  * (tags and content, not just tags): once tags are stripped, raw script
@@ -88,16 +238,7 @@ function stripNonProse(source: string): string {
  * above, which is what actually needs to reach them.
  */
 function extractProseCandidates(source: string): string[] {
-  const literalPattern = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
-  const interpolationPattern = /\$\{[^}]*\}/g;
-
-  const literals = [...source.matchAll(literalPattern)].flatMap((match) => {
-    const literal = match[0];
-    const nestedLiterals = [...literal.matchAll(interpolationPattern)].flatMap((interpolation) =>
-      [...interpolation[0].matchAll(literalPattern)].map((nested) => nested[0]),
-    );
-    return [literal.replace(interpolationPattern, ''), ...nestedLiterals];
-  });
+  const literals = collectLiterals(source);
   const templateOnly = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
   const textNodes = templateOnly.replace(/<[^>]+>/g, '\n').replace(/\{[^{}]*\}/g, '');
   return [...literals, textNodes];
@@ -163,5 +304,15 @@ describe('user-facing copy avoids banned abbreviations: regression cases', () =>
 
   it('still allows the lowercase-only engine identifier exemption for pr', () => {
     expect(findViolations('<span>review-pr:{repositoryId}</span>')).toEqual([]);
+  });
+
+  it('flags a banned abbreviation hidden inside a nested template literal', () => {
+    const source = "<span>{`${condition ? `PR #${number}` : ''}`}</span>";
+    expect(findViolations(source).length).toBeGreaterThan(0);
+  });
+
+  it('still allows the same nested-template shape when it uses full words', () => {
+    const source = "<span>{`${condition ? `Pull request #${number}` : ''}`}</span>";
+    expect(findViolations(source)).toEqual([]);
   });
 });

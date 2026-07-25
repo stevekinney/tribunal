@@ -28,6 +28,25 @@ const EMPTY_LENGTH_CHECKS = [
 
 const EMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})`;
 
+/**
+ * The mirror image of `EMPTY_LENGTH_CHECKS`: AST shapes that mean "this
+ * collection is non-empty" (`x.length` truthy, `x.length > 0`, `x.length >=
+ * 1`, plus optional-chained variants). A `{#if}` guarded this way renders its
+ * populated list in the `then` branch and its empty state in `{:else}` — the
+ * inverse layout from `EMPTY_LENGTH_SELECTOR`, so the `<p>` guard below
+ * targets the `else` branch instead of excluding it.
+ */
+const NONEMPTY_LENGTH_CHECKS = [
+  "[expression.type='MemberExpression'][expression.property.name='length']",
+  "[expression.type='ChainExpression'][expression.expression.type='MemberExpression'][expression.expression.property.name='length']",
+  "[expression.type='BinaryExpression'][expression.operator='>'][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0]",
+  "[expression.type='BinaryExpression'][expression.operator='>'][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=0]",
+  "[expression.type='BinaryExpression'][expression.operator='>='][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=1]",
+  "[expression.type='BinaryExpression'][expression.operator='>='][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=1]",
+];
+
+const NONEMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${NONEMPTY_LENGTH_CHECKS.join(', ')})`;
+
 export default defineConfig(
   {
     ignores: [
@@ -100,6 +119,11 @@ export default defineConfig(
           selector: `${EMPTY_LENGTH_SELECTOR} > SvelteElement[kind='html'][name.name='p'], ${EMPTY_LENGTH_SELECTOR} > :not(SvelteElseBlock) SvelteElement[kind='html'][name.name='p']`,
           message:
             'Render <EmptyState> from @lostgradient/cinder/empty-state for a `.length` empty check instead of a bare <p>. A hand-rolled paragraph drops the accessible group labelling EmptyState provides.',
+        },
+        {
+          selector: `${NONEMPTY_LENGTH_SELECTOR} > SvelteElseBlock SvelteElement[kind='html'][name.name='p']`,
+          message:
+            'Render <EmptyState> from @lostgradient/cinder/empty-state for the empty branch of a `.length` nonempty guard instead of a bare <p>. A hand-rolled paragraph drops the accessible group labelling EmptyState provides.',
         },
         {
           selector:
