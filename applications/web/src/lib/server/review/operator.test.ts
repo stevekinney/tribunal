@@ -25,6 +25,7 @@ import {
   getAgent,
   getRepositoryOperatorDetails,
   getCostOverview,
+  getDefaultModelOptions,
   getReviewEffortOptions,
   getReviewModelOptions,
   getReviewsEnabled,
@@ -683,6 +684,25 @@ describe('review operator server helpers', () => {
     });
   });
 
+  it('rejects a raw model ID for the per-user default model', async () => {
+    // Historically the only value ever written here — see the migration that
+    // aligned the column default with a real UI option. agentModelSchema
+    // (used for per-agent `model`) would accept this; the narrower per-user
+    // default validator must not.
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+    formData.set('dailyCostCapUsd', '25');
+    formData.set('defaultModel', 'claude-sonnet-4-6');
+    formData.set('reviewsEnabled', 'on');
+
+    const result = await withTestDatabase(() => saveUserReviewSettings(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'Default model is invalid.' },
+    });
+  });
+
   it('rejects inherited default models for user review settings', async () => {
     const { owner } = await seedRepositoryOwnership();
     const formData = new FormData();
@@ -798,6 +818,12 @@ describe('review operator server helpers', () => {
 
   it('exposes the model options, effort options, and effort validator', () => {
     expect(getReviewModelOptions()).toEqual(['inherit', 'sonnet', 'opus', 'haiku', 'fable']);
+    expect(getDefaultModelOptions()).toEqual(['sonnet', 'opus', 'haiku', 'fable']);
+    // Every default-model option must be a real, renderable review model
+    // option — the boundary this whole change exists to guarantee.
+    for (const model of getDefaultModelOptions()) {
+      expect(getReviewModelOptions()).toContain(model);
+    }
     expect(getReviewEffortOptions()).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(validateEffort('medium')).toBe(true);
     expect(validateEffort('not-a-real-effort')).toBe(false);

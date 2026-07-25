@@ -10,7 +10,7 @@ export const userReviewSettings = pgTable(
       .references(() => user.id, { onDelete: 'cascade' }),
     dailyCostCapUsd: numeric('daily_cost_cap_usd').notNull().default('25'),
     reviewsEnabled: boolean('reviews_enabled').notNull().default(true),
-    defaultModel: text('default_model').notNull().default('claude-sonnet-4-6'),
+    defaultModel: text('default_model').notNull().default('sonnet'),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow()

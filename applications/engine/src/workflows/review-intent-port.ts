@@ -242,6 +242,7 @@ async function buildPullRequestReviewInput(
       currentHeadSha: pullRequestState.headSha,
       ignoreGlobs: repositoryReviewSettings.ignoreGlobs,
       checkConclusionMode: repositoryReviewSettings.checkConclusionMode,
+      defaultModel: userReviewSettings.defaultModel,
     })
     .from(reviewIntent)
     .innerJoin(repository, eq(repository.id, reviewIntent.repositoryId))
@@ -344,6 +345,7 @@ async function buildPullRequestReviewInput(
       headSha,
       trigger: toReviewTrigger(intent.kind),
       agents: agents.map(toAgentSpec),
+      defaultModel: target.defaultModel,
       ignoreGlobs: target.ignoreGlobs,
       checkConclusionMode: toCheckConclusionMode(target.checkConclusionMode),
       ...(intent.checkRunId === null ? {} : { checkRunId: intent.checkRunId }),
