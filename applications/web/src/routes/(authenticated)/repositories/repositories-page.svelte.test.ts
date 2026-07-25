@@ -277,6 +277,45 @@ describe('/repositories page', () => {
       .toBeInTheDocument();
   });
 
+  it('renders StatGroup.Stat with its own typography, not unstyled text (cinder #905 regression)', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 2,
+          openPullRequestCountExact: true,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: true,
+          hasUnavailableRepositories: false,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    const label = document.querySelector('.cinder-stat__label');
+    const value = document.querySelector('.cinder-stat__value');
+    expect(label).not.toBeNull();
+    expect(value).not.toBeNull();
+    const labelFontSize = getComputedStyle(label as Element).fontSize;
+    const valueFontSize = getComputedStyle(value as Element).fontSize;
+    const valueFontWeight = getComputedStyle(value as Element).fontWeight;
+
+    // Unstyled (bug) text runs would inherit identical, plain body typography.
+    // A landed stat.css gives the label a small muted size and the value a
+    // large, semibold one — so they must differ.
+    expect(valueFontSize).not.toBe(labelFontSize);
+    expect(Number.parseFloat(valueFontSize)).toBeGreaterThan(Number.parseFloat(labelFontSize));
+    expect(Number.parseInt(valueFontWeight, 10)).toBeGreaterThanOrEqual(600);
+  });
+
   it('wraps the repository table in a named, focusable scroll region', async () => {
     render(RepositoriesPage, {
       data: {
