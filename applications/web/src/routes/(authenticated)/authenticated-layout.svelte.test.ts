@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   },
   getNeonAuthClient: vi.fn(),
   startNeonSessionRefresh: vi.fn(),
+  broadcastNeonSessionLogout: vi.fn(),
 }));
 
 vi.mock('$app/state', () => ({
@@ -19,12 +20,15 @@ vi.mock('$app/state', () => ({
 
 // This layout is only ever rendered for a signed-in user (the server load
 // redirects otherwise), so it starts a periodic Neon Auth session refresh on
-// mount. These tests aren't exercising that Neon Auth wiring itself (see
-// neon-client.test.ts) -- mock it out so nav/sidebar assertions don't depend
-// on PUBLIC_NEON_AUTH_URL being configured in this browser test environment.
+// mount, and its footer renders UserMenu (which wires the sign-out form's
+// broadcastNeonSessionLogout call). These tests aren't exercising that Neon
+// Auth wiring itself (see neon-client.test.ts and user-menu.svelte.test.ts)
+// -- mock it out so nav/sidebar assertions don't depend on
+// PUBLIC_NEON_AUTH_URL being configured in this browser test environment.
 vi.mock('$lib/auth/neon-client', () => ({
   getNeonAuthClient: mocks.getNeonAuthClient,
   startNeonSessionRefresh: mocks.startNeonSessionRefresh,
+  broadcastNeonSessionLogout: mocks.broadcastNeonSessionLogout,
 }));
 
 const childrenSnippet = createRawSnippet(() => ({

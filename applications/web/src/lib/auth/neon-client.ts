@@ -12,6 +12,44 @@ const neonSessionBridgeEndpoint = '/api/auth/neon-session';
 // the JWT's own `exp`) never goes stale while the user is active.
 export const neonSessionRefreshIntervalMs = 5 * 60 * 1000;
 
+// A visible-but-untouched tab (foregrounded, but the user has walked away or
+// it's obscured behind another window) still passes the visibility check.
+// Two full refresh cycles with zero recorded activity is long enough that a
+// genuinely active user -- who generates pointer/keyboard/scroll events far
+// more often than every five minutes -- would never trip it, while an
+// abandoned tab stops polling instead of indefinitely keeping
+// `deployment/fly/web.toml`'s scale-to-zero web machine and Neon Postgres
+// warm.
+export const neonSessionIdleThresholdMs = neonSessionRefreshIntervalMs * 2;
+
+// Cross-tab logout signal: `$lib/components/user-menu.svelte`'s sign-out
+// form broadcasts on this channel (via `broadcastNeonSessionLogout`, in its
+// `use:enhance` submit handler) before its POST to `/logout`
+// (`routes/logout/+server.ts`) deletes the bridge cookie. Every tab running
+// `startNeonSessionRefresh` listens and tears itself down immediately.
+// Without this, a JWT minted before sign-out is still cryptographically
+// valid, so a *different* tab's already-scheduled `getSession()`/bridge POST
+// can complete after logout and silently recreate the session cookie --
+// `AbortController` alone only cancels requests within the tab that created
+// it, not another tab's.
+const neonSessionLogoutBroadcastChannelName = 'tribunal-neon-auth-logout';
+
+/**
+ * Tells every other browser tab running `startNeonSessionRefresh` to stop
+ * immediately. Call this as part of signing out, before (or alongside)
+ * deleting the bridge cookie, so other tabs have the best chance of
+ * cancelling their own in-flight refresh before it can recreate the cookie.
+ * A no-op where `BroadcastChannel` isn't supported (e.g. older Safari) --
+ * those tabs still fall back to the existing single-tab abort behavior.
+ */
+export function broadcastNeonSessionLogout(): void {
+  if (typeof BroadcastChannel === 'undefined') return;
+
+  const channel = new BroadcastChannel(neonSessionLogoutBroadcastChannelName);
+  channel.postMessage('logout');
+  channel.close();
+}
+
 let lastPostedNeonSessionToken: string | null = null;
 
 export type PostNeonSessionTokenOptions = {
@@ -29,8 +67,8 @@ export type PostNeonSessionTokenOptions = {
   /**
    * Aborts the underlying `fetch` when the signal fires. Used by
    * `startNeonSessionRefresh` so a bridge POST kicked off by a refresh whose
-   * teardown has already run (e.g. the user navigated away to `/logout`)
-   * doesn't complete afterward and recreate the session cookie.
+   * teardown has already run (e.g. the user signed out) doesn't complete
+   * afterward and recreate the session cookie.
    */
   signal?: AbortSignal;
 };
@@ -143,20 +181,43 @@ export function getNeonAuthClient() {
  * request AND the bridge POST it may have already kicked off (the same
  * `AbortSignal` is threaded through `refreshNeonSessionCookie` into
  * `postNeonSessionToken`'s own `fetch`), in addition to stopping the
- * interval and the visibility listener. Aborting only the outer
+ * interval and the visibility/activity listeners. Aborting only the outer
  * `getSession()` call is not enough: better-fetch resolves `getSession()`
  * only after awaiting its success hooks, but this module's own bridge POST is
  * fired-and-forgotten from inside that hook, so by the time `getSession()`
  * settles the bridge POST is already a separate, unsignaled request in
  * flight. Without threading the same signal into it, a request still in
- * flight when the caller tears down (e.g. navigating from the authenticated
- * shell to `/logout`) can resolve afterward and recreate a valid Tribunal
- * session cookie moments after `/logout` deleted it.
+ * flight when the caller tears down (e.g. the user signing out, which
+ * unmounts the authenticated shell this is running in) can resolve
+ * afterward and recreate a valid Tribunal session cookie moments after
+ * sign-out deleted it.
+ *
+ * Also stops itself the moment any tab calls `broadcastNeonSessionLogout` --
+ * a visibility- and abort-signal-scoped fix only covers this one tab, and a
+ * still-valid JWT minted before sign-out lets a *different* tab's refresh
+ * outlive `/logout` and recreate the cookie there instead.
+ *
+ * Scheduled refreshes also stop once the tab has recorded no
+ * pointer/keyboard/scroll activity for `neonSessionIdleThresholdMs`, even
+ * while `visibilityState` stays `"visible"` (a foregrounded-but-abandoned
+ * tab, or one merely obscured behind another window, still reports
+ * `"visible"`). Any recorded activity, or the tab regaining visibility,
+ * counts as activity and unblocks the next refresh immediately.
  */
 export function startNeonSessionRefresh(
   authClient: Pick<ReturnType<typeof getNeonAuthClient>, 'getSession'>,
 ): () => void {
   const abortController = new AbortController();
+  let lastActivityAt = Date.now();
+  let stopped = false;
+
+  function recordActivity(): void {
+    lastActivityAt = Date.now();
+  }
+
+  function isIdle(): boolean {
+    return Date.now() - lastActivityAt >= neonSessionIdleThresholdMs;
+  }
 
   function refresh(): void {
     void authClient
@@ -175,28 +236,63 @@ export function startNeonSessionRefresh(
       });
   }
 
-  function refreshIfVisible(): void {
+  function refreshIfActive(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (isIdle()) return;
     refresh();
   }
 
   function handleVisibilityChange(): void {
     if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+    // Switching back to this tab is itself a sign of activity -- don't skip
+    // the resulting refresh just because the tab was idle while backgrounded.
+    recordActivity();
     refresh();
   }
 
+  const activityEventNames = ['pointerdown', 'keydown', 'scroll'] as const;
+
   refresh();
-  const intervalId = setInterval(refreshIfVisible, neonSessionRefreshIntervalMs);
+  const intervalId = setInterval(refreshIfActive, neonSessionRefreshIntervalMs);
 
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    for (const eventName of activityEventNames) {
+      // `capture: true` matters specifically for `scroll`: unlike
+      // `pointerdown`/`keydown`, `scroll` events fired on an inner
+      // `overflow`-scrolling element (e.g. `#main-content` in
+      // `(authenticated)/+layout.svelte`) do not bubble, so a
+      // bubble-phase-only listener on `document` would never see them and a
+      // user scrolling a long diff or log for the entire idle threshold
+      // would be wrongly marked idle. A capture-phase listener on `document`
+      // sees every scroll in the capture pass regardless of bubbling.
+      document.addEventListener(eventName, recordActivity, { capture: true, passive: true });
+    }
   }
 
-  return () => {
+  const logoutChannel =
+    typeof BroadcastChannel !== 'undefined'
+      ? new BroadcastChannel(neonSessionLogoutBroadcastChannelName)
+      : undefined;
+
+  function stop(): void {
+    if (stopped) return;
+    stopped = true;
+
     clearInterval(intervalId);
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      for (const eventName of activityEventNames) {
+        document.removeEventListener(eventName, recordActivity, { capture: true });
+      }
     }
-  };
+    logoutChannel?.close();
+  }
+
+  if (logoutChannel) {
+    logoutChannel.onmessage = () => stop();
+  }
+
+  return stop;
 }

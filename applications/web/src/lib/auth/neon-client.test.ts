@@ -5,6 +5,7 @@ const mockPublicEnv = vi.hoisted(() => ({ PUBLIC_NEON_AUTH_URL: undefined as str
 vi.mock('$env/dynamic/public', () => ({ env: mockPublicEnv }));
 
 import {
+  broadcastNeonSessionLogout,
   getNeonAuthClient,
   neonSessionRefreshIntervalMs,
   postNeonSessionToken,
@@ -192,18 +193,20 @@ describe('startNeonSessionRefresh', () => {
     // own `exp`, set once at mint time -- not when this interval starts. A
     // page reload can mount this well into that window, so waiting a full
     // interval before the first refresh could let the cookie expire first.
+    // Only one scheduled tick is exercised here (not two): two full
+    // intervals with zero recorded activity crosses the idle threshold
+    // (see the "idle threshold" tests below) and this test isn't about
+    // that behavior -- it's about the leading call plus the interval
+    // cadence, and stop() actually stopping it.
     const stop = startNeonSessionRefresh({ getSession });
     expect(getSession).toHaveBeenCalledTimes(1);
 
     vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
     expect(getSession).toHaveBeenCalledTimes(2);
 
-    vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
-    expect(getSession).toHaveBeenCalledTimes(3);
-
     stop();
-    vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 2);
-    expect(getSession).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 3);
+    expect(getSession).toHaveBeenCalledTimes(2);
   });
 
   it('passes an AbortSignal to every getSession call and aborts it when stopped', () => {
@@ -231,6 +234,15 @@ describe('startNeonSessionRefresh', () => {
     const getSession = vi.fn().mockRejectedValue(new Error('AbortError'));
 
     expect(() => startNeonSessionRefresh({ getSession })).not.toThrow();
+  });
+
+  it('is idempotent when the returned stop function is called more than once', () => {
+    const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+    const stop = startNeonSessionRefresh({ getSession });
+
+    stop();
+
+    expect(() => stop()).not.toThrow();
   });
 
   describe('bridging a refreshed session to the session bridge endpoint', () => {
@@ -325,6 +337,10 @@ describe('startNeonSessionRefresh', () => {
       for (const listener of listeners.get('visibilitychange') ?? []) listener();
     }
 
+    function fireEvent(eventName: string): void {
+      for (const listener of listeners.get(eventName) ?? []) listener();
+    }
+
     beforeEach(() => {
       visibilityState = 'visible';
       listeners = new Map();
@@ -356,6 +372,11 @@ describe('startNeonSessionRefresh', () => {
       vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
       expect(getSession).toHaveBeenCalledTimes(1);
 
+      // Recorded activity keeps this test isolated from the separately
+      // covered idle-threshold behavior, so it purely exercises the
+      // hidden/visible gate on the scheduled tick itself.
+      fireEvent('pointerdown');
+
       visibilityState = 'visible';
       vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
       expect(getSession).toHaveBeenCalledTimes(2);
@@ -385,5 +406,165 @@ describe('startNeonSessionRefresh', () => {
 
       expect(getSession).toHaveBeenCalledTimes(1); // only the leading call
     });
+  });
+
+  describe('idle threshold (visible but inactive tab)', () => {
+    let listeners: Map<string, Set<() => void>>;
+    let addEventListenerCalls: Array<[string, AddEventListenerOptions | undefined]>;
+
+    function fireEvent(eventName: string): void {
+      for (const listener of listeners.get(eventName) ?? []) listener();
+    }
+
+    beforeEach(() => {
+      listeners = new Map();
+      addEventListenerCalls = [];
+      vi.stubGlobal('document', {
+        visibilityState: 'visible',
+        addEventListener: (
+          eventName: string,
+          listener: () => void,
+          options?: AddEventListenerOptions,
+        ) => {
+          addEventListenerCalls.push([eventName, options]);
+          const existing = listeners.get(eventName) ?? new Set();
+          existing.add(listener);
+          listeners.set(eventName, existing);
+        },
+        removeEventListener: (eventName: string, listener: () => void) => {
+          listeners.get(eventName)?.delete(listener);
+        },
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('registers scroll activity tracking on the capture phase, since inner scrollable elements do not bubble scroll events', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+
+      const scrollRegistration = addEventListenerCalls.find(
+        ([eventName]) => eventName === 'scroll',
+      );
+      expect(scrollRegistration?.[1]).toMatchObject({ capture: true, passive: true });
+    });
+
+    it('skips the scheduled refresh once the idle threshold elapses without activity, even while visible', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1); // leading call
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      // Total elapsed now equals neonSessionIdleThresholdMs with zero
+      // recorded activity in that window -- idle even though visible.
+      expect(getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('resets the idle clock on recorded pointer/keyboard/scroll activity', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2);
+
+      fireEvent('keydown');
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      // Without the keydown, this tick would have been skipped as idle
+      // (total elapsed since start == neonSessionIdleThresholdMs). The
+      // recorded activity resets the clock, so the refresh still fires.
+      expect(getSession).toHaveBeenCalledTimes(3);
+    });
+
+    it('treats becoming visible again as activity, unblocking the next scheduled refresh', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2); // idle, skipped
+
+      fireEvent('visibilitychange');
+      expect(getSession).toHaveBeenCalledTimes(3); // visibilitychange refreshes unconditionally
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      // The visibilitychange refresh reset the idle clock, so the very next
+      // scheduled tick still fires instead of being skipped again.
+      expect(getSession).toHaveBeenCalledTimes(4);
+    });
+
+    it('removes activity listeners once stopped', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      const stop = startNeonSessionRefresh({ getSession });
+      stop();
+
+      fireEvent('keydown');
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 5);
+
+      expect(getSession).toHaveBeenCalledTimes(1); // only the leading call
+    });
+  });
+});
+
+describe('broadcastNeonSessionLogout / cross-tab logout coordination', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is a no-op when BroadcastChannel is unavailable', () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+
+    expect(() => broadcastNeonSessionLogout()).not.toThrow();
+  });
+
+  it('still starts and stops locally when BroadcastChannel is unavailable', () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+
+    const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+    const stop = startNeonSessionRefresh({ getSession });
+
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(() => stop()).not.toThrow();
+  });
+
+  it('aborts an active refresh in another tab when logout is broadcast', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const getSession = vi
+      .fn()
+      .mockImplementation((options?: { fetchOptions?: { signal?: AbortSignal } }) => {
+        capturedSignal = options?.fetchOptions?.signal;
+        return Promise.resolve({ data: null, error: null });
+      });
+
+    startNeonSessionRefresh({ getSession });
+    expect(capturedSignal?.aborted).toBe(false);
+
+    broadcastNeonSessionLogout();
+
+    // BroadcastChannel delivery is a genuine asynchronous (macrotask-driven)
+    // hop, not a plain microtask -- give it a real tick. Never calling the
+    // returned `stop()` here is the point: an aborted signal is only
+    // possible if the broadcast's own listener tore this down internally.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('does not error when logout is broadcast after the caller already stopped it', async () => {
+    const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+    const stop = startNeonSessionRefresh({ getSession });
+    stop();
+
+    expect(() => broadcastNeonSessionLogout()).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
 });
