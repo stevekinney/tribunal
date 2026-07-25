@@ -12,7 +12,7 @@ describe('authenticated layout sidebar styles', () => {
     const sidebarStartIndex = layout.indexOf('<Sidebar');
     const sidebarEndIndex = layout.indexOf('</Sidebar>') + '</Sidebar>'.length;
     const sidebarInvocation = layout.slice(sidebarStartIndex, sidebarEndIndex);
-    const desktopShellStartIndex = layout.indexOf('<div class="desktop-sidebar-shell"');
+    const desktopShellStartIndex = layout.search(/<div\s+class="desktop-sidebar-shell"/);
     const desktopShellEndIndex = layout.indexOf('<Sidebar', desktopShellStartIndex);
     const desktopShellBrand = layout.slice(desktopShellStartIndex, desktopShellEndIndex);
 
@@ -39,6 +39,7 @@ describe('authenticated layout sidebar styles', () => {
   it('keeps the app-owned desktop brand aligned with expanded and collapsed sidebar widths', () => {
     expect(layout).toContain('class="desktop-sidebar-shell"');
     expect(layout).toContain('data-collapsed={collapsed}');
+    expect(layout).toContain('inert={neonSessionRefresh.isResumingSession}');
     expect(layout).toContain(".desktop-sidebar-shell[data-collapsed='true']");
     expect(layout).toMatch(/\.desktop-sidebar-shell\s*\{[\s\S]*inline-size: 13\.5rem;/);
     expect(layout).toMatch(

@@ -31,6 +31,16 @@ vi.mock('$lib/auth/neon-client', () => ({
   broadcastNeonSessionLogout: mocks.broadcastNeonSessionLogout,
 }));
 
+type SessionRefreshOptions = {
+  onResumeRefreshStatusChange?: (status: 'idle' | 'pending' | 'failed') => void;
+};
+
+function latestSessionRefreshOptions(): SessionRefreshOptions {
+  const call = mocks.startNeonSessionRefresh.mock.calls.at(-1);
+  if (!call) throw new Error('Expected startNeonSessionRefresh to be called.');
+  return call[1] as SessionRefreshOptions;
+}
+
 describe('/onboarding page', () => {
   beforeEach(() => {
     invalidateAll.mockReset();
@@ -61,7 +71,54 @@ describe('/onboarding page', () => {
     render(OnboardingPage, { data, form: null, params: {} });
 
     await expect.poll(() => mocks.startNeonSessionRefresh.mock.calls.length).toBeGreaterThan(0);
-    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(fakeClient);
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(
+      fakeClient,
+      expect.objectContaining({ onResumeRefreshStatusChange: expect.any(Function) }),
+    );
+  });
+
+  it('blocks onboarding interactions while a hidden-tab session resume refresh is pending', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('pending');
+    await expect.element(page.getByRole('status')).toHaveTextContent('Restoring your session...');
+    await expect.element(page.getByTestId('session-resume-overlay')).toBeInTheDocument();
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
+
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('idle');
+    await expect.element(page.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps onboarding interactions blocked when a hidden-tab session resume refresh times out', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('failed');
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent('Session refresh is taking longer than expected.');
+    const reloadLink = page.getByRole('link', { name: 'Reload' });
+    await expect.element(reloadLink).toBeVisible();
+    await expect.element(reloadLink).toHaveAttribute('href', '/onboarding');
+    await expect.element(reloadLink).toHaveAttribute('data-sveltekit-reload', 'true');
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
   });
 
   function onboardingStepItems(): HTMLElement[] {

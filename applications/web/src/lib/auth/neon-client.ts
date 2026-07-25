@@ -11,6 +11,7 @@ const neonSessionBridgeEndpoint = '/api/auth/neon-session';
 // inside that window so the bridged Tribunal cookie (whose `expires` mirrors
 // the JWT's own `exp`) never goes stale while the user is active.
 export const neonSessionRefreshIntervalMs = 5 * 60 * 1000;
+export const neonSessionResumeRefreshPendingMaximumMs = 1500;
 
 // Cross-tab logout signal: `$lib/components/user-menu.svelte`'s sign-out
 // form broadcasts on this channel (via `broadcastNeonSessionLogout`, in its
@@ -125,25 +126,35 @@ export type RefreshNeonSessionCookieOptions = {
  * Posts a refreshed Neon Auth token to the session bridge, but only when it
  * differs from the last token posted -- better-auth mints a fresh JWT on
  * every `/get-session` call, so without this guard a burst of concurrent
- * calls would re-post needlessly. Fire-and-forget: callers (the periodic
- * scheduler below) don't block a UI action on this succeeding, they only log
- * if it fails -- except when the failure is the `signal` above firing, which
- * means the caller already tore this down and isn't waiting for a result.
+ * calls would re-post needlessly. Returns whether the session bridge is known
+ * to be fresh afterward. Routine interval callers ignore that result and try
+ * again later on failure; hidden-tab resume callers use it to keep the UI gate
+ * active unless renewal actually succeeds.
  */
-export function refreshNeonSessionCookie(
+export async function refreshNeonSessionCookie(
   sessionData: unknown,
   options: RefreshNeonSessionCookieOptions = {},
-): void {
+): Promise<boolean> {
   const token = extractRefreshedSessionToken(sessionData);
-  if (!token || token === lastPostedNeonSessionToken) return;
+  if (!token) return false;
+  if (token === lastPostedNeonSessionToken) return true;
 
-  void postNeonSessionToken(token, { refreshOnly: true, signal: options.signal }).catch(
-    (error: unknown) => {
-      if (options.signal?.aborted) return;
-      console.error('Failed to refresh the Tribunal Neon Auth session cookie', error);
-    },
-  );
+  try {
+    await postNeonSessionToken(token, { refreshOnly: true, signal: options.signal });
+    return true;
+  } catch (error) {
+    if (options.signal?.aborted) return false;
+    console.error('Failed to refresh the Tribunal Neon Auth session cookie', error);
+    return false;
+  }
 }
+
+export type StartNeonSessionRefreshOptions = {
+  onResumeRefreshStatusChange?: (status: NeonSessionResumeRefreshStatus) => void;
+  resumeRefreshPendingMaximumMs?: number;
+};
+
+export type NeonSessionResumeRefreshStatus = 'idle' | 'pending' | 'failed';
 
 export function getNeonAuthClient() {
   const authUrl = env.PUBLIC_NEON_AUTH_URL;
@@ -226,38 +237,104 @@ export function getNeonAuthClient() {
  */
 export function startNeonSessionRefresh(
   authClient: Pick<ReturnType<typeof getNeonAuthClient>, 'getSession'>,
+  options: StartNeonSessionRefreshOptions = {},
 ): () => void {
   const abortController = new AbortController();
   let stopped = false;
+  let resumeRefreshPendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let resumeRefreshStatus: NeonSessionResumeRefreshStatus = 'idle';
+  let resumeRefreshGeneration = 0;
 
-  function refresh(): void {
-    void authClient
+  function setResumeRefreshStatus(status: NeonSessionResumeRefreshStatus): void {
+    if (resumeRefreshStatus === status) return;
+    resumeRefreshStatus = status;
+    options.onResumeRefreshStatusChange?.(status);
+  }
+
+  function clearResumeRefreshStatus(generation?: number): void {
+    if (generation !== undefined && generation !== resumeRefreshGeneration) return;
+
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
+    setResumeRefreshStatus('idle');
+  }
+
+  function failResumeRefresh(generation: number): void {
+    if (generation !== resumeRefreshGeneration) return;
+
+    resumeRefreshPendingTimeout = undefined;
+    setResumeRefreshStatus('failed');
+  }
+
+  function failActiveResumeRefresh(): void {
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
+    resumeRefreshGeneration += 1;
+    if (resumeRefreshStatus !== 'idle') setResumeRefreshStatus('failed');
+  }
+
+  function trackResumeRefresh(refreshPromise: Promise<boolean>): void {
+    if (!options.onResumeRefreshStatusChange) return;
+
+    resumeRefreshGeneration += 1;
+    const generation = resumeRefreshGeneration;
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
+    setResumeRefreshStatus('pending');
+
+    resumeRefreshPendingTimeout = setTimeout(
+      () => failResumeRefresh(generation),
+      options.resumeRefreshPendingMaximumMs ?? neonSessionResumeRefreshPendingMaximumMs,
+    );
+
+    void refreshPromise.then((succeeded) => {
+      if (succeeded) {
+        clearResumeRefreshStatus(generation);
+      } else {
+        failResumeRefresh(generation);
+      }
+    });
+  }
+
+  function refresh({ releaseActiveResumeGateOnSuccess = false } = {}): Promise<boolean> {
+    return authClient
       .getSession({ fetchOptions: { signal: abortController.signal } })
       .then((result) => {
         const data =
           typeof result === 'object' && result !== null
             ? (result as { data?: unknown }).data
             : undefined;
-        refreshNeonSessionCookie(data, { signal: abortController.signal });
+        return refreshNeonSessionCookie(data, { signal: abortController.signal });
+      })
+      .then((succeeded) => {
+        if (succeeded && releaseActiveResumeGateOnSuccess) clearResumeRefreshStatus();
+        return succeeded;
       })
       .catch(() => {
         // Ignored: a rejected refresh (including one aborted by tearing this
         // down) isn't actionable here. A live tab simply tries again on its
         // next scheduled or visibility-triggered refresh.
+        return false;
       });
   }
 
   function refreshIfVisible(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    refresh();
+    void refresh({ releaseActiveResumeGateOnSuccess: true });
   }
 
   function handleVisibilityChange(): void {
     if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-    refresh();
+    trackResumeRefresh(refresh());
   }
 
-  refresh();
+  void refresh({ releaseActiveResumeGateOnSuccess: true });
   const intervalId = setInterval(refreshIfVisible, neonSessionRefreshIntervalMs);
 
   if (typeof document !== 'undefined') {
@@ -269,11 +346,17 @@ export function startNeonSessionRefresh(
       ? new BroadcastChannel(neonSessionLogoutBroadcastChannelName)
       : undefined;
 
-  function stop(): void {
+  function stop({ keepResumeGateBlocked = false } = {}): void {
     if (stopped) return;
     stopped = true;
 
     clearInterval(intervalId);
+    if (keepResumeGateBlocked) {
+      failActiveResumeRefresh();
+    } else {
+      resumeRefreshGeneration += 1;
+      clearResumeRefreshStatus();
+    }
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -282,7 +365,7 @@ export function startNeonSessionRefresh(
   }
 
   if (logoutChannel) {
-    logoutChannel.onmessage = () => stop();
+    logoutChannel.onmessage = () => stop({ keepResumeGateBlocked: true });
   }
 
   return stop;

@@ -7,6 +7,7 @@ vi.mock('$env/dynamic/public', () => ({ env: mockPublicEnv }));
 import {
   broadcastNeonSessionLogout,
   getNeonAuthClient,
+  neonSessionResumeRefreshPendingMaximumMs,
   neonSessionRefreshIntervalMs,
   postNeonSessionToken,
   refreshNeonSessionCookie,
@@ -362,6 +363,259 @@ describe('startNeonSessionRefresh', () => {
       vi.unstubAllGlobals();
     });
 
+    it('marks a visible-tab resume refresh as pending until the bridge post settles', async () => {
+      const statusChanges: string[] = [];
+      let resolveBridgePost: ((response: Response) => void) | undefined;
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveBridgePost = resolve;
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-pending' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(statusChanges).toEqual(['pending']);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      resolveBridgePost?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(statusChanges).toEqual(['pending', 'idle']);
+    });
+
+    it('marks a visible-tab resume refresh as failed after the capped wait when the network hangs', async () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Never resolves: offline or captive-portal refresh.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        {
+          onResumeRefreshStatusChange: (status) => statusChanges.push(status),
+          resumeRefreshPendingMaximumMs: 25,
+        },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+
+      expect(statusChanges).toEqual(['pending']);
+
+      vi.advanceTimersByTime(24);
+      expect(statusChanges).toEqual(['pending']);
+
+      vi.advanceTimersByTime(1);
+      expect(statusChanges).toEqual(['pending', 'failed']);
+    });
+
+    it('keeps a visible-tab resume refresh failed when getSession rejects', async () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockRejectedValueOnce(new Error('network down'));
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
+    });
+
+    it('keeps a visible-tab resume refresh failed when the bridge post rejects the token', async () => {
+      const statusChanges: string[] = [];
+      const fetchMock = vi.fn().mockResolvedValueOnce(new Response('expired', { status: 401 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-rejected' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(statusChanges).toEqual(['pending', 'failed']);
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('lets a successful routine refresh release a failed resume gate', async () => {
+      const statusChanges: string[] = [];
+      let resolveRoutineRefresh: ((value: { data: unknown; error: null }) => void) | undefined;
+      const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve: (value: { data: unknown; error: null }) => void) => {
+              resolveRoutineRefresh = resolve;
+            }),
+        )
+        .mockRejectedValueOnce(new Error('resume refresh failed'));
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
+
+      resolveRoutineRefresh?.({
+        data: { session: { token: 'routine-token-after-resume-failure' } },
+        error: null,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(statusChanges).toEqual(['pending', 'failed', 'idle']);
+    });
+
+    it('does not let an older resume refresh clear a newer pending gate', async () => {
+      const statusChanges: string[] = [];
+      const bridgePostResolutions: Array<(response: Response) => void> = [];
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            bridgePostResolutions.push(resolve);
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-old' } },
+          error: null,
+        })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-new' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(statusChanges).toEqual(['pending']);
+
+      bridgePostResolutions[0]?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(statusChanges).toEqual(['pending']);
+
+      bridgePostResolutions[1]?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(statusChanges).toEqual(['pending', 'idle']);
+    });
+
+    it('does not let a timed-out older resume refresh clear a newer failed gate', async () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // First resume hangs until its own timeout.
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Second resume hangs too; the older timeout must not report
+              // failure for the active generation.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        {
+          onResumeRefreshStatusChange: (status) => statusChanges.push(status),
+          resumeRefreshPendingMaximumMs: 25,
+        },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      vi.advanceTimersByTime(20);
+
+      fireVisibilityChange();
+      vi.advanceTimersByTime(5);
+
+      expect(statusChanges).toEqual(['pending']);
+
+      vi.advanceTimersByTime(20);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
+    });
+
+    it('does not mark routine interval refreshes as pending', () => {
+      const statusChanges: string[] = [];
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 2);
+
+      expect(getSession).toHaveBeenCalledTimes(3);
+      expect(statusChanges).toEqual([]);
+    });
+
     it('skips the scheduled interval refresh while the tab is hidden', () => {
       const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
       startNeonSessionRefresh({ getSession });
@@ -413,6 +667,31 @@ describe('startNeonSessionRefresh', () => {
       vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 4);
       expect(getSession).toHaveBeenCalledTimes(5);
     });
+
+    it('uses the default capped wait for visible-tab resume pending state', () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Never resolves: the cap clears the UI gate independently.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+
+      vi.advanceTimersByTime(neonSessionResumeRefreshPendingMaximumMs);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
+    });
   });
 });
 
@@ -458,6 +737,83 @@ describe('broadcastNeonSessionLogout / cross-tab logout coordination', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('keeps a blocked resume gate from reopening when logout is broadcast', async () => {
+    class FakeBroadcastChannel {
+      static channels = new Map<string, Set<FakeBroadcastChannel>>();
+
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+
+      constructor(readonly name: string) {
+        const existing = FakeBroadcastChannel.channels.get(name) ?? new Set();
+        existing.add(this);
+        FakeBroadcastChannel.channels.set(name, existing);
+      }
+
+      postMessage(data: unknown): void {
+        for (const channel of FakeBroadcastChannel.channels.get(this.name) ?? []) {
+          if (channel !== this) channel.onmessage?.({ data });
+        }
+      }
+
+      close(): void {
+        FakeBroadcastChannel.channels.get(this.name)?.delete(this);
+      }
+    }
+
+    let visibilityState: 'visible' | 'hidden' = 'visible';
+    const listeners = new Map<string, Set<() => void>>();
+    const fireVisibilityChange = () => {
+      for (const listener of listeners.get('visibilitychange') ?? []) listener();
+    };
+
+    vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel);
+    vi.stubGlobal('document', {
+      get visibilityState() {
+        return visibilityState;
+      },
+      addEventListener: (event: string, listener: () => void) => {
+        const existing = listeners.get(event) ?? new Set();
+        existing.add(listener);
+        listeners.set(event, existing);
+      },
+      removeEventListener: (event: string, listener: () => void) => {
+        listeners.get(event)?.delete(listener);
+      },
+    });
+
+    let capturedSignal: AbortSignal | undefined;
+    const statusChanges: string[] = [];
+    const getSession = vi
+      .fn()
+      .mockImplementationOnce((options?: { fetchOptions?: { signal?: AbortSignal } }) => {
+        capturedSignal = options?.fetchOptions?.signal;
+        return Promise.resolve({ data: null, error: null });
+      })
+      .mockImplementationOnce((options?: { fetchOptions?: { signal?: AbortSignal } }) => {
+        capturedSignal = options?.fetchOptions?.signal;
+        return new Promise(() => {
+          // Pending resume refresh that must not be reported idle by logout.
+        });
+      });
+
+    startNeonSessionRefresh(
+      { getSession },
+      { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+    );
+
+    visibilityState = 'visible';
+    fireVisibilityChange();
+
+    expect(statusChanges).toEqual(['pending']);
+    expect(capturedSignal?.aborted).toBe(false);
+
+    broadcastNeonSessionLogout();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(statusChanges).toEqual(['pending', 'failed']);
   });
 
   it('does not error when logout is broadcast after the caller already stopped it', async () => {

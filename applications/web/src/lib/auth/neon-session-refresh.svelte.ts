@@ -1,4 +1,13 @@
-import { getNeonAuthClient, startNeonSessionRefresh } from './neon-client';
+import {
+  getNeonAuthClient,
+  type NeonSessionResumeRefreshStatus,
+  startNeonSessionRefresh,
+} from './neon-client';
+
+export type NeonSessionRefreshState = {
+  readonly isResumingSession: boolean;
+  readonly hasResumeRefreshFailed: boolean;
+};
 
 /**
  * Starts (and tears down on unmount) periodic Neon Auth session refresh for
@@ -14,11 +23,17 @@ import { getNeonAuthClient, startNeonSessionRefresh } from './neon-client';
  * Not fatal if Neon Auth isn't configured -- this is a background
  * durability measure, not a page-load precondition.
  */
-export function useNeonSessionRefresh(): void {
+export function useNeonSessionRefresh(): NeonSessionRefreshState {
+  let resumeRefreshStatus = $state<NeonSessionResumeRefreshStatus>('idle');
+
   $effect(() => {
     let stopSessionRefresh: (() => void) | undefined;
     try {
-      stopSessionRefresh = startNeonSessionRefresh(getNeonAuthClient());
+      stopSessionRefresh = startNeonSessionRefresh(getNeonAuthClient(), {
+        onResumeRefreshStatusChange: (status) => {
+          resumeRefreshStatus = status;
+        },
+      });
     } catch (refreshError) {
       console.error('Failed to start Neon Auth session refresh', refreshError);
       return;
@@ -26,4 +41,13 @@ export function useNeonSessionRefresh(): void {
 
     return () => stopSessionRefresh?.();
   });
+
+  return {
+    get isResumingSession() {
+      return resumeRefreshStatus !== 'idle';
+    },
+    get hasResumeRefreshFailed() {
+      return resumeRefreshStatus === 'failed';
+    },
+  };
 }
