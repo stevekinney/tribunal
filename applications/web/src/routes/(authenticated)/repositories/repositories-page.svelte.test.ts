@@ -307,7 +307,7 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: {
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -316,11 +316,21 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
     });
+
+    // The summary strip is behind `{#await data.summary}` (see
+    // `+page.server.ts`) — wait for the StatGroup itself (rendered only in
+    // the `{:then}` branch, via its `label` prop as an accessible group
+    // name) to resolve before asserting on the Stat typography. A text
+    // match on "Repositories" would be satisfied by the page's `<h1>`
+    // immediately, without ever waiting on the resolved summary.
+    await expect
+      .element(page.getByRole('group', { name: 'Dashboard summary' }))
+      .toBeInTheDocument();
 
     const label = document.querySelector('.cinder-stat__label');
     const value = document.querySelector('.cinder-stat__value');

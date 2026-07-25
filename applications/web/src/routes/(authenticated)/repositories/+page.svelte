@@ -289,8 +289,8 @@
   {#await data.dashboardRowsById then dashboardsById}
     {#if repositories.some((repository) => dashboardsById.get(repository.id)?.dataStatus === 'unavailable')}
       <Alert variant="warning">
-        GitHub data for some repositories could not be refreshed this build. Their status shows as
-        Unknown until the next refresh.
+        GitHub data for some or all repositories could not be refreshed this build. Their status
+        shows as Unknown until the next refresh.
       </Alert>
     {/if}
   {/await}
