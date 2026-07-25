@@ -1,14 +1,4 @@
-import { sql } from 'drizzle-orm';
-import {
-  check,
-  index,
-  integer,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  uniqueIndex,
-} from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { actionItemSourceTypeEnum, actionItemStatusEnum } from './enums';
 import { pullRequestState } from './pull-request-state';
 
@@ -82,31 +72,6 @@ export const pullRequestActionItemSource = pgTable(
   ],
 );
 
-/**
- * Directed dependency edges between action items (item A blocks item B).
- * A self-reference is rejected by a check constraint; the reverse index
- * supports "what depends on this item" lookups.
- */
-export const pullRequestActionItemDependency = pgTable(
-  'pull_request_action_item_dependency',
-  {
-    actionItemId: integer('action_item_id')
-      .notNull()
-      .references(() => pullRequestActionItem.id, { onDelete: 'cascade' }),
-    dependsOnActionItemId: integer('depends_on_action_item_id')
-      .notNull()
-      .references(() => pullRequestActionItem.id, { onDelete: 'cascade' }),
-  },
-  (table) => [
-    primaryKey({ columns: [table.actionItemId, table.dependsOnActionItemId] }),
-    check(
-      'pull_request_action_item_dependency_no_self_ref',
-      sql`${table.actionItemId} != ${table.dependsOnActionItemId}`,
-    ),
-    index('pull_request_action_item_dependency_reverse_idx').on(table.dependsOnActionItemId),
-  ],
-);
-
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -115,6 +80,3 @@ export type PullRequestActionItem = typeof pullRequestActionItem.$inferSelect;
 export type NewPullRequestActionItem = typeof pullRequestActionItem.$inferInsert;
 export type PullRequestActionItemSource = typeof pullRequestActionItemSource.$inferSelect;
 export type NewPullRequestActionItemSource = typeof pullRequestActionItemSource.$inferInsert;
-export type PullRequestActionItemDependency = typeof pullRequestActionItemDependency.$inferSelect;
-export type NewPullRequestActionItemDependency =
-  typeof pullRequestActionItemDependency.$inferInsert;

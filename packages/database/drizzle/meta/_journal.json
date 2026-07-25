@@ -358,6 +358,13 @@
       "when": 1784997008583,
       "tag": "0050_remove-user-api-key",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1785001087355,
+      "tag": "0051_remove-action-item-dependencies",
+      "breakpoints": true
     }
   ]
 }

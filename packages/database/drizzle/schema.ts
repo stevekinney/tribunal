@@ -4910,38 +4910,6 @@ export const taskDependency = pgTable(
   ],
 );
 
-export const pullRequestActionItemDependency = pgTable(
-  'pull_request_action_item_dependency',
-  {
-    actionItemId: integer('action_item_id').notNull(),
-    dependsOnActionItemId: integer('depends_on_action_item_id').notNull(),
-  },
-  (table) => [
-    index('pull_request_action_item_dependency_reverse_idx').using(
-      'btree',
-      table.dependsOnActionItemId.asc().nullsLast().op('int4_ops'),
-    ),
-    foreignKey({
-      columns: [table.actionItemId],
-      foreignColumns: [pullRequestActionItem.id],
-      name: 'pull_request_action_item_dependency_action_item_id_pull_request',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.dependsOnActionItemId],
-      foreignColumns: [pullRequestActionItem.id],
-      name: 'pull_request_action_item_dependency_depends_on_action_item_id_p',
-    }).onDelete('cascade'),
-    primaryKey({
-      columns: [table.actionItemId, table.dependsOnActionItemId],
-      name: 'pull_request_action_item_dependency_action_item_id_depends_on_a',
-    }),
-    check(
-      'pull_request_action_item_dependency_no_self_ref',
-      sql`action_item_id <> depends_on_action_item_id`,
-    ),
-  ],
-);
-
 export const projectRepository = pgTable(
   'project_repository',
   {

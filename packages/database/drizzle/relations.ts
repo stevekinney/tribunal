@@ -98,7 +98,6 @@ import {
   goalConnection,
   goalFeature,
   taskDependency,
-  pullRequestActionItemDependency,
   projectRepository,
   linearIssueLabel,
   analysisRunRepository,
@@ -1332,12 +1331,6 @@ export const pullRequestActionItemRelations = relations(pullRequestActionItem, (
     fields: [pullRequestActionItem.pullRequestStateId],
     references: [pullRequestState.id],
   }),
-  pullRequestActionItemDependencies_actionItemId: many(pullRequestActionItemDependency, {
-    relationName: 'pullRequestActionItemDependency_actionItemId_pullRequestActionItem_id',
-  }),
-  pullRequestActionItemDependencies_dependsOnActionItemId: many(pullRequestActionItemDependency, {
-    relationName: 'pullRequestActionItemDependency_dependsOnActionItemId_pullRequestActionItem_id',
-  }),
 }));
 
 export const repositorySandboxSessionRelations = relations(
@@ -1461,23 +1454,6 @@ export const taskDependencyRelations = relations(taskDependency, ({ one }) => ({
     relationName: 'taskDependency_dependsOnTaskId_task_id',
   }),
 }));
-
-export const pullRequestActionItemDependencyRelations = relations(
-  pullRequestActionItemDependency,
-  ({ one }) => ({
-    pullRequestActionItem_actionItemId: one(pullRequestActionItem, {
-      fields: [pullRequestActionItemDependency.actionItemId],
-      references: [pullRequestActionItem.id],
-      relationName: 'pullRequestActionItemDependency_actionItemId_pullRequestActionItem_id',
-    }),
-    pullRequestActionItem_dependsOnActionItemId: one(pullRequestActionItem, {
-      fields: [pullRequestActionItemDependency.dependsOnActionItemId],
-      references: [pullRequestActionItem.id],
-      relationName:
-        'pullRequestActionItemDependency_dependsOnActionItemId_pullRequestActionItem_id',
-    }),
-  }),
-);
 
 export const projectRepositoryRelations = relations(projectRepository, ({ one }) => ({
   project: one(project, {
