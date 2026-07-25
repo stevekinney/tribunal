@@ -114,8 +114,7 @@ Per-workspace scopes:
   `src/**/*.ts` via `coverage.thresholds` in each vitest configuration. Every package
   excludes its own `src/**/*.test.ts`; most also exclude barrel/type-only files
   (`index.ts`, `types.ts`), and a few carve out additional package-specific files
-  (e.g. `packages/cost` excludes `src/usage-cost-api.ts`, `packages/review-core`
-  excludes `src/ports.ts`). `packages/database` additionally excludes
+  (e.g. `packages/review-core` excludes `src/ports.ts`). `packages/database` additionally excludes
   `src/test/**` (operational tooling that drives real Neon branches). Check each
   package's `vitest.configuration.ts` for its exact `coverage.exclude` list.
 - `scripts` gates `lib/**/*.ts` (the shared helper library). Top-level

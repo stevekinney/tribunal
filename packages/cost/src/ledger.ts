@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '@tribunal/database';
-import { and, eq, sql } from '@tribunal/database/operators';
-import { costEvent, tribunalRun, userReviewSettings } from '@tribunal/database/schema';
+import { eq } from '@tribunal/database/operators';
+import { costEvent, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
 import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
 import {
@@ -10,11 +10,8 @@ import {
   type SandboxResources,
   type SandboxRuntime,
 } from './pricing';
-import type { UsageCostApiClient, UsageCostApiEvent } from './usage-cost-api';
 
 type CostDatabase = Pick<Database, 'insert' | 'select'>;
-
-const defaultReconciliationLookbackMilliseconds = 60 * 60 * 1000;
 
 export type RecordSandboxInput = {
   userId: number;
@@ -25,13 +22,6 @@ export type RecordSandboxInput = {
   runtime: SandboxRuntime;
   resources: SandboxResources;
   occurredAt?: Date;
-};
-
-export type ReviewRunCostComparison = {
-  reviewRunId: string;
-  estimateUsd: number;
-  reconciledUsd: number;
-  deltaUsd: number;
 };
 
 function createCostEventId(): string {
@@ -105,97 +95,12 @@ export async function recordSandbox(
   });
 }
 
-function reconcileIdempotencyKey(event: UsageCostApiEvent): string {
-  return `llm:${event.agentRunId ?? event.id}:reconciled`;
-}
-
-/**
- * Writes authoritative Usage and Cost API rows while preserving estimate rows.
- */
-export async function reconcile(
-  database: CostDatabase,
-  usageCostApiClient: UsageCostApiClient,
-  reviewRunId: string,
-): Promise<void> {
-  const [target] = await database
-    .select({
-      reviewRunId: tribunalRun.id,
-      userId: tribunalRun.userId,
-      repositoryId: tribunalRun.repositoryId,
-      startedAt: tribunalRun.startedAt,
-      finishedAt: tribunalRun.finishedAt,
-    })
-    .from(tribunalRun)
-    .where(eq(tribunalRun.id, reviewRunId));
-
-  if (target === undefined) {
-    throw new Error(`Review run ${reviewRunId} was not found for cost reconciliation.`);
-  }
-
-  const fallbackStartedAt =
-    target.startedAt ?? (await readReviewRunEstimateStartedAt(database, reviewRunId));
-  const finishedAt = target.finishedAt ?? new Date();
-  const startedAt = resolveReconciliationStartedAt(fallbackStartedAt, finishedAt);
-
-  const events = await usageCostApiClient.listReviewRunCosts({
-    reviewRunId: target.reviewRunId,
-    userId: target.userId,
-    repositoryId: target.repositoryId,
-    startedAt,
-    finishedAt,
-  });
-  const orderedEvents = [...events].sort((left, right) =>
-    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
-  );
-
-  for (const event of orderedEvents) {
-    await insertCostEvent(database, {
-      id: createCostEventId(),
-      userId: event.userId,
-      kind: 'llm',
-      source: 'reconciled',
-      repositoryId: event.repositoryId,
-      reviewRunId: event.reviewRunId,
-      agentRunId: event.agentRunId,
-      agentId: event.agentId,
-      amountUsd: numericText(event.amountUsd),
-      meta: event.metadata ?? {},
-      occurredAt: event.occurredAt,
-      idempotencyKey: reconcileIdempotencyKey(event),
-    });
-  }
-}
-
-async function readReviewRunEstimateStartedAt(
-  database: CostDatabase,
-  reviewRunId: string,
-): Promise<Date | null> {
-  const [row] = await database
-    .select({ startedAt: sql<Date | string | null>`min(${costEvent.occurredAt})` })
-    .from(costEvent)
-    .where(and(eq(costEvent.reviewRunId, reviewRunId), eq(costEvent.source, 'estimate')));
-
-  return toDate(row?.startedAt);
-}
-
-function resolveReconciliationStartedAt(startedAt: Date | null, finishedAt: Date): Date {
-  if (startedAt !== null && startedAt.getTime() < finishedAt.getTime()) return startedAt;
-  return new Date(finishedAt.getTime() - defaultReconciliationLookbackMilliseconds);
-}
-
 function parseSandboxWindowStartedAt(window: string): Date | undefined {
   const normalizedWindow = /^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(window)
     ? `${window}:00:00.000Z`
     : window;
   const startedAt = new Date(normalizedWindow);
   return Number.isNaN(startedAt.getTime()) ? undefined : startedAt;
-}
-
-function toDate(value: Date | string | null | undefined): Date | null {
-  if (value instanceof Date) return value;
-  if (typeof value !== 'string') return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 async function readDailyCostCap(
@@ -233,34 +138,7 @@ export async function enforceDailyCap(
   };
 }
 
-/**
- * Returns estimate, reconciled, and delta totals for one review run.
- */
-export async function getReviewRunCostComparison(
-  database: CostDatabase,
-  reviewRunId: string,
-): Promise<ReviewRunCostComparison> {
-  const [row] = await database
-    .select({
-      estimateUsd: sql<string>`coalesce(sum(${costEvent.amountUsd}) filter (where ${costEvent.source} = 'estimate'), 0)`,
-      reconciledUsd: sql<string>`coalesce(sum(${costEvent.amountUsd}) filter (where ${costEvent.source} = 'reconciled'), 0)`,
-    })
-    .from(costEvent)
-    .where(and(eq(costEvent.reviewRunId, reviewRunId)));
-
-  const estimateUsd = toNumber(row?.estimateUsd);
-  const reconciledUsd = toNumber(row?.reconciledUsd);
-
-  return {
-    reviewRunId,
-    estimateUsd,
-    reconciledUsd,
-    deltaUsd: Number((reconciledUsd - estimateUsd).toFixed(8)),
-  };
-}
-
 export type CreateCostPortOptions = {
-  usageCostApiClient: UsageCostApiClient;
   now?: () => Date;
   defaultDailyCostCapUsd?: number;
 };
@@ -303,7 +181,6 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         occurredAt: parseSandboxWindowStartedAt(event.window) ?? options.now?.(),
         idempotencyKey: event.idempotencyKey,
       }),
-    reconcile: (reviewRunId) => reconcile(database, options.usageCostApiClient, reviewRunId),
     enforceDailyCap: (userId) =>
       enforceDailyCap(
         database,

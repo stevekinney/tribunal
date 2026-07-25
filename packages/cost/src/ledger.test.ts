@@ -10,16 +10,8 @@ import {
   tribunalRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
-import {
-  createCostPort,
-  enforceDailyCap,
-  getReviewRunCostComparison,
-  reconcile,
-  recordLlmEstimate,
-  recordSandbox,
-} from './ledger';
+import { createCostPort, enforceDailyCap, recordLlmEstimate, recordSandbox } from './ledger';
 import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
-import type { UsageCostApiClient } from './usage-cost-api';
 
 let testDatabase: TestDatabase;
 
@@ -151,56 +143,52 @@ describe('cost ledger', () => {
     expect(rows[0].meta).toMatchObject({ pricingVersion: '2026-06-17' });
   });
 
-  it('reconciles Usage and Cost API rows without removing estimates', async () => {
+  // Per-run cost reconciliation was removed (see #215): the Anthropic cost
+  // report endpoint only supports daily buckets grouped by description or
+  // workspace_id — it has no run, request, or API-key dimension — so a
+  // per-run reconcile could only ever attribute the organization's entire
+  // daily spend to a single review run. `createCostPort` no longer exposes a
+  // `reconcile` capability at all, and nothing writes `source: 'reconciled'`
+  // cost events for a review run anymore.
+  it('never writes reconciled cost events for a review run', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:30:00.000Z'),
+    });
+
+    expect('reconcile' in port).toBe(false);
+
+    // Exercises the standalone ledger function directly, not just the
+    // CostPort closure that wraps it.
     await recordLlmEstimate(testDatabase.db, {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentRunId: run.id,
       agentId: reviewer.id,
-      amountUsd: 1.25,
-      idempotencyKey: `llm:${run.id}:estimate`,
+      amountUsd: 0.4,
+      idempotencyKey: `llm:${run.id}:direct-estimate`,
     });
-    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
-    const client: UsageCostApiClient = {
-      async listReviewRunCosts(target) {
-        receivedTarget = target;
-        return [
-          {
-            id: 'usage_2',
-            occurredAt: new Date('2026-06-17T12:01:00.000Z'),
-            amountUsd: 1.1,
-            userId: user.id,
-            repositoryId: repository.id,
-            reviewRunId: target.reviewRunId,
-            agentRunId: run.id,
-            agentId: reviewer.id,
-            metadata: { invoiceLineItem: 'line_1' },
-          },
-          {
-            id: 'usage_1',
-            occurredAt: new Date('2026-06-17T12:00:00.000Z'),
-            amountUsd: 0.05,
-            userId: user.id,
-            repositoryId: repository.id,
-            reviewRunId: target.reviewRunId,
-            agentRunId: null,
-            agentId: null,
-          },
-        ];
-      },
-    };
-
-    await reconcile(testDatabase.db, client, review.id);
-    await reconcile(testDatabase.db, client, review.id);
-
-    expect(receivedTarget).toEqual({
-      reviewRunId: review.id,
+    await port.recordLlmEstimate({
       userId: user.id,
       repositoryId: repository.id,
-      startedAt: review.startedAt,
-      finishedAt: review.finishedAt,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.8,
+      idempotencyKey: `llm:${run.id}:estimate`,
+    });
+    await port.recordSandbox({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      sandboxId: 'sandbox_reconcile_check',
+      window: '2026-06-17T12:00:00.000Z',
+      amountUsd: 0.2,
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
+      idempotencyKey: 'sandbox:sandbox_reconcile_check:manual',
     });
 
     const rows = await testDatabase.db
@@ -208,100 +196,9 @@ describe('cost ledger', () => {
       .from(costEvent)
       .where(eq(costEvent.reviewRunId, review.id));
 
-    expect(rows.map((row) => row.source).sort()).toEqual(['estimate', 'reconciled', 'reconciled']);
-    expect(rows.find((row) => row.source === 'estimate')?.amountUsd).toBe('1.25000000');
-    expect(rows.find((row) => row.source === 'estimate')?.repositoryId).toBe(repository.id);
-    expect(
-      rows
-        .filter((row) => row.source === 'reconciled')
-        .map((row) => row.amountUsd)
-        .sort(),
-    ).toEqual(['0.05000000', '1.10000000']);
-  });
-
-  it('throws when reconciling a review run that no longer exists', async () => {
-    let costApiCalled = false;
-    const client: UsageCostApiClient = {
-      async listReviewRunCosts() {
-        costApiCalled = true;
-        return [];
-      },
-    };
-
-    await expect(reconcile(testDatabase.db, client, 'missing_review_run')).rejects.toThrow(
-      'Review run missing_review_run was not found for cost reconciliation.',
-    );
-    expect(costApiCalled).toBe(false);
-  });
-
-  it('reconciles legacy review runs without startedAt using the estimate window', async () => {
-    const { user, repository, review, reviewer, run } = await createCostFixture();
-    await testDatabase.db
-      .update(tribunalRun)
-      .set({ startedAt: null })
-      .where(eq(tribunalRun.id, review.id));
-    await recordLlmEstimate(testDatabase.db, {
-      userId: user.id,
-      repositoryId: repository.id,
-      reviewRunId: review.id,
-      agentRunId: run.id,
-      agentId: reviewer.id,
-      amountUsd: 0.25,
-      idempotencyKey: `llm:${run.id}:legacy-estimate`,
-    });
-
-    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
-    const client: UsageCostApiClient = {
-      async listReviewRunCosts(target) {
-        receivedTarget = target;
-        return [
-          {
-            id: 'usage_legacy',
-            occurredAt: new Date('2026-06-17T12:02:00.000Z'),
-            amountUsd: 0.2,
-            userId: user.id,
-            repositoryId: repository.id,
-            reviewRunId: target.reviewRunId,
-            agentRunId: run.id,
-            agentId: reviewer.id,
-          },
-        ];
-      },
-    };
-
-    await reconcile(testDatabase.db, client, review.id);
-
-    expect(receivedTarget).toEqual({
-      reviewRunId: review.id,
-      userId: user.id,
-      repositoryId: repository.id,
-      startedAt: expect.any(Date),
-      finishedAt: review.finishedAt,
-    });
-    expect(receivedTarget?.startedAt).toEqual(expect.any(Date));
-  });
-
-  it('reconciles with a one-hour fallback window when the run start is not before finish', async () => {
-    const { review } = await createCostFixture();
-    await testDatabase.db
-      .update(tribunalRun)
-      .set({
-        startedAt: new Date('2026-06-17T12:30:00.000Z'),
-        finishedAt: new Date('2026-06-17T12:30:00.000Z'),
-      })
-      .where(eq(tribunalRun.id, review.id));
-    let receivedTarget: Parameters<UsageCostApiClient['listReviewRunCosts']>[0] | undefined;
-    const client: UsageCostApiClient = {
-      async listReviewRunCosts(target) {
-        receivedTarget = target;
-        return [];
-      },
-    };
-
-    await reconcile(testDatabase.db, client, review.id);
-
-    expect(receivedTarget?.startedAt).toEqual(new Date('2026-06-17T11:30:00.000Z'));
-    expect(receivedTarget?.finishedAt).toEqual(new Date('2026-06-17T12:30:00.000Z'));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.source === 'estimate')).toBe(true);
+    expect(rows.some((row) => row.source === 'reconciled')).toBe(false);
   });
 
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
@@ -358,61 +255,9 @@ describe('cost ledger', () => {
     expect(await countLlmEvents()).toBe(before);
   });
 
-  it('returns estimate, reconciled, and delta for a review run', async () => {
-    const { user, review, reviewer, run } = await createCostFixture();
-    await testDatabase.db.insert(costEvent).values([
-      {
-        id: 'cost_estimate',
-        userId: user.id,
-        kind: 'llm',
-        source: 'estimate',
-        reviewRunId: review.id,
-        agentRunId: run.id,
-        agentId: reviewer.id,
-        amountUsd: '1.25',
-        idempotencyKey: 'llm:estimate',
-      },
-      {
-        id: 'cost_reconciled',
-        userId: user.id,
-        kind: 'llm',
-        source: 'reconciled',
-        reviewRunId: review.id,
-        agentRunId: run.id,
-        agentId: reviewer.id,
-        amountUsd: '1.10',
-        idempotencyKey: 'llm:reconciled',
-      },
-    ]);
-
-    await expect(getReviewRunCostComparison(testDatabase.db, review.id)).resolves.toEqual({
-      reviewRunId: review.id,
-      estimateUsd: 1.25,
-      reconciledUsd: 1.1,
-      deltaUsd: -0.15,
-    });
-  });
-
   it('creates the review-core cost port over the ledger', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
-    const client: UsageCostApiClient = {
-      async listReviewRunCosts(target) {
-        return [
-          {
-            id: 'usage_1',
-            occurredAt: new Date('2026-06-17T12:00:00.000Z'),
-            amountUsd: 0.75,
-            userId: user.id,
-            repositoryId: repository.id,
-            reviewRunId: target.reviewRunId,
-            agentRunId: run.id,
-            agentId: reviewer.id,
-          },
-        ];
-      },
-    };
     const port = createCostPort(testDatabase.db, {
-      usageCostApiClient: client,
       now: () => new Date('2026-06-17T12:30:00.000Z'),
     });
 
@@ -437,12 +282,7 @@ describe('cost ledger', () => {
       resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_1:manual',
     });
-    await port.reconcile(review.id);
 
-    await expect(getReviewRunCostComparison(testDatabase.db, review.id)).resolves.toMatchObject({
-      estimateUsd: 1,
-      reconciledUsd: 0.75,
-    });
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
       allowed: true,
       capUsd: 25,
@@ -471,7 +311,6 @@ describe('cost ledger', () => {
   it('records sandbox cost port events at shorthand billing window starts', async () => {
     const { user, repository, review } = await createCostFixture();
     const port = createCostPort(testDatabase.db, {
-      usageCostApiClient: { listReviewRunCosts: async () => [] },
       now: () => new Date('2026-06-17T12:30:00.000Z'),
     });
 
@@ -513,7 +352,6 @@ describe('cost ledger', () => {
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
     });
     const port = createCostPort(testDatabase.db, {
-      usageCostApiClient: { listReviewRunCosts: async () => [] },
       now: () => new Date('2026-06-17T12:00:00.000Z'),
     });
 
@@ -540,7 +378,6 @@ describe('cost ledger', () => {
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
     });
     const port = createCostPort(testDatabase.db, {
-      usageCostApiClient: { listReviewRunCosts: async () => [] },
       now: () => new Date('2026-06-17T12:00:00.000Z'),
       defaultDailyCostCapUsd: 3,
     });

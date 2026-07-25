@@ -39,17 +39,9 @@ const data = {
 describe('/costs page', () => {
   afterEach(() => cleanup());
 
-  it('renders linked source navigation, cap meter, product rollups, and cache split', async () => {
+  it('renders cap meter, product rollups, and cache split', async () => {
     render(CostsPage, { data, params: {}, form: null });
 
-    const sourceNavigation = page.getByRole('navigation', { name: 'Cost source' });
-    const estimateLink = sourceNavigation.getByRole('link', { name: 'Estimate' });
-    const reconciledLink = sourceNavigation.getByRole('link', { name: 'Reconciled' });
-
-    await expect.element(estimateLink).toHaveAttribute('href', '/costs?source=estimate');
-    await expect.element(estimateLink).toHaveAttribute('aria-current', 'page');
-    await expect.element(reconciledLink).toHaveAttribute('href', '/costs?source=reconciled');
-    await expect.element(reconciledLink).not.toHaveAttribute('aria-current');
     const dailySpendMeter = page.getByRole('meter', { name: "Today's spend vs daily cap" });
     await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemin', '0');
     await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemax', '10');

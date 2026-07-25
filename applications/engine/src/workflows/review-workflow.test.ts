@@ -245,26 +245,24 @@ describe('ReviewWorkflowEngine', () => {
         kind: 'session_start',
       }),
     ]);
-    expect(ports.cost.reconcileCalls).toEqual(['run:42:7:aaa111:opened']);
-    expect(engine.snapshot().durableState.reconciledReviewRunIds).toEqual([
-      'run:42:7:aaa111:opened',
-    ]);
   });
 
-  it('does not reconcile a run again after hydrating reconciled durable state', async () => {
+  // Per-run cost reconciliation was removed (see #215): the Anthropic cost
+  // report endpoint has no run/request/API-key dimension, so a per-run
+  // `reconcile()` call can only ever attribute the organization's entire
+  // daily spend to one run. `FakeCostPort.reconcile` below is not part of
+  // `CostPort` and always throws — it exists purely as a tripwire so a
+  // regression that reintroduces a call at this boundary fails loudly
+  // instead of silently reconciling again.
+  it('completes a review run to posted without ever calling cost reconciliation', async () => {
     const ports = createFakePorts();
-    const engine = createEngine(ports, {
-      reconciledReviewRunIds: ['run:42:7:aaa111:opened'],
-    });
+    const engine = createEngine(ports);
 
     await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
       status: 'posted',
     });
 
     expect(ports.cost.reconcileCalls).toEqual([]);
-    expect(engine.snapshot().durableState.reconciledReviewRunIds).toEqual([
-      'run:42:7:aaa111:opened',
-    ]);
   });
 
   it('hydrates running review state and skips duplicate posts when durable state shows comments already posted', async () => {

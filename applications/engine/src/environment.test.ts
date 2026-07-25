@@ -20,7 +20,6 @@ const fullEnvironment = {
   IDLE_SUSPEND_SECONDS: '900',
   SANDBOX_REAP_INTERVAL: '300',
   ENABLE_PROMPT_CACHING_1H: 'true',
-  ANTHROPIC_ADMIN_KEY: 'anthropic-admin-key',
   REVIEWS_ENABLED: 'false',
   WEFT_INSPECTOR: '0',
 };
@@ -56,7 +55,6 @@ describe('parseEngineEnvironment', () => {
       'DEFAULT_DAILY_COST_CAP_USD',
       'IDLE_SUSPEND_SECONDS',
       'SANDBOX_REAP_INTERVAL',
-      'ANTHROPIC_ADMIN_KEY',
     ] as const;
 
     for (const variableName of requiredVariables) {

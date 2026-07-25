@@ -31,7 +31,6 @@ const requiredSecrets = {
     'TRIBUNAL_PROXY_CIDR',
     'PROXY_SIGNING_KEY',
     'TRIBUNAL_ENGINE_CONTROL_TOKEN',
-    'ANTHROPIC_ADMIN_KEY',
     'GITHUB_APP_PRIVATE_KEY',
   ],
   'tribunal-web': [

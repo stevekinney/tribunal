@@ -139,7 +139,6 @@ Required proxy-related values:
 - `PROXY_SIGNING_KEY`: shared by engine and proxy.
 - `PROXY_CA_CERT`: certificate authority certificate for proxy trust.
 - `ANTHROPIC_API_KEY`: set on `tribunal-proxy`.
-- `ANTHROPIC_ADMIN_KEY`: set on `tribunal-engine`.
 - `TENSORLAKE_API_KEY`: set on `tribunal-engine`.
 - `TRIBUNAL_SANDBOX_IMAGE`: explicit Tensorlake reviewer image identifier.
 
@@ -219,8 +218,7 @@ flyctl secrets set -a tribunal-engine \
   TRIBUNAL_PROXY_URL="https://tribunal-proxy.fly.dev" \
   TRIBUNAL_PROXY_CIDR="<dedicated-proxy-ip>/32" \
   PROXY_SIGNING_KEY="<shared-proxy-signing-key>" \
-  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>" \
-  ANTHROPIC_ADMIN_KEY="<anthropic-admin-key>"
+  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>"
 
 # Optional: sets the direct/unpooled connection used only for the singleton
 # advisory lock. Without it, singleton election falls back to the pooled

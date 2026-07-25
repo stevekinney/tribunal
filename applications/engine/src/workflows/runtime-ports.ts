@@ -30,11 +30,6 @@ import {
 } from '@tribunal/sandbox';
 import { Sandbox, SandboxClient } from 'tensorlake';
 import type {
-  UsageCostApiClient,
-  UsageCostApiEvent,
-  UsageCostReconciliationTarget,
-} from '@tribunal/cost/usage-cost-api';
-import type {
   CheckRunPatch,
   DiffContext,
   GitHubPort,
@@ -81,18 +76,7 @@ export type ReviewIntentRuntimeEnvironment = {
   DEFAULT_DAILY_COST_CAP_USD?: number | string;
   IDLE_SUSPEND_SECONDS?: number | string;
   ENABLE_PROMPT_CACHING_1H?: boolean | string;
-  ANTHROPIC_ADMIN_KEY?: string;
   REVIEWS_ENABLED?: boolean | string;
-};
-
-export const emptyUsageCostApiClient = {
-  listReviewRunCosts: async (_target: UsageCostReconciliationTarget) => [],
-};
-
-export const unconfiguredUsageCostApiClient = {
-  listReviewRunCosts: async (_target: UsageCostReconciliationTarget) => {
-    throw new Error('Authoritative usage cost reconciliation is not configured.');
-  },
 };
 
 export function createReviewIntentConsumerFromEnvironment(
@@ -122,12 +106,7 @@ export function createReviewIntentConsumer(
     {
       github: createEngineGitHubPort(database, githubContext),
       sandbox: createEngineSandboxPort(environment),
-      cost: createCostPort(database, {
-        usageCostApiClient: createAnthropicUsageCostApiClient(
-          requireEnvironmentValue(environment.ANTHROPIC_ADMIN_KEY, 'ANTHROPIC_ADMIN_KEY'),
-        ),
-        defaultDailyCostCapUsd,
-      }),
+      cost: createCostPort(database, { defaultDailyCostCapUsd }),
       intents: intentPort,
       state: createDatabaseReviewWorkflowStatePort(database),
     },
@@ -228,141 +207,6 @@ async function listOpenPullRequestSandboxes(
     })
     .from(pullRequestState)
     .where(eq(pullRequestState.state, 'open'));
-}
-
-export function createAnthropicUsageCostApiClient(adminKey: string): UsageCostApiClient {
-  return {
-    async listReviewRunCosts(target: UsageCostReconciliationTarget) {
-      const events: UsageCostApiEvent[] = [];
-      const startingAt = target.startedAt;
-      const endingAt = target.finishedAt ?? new Date();
-      let page: string | undefined;
-
-      for (let pageIndex = 0; pageIndex < 5; pageIndex += 1) {
-        const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
-        url.searchParams.set('starting_at', startingAt.toISOString());
-        url.searchParams.set('ending_at', endingAt.toISOString());
-        url.searchParams.append('group_by[]', 'workspace_id');
-        url.searchParams.append('group_by[]', 'description');
-        if (page !== undefined) url.searchParams.set('page', page);
-
-        const response = await fetch(url, {
-          headers: {
-            'x-api-key': adminKey,
-            'anthropic-version': '2023-06-01',
-            'user-agent': 'Tribunal/0.0.1',
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`Anthropic cost report request failed with status ${response.status}`);
-        }
-        const payload = (await response.json()) as unknown;
-        events.push(...parseAnthropicCostReport(payload, target, pageIndex));
-
-        const payloadRecord = getRecord(payload);
-        if (payloadRecord?.has_more !== true) return events;
-        page = toNullableString(payloadRecord.next_page) ?? undefined;
-        if (page === undefined) {
-          throw new Error('Anthropic cost report response is missing next_page.');
-        }
-      }
-
-      throw new Error('Anthropic cost report pagination exceeded 5 pages.');
-    },
-  };
-}
-
-function parseAnthropicCostReport(
-  payload: unknown,
-  target: UsageCostReconciliationTarget,
-  pageIndex: number,
-): UsageCostApiEvent[] {
-  const rows = getCostReportRows(payload);
-  const events: UsageCostApiEvent[] = [];
-  let positiveUsdRowsWithReviewRunId = 0;
-  let positiveUsdRowsWithoutReviewRunId = 0;
-
-  for (const [index, row] of rows.entries()) {
-    const metadata = getRecord(row.custom_metadata ?? row.metadata);
-    if (row.currency !== undefined && row.currency !== 'USD') continue;
-    const amountUsd = parseUsdDecimal(row.amount);
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
-    const rowReviewRunId = toNullableString(metadata?.review_run_id);
-    if (rowReviewRunId === null) {
-      positiveUsdRowsWithoutReviewRunId += 1;
-      continue;
-    }
-    positiveUsdRowsWithReviewRunId += 1;
-    if (rowReviewRunId !== target.reviewRunId) continue;
-    const userId = toNullableInteger(metadata?.user_id ?? row.user_id) ?? target.userId;
-    events.push({
-      id: String(row.id ?? `${target.reviewRunId}:${pageIndex}:${index}`),
-      occurredAt: new Date(String(row.starting_at ?? row.ending_at ?? Date.now())),
-      amountUsd,
-      userId,
-      repositoryId:
-        toNullableInteger(metadata?.repository_id ?? row.repository_id) ?? target.repositoryId,
-      reviewRunId: target.reviewRunId,
-      agentRunId: toNullableString(metadata?.agent_run_id ?? row.agent_run_id),
-      agentId: toNullableString(metadata?.agent_id ?? row.agent_id),
-      metadata: metadata ?? {},
-    });
-  }
-
-  if (
-    events.length === 0 &&
-    positiveUsdRowsWithoutReviewRunId > 0 &&
-    positiveUsdRowsWithReviewRunId === 0
-  ) {
-    throw new Error(
-      'Anthropic cost report rows are missing review_run_id metadata; cannot safely reconcile organization-level costs.',
-    );
-  }
-
-  return events;
-}
-
-function getCostReportRows(payload: unknown): Array<Record<string, unknown>> {
-  const record = getRecord(payload);
-  const buckets = Array.isArray(record?.data) ? record.data : [];
-  return buckets.flatMap((bucket): Array<Record<string, unknown>> => {
-    const bucketRecord = getRecord(bucket);
-    if (bucketRecord === undefined || !Array.isArray(bucketRecord.results)) return [];
-    return bucketRecord.results.flatMap((row): Array<Record<string, unknown>> => {
-      const rowRecord = getRecord(row);
-      return rowRecord === undefined
-        ? []
-        : [
-            {
-              ...rowRecord,
-              starting_at: bucketRecord.starting_at,
-              ending_at: bucketRecord.ending_at,
-            },
-          ];
-    });
-  });
-}
-
-function getRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function toNullableInteger(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isInteger(number) && number > 0 ? number : null;
-}
-
-function toNullableString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function parseUsdDecimal(value: unknown): number {
-  if (typeof value !== 'string' && typeof value !== 'number') return Number.NaN;
-  const amountUsd = Number(value);
-  if (!Number.isFinite(amountUsd) || amountUsd <= 0) return Number.NaN;
-  return Number(amountUsd.toFixed(8));
 }
 
 type ReviewIntentWorkflowHandle = {

@@ -55,9 +55,6 @@ enablement.
   `NEON_PRODUCTION_ENDPOINT_ID=ep-round-dew-ap98dps9`,
   and `PRODUCTION_WEB_ORIGIN`. `PRODUCTION_PROXY_ORIGIN` is optional and
   defaults to `https://tribunal-proxy.fly.dev` when unset.
-- `ANTHROPIC_ADMIN_KEY` is an Anthropic Admin API key, not a normal model API
-  key. It should have the `sk-ant-admin...` prefix and is required by engine
-  cost reporting.
 - Keep `REVIEWS_ENABLED=false` until every safe-mode health gate passes.
 
 ## Gotchas
@@ -213,8 +210,7 @@ Start with evidence, not changes:
    - **Web health fails**: check `DATABASE_URL`, `REDIS_URL`, Neon Auth URLs,
      GitHub OAuth callback, and web logs.
    - **Engine health fails**: check `WEFT_DATABASE_URL`, exactly one Machine,
-     Flycast private ingress, `ANTHROPIC_ADMIN_KEY`, Tensorlake image, and
-     advisory lock.
+     Flycast private ingress, Tensorlake image, and advisory lock.
    - **Proxy health fails**: check `DATABASE_URL`, `REDIS_URL`,
      `ANTHROPIC_API_KEY`, `PROXY_CA_CERT`, `PROXY_SIGNING_KEY`, and proxy logs.
    - **Unauthorized proxy returns 2xx**: treat as a security blocker; do not

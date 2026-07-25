@@ -27,25 +27,19 @@ describe('/costs load', () => {
     ).rejects.toMatchObject({ status: 302, location: '/login' });
   });
 
-  it('defaults to the estimate cost source', async () => {
+  // Per-run cost reconciliation was removed (see #215): the Anthropic cost
+  // report endpoint has no per-run dimension, so `/costs` only ever shows
+  // estimated spend now. A `?source=reconciled` query param is ignored.
+  it('always loads the estimate cost source', async () => {
     await load({ locals: { user: { id: 1 } }, url: new URL('http://localhost/costs') } as never);
 
     expect(mockGetCostOverview).toHaveBeenCalledWith(1, 'estimate');
   });
 
-  it('uses the reconciled source when requested via query param', async () => {
+  it('ignores a source query param and still loads the estimate source', async () => {
     await load({
       locals: { user: { id: 1 } },
       url: new URL('http://localhost/costs?source=reconciled'),
-    } as never);
-
-    expect(mockGetCostOverview).toHaveBeenCalledWith(1, 'reconciled');
-  });
-
-  it('falls back to estimate for an unrecognized source value', async () => {
-    await load({
-      locals: { user: { id: 1 } },
-      url: new URL('http://localhost/costs?source=bogus'),
     } as never);
 
     expect(mockGetCostOverview).toHaveBeenCalledWith(1, 'estimate');

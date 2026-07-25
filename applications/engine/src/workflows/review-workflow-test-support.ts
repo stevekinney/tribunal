@@ -818,8 +818,15 @@ class FakeCostPort implements CostPort {
     this.sandboxCostEvents.push(event);
   }
 
+  // Not part of `CostPort` — per-run cost reconciliation was removed (#215).
+  // Kept as a tripwire: it always throws, so if a regression reintroduces a
+  // call to it at the review-workflow boundary, the test fails loudly
+  // instead of silently recording another reconciliation.
   async reconcile(reviewRunId: string): Promise<void> {
     this.reconcileCalls.push(reviewRunId);
+    throw new Error(
+      'cost.reconcile must not be called: per-run reconciliation was removed (#215).',
+    );
   }
 
   async enforceDailyCap(userId: number): Promise<DailyCapDecision> {
