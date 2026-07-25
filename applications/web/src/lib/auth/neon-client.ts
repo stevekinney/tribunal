@@ -126,23 +126,26 @@ export type RefreshNeonSessionCookieOptions = {
  * Posts a refreshed Neon Auth token to the session bridge, but only when it
  * differs from the last token posted -- better-auth mints a fresh JWT on
  * every `/get-session` call, so without this guard a burst of concurrent
- * calls would re-post needlessly. Fire-and-forget: callers (the periodic
- * scheduler below) don't block a UI action on this succeeding, they only log
- * if it fails -- except when the failure is the `signal` above firing, which
- * means the caller already tore this down and isn't waiting for a result.
+ * calls would re-post needlessly. Returns whether the session bridge is known
+ * to be fresh afterward. Routine interval callers ignore that result and try
+ * again later on failure; hidden-tab resume callers use it to keep the UI gate
+ * active unless renewal actually succeeds.
  */
 export async function refreshNeonSessionCookie(
   sessionData: unknown,
   options: RefreshNeonSessionCookieOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const token = extractRefreshedSessionToken(sessionData);
-  if (!token || token === lastPostedNeonSessionToken) return;
+  if (!token) return false;
+  if (token === lastPostedNeonSessionToken) return true;
 
   try {
     await postNeonSessionToken(token, { refreshOnly: true, signal: options.signal });
+    return true;
   } catch (error) {
-    if (options.signal?.aborted) return;
+    if (options.signal?.aborted) return false;
     console.error('Failed to refresh the Tribunal Neon Auth session cookie', error);
+    return false;
   }
 }
 
@@ -265,7 +268,7 @@ export function startNeonSessionRefresh(
     setResumeRefreshStatus('failed');
   }
 
-  function trackResumeRefresh(refreshPromise: Promise<void>): void {
+  function trackResumeRefresh(refreshPromise: Promise<boolean>): void {
     if (!options.onResumeRefreshStatusChange) return;
 
     resumeRefreshGeneration += 1;
@@ -281,10 +284,16 @@ export function startNeonSessionRefresh(
       options.resumeRefreshPendingMaximumMs ?? neonSessionResumeRefreshPendingMaximumMs,
     );
 
-    void refreshPromise.finally(() => clearResumeRefreshStatus(generation));
+    void refreshPromise.then((succeeded) => {
+      if (succeeded) {
+        clearResumeRefreshStatus(generation);
+      } else {
+        failResumeRefresh(generation);
+      }
+    });
   }
 
-  function refresh(): Promise<void> {
+  function refresh(): Promise<boolean> {
     return authClient
       .getSession({ fetchOptions: { signal: abortController.signal } })
       .then((result) => {
@@ -298,6 +307,7 @@ export function startNeonSessionRefresh(
         // Ignored: a rejected refresh (including one aborted by tearing this
         // down) isn't actionable here. A live tab simply tries again on its
         // next scheduled or visibility-triggered refresh.
+        return false;
       });
   }
 

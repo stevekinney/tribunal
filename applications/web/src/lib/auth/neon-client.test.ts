@@ -431,6 +431,53 @@ describe('startNeonSessionRefresh', () => {
       expect(statusChanges).toEqual(['pending', 'failed']);
     });
 
+    it('keeps a visible-tab resume refresh failed when getSession rejects', async () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockRejectedValueOnce(new Error('network down'));
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
+    });
+
+    it('keeps a visible-tab resume refresh failed when the bridge post rejects the token', async () => {
+      const statusChanges: string[] = [];
+      const fetchMock = vi.fn().mockResolvedValueOnce(new Response('expired', { status: 401 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-rejected' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(statusChanges).toEqual(['pending', 'failed']);
+
+      consoleErrorSpy.mockRestore();
+    });
+
     it('does not let an older resume refresh clear a newer pending gate', async () => {
       const statusChanges: string[] = [];
       const bridgePostResolutions: Array<(response: Response) => void> = [];
