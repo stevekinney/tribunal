@@ -42,6 +42,14 @@ describe('/costs page', () => {
   it('renders cap meter, product rollups, and cache split', async () => {
     render(CostsPage, { data, params: {}, form: null });
 
+    await expect.element(page.getByText('Estimated review spend')).toBeInTheDocument();
+    await expect
+      .element(
+        page.getByText(
+          "Estimated from token counts. Reconciled billing figures aren't available yet.",
+        ),
+      )
+      .toBeInTheDocument();
     const dailySpendMeter = page.getByRole('meter', { name: "Today's spend vs daily cap" });
     await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemin', '0');
     await expect.element(dailySpendMeter).toHaveAttribute('aria-valuemax', '10');
