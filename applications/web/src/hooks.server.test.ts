@@ -4,13 +4,13 @@ import { TransientAuthInfrastructureError } from '$lib/server/auth/neon-session'
 
 const mockValidateNeonSessionFromToken = vi.hoisted(() => vi.fn());
 const mockDeleteNeonAuthTokenCookie = vi.hoisted(() => vi.fn());
-const mockWarnOnHandledWebhookEventDriftAtStartup = vi.hoisted(() => vi.fn());
+const mockWarnOnGitHubAppConfigurationDriftAtStartup = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ E2E_TEST_MODE: '0' }));
 
 vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
 
 vi.mock(import('$lib/server/github/webhooks/subscription-drift'), () => ({
-  warnOnHandledWebhookEventDriftAtStartup: mockWarnOnHandledWebhookEventDriftAtStartup,
+  warnOnGitHubAppConfigurationDriftAtStartup: mockWarnOnGitHubAppConfigurationDriftAtStartup,
 }));
 
 // `sequence()` requires SvelteKit's real AsyncLocalStorage-backed request
@@ -65,8 +65,8 @@ describe('hooks auth handle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnv.E2E_TEST_MODE = '0';
-    mockWarnOnHandledWebhookEventDriftAtStartup.mockReset();
-    mockWarnOnHandledWebhookEventDriftAtStartup.mockResolvedValue(undefined);
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockResolvedValue(undefined);
   });
 
   it('populates locals.user from the Neon Auth bridge cookie', async () => {
@@ -211,7 +211,7 @@ describe('correlationHandle (isolated from the composed handle via a mocked sequ
 describe('init (server startup hook)', () => {
   it('fires the webhook subscription drift check without awaiting it', async () => {
     let resolveDriftCheck: () => void = () => {};
-    mockWarnOnHandledWebhookEventDriftAtStartup.mockReturnValue(
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReturnValue(
       new Promise<void>((resolve) => {
         resolveDriftCheck = resolve;
       }),
@@ -222,13 +222,13 @@ describe('init (server startup hook)', () => {
     // since the mocked promise above is never resolved before this call.
     await init();
 
-    expect(mockWarnOnHandledWebhookEventDriftAtStartup).toHaveBeenCalledTimes(1);
+    expect(mockWarnOnGitHubAppConfigurationDriftAtStartup).toHaveBeenCalledTimes(1);
     resolveDriftCheck();
   });
 
   it('logs rather than throws when the drift check rejects', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    mockWarnOnHandledWebhookEventDriftAtStartup.mockRejectedValue(new Error('boom'));
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockRejectedValue(new Error('boom'));
 
     const { init } = await import('./hooks.server');
     await init();
@@ -236,7 +236,7 @@ describe('init (server startup hook)', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(errorSpy).toHaveBeenCalledWith(
-      '[webhook-subscription] Unexpected error during startup drift check:',
+      '[github-app-configuration] Unexpected error during startup drift check:',
       expect.any(Error),
     );
   });
