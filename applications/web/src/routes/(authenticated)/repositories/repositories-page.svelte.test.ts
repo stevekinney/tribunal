@@ -452,6 +452,49 @@ describe('/repositories page', () => {
     await expect.element(page.getByText('3 unresolved')).toBeInTheDocument();
   });
 
+  it('still shows the unavailable banner when the failure has no attributed cause', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            dataStatus: 'unavailable',
+            unavailableReason: undefined,
+            defaultBranchStatus: 'unknown',
+            openPullRequestCount: null,
+            attentionPullRequestCount: null,
+            unresolvedThreadCount: null,
+          }),
+        ]),
+        summary: Promise.resolve({
+          ...okSummaryForOne,
+          failingDefaultBranchCountExact: false,
+          openPullRequestCount: 0,
+          openPullRequestCountExact: false,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: true,
+        }),
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: a whole-fan-out rejection deliberately leaves the reason
+    // unset, because that catch also covers non-GitHub causes. Filtering
+    // those rows out of the banner state made the warning vanish entirely at
+    // exactly the moment every repository was unavailable — a silent page is
+    // worse than an unattributed one. Matched on the banner's own closing
+    // sentence: the per-row tooltip carries similar wording, and both
+    // correctly render in this state.
+    await expect
+      .element(page.getByText(/Their status shows as Unknown until the next refresh/))
+      .toBeInTheDocument();
+  });
+
   it('names the specific reason in the banner when every unavailable repository shares one cause', async () => {
     render(RepositoriesPage, {
       data: {

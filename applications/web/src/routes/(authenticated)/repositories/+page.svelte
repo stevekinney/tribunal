@@ -211,8 +211,17 @@
    * on the reason, the banner falls back to pointing at each row's own
    * indicator instead of picking one repository's reason to feature.
    */
-  function unavailableBannerMessage(reason: DashboardUnavailableReason): string {
-    const map: Record<DashboardUnavailableReason, string> = {
+  /**
+   * Stands in for an unavailable row whose cause was never established, so
+   * such rows still reach the banner instead of being filtered out of it.
+   */
+  const UNATTRIBUTED_REASON = 'unattributed' as const;
+  type BannerReason = DashboardUnavailableReason | typeof UNATTRIBUTED_REASON;
+
+  function unavailableBannerMessage(reason: BannerReason): string {
+    const map: Record<BannerReason, string> = {
+      unattributed:
+        "Some repositories' data could not be refreshed this build. Their status shows as Unknown until the next refresh.",
       'no-installation':
         'One or more repositories have no GitHub installation connected. Reconnect them from “Manage repository access”.',
       'api-budget-exhausted':
@@ -229,13 +238,18 @@
   function distinctUnavailableReasons(
     reposToCheck: (typeof data.repositories)[number][],
     dashboardsById: Awaited<typeof data.dashboardRowsById>,
-  ): DashboardUnavailableReason[] {
-    const seen = new SvelteSet<DashboardUnavailableReason>();
+  ): BannerReason[] {
+    const seen = new SvelteSet<BannerReason>();
     for (const repository of reposToCheck) {
       const dashboard = dashboardsById.get(repository.id);
-      if (dashboard?.dataStatus === 'unavailable' && dashboard.unavailableReason) {
-        seen.add(dashboard.unavailableReason);
-      }
+      if (dashboard?.dataStatus !== 'unavailable') continue;
+
+      // An unavailable row with no reason still has to count. A whole-fan-out
+      // rejection deliberately leaves the reason unset (see `+page.server.ts`),
+      // and skipping those rows would empty this list and hide the banner
+      // entirely — precisely when every repository is unavailable, which is
+      // the case that most needs a warning.
+      seen.add(dashboard.unavailableReason ?? UNATTRIBUTED_REASON);
     }
     return [...seen];
   }
