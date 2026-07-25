@@ -1,3 +1,4 @@
+import type { EngineLeaseHealth } from '@lostgradient/weft';
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
 import { and, desc, eq, inArray, isNull, sql } from '@tribunal/database/operators';
@@ -196,6 +197,7 @@ export function createReviewIntentConsumer(
       if (workflowEngine === undefined) {
         return reviewWorkflowEngine.reapClosedPullRequestSandboxes(openPullRequests);
       }
+      assertLeaseHeldForDispatch(workflowEngine);
       const handle = await workflowEngine.start('sandbox-reaper', openPullRequests, {
         id: 'sandbox-reaper',
         onTerminalConflict: 'start-new',
@@ -216,7 +218,42 @@ type ReviewIntentWorkflowEngine = {
       defer: false;
     },
   ): Promise<ReviewIntentWorkflowHandle>;
+  getLeaseHealth(): EngineLeaseHealth;
 };
+
+/**
+ * Thrown when a workflow dispatch is refused because the bound engine does
+ * not currently hold its Weft ownership lease (see `assertLeaseHeldForDispatch`).
+ */
+export class EngineLeaseUnavailableError extends Error {
+  constructor(health: EngineLeaseHealth) {
+    super(
+      `Refusing to dispatch engine workflow: ownership lease is not held (status: ${health.status}).`,
+    );
+    this.name = 'EngineLeaseUnavailableError';
+  }
+}
+
+/**
+ * Verifies the bound workflow engine still holds its Weft ownership lease
+ * before dispatching a `start()` call.
+ *
+ * Weft's own `assertLeaseHeldForEngineWork` throws a raw `EngineLeaseNotHeldError`
+ * for the exact same condition deep inside `start()` -- reachable from any
+ * engine-work dispatch, not just this one (see #211, where it surfaced from
+ * the sandbox reaper). Checking here, at the boundary where every dispatch in
+ * this module originates, lets a lost lease fail through each call site's
+ * normal retry path (a deferred review-intent retry via
+ * `markReviewIntentFailed`, or simply the next `SANDBOX_REAP_INTERVAL` tick)
+ * instead of an unhandled Weft internal assertion.
+ */
+function assertLeaseHeldForDispatch(workflowEngine: ReviewIntentWorkflowEngine): void {
+  const health = workflowEngine.getLeaseHealth();
+  if (health.holdsLease) return;
+
+  console.error('[engine] refusing to dispatch workflow: ownership lease is not held', health);
+  throw new EngineLeaseUnavailableError(health);
+}
 
 async function listOpenPullRequestSandboxes(
   database: Database,
@@ -373,6 +410,7 @@ async function dispatchReviewIntentWorkflow(
   workflowEngine: ReviewIntentWorkflowEngine,
   intent: ClaimedReviewIntent,
 ): Promise<ReviewIntentWorkflowHandle> {
+  assertLeaseHeldForDispatch(workflowEngine);
   return workflowEngine.start('review-pr', intent, {
     id: createPullRequestWorkflowId({
       repositoryId: intent.pullRequest.repositoryId,

@@ -4,7 +4,7 @@ import {
   assertDurableStorageForRecovery,
   workflow,
 } from '@lostgradient/weft';
-import type { Storage } from '@lostgradient/weft';
+import type { EngineLeaseHealth, Storage } from '@lostgradient/weft';
 import type { EngineHealthDependency } from '../health';
 import type { StopReviewRunResult } from './review-workflow';
 
@@ -45,6 +45,7 @@ export type ReviewIntentWorkflowEngine = {
     input: unknown,
     options: unknown,
   ): Promise<unknown>;
+  getLeaseHealth(): EngineLeaseHealth;
 };
 
 export type EngineSingletonLock = {
@@ -137,6 +138,18 @@ export async function createEngineRuntime(
         );
       },
       async release() {
+        // Weft's own `[Symbol.asyncDispose]` attempts the lease release in a
+        // `finally` even when this call rejects (e.g. a queued inline
+        // workflow drain failure) -- but `LeaseManager.release()` swallows
+        // every storage error internally and never reports success or
+        // failure either way. There is currently no signal, throwing or not,
+        // that tells us whether the lease record was actually deleted (see
+        // stevekinney/weft#853, filed while investigating #211's "shutdown
+        // completed WITHOUT releasing the singleton lease" log line). Until
+        // that lands, retrying the whole disposal on any error is the best
+        // available response -- see `DEFAULT_RELEASE_ATTEMPTS` in `index.ts`,
+        // which was widened specifically so this has more of the shutdown
+        // window to succeed.
         releasePromise ??= (async () => {
           poller.stop();
           try {

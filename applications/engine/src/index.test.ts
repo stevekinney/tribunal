@@ -508,6 +508,10 @@ describe('createStartingEngineServerOptions', () => {
 });
 
 describe('createReviewIntentKickScheduler', () => {
+  // Idle shutdown exits non-zero (IDLE_SHUTDOWN_EXIT_CODE in index.ts) so a
+  // deployment with `auto_stop_machines = "off"` (see #211) always gets a
+  // self-healing restart from Fly's crash-restart policy instead of a
+  // silent, permanent stop.
   it('releases the runtime and exits after the configured idle window', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);
@@ -531,7 +535,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     expect(scheduler.kick()).toEqual({ started: false, reason: 'released' });
     vi.useRealTimers();
   });
@@ -603,7 +607,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     vi.useRealTimers();
   });
 
@@ -642,7 +646,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(2);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     vi.useRealTimers();
   });
 
@@ -682,7 +686,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     vi.useRealTimers();
   });
 
@@ -721,7 +725,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     vi.useRealTimers();
   });
 
@@ -759,7 +763,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     vi.useRealTimers();
   });
 });
@@ -819,6 +823,42 @@ describe('startSandboxReaper', () => {
     ).toBeUndefined();
 
     expect(setIntervalFunction).not.toHaveBeenCalled();
+  });
+
+  // Regression for #211: a throwing sandbox reap (e.g. Weft's
+  // EngineLeaseNotHeldError) must be logged and swallowed at this boundary,
+  // not left to propagate and terminate the process -- and the interval
+  // itself must keep firing afterward so the next tick still gets a chance
+  // to succeed.
+  it('survives a reaper rejection and still reaps on the next interval tick', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const reapClosedPullRequestSandboxes = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EngineLeaseNotHeldError'))
+      .mockResolvedValueOnce([]);
+    const runtime = { reapClosedPullRequestSandboxes };
+    let tick: (() => void) | undefined;
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      tick = callback;
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+
+    tick?.();
+    await flushPromises();
+
+    expect(reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith('[engine] sandbox reaper failed', expect.any(Error));
+
+    // Nothing about the failed run tore down the timer or the process --
+    // firing the same interval callback again must still invoke the reaper.
+    tick?.();
+    await flushPromises();
+
+    expect(reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(2);
+
+    consoleError.mockRestore();
   });
 });
 

@@ -22,6 +22,32 @@ export function parsePort(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
 }
 
+/**
+ * Exit code used when the idle-shutdown path decides, on its own initiative,
+ * that there is nothing left to do and stops the process (see
+ * `createReviewIntentKickScheduler`'s `shutdownIfIdle`).
+ *
+ * `deployment/fly/engine.toml` sets `auto_stop_machines = "off"` specifically
+ * because this app's operator never wants Fly to consider a stopped engine
+ * machine "normal idling" — every stop is an incident until proven otherwise
+ * (see #211). Fly's machine restart policy only restarts a machine whose
+ * process exited non-zero; an `exit(0)` reads as an intentional, successful
+ * stop and is never auto-restarted. Before this fix the idle-shutdown path
+ * called `exit(0)`, so any idle-shutdown decision — regardless of whether it
+ * was actually correct — left the machine stopped with no automatic
+ * recovery, which is exactly what produced the ~10 hour outage in #211.
+ * Exiting non-zero here instead makes every idle-shutdown decision
+ * self-healing: Fly restarts the machine, and if there is genuinely still no
+ * work, the same decision (and the same non-zero exit) simply repeats. That
+ * trade-off — periodic restarts instead of a silent, unbounded stop — is the
+ * one this deployment has already chosen by turning `auto_stop_machines`
+ * off. This is deliberately distinct from the clean `exit(0)` in
+ * `createSignalShutdown`, which responds to a SIGTERM Fly itself sent for a
+ * rolling deploy handoff and must stay 0 so Fly does not fight its own
+ * deploy by restarting the outgoing machine.
+ */
+const IDLE_SHUTDOWN_EXIT_CODE = 1;
+
 const SINGLETON_RETRY_COOLDOWN_MS = 5_000;
 // Each cycle already spends ~8.25 minutes inside the acquire budget
 // (`postgres-advisory-lock.ts`), so 5 cycles is a ~41 minute outer ceiling —
@@ -507,7 +533,10 @@ export function createReviewIntentKickScheduler(
       released = true;
       await runtime.release();
       logger.log('[engine] idle shutdown complete');
-      exit(0);
+      // Non-zero: see IDLE_SHUTDOWN_EXIT_CODE — this deployment never treats
+      // a stopped engine machine as normal idling, so every voluntary stop
+      // must be able to self-heal via Fly's crash-restart policy.
+      exit(IDLE_SHUTDOWN_EXIT_CODE);
     } catch (error) {
       released = false;
       logger.error('[engine] idle shutdown check failed', error);
@@ -547,8 +576,16 @@ export type SignalShutdownInput = {
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
-const DEFAULT_RELEASE_ATTEMPTS = 3;
-const RELEASE_RETRY_DELAY_MS = 500;
+// `deployment/fly/engine.toml` gives the shutdown handler a 20s
+// `kill_timeout` before Fly escalates to SIGKILL. #211 observed all release
+// attempts fail during a real shutdown; the previous budget (3 attempts,
+// 500ms apart — under 2s total) gave a transient failure almost no room to
+// clear before giving up. Widening it to most of the kill_timeout window
+// gives the same kind of transient condition a much better chance to
+// self-heal, without changing what happens if it never does (still logs
+// loudly and still exits 0, per the SIGTERM contract with Fly's deploy).
+const DEFAULT_RELEASE_ATTEMPTS = 8;
+const RELEASE_RETRY_DELAY_MS = 1_000;
 
 /**
  * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
