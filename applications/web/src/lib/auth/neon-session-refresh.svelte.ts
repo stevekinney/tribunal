@@ -5,7 +5,6 @@ import {
 } from './neon-client';
 
 export type NeonSessionRefreshState = {
-  readonly resumeRefreshStatus: NeonSessionResumeRefreshStatus;
   readonly isResumingSession: boolean;
   readonly hasResumeRefreshFailed: boolean;
 };
@@ -44,9 +43,6 @@ export function useNeonSessionRefresh(): NeonSessionRefreshState {
   });
 
   return {
-    get resumeRefreshStatus() {
-      return resumeRefreshStatus;
-    },
     get isResumingSession() {
       return resumeRefreshStatus !== 'idle';
     },

@@ -137,7 +137,10 @@ describe('(authenticated) layout', () => {
     await expect
       .element(browserPage.getByRole('status'))
       .toHaveTextContent('Session refresh is taking longer than expected.');
-    await expect.element(browserPage.getByRole('button', { name: 'Reload' })).toBeVisible();
+    const reloadLink = browserPage.getByRole('link', { name: 'Reload' });
+    await expect.element(reloadLink).toBeVisible();
+    await expect.element(reloadLink).toHaveAttribute('href', '/repositories');
+    await expect.element(reloadLink).toHaveAttribute('data-sveltekit-reload', 'true');
     expect(document.querySelector('#main-content')?.hasAttribute('inert')).toBe(true);
     expect(document.querySelector('.mobile-topbar')?.hasAttribute('inert')).toBe(true);
     expect(document.querySelector('.desktop-sidebar-shell')?.hasAttribute('inert')).toBe(true);

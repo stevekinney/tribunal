@@ -151,7 +151,7 @@
       <div class="session-resume-panel">
         {#if neonSessionRefresh.hasResumeRefreshFailed}
           <span>Session refresh is taking longer than expected.</span>
-          <Button variant="secondary" size="sm" onclick={() => window.location.reload()}>
+          <Button href="/onboarding" variant="secondary" size="sm" data-sveltekit-reload>
             Reload
           </Button>
         {:else}

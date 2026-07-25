@@ -114,7 +114,10 @@ describe('/onboarding page', () => {
     await expect
       .element(page.getByRole('status'))
       .toHaveTextContent('Session refresh is taking longer than expected.');
-    await expect.element(page.getByRole('button', { name: 'Reload' })).toBeVisible();
+    const reloadLink = page.getByRole('link', { name: 'Reload' });
+    await expect.element(reloadLink).toBeVisible();
+    await expect.element(reloadLink).toHaveAttribute('href', '/onboarding');
+    await expect.element(reloadLink).toHaveAttribute('data-sveltekit-reload', 'true');
     expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
   });
 
