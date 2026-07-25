@@ -1,10 +1,10 @@
 # Documentation index
 
-Tribunal is a SvelteKit web app whose only integration is GitHub: log in with GitHub,
-install the Tribunal GitHub App, and browse the open pull requests for the repositories
-the install grants access to. The data model is deliberately flat
-(`user → github_installation → installation_repository → repository → pull_request`).
-There are no background workers, workflow engine, or other integrations.
+Tribunal is a SvelteKit web app plus review engine whose only product integration is GitHub: log in
+with GitHub, install the Tribunal GitHub App, browse the open pull requests for the repositories the
+install grants access to, and run configured review agents. The authorization data model is
+deliberately flat (`user → github_installation → installation_repository → repository →
+pull_request`).
 
 ## Start here
 
@@ -24,6 +24,7 @@ There are no background workers, workflow engine, or other integrations.
 ## Development guides
 
 - [check-matrix.md](check-matrix.md) - Check inventory and CI/hook policy
+- [settings-matrix.md](settings-matrix.md) - Trace user, repository, and agent settings from UI to runtime effect
 
 ## Technical reference
 
