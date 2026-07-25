@@ -33,6 +33,7 @@ pull_request`).
 - [API.md](API.md) - HTTP API reference (the API-key check and GitHub webhook routes)
 - [api/observability-envelope.md](api/observability-envelope.md) - Correlation and request ID propagation
 - [api-keys-authorization.md](api-keys-authorization.md) - Customer API key authorization policy
+- [github-cache-identity-audit.md](github-cache-identity-audit.md) - GitHub cache key identity and payload-shape audit
 - [PLATFORM_ADMIN_RUNBOOK.md](PLATFORM_ADMIN_RUNBOOK.md) - Platform administrator access procedures
 
 ## Framework guides
