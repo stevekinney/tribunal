@@ -433,4 +433,141 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['agent_1']);
   });
+
+  it('shows a danger zone with a stop-watching control for a watched repository', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await expect.element(page.getByRole('heading', { name: 'Danger zone' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop watching' })).toBeVisible();
+  });
+
+  it('disables the stop-watching button while a save is in flight so the two writes cannot race', async () => {
+    // Regression: the settings save always writes `watched: true`, while
+    // Stop watching submits `watched` absent (off) with the agentIds/
+    // ignoreGlobs snapshot taken at render. Submitting both at once could
+    // race, so Stop watching must be inert for the duration of a save.
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const stopWatchingButton = page.getByRole('button', { name: 'Stop watching' });
+    await expect.element(stopWatchingButton).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    await expect.element(stopWatchingButton).toBeDisabled();
+
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'success', status: 200, data: { success: true } },
+      update: vi.fn(),
+    });
+
+    await expect.element(stopWatchingButton).not.toBeDisabled();
+  });
+
+  it('hides the danger zone stop-watching control for a repository that is not watched', async () => {
+    render(SettingsPage, {
+      data: {
+        ...baseData,
+        repository: {
+          ...baseData.repository,
+          review: { ...baseData.repository.review, watched: false },
+        },
+      },
+      form: null,
+      params: { repositoryId: '101' },
+    });
+
+    await expect
+      .element(page.getByRole('button', { name: 'Stop watching' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('gates unwatching behind a confirmation dialog', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect
+      .element(dialog.getByRole('heading', { name: 'Stop watching this repository?' }))
+      .toBeVisible();
+    await expect.element(dialog.getByRole('button', { name: 'Stop watching' })).toBeVisible();
+  });
+
+  it('submits the unwatch form when the confirmation dialog is confirmed', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
+    const submitSpy = vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+
+    // Unwatching is destructive, so per `.claude/rules/component-library.md`
+    // the confirm button stays disabled until the repository name is typed.
+    // Asserting the disabled state first is the point of the guard: a test
+    // that only typed and clicked would still pass if the gate vanished.
+    const dialog = page.getByRole('dialog');
+    const confirmButton = dialog.getByRole('button', { name: 'Stop watching' });
+    await expect.element(confirmButton).toBeDisabled();
+    expect(submitSpy).not.toHaveBeenCalled();
+
+    await dialog.getByRole('textbox').fill('review-target');
+    await confirmButton.click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables saving as soon as unwatching is confirmed, not just while a save is already in flight', async () => {
+    // Regression: confirming "Stop watching" starts a real (non-enhanced)
+    // cross-document navigation to /repositories, which the old page stays
+    // interactive through until it completes — the disabled={saving} guard
+    // on the save button only blocks a save that was already in flight
+    // *before* unwatch was confirmed. Without also gating on `unwatching`, a
+    // slow network lets the user click "Save settings" after confirming
+    // unwatch, sending the inverse pair of concurrent writes (watched: false
+    // with the old values vs. watched: true with the edited ones).
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
+    vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
+
+    const saveButton = page.getByRole('button', { name: 'Save settings' });
+    await expect.element(saveButton).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('textbox').fill('review-target');
+    await dialog.getByRole('button', { name: 'Stop watching' }).click();
+
+    await expect.element(saveButton).toBeDisabled();
+  });
+
+  it('posts only the repository id, so unwatching cannot roll back settings saved elsewhere', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    // The form targets the repositories list's `?/watch` action rather than a
+    // route-local one, so a settings tab open from before this change keeps
+    // working, and `watched` is intentionally never set since this form only
+    // ever turns watching off.
+    //
+    // Regression: it used to also submit `agentIds` and `ignoreGlobs` to
+    // preserve them for a later re-add. But those were this page's
+    // render-time snapshot, and `?/watch` treats submitted values as
+    // authoritative — so unwatching from a tab left open while another tab
+    // saved new settings silently rolled that newer configuration back.
+    // Omitting both makes the action read the repository's current saved
+    // settings instead, which preserves them without the stale snapshot.
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
+    const formData = new FormData(unwatchForm);
+
+    expect(formData.get('repositoryId')).toBe('101');
+    expect(formData.getAll('agentIds')).toEqual([]);
+    expect(formData.get('ignoreGlobs')).toBeNull();
+    expect(formData.get('watched')).toBeNull();
+  });
 });

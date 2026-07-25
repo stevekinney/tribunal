@@ -27,6 +27,22 @@ export interface DashboardSummary {
   attentionPullRequestCountExact: boolean;
   /** True when at least one repository's GitHub data could not be read this build. */
   hasUnavailableRepositories: boolean;
+  /**
+   * True when at least one *available* repository has an open pull request
+   * whose CI/merge/thread decoration is missing or stale. Distinct from
+   * `hasUnavailableRepositories`: this is not a failure, so copy built on
+   * this flag must not describe it as one. It is also not exclusively a
+   * newly-found pull request — the same condition covers an older stale
+   * decoration — so copy must not promise the count fills in shortly.
+   */
+  hasUnanalyzedPullRequests: boolean;
+  /**
+   * True when at least one repository has more open pull requests than a
+   * single build fetches. Independent of `hasUnanalyzedPullRequests`: both
+   * can hold at once, and unlike that flag this one does not resolve on its
+   * own, so copy must report it even when another cause also applies.
+   */
+  hasPullRequestsAtCap: boolean;
 }
 
 /** Build the summary strip counts from already-built dashboard rows. */
@@ -38,6 +54,8 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
   let attentionPullRequestCount = 0;
   let attentionPullRequestCountExact = true;
   let hasUnavailableRepositories = false;
+  let hasUnanalyzedPullRequests = false;
+  let hasPullRequestsAtCap = false;
 
   for (const row of rows) {
     if (row.defaultBranchStatus === 'failing') failingDefaultBranchCount += 1;
@@ -58,6 +76,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
     if (row.openPullRequestCountAtCap) {
       openPullRequestCountExact = false;
       attentionPullRequestCountExact = false;
+      hasPullRequestsAtCap = true;
     }
     // A fetched pull request with an unknown CI/merge status or a missing
     // unresolved-thread count means its cached decoration is missing or
@@ -73,6 +92,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
       )
     ) {
       attentionPullRequestCountExact = false;
+      hasUnanalyzedPullRequests = true;
     }
   }
 
@@ -85,5 +105,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
     attentionPullRequestCount,
     attentionPullRequestCountExact,
     hasUnavailableRepositories,
+    hasUnanalyzedPullRequests,
+    hasPullRequestsAtCap,
   };
 }

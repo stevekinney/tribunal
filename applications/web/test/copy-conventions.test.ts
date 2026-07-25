@@ -3,13 +3,14 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Concurrently restructured by another change; has a genuine "Open PRs"
- * table header violation. Remove this entry — do not weaken the check —
- * once that restructuring lands and fixes it. Tracked in the pull request
- * description. Kept in sync with the matching `ignores` entry in
- * eslint.config.js's empty-state `no-restricted-syntax` rule.
+ * Files temporarily excluded from the banned-abbreviation scan below,
+ * pending a fix already tracked elsewhere. Empty by default — add an entry
+ * only alongside a comment naming the tracking issue/pull request, and
+ * remove it as soon as that work lands. Kept in sync with the matching
+ * `ignores` entry in eslint.config.js's empty-state `no-restricted-syntax`
+ * rule when both checks share an exclusion.
  */
-const EXCLUDED_FILES = [join('routes', '(authenticated)', 'repositories', '+page.svelte')];
+const EXCLUDED_FILES: string[] = [];
 
 /**
  * Enforces .claude/rules/conventions.md ("Prefer full words in names") for

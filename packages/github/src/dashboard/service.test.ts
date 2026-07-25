@@ -603,42 +603,58 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('renders unknown, not a classic-only verdict, when the ruleset read fails', async () => {
-    expect.assertions(1);
-    const getBranch = vi.fn().mockResolvedValue({
-      data: {
-        commit: { sha: 'resolved-sha' },
-        protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
-      },
-    });
-    const getBranchRules = vi.fn().mockRejectedValue(new Error('rulesets not available'));
-    const octokit = makeOctokit({
-      pullRequests: [],
-      checkRuns: {
-        total_count: 2,
-        check_runs: [
-          { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
-          { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
-        ],
-      },
-      getBranch,
-      getBranchRules,
-    });
-    const context = createMockContext({
-      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
-      db: withDbSelectResult([]),
-    });
+    expect.assertions(2);
+    // `getBranchRules` routes through `cachedRead`, which already logs its
+    // own `[github-cache] ... api-error` line at `console.error` before
+    // rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert for the
+    // same failure.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const getBranch = vi.fn().mockResolvedValue({
+        data: {
+          commit: { sha: 'resolved-sha' },
+          protection: { required_status_checks: { contexts: ['Unit Tests'], checks: [] } },
+        },
+      });
+      const getBranchRules = vi.fn().mockRejectedValue(new Error('rulesets not available'));
+      const octokit = makeOctokit({
+        pullRequests: [],
+        checkRuns: {
+          total_count: 2,
+          check_runs: [
+            { name: 'Unit Tests', status: 'completed', conclusion: 'success' },
+            { name: 'Deploy Production', status: 'completed', conclusion: 'failure' },
+          ],
+        },
+        getBranch,
+        getBranchRules,
+      });
+      const context = createMockContext({
+        getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+        db: withDbSelectResult([]),
+      });
 
-    const rows = await buildRepositoryDashboard(context, [
-      makeRepository({ defaultBranch: 'main', commit: null }),
-    ]);
+      const rows = await buildRepositoryDashboard(context, [
+        makeRepository({ defaultBranch: 'main', commit: null }),
+      ]);
 
-    // GitHub's `getBranchRules` returns `200` with an empty array for a
-    // genuinely rule-free branch — it never throws to signal "no rules". So
-    // a thrown error here can only mean the read didn't complete, not that
-    // this branch has no ruleset-required checks; degrading to the
-    // classic-protection-only set would risk a false green if a
-    // ruleset-required check exists and never gets seen because of it.
-    expect(rows[0].defaultBranchStatus).toBe('unknown');
+      // GitHub's `getBranchRules` returns `200` with an empty array for a
+      // genuinely rule-free branch — it never throws to signal "no rules". So
+      // a thrown error here can only mean the read didn't complete, not that
+      // this branch has no ruleset-required checks; degrading to the
+      // classic-protection-only set would risk a false green if a
+      // ruleset-required check exists and never gets seen because of it.
+      expect(rows[0].defaultBranchStatus).toBe('unknown');
+      // Regression: the readRulesetRequiredChecks catch used to discard this
+      // error entirely — nothing in service.ts logged anything.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('getBranchRules failed for acme/widgets'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   it('treats a ruleset "Require workflows to pass" rule as an unmatched requirement rather than dropping it', async () => {
@@ -855,23 +871,49 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('does not attempt a live branch-head lookup once the api budget is exhausted', async () => {
-    expect.assertions(2);
-    const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
-    const octokit = makeOctokit({ pullRequests: [], getBranch });
-    const context = createMockContext({
-      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
-      db: withDbSelectResult([]),
-    });
+    expect.assertions(4);
+    // Budget exhaustion is this build's own deliberate choice to stop, not a
+    // bug or a GitHub failure, so it logs at `console.debug` — a `warn`/
+    // `error` here would page an operator for expected behavior at scale.
+    const consoleDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    // Regression: the budget-exhaustion marker is thrown *inside* the fetch
+    // function passed to `cachedRead`, so the cache layer's own
+    // `fetchAndStore` catch would otherwise still log its generic
+    // `[github-cache] ... api-error` line at `console.error` for this same,
+    // fully-expected event — a downgrade in this module alone would not have
+    // prevented that alert. `DashboardBudgetExhaustedError` extends
+    // `CachedReadAbortedError` specifically so the cache layer recognizes and
+    // skips it too.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
+      const octokit = makeOctokit({ pullRequests: [], getBranch });
+      const context = createMockContext({
+        getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+        db: withDbSelectResult([]),
+      });
 
-    // Budget of 1 covers only the pull-request inventory call.
-    const rows = await buildRepositoryDashboard(
-      context,
-      [makeRepository({ defaultBranch: 'main', commit: null })],
-      { apiBudget: 1 },
-    );
+      // Budget of 1 covers only the pull-request inventory call.
+      const rows = await buildRepositoryDashboard(
+        context,
+        [makeRepository({ defaultBranch: 'main', commit: null })],
+        { apiBudget: 1 },
+      );
 
-    expect(rows[0].defaultBranchStatus).toBe('unknown');
-    expect(getBranch).not.toHaveBeenCalled();
+      expect(rows[0].defaultBranchStatus).toBe('unknown');
+      expect(getBranch).not.toHaveBeenCalled();
+      // Regression: the get-branch-head-sha catch used to discard this error
+      // entirely — nothing in service.ts logged anything.
+      expect(consoleDebug).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'getBranchHeadSha skipped for acme/widgets (#1): API budget exhausted',
+        ),
+      );
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleDebug.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 
   it('treats missing pull_request_state rows as unknown decoration, not absence', async () => {
@@ -948,16 +990,34 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('renders unknown default-branch status when the CI check-run fetch throws', async () => {
-    expect.assertions(1);
-    const octokit = makeOctokit({ pullRequests: [], checksError: new Error('checks unavailable') });
-    const context = createMockContext({
-      getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
-      db: withDbSelectResult([]),
-    });
+    expect.assertions(2);
+    // `getDefaultBranchCiStatus` routes through `cachedRead`, which already
+    // logs its own `[github-cache] ... api-error` line at `console.error`
+    // before rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const octokit = makeOctokit({
+        pullRequests: [],
+        checksError: new Error('checks unavailable'),
+      });
+      const context = createMockContext({
+        getInstallationOctokit: vi.fn().mockResolvedValue(octokit),
+        db: withDbSelectResult([]),
+      });
 
-    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+      const rows = await buildRepositoryDashboard(context, [makeRepository()]);
 
-    expect(rows[0].defaultBranchStatus).toBe('unknown');
+      expect(rows[0].defaultBranchStatus).toBe('unknown');
+      // Regression: the getDefaultBranchCiStatus catch used to discard this
+      // error entirely — nothing in service.ts logged anything.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('getDefaultBranchCiStatus failed for acme/widgets'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   it('treats a malformed cached branch-head envelope (neither requiredChecks nor requiredCheckNames) as having no required checks', async () => {
@@ -1000,46 +1060,70 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('renders a github-error row when inventory list fails for one repository, without failing the build', async () => {
-    expect.assertions(3);
-    const failingOctokit = makeOctokit({ listPullsError: new Error('boom') });
-    const healthyOctokit = makeOctokit({ pullRequests: [makePullRequest()] });
-    const getInstallationOctokit = vi
-      .fn()
-      .mockResolvedValueOnce(failingOctokit)
-      .mockResolvedValueOnce(healthyOctokit);
-    const context = createMockContext({
-      getInstallationOctokit,
-      db: withDbSelectResult([]),
-    });
+    expect.assertions(4);
+    // `listPullRequests` routes through `cachedRead`, which already logs its
+    // own `[github-cache] ... api-error` line at `console.error` before
+    // rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failingOctokit = makeOctokit({ listPullsError: new Error('boom') });
+      const healthyOctokit = makeOctokit({ pullRequests: [makePullRequest()] });
+      const getInstallationOctokit = vi
+        .fn()
+        .mockResolvedValueOnce(failingOctokit)
+        .mockResolvedValueOnce(healthyOctokit);
+      const context = createMockContext({
+        getInstallationOctokit,
+        db: withDbSelectResult([]),
+      });
 
-    const rows = await buildRepositoryDashboard(context, [
-      makeRepository({ id: 1 }),
-      makeRepository({ id: 2 }),
-    ]);
+      const rows = await buildRepositoryDashboard(context, [
+        makeRepository({ id: 1 }),
+        makeRepository({ id: 2 }),
+      ]);
 
-    expect(rows[0].dataStatus).toBe('unavailable');
-    expect(rows[0].unavailableReason).toBe('github-error');
-    expect(rows[1].dataStatus).toBe('ok');
+      expect(rows[0].dataStatus).toBe('unavailable');
+      expect(rows[0].unavailableReason).toBe('github-error');
+      expect(rows[1].dataStatus).toBe('ok');
+      // Regression: the listPullRequests catch used to discard this error
+      // entirely — nothing in service.ts logged anything.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('listPullRequests failed for acme/widgets (#1)'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   it('trips the budget on a rate-limit error and stops calling GitHub for remaining repositories (sequential, concurrency: 1)', async () => {
-    expect.assertions(4);
-    const rateLimitedOctokit = makeOctokit({ listPullsError: rateLimitError });
-    const getInstallationOctokit = vi.fn().mockResolvedValue(rateLimitedOctokit);
-    const context = createMockContext({ getInstallationOctokit });
+    expect.assertions(5);
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rateLimitedOctokit = makeOctokit({ listPullsError: rateLimitError });
+      const getInstallationOctokit = vi.fn().mockResolvedValue(rateLimitedOctokit);
+      const context = createMockContext({ getInstallationOctokit });
 
-    const rows = await buildRepositoryDashboard(
-      context,
-      [makeRepository({ id: 1 }), makeRepository({ id: 2 }), makeRepository({ id: 3 })],
-      { concurrency: 1 },
-    );
+      const rows = await buildRepositoryDashboard(
+        context,
+        [makeRepository({ id: 1 }), makeRepository({ id: 2 }), makeRepository({ id: 3 })],
+        { concurrency: 1 },
+      );
 
-    expect(rows[0].unavailableReason).toBe('rate-limited');
-    expect(rows[1].unavailableReason).toBe('rate-limited');
-    expect(rows[2].unavailableReason).toBe('rate-limited');
-    // Only the first repository's installation octokit resolution is attempted;
-    // the rest short-circuit before ever asking for an installation client.
-    expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
+      expect(rows[0].unavailableReason).toBe('rate-limited');
+      expect(rows[1].unavailableReason).toBe('rate-limited');
+      expect(rows[2].unavailableReason).toBe('rate-limited');
+      // Only the first repository's installation octokit resolution is attempted;
+      // the rest short-circuit before ever asking for an installation client.
+      expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('listPullRequests rate-limited for acme/widgets (#1)'),
+        rateLimitError,
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   // With concurrency > 1, the shared budget's exhaustion (or, here, its
@@ -1229,31 +1313,53 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('renders a github-error row (not no-installation) when installation token resolution throws', async () => {
-    expect.assertions(2);
-    const getInstallationOctokit = vi.fn().mockRejectedValue(new Error('token mint failed'));
-    const context = createMockContext({ getInstallationOctokit });
+    expect.assertions(3);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const getInstallationOctokit = vi.fn().mockRejectedValue(new Error('token mint failed'));
+      const context = createMockContext({ getInstallationOctokit });
 
-    const rows = await buildRepositoryDashboard(context, [makeRepository()]);
+      const rows = await buildRepositoryDashboard(context, [makeRepository()]);
 
-    expect(rows[0].dataStatus).toBe('unavailable');
-    expect(rows[0].unavailableReason).toBe('github-error');
+      expect(rows[0].dataStatus).toBe('unavailable');
+      expect(rows[0].unavailableReason).toBe('github-error');
+      // Regression: the getInstallationOctokit catch used to discard this
+      // error entirely — nothing in service.ts logged anything.
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('getInstallationOctokit failed for acme/widgets'),
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('marks the shared budget rate-limited when installation token resolution throws a rate-limit error (sequential, concurrency: 1)', async () => {
-    expect.assertions(3);
-    const getInstallationOctokit = vi.fn().mockRejectedValue(rateLimitError);
-    const context = createMockContext({ getInstallationOctokit });
+    expect.assertions(4);
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const getInstallationOctokit = vi.fn().mockRejectedValue(rateLimitError);
+      const context = createMockContext({ getInstallationOctokit });
 
-    const rows = await buildRepositoryDashboard(
-      context,
-      [makeRepository({ id: 1 }), makeRepository({ id: 2 })],
-      { concurrency: 1 },
-    );
+      const rows = await buildRepositoryDashboard(
+        context,
+        [makeRepository({ id: 1 }), makeRepository({ id: 2 })],
+        { concurrency: 1 },
+      );
 
-    expect(rows[0].unavailableReason).toBe('rate-limited');
-    // The budget trips for the whole build, so the second repository never
-    // even attempts to resolve an installation client.
-    expect(rows[1].unavailableReason).toBe('rate-limited');
-    expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
+      expect(rows[0].unavailableReason).toBe('rate-limited');
+      // The budget trips for the whole build, so the second repository never
+      // even attempts to resolve an installation client.
+      expect(rows[1].unavailableReason).toBe('rate-limited');
+      expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
+      // A rate limit is an expected operational condition, not a bug — it
+      // logs at `warn`, not `error`.
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('getInstallationOctokit rate-limited for acme/widgets'),
+        rateLimitError,
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 });

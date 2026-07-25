@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { PageProps } from './$types';
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { SvelteSet } from 'svelte/reactivity';
   import { enhance } from '$app/forms';
-  import { invalidateAll } from '$app/navigation';
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Link } from '@lostgradient/cinder/link';
@@ -13,32 +12,24 @@
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Skeleton } from '@lostgradient/cinder/skeleton';
   import { Table } from '@lostgradient/cinder/table';
-  import { Toggle } from '@lostgradient/cinder/toggle';
+  import { Tooltip } from '@lostgradient/cinder/tooltip';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
   import { StatGroup } from '@lostgradient/cinder/stat-group';
   import { DataList } from '@lostgradient/cinder/data-list';
   import { StackedListItem } from '@lostgradient/cinder/stacked-list-item';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { FolderGit2, Plus } from 'lucide-svelte';
+  import { CircleAlert, FolderGit2, Info, Plus, Search } from 'lucide-svelte';
   import GithubIcon from 'lucide-svelte/icons/github';
+  import SettingsIcon from 'lucide-svelte/icons/settings';
   import WebhookIcon from 'lucide-svelte/icons/webhook';
+  import type { DashboardUnavailableReason } from '@tribunal/github/dashboard/types';
 
   let { data, form }: PageProps = $props();
 
   let searchQuery = $state('');
   let repositoryToAddId = $state('');
   let repositoryToAddInput = $state('');
-
-  /**
-   * Optimistic watch states keyed by repository ID. Populated on toggle click and
-   * cleared after the form action's `update()` resolves, so the server state takes
-   * over again. On failure, clearing the local state rolls the UI back to the
-   * last server-confirmed value.
-   */
-  const localWatchStates = new SvelteMap<number, boolean>();
-  const activeWatchSubmissions = new SvelteSet<number>();
-  const queuedWatchStates = new SvelteMap<number, boolean>();
 
   // Only repositories explicitly added to Tribunal (watched) appear in the
   // table. The full accessible catalog is never rendered here — it lives behind
@@ -47,21 +38,13 @@
   // `summary`, `attentionPullRequests`, and `dashboardRowsById` are Promises —
   // every GitHub-dependent field on this page. They're awaited directly in the
   // markup below (`{#await}`) rather than derived here, so the repository
-  // identity, search, and watch toggles below paint immediately while the
-  // dashboard fan-out is still in flight.
+  // identity and search below paint immediately while the dashboard fan-out
+  // is still in flight.
   const repositories = $derived(data.repositories);
   const hasInstallations = $derived(data.installations.length > 0);
   // The Add picker only renders when there is something to add, so empty-state
   // copy must not point at it unless an addable repository actually exists.
   const hasAddableRepositories = $derived(data.addableRepositories.length > 0);
-
-  /**
-   * Resolves the effective watch state: returns the optimistic local state if
-   * a toggle is pending, otherwise falls back to the confirmed server state.
-   */
-  function watchedFor(id: number, serverValue: boolean): boolean {
-    return localWatchStates.has(id) ? (localWatchStates.get(id) as boolean) : serverValue;
-  }
 
   const addableRepositoryOptions = $derived(
     data.addableRepositories.map((repository) => ({
@@ -164,79 +147,111 @@
   }
 
   /**
-   * Returns the agent IDs to submit when toggling a table row's watch state.
-   * The table only ever contains added (watched) repositories, so this always
-   * preserves the repository's current agent assignment — removing a repository
-   * keeps its saved settings intact for a later re-add. First-time defaults for
-   * repositories added through the picker are resolved server-side.
+   * Plain-language reason a single repository's row is unavailable this
+   * build, shown as a tooltip on the per-row warning indicator. Distinguishes
+   * a deliberate skip (shared API budget spent, or GitHub rate-limited this
+   * build) from an actual GitHub failure — these are different operational
+   * situations and previously rendered identically as an unlabeled "Unknown".
    */
-  function agentIdsForWatch(repository: (typeof data.repositories)[number]): string[] {
-    return repository.review.agents.map((a) => a.id);
+  function unavailableReasonMessage(reason: DashboardUnavailableReason | undefined): string {
+    const map: Record<DashboardUnavailableReason, string> = {
+      'no-installation': 'No GitHub installation is connected for this repository.',
+      'api-budget-exhausted':
+        "Skipped this build: Tribunal's shared GitHub API budget ran out before reaching this repository.",
+      'rate-limited':
+        'Skipped this build: GitHub rate-limited Tribunal partway through, so this repository was not checked.',
+      'github-error': "GitHub returned an error while reading this repository's data.",
+    };
+    return reason
+      ? map[reason]
+      : "This repository's GitHub data could not be refreshed this build.";
   }
 
-  function formDataForWatch(
-    repository: (typeof data.repositories)[number],
-    watched: boolean,
-  ): FormData {
-    const formData = new FormData();
-    formData.set('repositoryId', String(repository.id));
-    formData.set('watched', watched ? 'on' : '');
-    for (const agentId of agentIdsForWatch(repository)) {
-      formData.append('agentIds', agentId);
+  /**
+   * Every reason the attention list is inexact, not just the first one.
+   *
+   * These causes are independent — a repository can be over the fetch cap
+   * *and* hold a pull request with a missing decoration — so reporting only
+   * the first would hide the others. That matters most for the cap, which
+   * does not resolve on its own: leading with a self-healing cause would
+   * imply the list becomes complete on its own when it will not.
+   */
+  function incompleteAttentionListReasons(currentSummary: {
+    hasUnavailableRepositories: boolean;
+    hasUnanalyzedPullRequests: boolean;
+    hasPullRequestsAtCap: boolean;
+  }): string {
+    const reasons: string[] = [];
+    if (currentSummary.hasUnavailableRepositories) {
+      reasons.push(
+        "One or more repositories could not be checked this build — see that repository's warning icon in the table for why, clearing any search filter if it isn't visible.",
+      );
     }
-    formData.set('ignoreGlobs', repository.review.ignoreGlobs.join('\n'));
-    return formData;
+    if (currentSummary.hasPullRequestsAtCap) {
+      // "may have" rather than "have": the cap flag is set purely because a
+      // repository's fetched page came back full, which does not establish
+      // that another pull request exists beyond it. At exactly the limit,
+      // nothing is actually missing.
+      reasons.push(
+        'Some repositories returned a full page of open pull requests, so there may be more than Tribunal counted.',
+      );
+    }
+    if (currentSummary.hasUnanalyzedPullRequests) {
+      reasons.push(
+        "Some pull requests don't have complete status information yet, so they aren't counted either way.",
+      );
+    }
+    return reasons.join(' ');
   }
 
-  function setWatchedFormValue(form: HTMLFormElement, watched: boolean): void {
-    const watchedField = form.elements.namedItem('watched');
-    if (watchedField instanceof HTMLInputElement) {
-      watchedField.value = watched ? 'on' : '';
-    }
+  /**
+   * Build-wide phrasing of the same reasons, used by the top banner when
+   * every unavailable repository this build shares one cause — naming it
+   * beats a generic "some repositories" notice. When repositories disagree
+   * on the reason, the banner falls back to pointing at each row's own
+   * indicator instead of picking one repository's reason to feature.
+   */
+  /**
+   * Stands in for an unavailable row whose cause was never established, so
+   * such rows still reach the banner instead of being filtered out of it.
+   */
+  const UNATTRIBUTED_REASON = 'unattributed' as const;
+  type BannerReason = DashboardUnavailableReason | typeof UNATTRIBUTED_REASON;
+
+  function unavailableBannerMessage(reason: BannerReason): string {
+    const map: Record<BannerReason, string> = {
+      unattributed:
+        "Some repositories' data could not be refreshed this build. Their status shows as Unknown until the next refresh.",
+      'no-installation':
+        'One or more repositories have no GitHub installation connected. Reconnect them from “Manage repository access”.',
+      'api-budget-exhausted':
+        'Tribunal stopped checking repositories after using its shared GitHub API budget for this page load. Their status will refresh on the next load.',
+      'rate-limited':
+        'GitHub rate-limited Tribunal partway through this page load, so the remaining repositories were not checked. Their status will refresh on the next load.',
+      'github-error':
+        "GitHub returned an error while refreshing one or more repositories' data. Their status shows as Unknown until the next refresh.",
+    };
+    return map[reason];
   }
 
-  function submitWatchForm(repositoryId: number, watched: boolean): boolean {
-    const watchForm = document.getElementById(`watch-form-${repositoryId}`);
-    if (!(watchForm instanceof HTMLFormElement)) return false;
+  /** Distinct `unavailableReason`s across every unavailable row this build, in first-seen order. */
+  function distinctUnavailableReasons(
+    reposToCheck: (typeof data.repositories)[number][],
+    dashboardsById: Awaited<typeof data.dashboardRowsById>,
+  ): BannerReason[] {
+    const seen = new SvelteSet<BannerReason>();
+    for (const repository of reposToCheck) {
+      const dashboard = dashboardsById.get(repository.id);
+      if (dashboard?.dataStatus !== 'unavailable') continue;
 
-    setWatchedFormValue(watchForm, watched);
-
-    if (activeWatchSubmissions.has(repositoryId)) {
-      queuedWatchStates.set(repositoryId, watched);
-      return true;
+      // An unavailable row with no reason still has to count. A whole-fan-out
+      // rejection deliberately leaves the reason unset (see `+page.server.ts`),
+      // and skipping those rows would empty this list and hide the banner
+      // entirely — precisely when every repository is unavailable, which is
+      // the case that most needs a warning.
+      seen.add(dashboard.unavailableReason ?? UNATTRIBUTED_REASON);
     }
-
-    activeWatchSubmissions.add(repositoryId);
-    watchForm.requestSubmit();
-    return true;
-  }
-
-  async function submitQueuedWatchState(
-    repository: (typeof data.repositories)[number],
-  ): Promise<boolean> {
-    const repositoryId = repository.id;
-    if (queuedWatchStates.has(repositoryId)) {
-      const queuedWatched = queuedWatchStates.get(repositoryId) as boolean;
-      queuedWatchStates.delete(repositoryId);
-      if (!submitWatchForm(repositoryId, queuedWatched)) {
-        try {
-          const response = await fetch('?/watch', {
-            method: 'POST',
-            body: formDataForWatch(repository, queuedWatched),
-          });
-          if (response.ok) {
-            await invalidateAll();
-          }
-        } finally {
-          if (!activeWatchSubmissions.has(repositoryId)) {
-            localWatchStates.delete(repositoryId);
-          }
-        }
-      }
-      return true;
-    }
-
-    return false;
+    return [...seen];
   }
 </script>
 
@@ -287,10 +302,14 @@
   {/if}
 
   {#await data.dashboardRowsById then dashboardsById}
-    {#if repositories.some((repository) => dashboardsById.get(repository.id)?.dataStatus === 'unavailable')}
+    {@const unavailableReasons = distinctUnavailableReasons(repositories, dashboardsById)}
+    {#if unavailableReasons.length === 1}
+      <Alert variant="warning">{unavailableBannerMessage(unavailableReasons[0])}</Alert>
+    {:else if unavailableReasons.length > 1}
       <Alert variant="warning">
-        GitHub data for some or all repositories could not be refreshed this build. Their status
-        shows as Unknown until the next refresh.
+        GitHub data for some repositories could not be refreshed this build, for more than one
+        reason. Check each affected repository's warning icon for why — search or filter to it if it
+        isn't currently visible.
       </Alert>
     {/if}
   {/await}
@@ -348,14 +367,20 @@
           {:then attentionPullRequests}
             <DataList items={attentionPullRequests} key={(pr) => `${pr.repositoryId}:${pr.number}`}>
               {#snippet empty()}
-                <p>
-                  {#if summary && !summary.attentionPullRequestCountExact}
-                    Attention data is incomplete: some repositories could not be checked this build,
-                    so this list may be missing pull requests.
-                  {:else}
-                    No open pull requests need attention right now.
-                  {/if}
-                </p>
+                {#snippet attentionIcon()}<CircleAlert size={32} aria-hidden="true" />{/snippet}
+                {#if summary && !summary.attentionPullRequestCountExact}
+                  <EmptyState
+                    title="This list may be incomplete"
+                    description={incompleteAttentionListReasons(summary)}
+                    icon={attentionIcon}
+                  />
+                {:else}
+                  <EmptyState
+                    title="Nothing needs attention"
+                    description="No open pull requests need attention right now."
+                    icon={attentionIcon}
+                  />
+                {/if}
               {/snippet}
               {#snippet children(pullRequest)}
                 <StackedListItem href={pullRequest.htmlUrl} target="_blank">
@@ -404,7 +429,14 @@
     </div>
 
     {#if filteredRepositories.length === 0}
-      <p class="empty-hint">No repositories matching "{searchQuery}".</p>
+      <Card padding="none">
+        <EmptyState
+          title="No matching repositories"
+          description={`No repositories matching "${searchQuery}".`}
+        >
+          {#snippet icon()}<Search size={32} aria-hidden="true" />{/snippet}
+        </EmptyState>
+      </Card>
     {:else}
       <Card padding="none">
         <Table
@@ -416,15 +448,25 @@
             <Table.Row>
               <Table.HeaderCell>Repository</Table.HeaderCell>
               <Table.HeaderCell>Default branch CI</Table.HeaderCell>
-              <Table.HeaderCell align="right">Open PRs</Table.HeaderCell>
-              <Table.HeaderCell align="right">Attention</Table.HeaderCell>
+              <Table.HeaderCell align="right">Open pull requests</Table.HeaderCell>
+              <Table.HeaderCell align="right" aria-label="Needs attention">
+                <span class="header-with-help">
+                  Needs attention
+                  <Tooltip
+                    text="A pull request needs attention when its own CI is failing or errored, it conflicts with the base branch, or it has unresolved review threads. Pending or unknown checks never count, and neither does age."
+                  >
+                    <Button variant="ghost" size="xs">
+                      {#snippet leadingIcon()}<Info size={12} aria-hidden="true" />{/snippet}
+                      <span class="cinder-sr-only">What counts as needing attention</span>
+                    </Button>
+                  </Tooltip>
+                </span>
+              </Table.HeaderCell>
               <Table.HeaderCell align="right">Unresolved threads</Table.HeaderCell>
-              <Table.HeaderCell align="center">Watching</Table.HeaderCell>
             </Table.Row>
           </Table.Header>
           <Table.Body>
             {#each filteredRepositories as repository (repository.id)}
-              {@const isWatching = watchedFor(repository.id, repository.review.watched)}
               <Table.Row>
                 <Table.Cell>
                   <div class="repository-identity">
@@ -444,6 +486,17 @@
                       {#snippet leadingIcon()}<WebhookIcon size={14} aria-hidden="true" />{/snippet}
                       <span class="cinder-sr-only">Webhook events</span>
                     </Button>
+                    <Button
+                      href={`/repositories/${repository.id}/settings`}
+                      variant="ghost"
+                      size="xs"
+                    >
+                      {#snippet leadingIcon()}<SettingsIcon
+                          size={14}
+                          aria-hidden="true"
+                        />{/snippet}
+                      <span class="cinder-sr-only">Repository settings</span>
+                    </Button>
                   </div>
                 </Table.Cell>
                 {#await data.dashboardRowsById}
@@ -454,12 +507,25 @@
                 {:then dashboardsById}
                   {@const dashboard = dashboardsById.get(repository.id) ?? null}
                   <Table.Cell>
-                    <StatusDot
-                      status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
-                      label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
-                      showLabel
-                      size="sm"
-                    />
+                    <div class="ci-status-cell">
+                      <StatusDot
+                        status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
+                        label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
+                        showLabel
+                        size="sm"
+                      />
+                      {#if dashboard?.dataStatus === 'unavailable'}
+                        <Tooltip text={unavailableReasonMessage(dashboard.unavailableReason)}>
+                          <Button variant="ghost" size="xs">
+                            {#snippet leadingIcon()}<CircleAlert
+                                size={14}
+                                aria-hidden="true"
+                              />{/snippet}
+                            <span class="cinder-sr-only">Repository data unavailable</span>
+                          </Button>
+                        </Tooltip>
+                      {/if}
+                    </div>
                   </Table.Cell>
                   <Table.Cell align="right">
                     {#if dashboard && dashboard.openPullRequestCount !== null}
@@ -499,57 +565,6 @@
                     {/if}
                   </Table.Cell>
                 {/await}
-                <Table.Cell align="center">
-                  <div class="watching-cell">
-                    <form
-                      id="watch-form-{repository.id}"
-                      method="POST"
-                      action="?/watch"
-                      class="watch-form"
-                      use:enhance={({ formData }) => {
-                        const id = repository.id;
-                        const watched = watchedFor(id, repository.review.watched);
-                        formData.set('watched', watched ? 'on' : '');
-
-                        return async ({ update }) => {
-                          try {
-                            await update();
-                          } finally {
-                            activeWatchSubmissions.delete(id);
-                            if (
-                              !(await submitQueuedWatchState(repository)) &&
-                              !activeWatchSubmissions.has(id)
-                            ) {
-                              localWatchStates.delete(id);
-                            }
-                          }
-                        };
-                      }}
-                    >
-                      <input type="hidden" name="repositoryId" value={repository.id} />
-                      {#each agentIdsForWatch(repository) as agentId (agentId)}
-                        <input type="hidden" name="agentIds" value={agentId} />
-                      {/each}
-                      <input
-                        type="hidden"
-                        name="ignoreGlobs"
-                        value={repository.review.ignoreGlobs.join('\n')}
-                      />
-                      <input type="hidden" name="watched" value={isWatching ? 'on' : ''} />
-                      <Toggle
-                        id="watching-{repository.id}"
-                        checked={isWatching}
-                        label="Repository watched"
-                        hideLabel
-                        onValueChange={(next) => {
-                          localWatchStates.set(repository.id, next);
-                          submitWatchForm(repository.id, next);
-                          return next;
-                        }}
-                      />
-                    </form>
-                  </div>
-                </Table.Cell>
               </Table.Row>
             {/each}
           </Table.Body>
@@ -580,11 +595,6 @@
   .search-wrapper {
     flex: 1;
     min-width: 240px;
-  }
-
-  .empty-hint {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
   }
 
   .section-heading {
@@ -642,16 +652,16 @@
     color: var(--text-muted);
   }
 
-  .watching-cell {
+  .ci-status-cell {
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: var(--space-1);
   }
 
-  .watch-form {
-    display: flex;
+  .header-with-help {
+    display: inline-flex;
     align-items: center;
+    gap: var(--space-1);
   }
 
   .table-hint {

@@ -14,6 +14,7 @@ import {
   operatorSurfaceStates,
   parseIgnoreGlobs,
   saveRepositoryWatchSettings,
+  setRepositoryWatched,
   type RepositoryOperatorDetails,
 } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
@@ -228,7 +229,13 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
           htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
         },
         refreshedAt,
-        'github-error',
+        // Deliberately unattributed. This catch covers the *whole* fan-out
+        // rejecting, which includes non-GitHub causes — `listPRStatesForRepositories`
+        // throwing because the database is unavailable reaches here too. Naming
+        // `github-error` would tell the user GitHub failed when its reads may
+        // have succeeded. The undefined fallback says the data could not be
+        // refreshed without asserting a cause we do not know.
+        undefined,
       ),
     );
   });
@@ -284,7 +291,23 @@ export const actions: Actions = {
       return fail(400, { error: 'Repository is invalid.' });
     }
 
+    const watched = formData.get('watched') === 'on';
     const submittedAgentIds = formData.getAll('agentIds').map(String);
+
+    // Unwatching submits no configuration at all (see the settings page's
+    // danger-zone form). Flip just that column rather than reading the current
+    // settings and writing them back: a read-then-rewrite loses anything
+    // another tab saves in between, which is the whole reason the form stopped
+    // sending its own snapshot.
+    if (!watched && !formData.has('ignoreGlobs') && submittedAgentIds.length === 0) {
+      await setRepositoryWatched(user.id, repositoryId, false);
+      // `redirect` throws, so nothing after this runs. The result object is
+      // deliberately dropped: this path is only ever reached by the settings
+      // page's plain, non-enhanced form, which has no JavaScript to read a
+      // JSON body and needs the 303 to land on a clean GET instead.
+      redirect(303, '/repositories');
+    }
+
     let ignoreGlobs = parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? ''));
     let agentIds = submittedAgentIds;
 
@@ -302,11 +325,30 @@ export const actions: Actions = {
       }
     }
 
-    return saveRepositoryWatchSettings(user.id, {
+    const result = await saveRepositoryWatchSettings(user.id, {
       repositoryId,
-      watched: formData.get('watched') === 'on',
+      watched,
       ignoreGlobs,
       agentIds,
     });
+
+    // Turning watching off is submitted only by the repository settings
+    // page's plain, non-enhanced "Stop watching" form (see
+    // settings/+page.svelte) — a real cross-document POST with no JS to act
+    // on a JSON result. Without an explicit redirect here, the browser would
+    // be left sitting on the POST response for `/repositories?/watch`:
+    // reloading or revisiting that history entry prompts a resubmission
+    // confirmation, and confirming it would unwatch again (or overwrite a
+    // meanwhile-changed configuration) against whatever the repository looks
+    // like by then. Redirecting to a clean GET on success avoids that and
+    // lands the user on the list that now reflects the change. The
+    // Add-repository form on this page always submits `watched=on` and
+    // handles the result itself via `use:enhance`, so this redirect never
+    // fires for that flow.
+    if (!watched && !('status' in result)) {
+      redirect(303, '/repositories');
+    }
+
+    return result;
   },
 };

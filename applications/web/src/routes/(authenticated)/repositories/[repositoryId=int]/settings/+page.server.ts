@@ -57,6 +57,16 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 };
 
 export const actions: Actions = {
+  // Kept as the unnamed `default` action rather than renamed to a named
+  // action: SvelteKit forbids mixing `default` with named actions on the
+  // same route, and this route's settings form has no `action` attribute, so
+  // an already-open settings tab from before a deploy still posts here
+  // successfully — the same stale-tab tolerance `submitRepositorySettingsForm`
+  // already documents for the repository pull-requests page's legacy
+  // `saveSettings` action. "Stop watching" is a plain form that posts to the
+  // repositories list's existing `?/watch` action instead of a second named
+  // action here (see the settings page's danger-zone form), so this route
+  // never needs more than the one action.
   default: async ({ locals, request, params }) => {
     const { user } = locals;
     if (!user) redirect(302, '/login');

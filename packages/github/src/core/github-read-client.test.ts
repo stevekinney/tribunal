@@ -3,6 +3,7 @@ import type { CacheOperations } from '../context.js';
 import type { CachePolicy } from './cache-policy.js';
 import type { CachedEnvelope } from './cached-envelope.js';
 import {
+  CachedReadAbortedError,
   cachedRead,
   type CachedReadFetchFunction,
   type CachedReadFetchResult,
@@ -322,6 +323,45 @@ describe('cachedRead', () => {
       await expect(cachedRead(cache, policy, fetchFunction, ['arg1'])).rejects.toThrow(
         'Unexpected 304',
       );
+    });
+  });
+
+  describe('caller-aborted fetch (CachedReadAbortedError)', () => {
+    // A fetch function can throw this (or a subclass) to signal its own
+    // deliberate abort — e.g. a caller-side budget check — rather than a
+    // GitHub/network failure. It must still propagate, but must not be
+    // logged as an `[github-cache] ... api-error`: that log exists for real
+    // API failures, and logging a caller's expected control-flow decision
+    // the same way would produce a false alert every time it fires.
+    it('propagates the error on a cache miss without logging an api-error', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        class CallerBudgetExhaustedError extends CachedReadAbortedError {}
+        const fetchFunction = vi.fn().mockRejectedValue(new CallerBudgetExhaustedError('nope'));
+
+        await expect(cachedRead(cache, policy, fetchFunction, ['arg1'])).rejects.toBeInstanceOf(
+          CachedReadAbortedError,
+        );
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    it('propagates the error during an eTag conditional request without logging an api-error', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const envelope = buildStoredEnvelope({ expiresAt: Date.now() - 1000 });
+        vi.mocked(cache.getCached).mockResolvedValue(envelope);
+        const fetchFunction = vi.fn().mockRejectedValue(new CachedReadAbortedError('nope'));
+
+        await expect(cachedRead(cache, policy, fetchFunction, ['arg1'])).rejects.toBeInstanceOf(
+          CachedReadAbortedError,
+        );
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
     });
   });
 });

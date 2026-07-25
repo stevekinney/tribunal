@@ -7,10 +7,12 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { FormField } from '@lostgradient/cinder/form-field';
   import { Link } from '@lostgradient/cinder/link';
   import { TagInput } from '@lostgradient/cinder/tag-input';
+  import EyeOff from 'lucide-svelte/icons/eye-off';
   import Save from 'lucide-svelte/icons/save';
   import type { PageProps } from './$types';
 
@@ -22,6 +24,36 @@
     { label: repositoryName, href: `/repositories/${data.repository.id}/pull-requests` },
     { label: 'Settings' },
   ]);
+
+  let confirmUnwatchOpen = $state(false);
+  let unwatchTriggerRef = $state<HTMLElement | null>(null);
+  let unwatchFormElement = $state<HTMLFormElement | null>(null);
+  /**
+   * Set the instant unwatching is confirmed, not when the unwatch form's
+   * submission resolves — it never does, in the observable sense. This is a
+   * plain (non-enhanced) form, so confirming it starts a real cross-document
+   * navigation to `/repositories` rather than an awaitable fetch; the old
+   * page (and this state) stays around, interactive, until that navigation
+   * completes. If GitHub or the network is slow, that can be a while. Gating
+   * the settings form on `saving` alone only blocks a save that's already in
+   * flight from racing a *new* unwatch click — it does nothing once unwatch
+   * has already been confirmed and is silently in flight itself, which is
+   * exactly when a "Save settings" click would race it: the save always
+   * writes `watched: true` with the edited values, the unwatch write is
+   * already in flight with `watched: false` and a snapshot of the old
+   * values, and whichever request the server finishes last wins.
+   */
+  let unwatching = $state(false);
+
+  function openUnwatchConfirmation(event: MouseEvent) {
+    unwatchTriggerRef = event.currentTarget as HTMLElement;
+    confirmUnwatchOpen = true;
+  }
+
+  function confirmUnwatch() {
+    unwatching = true;
+    unwatchFormElement?.requestSubmit();
+  }
 
   /**
    * First-time setup (not watched, no saved settings) defaults the agent
@@ -88,7 +120,7 @@
           defaultValue={data.repository.review.ignoreGlobs}
           commitOnSubmit
           placeholder="dist/**"
-          disabled={saving}
+          disabled={saving || unwatching}
         />
       </FormField>
     </Card>
@@ -130,7 +162,7 @@
                 value={agent.id}
                 checked={selected}
                 aria-label={`Assign ${agent.slug} to repository`}
-                disabled={!canToggle || saving}
+                disabled={!canToggle || saving || unwatching}
                 onValueChange={(next) => {
                   const nextSelectedAgentIds = new Set(selectedAgentIds);
                   if (next) {
@@ -149,13 +181,87 @@
     </Card>
 
     <div class="settings-actions">
-      <Button type="submit" variant="primary" size="sm" disabled={saving}>
+      <Button type="submit" variant="primary" size="sm" disabled={saving || unwatching}>
         {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
         {saving ? 'Saving…' : 'Save settings'}
       </Button>
     </div>
   </form>
+
+  {#if data.repository.review.watched}
+    <Card title="Danger zone" tone="danger" headingLevel={2}>
+      <p class="danger-copy">
+        Stop watching this repository. Tribunal removes it from the repositories list and stops
+        starting new reviews on its pull requests. A review already running finishes and still posts
+        its result. Saved ignore globs and agent assignments are kept, so re-adding it later
+        restores this configuration.
+      </p>
+      <!--
+        Posts to the repositories list's existing `?/watch` action (not a
+        second named action on this route — see the note on this route's
+        `default` action in +page.server.ts) with the repository's current
+        agent assignment and ignore globs, exactly like the removed
+        repositories-list row toggle used to, so unwatching preserves this
+        configuration for a later re-add. `watched` is omitted (absent =
+        off) since this form only ever turns watching off.
+      -->
+      <form
+        method="POST"
+        action="/repositories?/watch"
+        bind:this={unwatchFormElement}
+        class="unwatch-form"
+      >
+        <input type="hidden" name="repositoryId" value={data.repository.id} />
+        <!--
+          Deliberately submits no `agentIds` or `ignoreGlobs`. Hidden fields
+          would carry this page's render-time snapshot, and `?/watch` treats
+          submitted values as authoritative — so unwatching from a tab left
+          open while another tab saved new settings would silently roll that
+          newer configuration back. With both fields absent the action reads
+          the repository's current saved settings instead (see its
+          `!formData.has('ignoreGlobs') && submittedAgentIds.length === 0`
+          branch), which preserves whatever is actually stored for a later
+          re-add — the behavior these fields were added for, without the
+          stale-snapshot hazard.
+        -->
+        <!--
+          Disabled while the settings form's save is in flight, or once
+          unwatching has itself been confirmed: that save always writes
+          `watched: true` (see `submitRepositorySettingsForm`), while this
+          form's hidden `agentIds`/`ignoreGlobs` snapshot the settings as of
+          render, not whatever a save is about to persist. Submitting both at
+          once would race — whichever request finishes last could
+          unexpectedly re-watch the repository or overwrite the newly saved
+          configuration with this form's stale values. The `unwatching` half
+          of the guard is defensive (this button is normally already hidden
+          behind the confirm dialog by the time it would matter) — the real
+          fix for the reverse direction is disabling "Save settings" below.
+        -->
+        <Button
+          type="button"
+          variant="danger"
+          disabled={saving || unwatching}
+          onclick={openUnwatchConfirmation}
+        >
+          {#snippet leadingIcon()}<EyeOff size={14} aria-hidden="true" />{/snippet}
+          Stop watching
+        </Button>
+      </form>
+    </Card>
+  {/if}
 </Page>
+
+<ConfirmDialog
+  bind:open={confirmUnwatchOpen}
+  triggerRef={unwatchTriggerRef}
+  title="Stop watching this repository?"
+  description="Tribunal removes it from the repositories list and stops starting new reviews. A review already running finishes and still posts its result. Saved ignore globs and agent assignments are kept for next time."
+  destructive
+  typeToConfirm={data.repository.name}
+  typeToConfirmLabel="Type the repository name to confirm"
+  confirmLabel="Stop watching"
+  onconfirm={confirmUnwatch}
+/>
 
 <style>
   .settings-form {
@@ -196,5 +302,16 @@
   .settings-actions {
     display: flex;
     justify-content: flex-end;
+  }
+
+  .danger-copy {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-4);
+  }
+
+  .unwatch-form {
+    display: flex;
+    justify-content: flex-start;
   }
 </style>

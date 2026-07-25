@@ -320,6 +320,34 @@ export async function saveRepositoryWatchSettings(
   return { success: true };
 }
 
+/**
+ * Flip only `watched`, leaving ignore globs and agent assignments untouched.
+ *
+ * `saveRepositoryWatchSettings` rewrites the whole configuration, so using it
+ * to unwatch means reading the current settings and writing them back — and
+ * anything saved by another tab between that read and that write is silently
+ * overwritten with the earlier snapshot. This is a single statement against
+ * the one column that is actually changing, so there is no window to lose.
+ *
+ * Only meaningful for an existing row: unwatching a repository that was never
+ * watched has nothing to update and reports no rows changed.
+ */
+export async function setRepositoryWatched(userId: number, repositoryId: number, watched: boolean) {
+  await requireRepositoryOwnership(userId, repositoryId);
+
+  await db
+    .update(repositoryReviewSettings)
+    .set({ watched, updatedAt: new Date() })
+    .where(
+      and(
+        eq(repositoryReviewSettings.userId, userId),
+        eq(repositoryReviewSettings.repositoryId, repositoryId),
+      ),
+    );
+
+  return { success: true };
+}
+
 export async function listAgents(userId: number) {
   return db.select().from(agent).where(eq(agent.userId, userId)).orderBy(agent.slug);
 }
