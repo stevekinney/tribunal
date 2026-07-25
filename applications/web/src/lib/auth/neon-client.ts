@@ -147,9 +147,11 @@ export async function refreshNeonSessionCookie(
 }
 
 export type StartNeonSessionRefreshOptions = {
-  onResumeRefreshPendingChange?: (pending: boolean) => void;
+  onResumeRefreshStatusChange?: (status: NeonSessionResumeRefreshStatus) => void;
   resumeRefreshPendingMaximumMs?: number;
 };
+
+export type NeonSessionResumeRefreshStatus = 'idle' | 'pending' | 'failed';
 
 export function getNeonAuthClient() {
   const authUrl = env.PUBLIC_NEON_AUTH_URL;
@@ -237,27 +239,34 @@ export function startNeonSessionRefresh(
   const abortController = new AbortController();
   let stopped = false;
   let resumeRefreshPendingTimeout: ReturnType<typeof setTimeout> | undefined;
-  let resumeRefreshPending = false;
+  let resumeRefreshStatus: NeonSessionResumeRefreshStatus = 'idle';
   let resumeRefreshGeneration = 0;
 
-  function setResumeRefreshPending(pending: boolean): void {
-    if (resumeRefreshPending === pending) return;
-    resumeRefreshPending = pending;
-    options.onResumeRefreshPendingChange?.(pending);
+  function setResumeRefreshStatus(status: NeonSessionResumeRefreshStatus): void {
+    if (resumeRefreshStatus === status) return;
+    resumeRefreshStatus = status;
+    options.onResumeRefreshStatusChange?.(status);
   }
 
-  function clearResumeRefreshPending(generation?: number): void {
+  function clearResumeRefreshStatus(generation?: number): void {
     if (generation !== undefined && generation !== resumeRefreshGeneration) return;
 
     if (resumeRefreshPendingTimeout) {
       clearTimeout(resumeRefreshPendingTimeout);
       resumeRefreshPendingTimeout = undefined;
     }
-    setResumeRefreshPending(false);
+    setResumeRefreshStatus('idle');
+  }
+
+  function failResumeRefresh(generation: number): void {
+    if (generation !== resumeRefreshGeneration) return;
+
+    resumeRefreshPendingTimeout = undefined;
+    setResumeRefreshStatus('failed');
   }
 
   function trackResumeRefresh(refreshPromise: Promise<void>): void {
-    if (!options.onResumeRefreshPendingChange) return;
+    if (!options.onResumeRefreshStatusChange) return;
 
     resumeRefreshGeneration += 1;
     const generation = resumeRefreshGeneration;
@@ -265,14 +274,14 @@ export function startNeonSessionRefresh(
       clearTimeout(resumeRefreshPendingTimeout);
       resumeRefreshPendingTimeout = undefined;
     }
-    setResumeRefreshPending(true);
+    setResumeRefreshStatus('pending');
 
     resumeRefreshPendingTimeout = setTimeout(
-      () => clearResumeRefreshPending(generation),
+      () => failResumeRefresh(generation),
       options.resumeRefreshPendingMaximumMs ?? neonSessionResumeRefreshPendingMaximumMs,
     );
 
-    void refreshPromise.finally(() => clearResumeRefreshPending(generation));
+    void refreshPromise.finally(() => clearResumeRefreshStatus(generation));
   }
 
   function refresh(): Promise<void> {
@@ -320,7 +329,7 @@ export function startNeonSessionRefresh(
 
     clearInterval(intervalId);
     resumeRefreshGeneration += 1;
-    clearResumeRefreshPending();
+    clearResumeRefreshStatus();
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);

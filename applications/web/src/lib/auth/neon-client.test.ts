@@ -364,7 +364,7 @@ describe('startNeonSessionRefresh', () => {
     });
 
     it('marks a visible-tab resume refresh as pending until the bridge post settles', async () => {
-      const pendingChanges: boolean[] = [];
+      const statusChanges: string[] = [];
       let resolveBridgePost: ((response: Response) => void) | undefined;
       const fetchMock = vi.fn().mockImplementation(
         () =>
@@ -383,24 +383,24 @@ describe('startNeonSessionRefresh', () => {
 
       startNeonSessionRefresh(
         { getSession },
-        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
       );
 
       visibilityState = 'visible';
       fireVisibilityChange();
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(pendingChanges).toEqual([true]);
+      expect(statusChanges).toEqual(['pending']);
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
       resolveBridgePost?.(new Response('{}', { status: 200 }));
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(pendingChanges).toEqual([true, false]);
+      expect(statusChanges).toEqual(['pending', 'idle']);
     });
 
-    it('clears a visible-tab resume pending state after the capped wait when the network hangs', async () => {
-      const pendingChanges: boolean[] = [];
+    it('marks a visible-tab resume refresh as failed after the capped wait when the network hangs', async () => {
+      const statusChanges: string[] = [];
       const getSession = vi
         .fn()
         .mockResolvedValueOnce({ data: null, error: null })
@@ -414,7 +414,7 @@ describe('startNeonSessionRefresh', () => {
       startNeonSessionRefresh(
         { getSession },
         {
-          onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending),
+          onResumeRefreshStatusChange: (status) => statusChanges.push(status),
           resumeRefreshPendingMaximumMs: 25,
         },
       );
@@ -422,17 +422,17 @@ describe('startNeonSessionRefresh', () => {
       visibilityState = 'visible';
       fireVisibilityChange();
 
-      expect(pendingChanges).toEqual([true]);
+      expect(statusChanges).toEqual(['pending']);
 
       vi.advanceTimersByTime(24);
-      expect(pendingChanges).toEqual([true]);
+      expect(statusChanges).toEqual(['pending']);
 
       vi.advanceTimersByTime(1);
-      expect(pendingChanges).toEqual([true, false]);
+      expect(statusChanges).toEqual(['pending', 'failed']);
     });
 
     it('does not let an older resume refresh clear a newer pending gate', async () => {
-      const pendingChanges: boolean[] = [];
+      const statusChanges: string[] = [];
       const bridgePostResolutions: Array<(response: Response) => void> = [];
       const fetchMock = vi.fn().mockImplementation(
         () =>
@@ -455,7 +455,7 @@ describe('startNeonSessionRefresh', () => {
 
       startNeonSessionRefresh(
         { getSession },
-        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
       );
 
       visibilityState = 'visible';
@@ -466,30 +466,71 @@ describe('startNeonSessionRefresh', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(pendingChanges).toEqual([true]);
+      expect(statusChanges).toEqual(['pending']);
 
       bridgePostResolutions[0]?.(new Response('{}', { status: 200 }));
       await vi.advanceTimersByTimeAsync(0);
-      expect(pendingChanges).toEqual([true]);
+      expect(statusChanges).toEqual(['pending']);
 
       bridgePostResolutions[1]?.(new Response('{}', { status: 200 }));
       await vi.advanceTimersByTimeAsync(0);
-      expect(pendingChanges).toEqual([true, false]);
+      expect(statusChanges).toEqual(['pending', 'idle']);
+    });
+
+    it('does not let a timed-out older resume refresh clear a newer failed gate', async () => {
+      const statusChanges: string[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // First resume hangs until its own timeout.
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Second resume hangs too; the older timeout must not report
+              // failure for the active generation.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        {
+          onResumeRefreshStatusChange: (status) => statusChanges.push(status),
+          resumeRefreshPendingMaximumMs: 25,
+        },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      vi.advanceTimersByTime(20);
+
+      fireVisibilityChange();
+      vi.advanceTimersByTime(5);
+
+      expect(statusChanges).toEqual(['pending']);
+
+      vi.advanceTimersByTime(20);
+
+      expect(statusChanges).toEqual(['pending', 'failed']);
     });
 
     it('does not mark routine interval refreshes as pending', () => {
-      const pendingChanges: boolean[] = [];
+      const statusChanges: string[] = [];
       const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
 
       startNeonSessionRefresh(
         { getSession },
-        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
       );
 
       vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 2);
 
       expect(getSession).toHaveBeenCalledTimes(3);
-      expect(pendingChanges).toEqual([]);
+      expect(statusChanges).toEqual([]);
     });
 
     it('skips the scheduled interval refresh while the tab is hidden', () => {
@@ -545,7 +586,7 @@ describe('startNeonSessionRefresh', () => {
     });
 
     it('uses the default capped wait for visible-tab resume pending state', () => {
-      const pendingChanges: boolean[] = [];
+      const statusChanges: string[] = [];
       const getSession = vi
         .fn()
         .mockResolvedValueOnce({ data: null, error: null })
@@ -558,7 +599,7 @@ describe('startNeonSessionRefresh', () => {
 
       startNeonSessionRefresh(
         { getSession },
-        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+        { onResumeRefreshStatusChange: (status) => statusChanges.push(status) },
       );
 
       visibilityState = 'visible';
@@ -566,7 +607,7 @@ describe('startNeonSessionRefresh', () => {
 
       vi.advanceTimersByTime(neonSessionResumeRefreshPendingMaximumMs);
 
-      expect(pendingChanges).toEqual([true, false]);
+      expect(statusChanges).toEqual(['pending', 'failed']);
     });
   });
 });

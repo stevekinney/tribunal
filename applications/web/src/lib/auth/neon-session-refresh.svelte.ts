@@ -1,7 +1,13 @@
-import { getNeonAuthClient, startNeonSessionRefresh } from './neon-client';
+import {
+  getNeonAuthClient,
+  type NeonSessionResumeRefreshStatus,
+  startNeonSessionRefresh,
+} from './neon-client';
 
 export type NeonSessionRefreshState = {
+  readonly resumeRefreshStatus: NeonSessionResumeRefreshStatus;
   readonly isResumingSession: boolean;
+  readonly hasResumeRefreshFailed: boolean;
 };
 
 /**
@@ -19,14 +25,14 @@ export type NeonSessionRefreshState = {
  * durability measure, not a page-load precondition.
  */
 export function useNeonSessionRefresh(): NeonSessionRefreshState {
-  let isResumingSession = $state(false);
+  let resumeRefreshStatus = $state<NeonSessionResumeRefreshStatus>('idle');
 
   $effect(() => {
     let stopSessionRefresh: (() => void) | undefined;
     try {
       stopSessionRefresh = startNeonSessionRefresh(getNeonAuthClient(), {
-        onResumeRefreshPendingChange: (pending) => {
-          isResumingSession = pending;
+        onResumeRefreshStatusChange: (status) => {
+          resumeRefreshStatus = status;
         },
       });
     } catch (refreshError) {
@@ -38,8 +44,14 @@ export function useNeonSessionRefresh(): NeonSessionRefreshState {
   });
 
   return {
+    get resumeRefreshStatus() {
+      return resumeRefreshStatus;
+    },
     get isResumingSession() {
-      return isResumingSession;
+      return resumeRefreshStatus !== 'idle';
+    },
+    get hasResumeRefreshFailed() {
+      return resumeRefreshStatus === 'failed';
     },
   };
 }

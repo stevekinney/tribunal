@@ -32,7 +32,7 @@ vi.mock('$lib/auth/neon-client', () => ({
 }));
 
 type SessionRefreshOptions = {
-  onResumeRefreshPendingChange?: (pending: boolean) => void;
+  onResumeRefreshStatusChange?: (status: 'idle' | 'pending' | 'failed') => void;
 };
 
 function latestSessionRefreshOptions(): SessionRefreshOptions {
@@ -73,7 +73,7 @@ describe('/onboarding page', () => {
     await expect.poll(() => mocks.startNeonSessionRefresh.mock.calls.length).toBeGreaterThan(0);
     expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(
       fakeClient,
-      expect.objectContaining({ onResumeRefreshPendingChange: expect.any(Function) }),
+      expect.objectContaining({ onResumeRefreshStatusChange: expect.any(Function) }),
     );
   });
 
@@ -88,14 +88,34 @@ describe('/onboarding page', () => {
 
     render(OnboardingPage, { data, form: null, params: {} });
 
-    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(true);
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('pending');
     await expect.element(page.getByRole('status')).toHaveTextContent('Restoring your session...');
     await expect.element(page.getByTestId('session-resume-overlay')).toBeInTheDocument();
     expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
 
-    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('idle');
     await expect.element(page.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
     expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps onboarding interactions blocked when a hidden-tab session resume refresh times out', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('failed');
+
+    await expect
+      .element(page.getByRole('status'))
+      .toHaveTextContent('Session refresh is taking longer than expected.');
+    await expect.element(page.getByRole('button', { name: 'Reload' })).toBeVisible();
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
   });
 
   function onboardingStepItems(): HTMLElement[] {

@@ -98,7 +98,16 @@
       aria-atomic="true"
       data-testid="session-resume-overlay"
     >
-      <div class="session-resume-panel">Restoring your session...</div>
+      <div class="session-resume-panel">
+        {#if neonSessionRefresh.hasResumeRefreshFailed}
+          <span>Session refresh is taking longer than expected.</span>
+          <Button variant="secondary" size="sm" onclick={() => window.location.reload()}>
+            Reload
+          </Button>
+        {:else}
+          Restoring your session...
+        {/if}
+      </div>
     </div>
   {/if}
 

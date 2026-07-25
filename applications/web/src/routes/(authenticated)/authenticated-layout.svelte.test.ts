@@ -69,7 +69,7 @@ const expectSidebarReviewStatus = async (label: string) => {
 };
 
 type SessionRefreshOptions = {
-  onResumeRefreshPendingChange?: (pending: boolean) => void;
+  onResumeRefreshStatusChange?: (status: 'idle' | 'pending' | 'failed') => void;
 };
 
 function latestSessionRefreshOptions(): SessionRefreshOptions {
@@ -103,7 +103,7 @@ describe('(authenticated) layout', () => {
     expect(mocks.startNeonSessionRefresh).toHaveBeenCalledTimes(1);
     expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(
       fakeClient,
-      expect.objectContaining({ onResumeRefreshPendingChange: expect.any(Function) }),
+      expect.objectContaining({ onResumeRefreshStatusChange: expect.any(Function) }),
     );
     expect(stopRefresh).not.toHaveBeenCalled();
 
@@ -115,7 +115,7 @@ describe('(authenticated) layout', () => {
   it('blocks the shell while a hidden-tab session resume refresh is pending', async () => {
     render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
 
-    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(true);
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('pending');
     await expect
       .element(browserPage.getByRole('status'))
       .toHaveTextContent('Restoring your session...');
@@ -124,9 +124,23 @@ describe('(authenticated) layout', () => {
     expect(document.querySelector('.mobile-topbar')?.hasAttribute('inert')).toBe(true);
     expect(document.querySelector('.desktop-sidebar-shell')?.hasAttribute('inert')).toBe(true);
 
-    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('idle');
     await expect.element(browserPage.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
     expect(document.querySelector('#main-content')?.hasAttribute('inert')).toBe(false);
+  });
+
+  it('keeps the shell blocked when a hidden-tab session resume refresh times out', async () => {
+    render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshStatusChange?.('failed');
+
+    await expect
+      .element(browserPage.getByRole('status'))
+      .toHaveTextContent('Session refresh is taking longer than expected.');
+    await expect.element(browserPage.getByRole('button', { name: 'Reload' })).toBeVisible();
+    expect(document.querySelector('#main-content')?.hasAttribute('inert')).toBe(true);
+    expect(document.querySelector('.mobile-topbar')?.hasAttribute('inert')).toBe(true);
+    expect(document.querySelector('.desktop-sidebar-shell')?.hasAttribute('inert')).toBe(true);
   });
 
   it('does not crash the shell when Neon Auth session refresh fails to start', async () => {
