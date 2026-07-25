@@ -28,6 +28,7 @@ describe('buildDashboardSummary', () => {
       attentionPullRequestCount: 0,
       attentionPullRequestCountExact: true,
       hasUnavailableRepositories: false,
+      hasUnanalyzedPullRequests: false,
     });
   });
 
@@ -158,6 +159,11 @@ describe('buildDashboardSummary', () => {
     expect(summary.attentionPullRequestCountExact).toBe(false);
     expect(summary.openPullRequestCountExact).toBe(true);
     expect(summary.hasUnavailableRepositories).toBe(false);
+    // Regression: this is normal catch-up on a newly discovered pull
+    // request, not a failure — copy built on `attentionPullRequestCountExact`
+    // alone can't distinguish it from `hasUnavailableRepositories`, so it
+    // needs its own flag.
+    expect(summary.hasUnanalyzedPullRequests).toBe(true);
   });
 
   it('keeps the attention rollup exact when every fetched pull request has known signals', () => {
@@ -189,5 +195,25 @@ describe('buildDashboardSummary', () => {
     ]);
 
     expect(summary.attentionPullRequestCountExact).toBe(true);
+    expect(summary.hasUnanalyzedPullRequests).toBe(false);
+  });
+
+  it('does not conflate the page-cap reason with unanalyzed pull requests', () => {
+    // Regression: both `openPullRequestCountAtCap` and an unanalyzed pull
+    // request flip `attentionPullRequestCountExact` to false through the
+    // same field, but they are different situations (a structural page
+    // limit vs. normal catch-up on a new pull request) — `hasUnanalyzedPullRequests`
+    // must stay false when only the cap is at fault.
+    const summary = buildDashboardSummary([
+      makeRow({
+        openPullRequestCount: 100,
+        openPullRequestCountAtCap: true,
+        attentionPullRequestCount: 0,
+        pullRequests: [],
+      }),
+    ]);
+
+    expect(summary.attentionPullRequestCountExact).toBe(false);
+    expect(summary.hasUnanalyzedPullRequests).toBe(false);
   });
 });

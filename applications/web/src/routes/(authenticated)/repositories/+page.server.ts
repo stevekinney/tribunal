@@ -284,6 +284,7 @@ export const actions: Actions = {
       return fail(400, { error: 'Repository is invalid.' });
     }
 
+    const watched = formData.get('watched') === 'on';
     const submittedAgentIds = formData.getAll('agentIds').map(String);
     let ignoreGlobs = parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? ''));
     let agentIds = submittedAgentIds;
@@ -302,11 +303,30 @@ export const actions: Actions = {
       }
     }
 
-    return saveRepositoryWatchSettings(user.id, {
+    const result = await saveRepositoryWatchSettings(user.id, {
       repositoryId,
-      watched: formData.get('watched') === 'on',
+      watched,
       ignoreGlobs,
       agentIds,
     });
+
+    // Turning watching off is submitted only by the repository settings
+    // page's plain, non-enhanced "Stop watching" form (see
+    // settings/+page.svelte) — a real cross-document POST with no JS to act
+    // on a JSON result. Without an explicit redirect here, the browser would
+    // be left sitting on the POST response for `/repositories?/watch`:
+    // reloading or revisiting that history entry prompts a resubmission
+    // confirmation, and confirming it would unwatch again (or overwrite a
+    // meanwhile-changed configuration) against whatever the repository looks
+    // like by then. Redirecting to a clean GET on success avoids that and
+    // lands the user on the list that now reflects the change. The
+    // Add-repository form on this page always submits `watched=on` and
+    // handles the result itself via `use:enhance`, so this redirect never
+    // fires for that flow.
+    if (!watched && !('status' in result)) {
+      redirect(303, '/repositories');
+    }
+
+    return result;
   },
 };

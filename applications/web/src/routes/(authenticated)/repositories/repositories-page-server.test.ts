@@ -218,6 +218,7 @@ describe('/repositories load: added repositories only', () => {
     await expect(data.summary).resolves.toMatchObject({
       totalRepositoryCount: 1,
       hasUnavailableRepositories: true,
+      hasUnanalyzedPullRequests: false,
     });
     await expect(data.attentionPullRequests).resolves.toEqual([]);
 
@@ -392,5 +393,61 @@ describe('/repositories actions.watch', () => {
       ignoreGlobs: [],
       agentIds: ['agent_enabled'],
     });
+  });
+
+  // Regression: the repository settings page's "Stop watching" control is a
+  // plain, non-enhanced form that posts here with `watched` omitted (off).
+  // Unlike the Add-repository form (always `watched=on`, handled by its own
+  // `use:enhance`), a plain form submission has no JS to react to a JSON
+  // `{ success: true }` result — without an explicit redirect, the browser
+  // would be left sitting on the POST response for `/repositories?/watch`,
+  // and reloading or revisiting that history entry would prompt a
+  // resubmission that could unwatch again against a since-changed repository.
+  it('redirects to /repositories after successfully turning watching off', async () => {
+    mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
+
+    await expect(
+      actions.watch({
+        locals: { user: { id: 1 } },
+        request: createRequest({
+          repositoryId: '2',
+          agentIds: ['agent_a'],
+          ignoreGlobs: 'docs/**',
+        }),
+      } as never),
+    ).rejects.toMatchObject({ status: 303, location: '/repositories' });
+  });
+
+  it('does not redirect and returns the failure when turning watching off fails to save', async () => {
+    mockSaveRepositoryWatchSettings.mockResolvedValue({
+      status: 400,
+      data: { error: 'One or more selected agents are unavailable.' },
+      type: 'failure',
+    });
+
+    const result = await actions.watch({
+      locals: { user: { id: 1 } },
+      request: createRequest({
+        repositoryId: '2',
+        agentIds: ['agent_a'],
+        ignoreGlobs: 'docs/**',
+      }),
+    } as never);
+
+    expect(result).toMatchObject({
+      status: 400,
+      data: { error: 'One or more selected agents are unavailable.' },
+    });
+  });
+
+  it('does not redirect after successfully turning watching on (the Add-repository flow)', async () => {
+    mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
+
+    const result = await actions.watch({
+      locals: { user: { id: 1 } },
+      request: createRequest({ repositoryId: '2', watched: 'on', agentIds: ['agent_a'] }),
+    } as never);
+
+    expect(result).toEqual({ success: true });
   });
 });

@@ -194,6 +194,7 @@ const okSummaryForOne = {
   attentionPullRequestCount: 0,
   attentionPullRequestCountExact: true,
   hasUnavailableRepositories: false,
+  hasUnanalyzedPullRequests: false,
 } satisfies Summary;
 
 const baseData: PageData = {
@@ -258,6 +259,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -285,6 +287,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -317,6 +320,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -367,6 +371,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -420,6 +425,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 1,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -467,6 +473,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -512,6 +519,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -589,6 +597,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -629,6 +638,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -642,6 +652,45 @@ describe('/repositories page', () => {
     await expect
       .element(page.getByText(/exceeded the per-repository results limit/))
       .toBeInTheDocument();
+    await expect.element(page.getByText(/see the warning icon/i)).not.toBeInTheDocument();
+  });
+
+  it('explains a newly discovered, not-yet-analyzed pull request without framing it as a failure', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        attentionPullRequests: Promise.resolve([]),
+        summary: Promise.resolve({
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 1,
+          openPullRequestCountExact: true,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: true,
+        }),
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: a newly discovered pull request with no `pull_request_state`
+    // row yet is normal catch-up, not a failure or a limit — it must not be
+    // described as "stale cached status" (no cache exists) or lumped in with
+    // the unavailable-repository/page-cap copy.
+    await expect
+      .element(page.getByText(/found too recently to be analyzed yet/))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText(/exceeded the per-repository results limit/))
+      .not.toBeInTheDocument();
     await expect.element(page.getByText(/see the warning icon/i)).not.toBeInTheDocument();
   });
 
@@ -672,6 +721,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -709,6 +759,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,
@@ -747,6 +798,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: false,
         }),
       },
       form: null,

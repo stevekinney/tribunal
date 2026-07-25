@@ -27,6 +27,15 @@ export interface DashboardSummary {
   attentionPullRequestCountExact: boolean;
   /** True when at least one repository's GitHub data could not be read this build. */
   hasUnavailableRepositories: boolean;
+  /**
+   * True when at least one *available* repository has an open pull request
+   * whose CI/merge/thread decoration is missing or stale — most commonly a
+   * pull request GitHub reported as open but `pull_request_state` has not
+   * caught up to yet. Distinct from `hasUnavailableRepositories`: this is
+   * not a failure or a limit, it is normal catch-up on first sight, and
+   * copy built on top of this flag must not describe it as one.
+   */
+  hasUnanalyzedPullRequests: boolean;
 }
 
 /** Build the summary strip counts from already-built dashboard rows. */
@@ -38,6 +47,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
   let attentionPullRequestCount = 0;
   let attentionPullRequestCountExact = true;
   let hasUnavailableRepositories = false;
+  let hasUnanalyzedPullRequests = false;
 
   for (const row of rows) {
     if (row.defaultBranchStatus === 'failing') failingDefaultBranchCount += 1;
@@ -73,6 +83,7 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
       )
     ) {
       attentionPullRequestCountExact = false;
+      hasUnanalyzedPullRequests = true;
     }
   }
 
@@ -85,5 +96,6 @@ export function buildDashboardSummary(rows: RepositoryDashboardRow[]): Dashboard
     attentionPullRequestCount,
     attentionPullRequestCountExact,
     hasUnavailableRepositories,
+    hasUnanalyzedPullRequests,
   };
 }

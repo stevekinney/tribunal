@@ -324,10 +324,16 @@
                       description="One or more repositories could not be checked this build. Check the affected repository's warning icon in the table for why — clear any search filter if it isn't currently visible."
                       icon={attentionIcon}
                     />
+                  {:else if summary.hasUnanalyzedPullRequests}
+                    <EmptyState
+                      title="This list may be incomplete"
+                      description="Some pull requests were found too recently to be analyzed yet. The count will fill in shortly."
+                      icon={attentionIcon}
+                    />
                   {:else}
                     <EmptyState
                       title="This list may be incomplete"
-                      description="Some pull requests exceeded the per-repository results limit or have stale cached status, so this list may be missing entries."
+                      description="Some pull requests exceeded the per-repository results limit, so this list may be missing entries."
                       icon={attentionIcon}
                     />
                   {/if}

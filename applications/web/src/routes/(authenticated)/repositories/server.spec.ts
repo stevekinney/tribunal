@@ -102,6 +102,7 @@ type RepositoriesLoadResult = {
     attentionPullRequestCount: number;
     attentionPullRequestCountExact: boolean;
     hasUnavailableRepositories: boolean;
+    hasUnanalyzedPullRequests: boolean;
   } | null>;
 };
 
@@ -291,6 +292,7 @@ describe('/repositories server load', () => {
       attentionPullRequestCount: 1,
       attentionPullRequestCountExact: true,
       hasUnavailableRepositories: false,
+      hasUnanalyzedPullRequests: false,
     });
 
     const attentionPullRequests = await result.attentionPullRequests;
