@@ -502,7 +502,18 @@ describe('/repositories/[repositoryId]/settings page', () => {
     const submitSpy = vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
 
     await page.getByRole('button', { name: 'Stop watching' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Stop watching' }).click();
+
+    // Unwatching is destructive, so per `.claude/rules/component-library.md`
+    // the confirm button stays disabled until the repository name is typed.
+    // Asserting the disabled state first is the point of the guard: a test
+    // that only typed and clicked would still pass if the gate vanished.
+    const dialog = page.getByRole('dialog');
+    const confirmButton = dialog.getByRole('button', { name: 'Stop watching' });
+    await expect.element(confirmButton).toBeDisabled();
+    expect(submitSpy).not.toHaveBeenCalled();
+
+    await dialog.getByRole('textbox').fill('review-target');
+    await confirmButton.click();
 
     expect(submitSpy).toHaveBeenCalledTimes(1);
   });
@@ -527,7 +538,9 @@ describe('/repositories/[repositoryId]/settings page', () => {
     await expect.element(saveButton).not.toBeDisabled();
 
     await page.getByRole('button', { name: 'Stop watching' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Stop watching' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('textbox').fill('review-target');
+    await dialog.getByRole('button', { name: 'Stop watching' }).click();
 
     await expect.element(saveButton).toBeDisabled();
   });

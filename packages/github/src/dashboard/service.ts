@@ -770,7 +770,13 @@ function isFresh(updatedAt: Date | null | undefined, nowMs: number, staleAfterMs
 export function unavailableRow(
   repository: RepositoryDashboardRow['repository'],
   refreshedAt: string,
-  reason: DashboardUnavailableReason,
+  /**
+   * Omit when the cause genuinely is not known. Callers that catch a whole
+   * fan-out rejection cannot attribute it to any one of these reasons — the
+   * rejection may not even have come from GitHub — and naming one anyway
+   * reports a cause to the user that was never established.
+   */
+  reason?: DashboardUnavailableReason,
 ): RepositoryDashboardRow {
   return {
     repository,

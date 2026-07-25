@@ -223,10 +223,12 @@ describe('/repositories load: added repositories only', () => {
     await expect(data.attentionPullRequests).resolves.toEqual([]);
 
     const dashboardRowsById = await data.dashboardRowsById;
-    expect(dashboardRowsById.get(2)).toMatchObject({
-      dataStatus: 'unavailable',
-      unavailableReason: 'github-error',
-    });
+    const row = dashboardRowsById.get(2);
+    expect(row).toMatchObject({ dataStatus: 'unavailable' });
+    // A whole-fan-out rejection is deliberately unattributed: it can be a
+    // database failure rather than a GitHub one, so claiming `github-error`
+    // would report a cause to the user that was never established.
+    expect(row?.unavailableReason).toBeUndefined();
   });
 });
 

@@ -660,7 +660,7 @@ describe('/repositories page', () => {
     // therefore zero warning icons on the page — the copy must not send the
     // reader looking for an icon that isn't there.
     await expect
-      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
+      .element(page.getByText(/returned a full page of open pull requests/))
       .toBeInTheDocument();
     await expect.element(page.getByText(/warning icon/i)).not.toBeInTheDocument();
   });
@@ -699,7 +699,7 @@ describe('/repositories page', () => {
     // cap behind the unanalyzed message — and the cap does not resolve on
     // its own, so hiding it implies the list completes itself when it won't.
     await expect
-      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
+      .element(page.getByText(/returned a full page of open pull requests/))
       .toBeInTheDocument();
     await expect
       .element(page.getByText(/don't have complete status information yet/))
@@ -741,7 +741,7 @@ describe('/repositories page', () => {
       .element(page.getByText(/don't have complete status information yet/))
       .toBeInTheDocument();
     await expect
-      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
+      .element(page.getByText(/returned a full page of open pull requests/))
       .not.toBeInTheDocument();
     await expect.element(page.getByText(/warning icon/i)).not.toBeInTheDocument();
   });

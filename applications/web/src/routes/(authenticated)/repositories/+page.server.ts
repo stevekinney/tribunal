@@ -228,7 +228,13 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
           htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
         },
         refreshedAt,
-        'github-error',
+        // Deliberately unattributed. This catch covers the *whole* fan-out
+        // rejecting, which includes non-GitHub causes — `listPRStatesForRepositories`
+        // throwing because the database is unavailable reaches here too. Naming
+        // `github-error` would tell the user GitHub failed when its reads may
+        // have succeeded. The undefined fallback says the data could not be
+        // refreshed without asserting a cause we do not know.
+        undefined,
       ),
     );
   });

@@ -188,8 +188,12 @@
       );
     }
     if (currentSummary.hasPullRequestsAtCap) {
+      // "may have" rather than "have": the cap flag is set purely because a
+      // repository's fetched page came back full, which does not establish
+      // that another pull request exists beyond it. At exactly the limit,
+      // nothing is actually missing.
       reasons.push(
-        'Some repositories have more open pull requests than Tribunal reads in a single build, so entries beyond that limit are not counted.',
+        'Some repositories returned a full page of open pull requests, so there may be more than Tribunal counted.',
       );
     }
     if (currentSummary.hasUnanalyzedPullRequests) {

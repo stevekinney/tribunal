@@ -253,6 +253,8 @@
   title="Stop watching this repository?"
   description="Tribunal removes it from the repositories list and stops starting new reviews. A review already running finishes and still posts its result. Saved ignore globs and agent assignments are kept for next time."
   destructive
+  typeToConfirm={data.repository.name}
+  typeToConfirmLabel="Type the repository name to confirm"
   confirmLabel="Stop watching"
   onconfirm={confirmUnwatch}
 />
