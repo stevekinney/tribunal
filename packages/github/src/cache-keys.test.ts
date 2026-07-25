@@ -75,13 +75,13 @@ describe('CACHE_KEYS', () => {
     );
   });
 
-  it('builds review state, thread counts, and CI check keys', () => {
+  it('builds review thread count and CI check keys', () => {
     expect.assertions(3);
-    expect(CACHE_KEYS.GITHUB_REVIEW_STATE('octo', 'repo', 9)).toBe(
-      'github:response:octo:repo:pr:9:review-state',
-    );
     expect(CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS('octo', 'repo', 9)).toBe(
       'github:response:octo:repo:pr:9:review-thread-counts',
+    );
+    expect(CACHE_KEYS.GITHUB_UNRESOLVED_REVIEW_THREAD_COUNT('octo', 'repo', 9)).toBe(
+      'github:response:octo:repo:pr:9:unresolved-review-thread-count',
     );
     expect(CACHE_KEYS.GITHUB_CHECK_COUNTS('octo', 'repo', 'sha123')).toBe(
       'github:response:octo:repo:checks:sha123',

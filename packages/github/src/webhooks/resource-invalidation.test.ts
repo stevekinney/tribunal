@@ -279,9 +279,6 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN('acme', 'widgets', 8),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_REVIEW_STATE('acme', 'widgets', 8),
-      );
     });
   });
 
@@ -289,7 +286,7 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
   // pull_request_review_comment
   // --------------------------------------------------------------------------
   describe('pull_request_review_comment events', () => {
-    it('invalidates review comments pattern, PR detail, and review state', async () => {
+    it('invalidates review comments pattern and PR detail', async () => {
       const data = makePayload({
         action: 'created',
         pull_request: { number: 3 },
@@ -307,9 +304,6 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       );
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN('acme', 'widgets', 3),
-      );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_REVIEW_STATE('acme', 'widgets', 3),
       );
     });
   });

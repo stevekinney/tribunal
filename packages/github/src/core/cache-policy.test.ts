@@ -41,8 +41,8 @@ describe('cache-policy', () => {
     });
 
     it('has policies for previously uncached operations', () => {
-      expect(getPolicy('get-aggregate-review-state')).toBeDefined();
       expect(getPolicy('get-review-thread-counts')).toBeDefined();
+      expect(getPolicy('get-unresolved-review-thread-count')).toBeDefined();
       expect(getPolicy('get-failing-check-count')).toBeDefined();
     });
 
@@ -173,7 +173,7 @@ describe('cache-policy', () => {
           ],
         },
         {
-          operationId: 'get-aggregate-review-state',
+          operationId: 'get-review-thread-counts',
           baselineArguments: ['owner', 'repo', 42],
           variantArguments: [
             ['other-owner', 'repo', 42],
@@ -182,7 +182,7 @@ describe('cache-policy', () => {
           ],
         },
         {
-          operationId: 'get-review-thread-counts',
+          operationId: 'get-unresolved-review-thread-count',
           baselineArguments: ['owner', 'repo', 42],
           variantArguments: [
             ['other-owner', 'repo', 42],
@@ -322,15 +322,6 @@ describe('cache-policy', () => {
       expect(secondHeadKey).not.toBe(firstHeadKey);
     });
 
-    it('get-aggregate-review-state generates correct cache key', () => {
-      const policy = getPolicy('get-aggregate-review-state')!;
-      const key = policy.keyFactory('owner', 'repo', 5);
-      expect(key).toContain('owner');
-      expect(key).toContain('repo');
-      expect(key).toContain('5');
-      expect(key).toContain('review-state');
-    });
-
     it('get-failing-check-count generates correct cache key', () => {
       const policy = getPolicy('get-failing-check-count')!;
       const key = policy.keyFactory('owner', 'repo', 'abc123sha');
@@ -345,6 +336,15 @@ describe('cache-policy', () => {
       expect(key).toContain('repo');
       expect(key).toContain('42');
       expect(key).toContain('review-thread-counts');
+    });
+
+    it('get-unresolved-review-thread-count generates correct cache key', () => {
+      const policy = getPolicy('get-unresolved-review-thread-count')!;
+      const key = policy.keyFactory('owner', 'repo', 42);
+      expect(key).toContain('owner');
+      expect(key).toContain('repo');
+      expect(key).toContain('42');
+      expect(key).toContain('unresolved-review-thread-count');
     });
 
     it('get-installation generates correct cache key', () => {
@@ -398,8 +398,8 @@ describe('cache-policy', () => {
     it('GraphQL and multi-call operations do not support eTag', () => {
       expect(getPolicy('validate-thread-ownership')?.supportsEtag).toBe(false);
       expect(getPolicy('find-thread-for-comment')?.supportsEtag).toBe(false);
-      expect(getPolicy('get-aggregate-review-state')?.supportsEtag).toBe(false);
       expect(getPolicy('get-review-thread-counts')?.supportsEtag).toBe(false);
+      expect(getPolicy('get-unresolved-review-thread-count')?.supportsEtag).toBe(false);
       expect(getPolicy('get-failing-check-count')?.supportsEtag).toBe(false);
     });
   });

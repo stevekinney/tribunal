@@ -1,5 +1,5 @@
 import type { Octokit } from 'octokit';
-import type { CIStatus, MergeStatus, ReviewStatus } from '@tribunal/database/schema';
+import type { CIStatus, MergeStatus } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../../context.js';
 import { cachedRead } from '../../core/github-read-client.js';
 import { requirePolicy } from '../../core/cache-policy.js';
@@ -30,78 +30,21 @@ export function mapMergeableState(mergeableState: string | undefined): MergeStat
 // REVIEW STATE
 // ============================================================================
 
-interface AggregateReviewState {
-  reviewStatus: ReviewStatus;
-  approvalCount: number;
-  changesRequestedCount: number;
-  unresolvedThreadCount: number;
-}
-
 /**
- * Fetch aggregate review state for a PR.
- * Makes one REST call for reviews and one GraphQL call for unresolved thread count.
+ * Fetch unresolved review thread count for a PR.
+ * Makes one GraphQL call per review thread page.
  *
  * @param context - Optional service context. When provided, results are cached via Redis.
  * @param octokit - Authenticated Octokit client
  */
-export async function getAggregateReviewState(
+export async function getUnresolvedReviewThreadCount(
   context: GithubServiceContext | undefined,
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<AggregateReviewState> {
-  const fetchReviewState = async (): Promise<AggregateReviewState> => {
-    // Get all reviews (paginate to handle PRs with > 100 reviews)
-    const perPage = 100;
-    let page = 1;
-    const allReviews: Awaited<ReturnType<typeof octokit.rest.pulls.listReviews>>['data'] = [];
-
-    // Manual pagination to avoid missing reviews on large PRs
-    // Stops when a page returns fewer than perPage reviews.
-    // NOTE: This keeps behavior consistent while lifting the 100-review limit.
-    while (true) {
-      const { data } = await octokit.rest.pulls.listReviews({
-        owner,
-        repo,
-        pull_number: prNumber,
-        per_page: perPage,
-        page,
-      });
-
-      allReviews.push(...data);
-
-      if (data.length < perPage) {
-        break;
-      }
-
-      page += 1;
-    }
-
-    // De-duplicate: keep only the latest review per user
-    const latestByUser = new Map<number, string>();
-    for (const review of allReviews) {
-      if (!review.user?.id || !review.state) continue;
-      // Later reviews in the array are more recent
-      latestByUser.set(review.user.id, review.state);
-    }
-
-    let approvalCount = 0;
-    let changesRequestedCount = 0;
-    for (const state of latestByUser.values()) {
-      if (state === 'APPROVED') approvalCount++;
-      if (state === 'CHANGES_REQUESTED') changesRequestedCount++;
-    }
-
-    // Determine overall review status
-    let reviewStatus: ReviewStatus = 'pending';
-    if (changesRequestedCount > 0) {
-      reviewStatus = 'changes_requested';
-    } else if (approvalCount > 0) {
-      reviewStatus = 'approved';
-    }
-
-    // Get unresolved thread count via GraphQL
+): Promise<number> {
+  const fetchUnresolvedThreadCount = async (): Promise<number> => {
     let unresolvedThreadCount = 0;
     try {
       let cursor: string | null = null;
@@ -139,21 +82,24 @@ export async function getAggregateReviewState(
       } while (cursor);
     } catch (error) {
       // Non-critical — proceed with 0. Log for observability.
-      console.error('[github-cache] getAggregateReviewState GraphQL thread count failed:', error);
+      console.error(
+        '[github-cache] getUnresolvedReviewThreadCount GraphQL thread count failed:',
+        error,
+      );
     }
 
-    return { reviewStatus, approvalCount, changesRequestedCount, unresolvedThreadCount };
+    return unresolvedThreadCount;
   };
 
   if (!context) {
-    return fetchReviewState();
+    return fetchUnresolvedThreadCount();
   }
 
-  const policy = requirePolicy('get-aggregate-review-state');
-  const { value } = await cachedRead<AggregateReviewState>(
+  const policy = requirePolicy('get-unresolved-review-thread-count');
+  const { value } = await cachedRead<number>(
     context.cache,
     policy,
-    async () => ({ data: await fetchReviewState() }),
+    async () => ({ data: await fetchUnresolvedThreadCount() }),
     [owner, repo, prNumber],
   );
   return value;

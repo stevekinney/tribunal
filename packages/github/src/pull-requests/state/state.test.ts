@@ -1,15 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
 import { createTestContext, type TestContext } from '@tribunal/test/context';
-import { pullRequestState } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../../context.js';
-import {
-  getPRState,
-  listPRStates,
-  listPRStatesForRepositories,
-  setIsPaused,
-  upsertPRState,
-} from './state.js';
+import { getPRState, listPRStates, listPRStatesForRepositories, upsertPRState } from './state.js';
 
 let testContext: TestContext;
 
@@ -46,10 +38,8 @@ describe('upsertPRState', () => {
       repositoryId: repository.id,
       prNumber: 1,
       state: 'open',
-      isDraft: false,
       isMerged: false,
       headSha: 'abc123',
-      baseSha: 'def456',
       baseRef: 'main',
       prUpdatedAt: new Date('2024-01-01T00:00:00Z'),
     });
@@ -126,20 +116,15 @@ describe('upsertPRState', () => {
       repositoryId: repository.id,
       prNumber: 1,
       ciStatus: 'failing',
-      failingCheckCount: 2,
       ciUpdatedAt: new Date('2024-01-01T00:00:00Z'),
-      reviewStatus: 'approved',
-      approvalCount: 1,
-      changesRequestedCount: 0,
-      unresolvedThreadCount: 0,
+      unresolvedThreadCount: 2,
       reviewUpdatedAt: new Date('2024-01-01T00:00:00Z'),
       mergeStatus: 'clean',
       mergeUpdatedAt: new Date('2024-01-01T00:00:00Z'),
     });
 
     expect(updated.ciStatus).toBe('failing');
-    expect(updated.failingCheckCount).toBe(2);
-    expect(updated.reviewStatus).toBe('approved');
+    expect(updated.unresolvedThreadCount).toBe(2);
     expect(updated.mergeStatus).toBe('clean');
   });
 
@@ -156,22 +141,16 @@ describe('upsertPRState', () => {
     const updated = await upsertPRState(context, {
       repositoryId: repository.id,
       prNumber: 1,
-      isDraft: true,
       isMerged: false,
       headSha: 'no-timestamp-sha',
-      baseSha: 'base-sha',
       baseRef: 'develop',
       ciStatus: 'passing',
-      failingCheckCount: 0,
-      reviewStatus: 'pending',
-      approvalCount: 0,
-      changesRequestedCount: 0,
       unresolvedThreadCount: 0,
       mergeStatus: 'behind',
     });
 
-    expect(updated.isDraft).toBe(true);
     expect(updated.headSha).toBe('no-timestamp-sha');
+    expect(updated.baseRef).toBe('develop');
     expect(updated.ciStatus).toBe('passing');
     expect(updated.mergeStatus).toBe('behind');
   });
@@ -192,7 +171,7 @@ describe('getPRState', () => {
 });
 
 describe('listPRStates', () => {
-  it('lists PR states for a repository, applying filters and a cursor', async () => {
+  it('lists PR states for a repository with a cursor', async () => {
     const repository = await createRepository(9007);
     const context = createGithubContext();
     await upsertPRState(context, {
@@ -200,32 +179,18 @@ describe('listPRStates', () => {
       prNumber: 1,
       state: 'open',
       ciStatus: 'passing',
-      isPaused: false,
     });
     await upsertPRState(context, {
       repositoryId: repository.id,
       prNumber: 2,
       state: 'open',
       ciStatus: 'failing',
-      isPaused: true,
-      automationStatus: 'running',
     });
 
     const all = await listPRStates(context, repository.id);
     expect(all).toHaveLength(2);
 
-    const filteredByCi = await listPRStates(context, repository.id, { ciStatus: 'failing' });
-    expect(filteredByCi.map((row) => row.prNumber)).toEqual([2]);
-
-    const filteredByAutomation = await listPRStates(context, repository.id, {
-      automationStatus: 'running',
-    });
-    expect(filteredByAutomation.map((row) => row.prNumber)).toEqual([2]);
-
-    const filteredByPaused = await listPRStates(context, repository.id, { isPaused: true });
-    expect(filteredByPaused.map((row) => row.prNumber)).toEqual([2]);
-
-    const afterCursor = await listPRStates(context, repository.id, undefined, 50, all[0]!.id);
+    const afterCursor = await listPRStates(context, repository.id, 50, all[0]!.id);
     expect(afterCursor.map((row) => row.prNumber)).toEqual([2]);
   });
 });
@@ -256,32 +221,5 @@ describe('listPRStatesForRepositories', () => {
     expect(result.get(`${repositoryA.id}:1`)?.prNumber).toBe(1);
     expect(result.get(`${repositoryB.id}:1`)?.prNumber).toBe(1);
     expect(result.has(`${repositoryA.id}:2`)).toBe(false);
-  });
-});
-
-describe('setIsPaused', () => {
-  it('updates isPaused and returns the row when it exists', async () => {
-    const repository = await createRepository(9010);
-    const context = createGithubContext();
-    await upsertPRState(context, { repositoryId: repository.id, prNumber: 1, state: 'open' });
-
-    const result = await setIsPaused(context, repository.id, 1, true);
-
-    expect(result?.isPaused).toBe(true);
-
-    const [row] = await testContext.db
-      .select()
-      .from(pullRequestState)
-      .where(eq(pullRequestState.prNumber, 1));
-    expect(row?.isPaused).toBe(true);
-  });
-
-  it('returns null when no matching PR state exists', async () => {
-    const repository = await createRepository(9011);
-    const context = createGithubContext();
-
-    const result = await setIsPaused(context, repository.id, 999, true);
-
-    expect(result).toBeNull();
   });
 });
