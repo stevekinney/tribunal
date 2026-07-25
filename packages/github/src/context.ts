@@ -56,8 +56,9 @@ export interface GithubServiceContext {
    * until the first dispatch, rather than at context-construction time — this
    * keeps web-app startup from blocking on `Engine.create` + `recoverAll()`.
    * Resolves to a {@link WeftClient} when an engine is configured, or `null`
-   * when it is not; producers fall back to log-only on `null`, so webhook
-   * delivery acceptance is never blocked on the engine. Omitted entirely in
+   * when it is not. Producers that require a durable receiver report an error
+   * result on `null`; call sites decide whether that blocks the request or is
+   * logged as an observable background dispatch failure. Omitted entirely in
    * hosts that have no Weft integration.
    */
   resolveWeftClient?: () => Promise<WeftClient | null>;

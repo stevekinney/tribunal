@@ -34,8 +34,7 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list (fire-and-forget — logs error
-      // results too, see fireAndForgetInstallationSync for the durability note).
+      // Trigger sync to update repository list through the engine control channel.
       fireAndForgetInstallationSync(
         {
           installationId,
@@ -64,8 +63,7 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list (fire-and-forget — logs error
-      // results too, see fireAndForgetInstallationSync for the durability note).
+      // Trigger sync to update repository list through the engine control channel.
       fireAndForgetInstallationSync(
         {
           installationId,

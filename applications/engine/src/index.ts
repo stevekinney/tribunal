@@ -3,6 +3,7 @@ import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
+import { handleInstallationSyncRequest } from './installation-syncs';
 import {
   createEngineRuntime,
   type EngineBootstrapOptions,
@@ -361,6 +362,12 @@ export function createEngineServerOptions(
           return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
         }
         return Response.json({ ok: true, started: result.started }, { status: 202 });
+      }
+      if (url.pathname === '/installation-syncs' && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        return handleInstallationSyncRequest(request, runtime);
       }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
       if (stopMatch !== null && request.method === 'POST') {

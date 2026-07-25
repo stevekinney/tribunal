@@ -3,9 +3,9 @@
 GitHub App + OAuth integration: installation auth, user-attributed write
 auth, repository access verification, and webhook event handling.
 
-GitHub is Tribunal's only integration. There is no background runtime here —
-webhook handlers update database records and log the work that previously
-dispatched to a workflow engine, but no jobs are executed.
+GitHub is Tribunal's only integration. The web process handles OAuth, API
+routes, webhook validation, database writes, and engine control requests. Durable
+workflow execution belongs to `tribunal-engine`.
 
 ## Module Structure
 
@@ -61,9 +61,9 @@ request and handler modules.
   errors on failure.
 - `webhooks/handlers/installation.ts` — `installation.*` and
   `installation_repositories.*` events: upserts installation records, updates
-  status (active/suspended), and removes repositories. It calls
-  `enqueueInstallationSync` from `@tribunal/github/sync`, which currently logs the
-  work that would have been enqueued and returns a `started` status — no job runs.
+  status (active/suspended), and removes repositories. It signals
+  `tribunal-engine` through the protected installation-sync control endpoint so
+  the engine start-or-signals the durable `installation-sync` workflow.
 - `webhooks/handlers/authorization.ts` — `github_app_authorization.revoked`:
   marks the sender's GitHub tokens invalid and clears their access cache.
 - `webhooks/handlers/index.ts` also re-exports `handleRepositoryMetadataEvents`

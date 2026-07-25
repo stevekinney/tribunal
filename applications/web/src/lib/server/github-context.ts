@@ -37,9 +37,8 @@ export const githubContext: GithubServiceContext = {
   },
   getInstallationOctokit,
   getGithubApplication,
-  // Resolve the engine lazily on first dispatch (not at module load) so web-app
-  // startup never blocks on Engine.create + recoverAll(). `getWeftClient` is the
-  // memoized resolver — it builds the engine once and returns null when no
-  // WEFT_DATABASE_URL is configured.
+  // Resolve the local Weft client lazily for local/test producers that still use
+  // this context directly. Production installation sync goes through the engine
+  // control endpoint; `WEFT_DATABASE_URL` remains owned by tribunal-engine.
   resolveWeftClient: getWeftClient,
 };

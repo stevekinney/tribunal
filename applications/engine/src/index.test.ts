@@ -242,6 +242,232 @@ describe('createEngineServerOptions', () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_released' });
   });
 
+  it('dispatches installation syncs through the runtime endpoint', async () => {
+    const enqueueInstallationSync = vi.fn().mockResolvedValue({
+      workflowId: 'github:installations:100:sync',
+      status: 'started',
+      outcome: 'started',
+    });
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        enqueueInstallationSync,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          installationId: 100,
+          reason: 'webhook:installation.created',
+          workspaceId: 7,
+          deliveryId: 'delivery-1',
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(enqueueInstallationSync).toHaveBeenCalledWith({
+      installationId: 100,
+      reason: 'webhook:installation.created',
+      workspaceId: 7,
+      deliveryId: 'delivery-1',
+    });
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      workflowId: 'github:installations:100:sync',
+      outcome: 'started',
+    });
+  });
+
+  it('returns an observable failure when installation sync dispatch fails', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        enqueueInstallationSync: async () => ({
+          workflowId: 'github:installations:100:sync',
+          status: 'error',
+          error: 'receiver unavailable',
+        }),
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          installationId: 100,
+          reason: 'webhook:installation.created',
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'receiver unavailable',
+      workflowId: 'github:installations:100:sync',
+    });
+  });
+
+  it('reports installation sync receiver unavailability', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          installationId: 100,
+          reason: 'webhook:installation.created',
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'installation_sync_receiver_unavailable',
+    });
+  });
+
+  it('rejects invalid installation sync payloads', async () => {
+    const enqueueInstallationSync = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        enqueueInstallationSync,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ installationId: 0, reason: '' }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(enqueueInstallationSync).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'invalid_installation_sync_request',
+    });
+  });
+
+  it('rejects malformed installation sync JSON', async () => {
+    const enqueueInstallationSync = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        enqueueInstallationSync,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: '{"installationId":',
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(enqueueInstallationSync).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'invalid_installation_sync_request',
+    });
+  });
+
   it('reports runtime health dependencies', async () => {
     const server = createEngineServerOptions(
       3001,

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { kickReviewEngine, postReviewEngineControl } from './engine-client';
+import {
+  kickReviewEngine,
+  postReviewEngineControl,
+  signalInstallationSyncEngine,
+} from './engine-client';
 
 const mocks = vi.hoisted(() => ({
   env: {
@@ -59,5 +63,38 @@ describe('review engine client', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(error);
 
     await expect(kickReviewEngine()).resolves.toEqual({ status: 'failed', error });
+  });
+
+  it('posts installation sync dispatches to the engine receiver', async () => {
+    mocks.env.TRIBUNAL_ENGINE_URL = 'http://tribunal-engine.flycast';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', {
+        status: 202,
+      }),
+    );
+    const options = {
+      installationId: 100,
+      reason: 'webhook:installation.created',
+      workspaceId: 7,
+      deliveryId: 'delivery-1',
+    };
+
+    await expect(signalInstallationSyncEngine(options)).resolves.toEqual({
+      status: 'sent',
+      ok: true,
+      responseStatus: 202,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('http://tribunal-engine.flycast/installation-syncs'),
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(options),
+      },
+    );
   });
 });

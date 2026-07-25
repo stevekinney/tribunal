@@ -64,8 +64,7 @@ export async function handleInstallation(
           repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
         });
 
-        // Trigger sync to fetch repositories (fire-and-forget — see
-        // fireAndForgetInstallationSync for the durability limitation).
+        // Trigger sync to fetch repositories through the engine control channel.
         // deliveryId (the GitHub delivery GUID) becomes the Weft signalId so
         // retries/redeliveries dedup at the signal layer too (on top of the
         // upstream claimWebhookDelivery dedup).
@@ -87,8 +86,7 @@ export async function handleInstallation(
     case 'new_permissions_accepted': {
       await updateInstallationStatus(githubContext, installationId, 'active');
 
-      // Trigger sync in case new permissions grant access to more repos
-      // (fire-and-forget — see fireAndForgetInstallationSync for the limitation).
+      // Trigger sync in case new permissions grant access to more repos.
       const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
       fireAndForgetInstallationSync(
         {
