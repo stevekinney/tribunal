@@ -92,7 +92,10 @@ the endpoint returns 500.
 Handled event types include `pull_request`, `pull_request_review`,
 `pull_request_review_comment`, `check_run`, `check_suite`, `installation`,
 `installation_repositories`, `installation_target`, `github_app_authorization`,
-`push`, `issue_comment`, and `pull_request_review_thread`.
+`push`, `issue_comment`, and `pull_request_review_thread` — sourced from
+`applications/web/src/lib/server/github/webhooks/handled-event-types.ts`, which is
+also the drift baseline the GitHub App's webhook subscription is checked against
+(see "Subscribed events" in [`documentation/INTEGRATIONS.md`](./INTEGRATIONS.md)).
 
 A successful delivery returns `200 { ok: true }`.
 

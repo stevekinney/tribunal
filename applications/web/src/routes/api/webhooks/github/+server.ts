@@ -25,6 +25,7 @@ import {
   claimWebhookDelivery,
   releaseWebhookDeliveryClaim,
 } from '@tribunal/github/webhooks/claim-delivery';
+import { ROUTER_HANDLED_GITHUB_WEBHOOK_EVENT_TYPES } from '$lib/server/github/webhooks/handled-event-types';
 
 // Import typed webhook handlers
 import { handlePullRequestEvent } from './handlers/pull-request.server';
@@ -59,19 +60,12 @@ import { createGithubWebhookRouter } from 'github-webhook-schemas/registry';
 /**
  * Event types that are handled by the typed router (not the manual fallback path).
  * Used to detect Zod validation failures that would otherwise silently skip review intents.
+ *
+ * Sourced from `$lib/server/github/webhooks/handled-event-types` — the single
+ * source of truth also used by the webhook subscription drift check, so the
+ * two never disagree about what Tribunal actually handles.
  */
-const ROUTER_HANDLED_EVENT_TYPES = new Set([
-  'pull_request',
-  'pull_request_review',
-  'pull_request_review_comment',
-  'check_run',
-  'check_suite',
-  'installation',
-  'installation_repositories',
-  'installation_target',
-  'github_app_authorization',
-  'push',
-]);
+const ROUTER_HANDLED_EVENT_TYPES = new Set<string>(ROUTER_HANDLED_GITHUB_WEBHOOK_EVENT_TYPES);
 
 function isPreDatabaseIgnoredWebhook(
   eventType: string | null,

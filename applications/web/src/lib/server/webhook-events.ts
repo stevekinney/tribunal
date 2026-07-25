@@ -424,6 +424,22 @@ export async function listWebhookEvents(
 export interface WebhookEventFilterOptions {
   eventTypes: string[];
   actions: string[];
+  /**
+   * Distinct event types with at least one row actually received in this
+   * scope — independent of subscription status, and never merged with
+   * `subscribedEventTypes`.
+   *
+   * `eventTypes` alone cannot tell a caller whether a given event type is
+   * present because it was received, because the App is subscribed to it, or
+   * both — this field lets `/webhooks` distinguish "subscribed but zero
+   * received" (present in `subscribedEventTypes`, absent here) from a type
+   * that has actually been observed.
+   *
+   * Optional (rather than required) so existing fixtures/callers that
+   * predate this field — such as the repository-scoped webhooks page, which
+   * does not surface subscription state — do not need to supply it.
+   */
+  receivedEventTypes?: string[];
 }
 
 /**
@@ -444,6 +460,7 @@ export async function getWebhookEventFilterOptions(
     return {
       eventTypes: [...new Set(subscribedEventTypes)].sort(),
       actions: [],
+      receivedEventTypes: [],
     };
   }
 
@@ -454,8 +471,10 @@ export async function getWebhookEventFilterOptions(
     db.selectDistinct({ action: webhookEvent.action }).from(webhookEvent).where(whereClause),
   ]);
 
+  const receivedEventTypes = [...new Set(eventTypeRows.map((row) => row.eventType))].sort();
+
   const eventTypes = new Set(subscribedEventTypes);
-  for (const row of eventTypeRows) eventTypes.add(row.eventType);
+  for (const eventType of receivedEventTypes) eventTypes.add(eventType);
 
   const actions = new Set<string>();
   for (const row of actionRows) {
@@ -465,6 +484,7 @@ export async function getWebhookEventFilterOptions(
   return {
     eventTypes: [...eventTypes].sort(),
     actions: [...actions].sort(),
+    receivedEventTypes,
   };
 }
 

@@ -1,4 +1,4 @@
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, ServerInit } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { env } from '$env/dynamic/private';
 import {
@@ -9,6 +9,23 @@ import {
 import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
+import { warnOnHandledWebhookEventDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
+
+/**
+ * Runs once before the server responds to its first request.
+ *
+ * Fires the GitHub App webhook subscription drift check without awaiting it
+ * — a slow or failing GitHub API call must never delay the server's first
+ * response, matching this codebase's existing "never block startup on an
+ * external call" convention (see `github-context.ts`'s `resolveWeftClient`
+ * comment). The check only ever logs; see `subscription-drift.ts` for why
+ * it is a warning rather than a startup guard that throws.
+ */
+export const init: ServerInit = () => {
+  void warnOnHandledWebhookEventDriftAtStartup().catch((error) => {
+    console.error('[webhook-subscription] Unexpected error during startup drift check:', error);
+  });
+};
 
 /**
  * Correlation tracking handle.

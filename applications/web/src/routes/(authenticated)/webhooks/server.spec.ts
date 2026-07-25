@@ -52,9 +52,13 @@ vi.mock('$lib/server/webhook-events', async () => {
   };
 });
 
-vi.mock('@tribunal/github/webhooks/registered-webhooks', () => ({
-  getRegisteredWebhooks: mockGetRegisteredWebhooks,
-}));
+vi.mock('@tribunal/github/webhooks/registered-webhooks', async () => {
+  const actual = await vi.importActual('@tribunal/github/webhooks/registered-webhooks');
+  return {
+    ...actual,
+    getRegisteredWebhooks: mockGetRegisteredWebhooks,
+  };
+});
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
@@ -63,6 +67,8 @@ import { load } from './+page.server';
 type WebhooksLoadResult = {
   hasRepositories: boolean;
   subscribedEventTypes: string[];
+  driftedEventTypes: string[];
+  subscriptionStatusKnown: boolean;
   loadError: string | null;
 };
 
@@ -124,10 +130,57 @@ describe('/webhooks server load', () => {
     expect(result.subscribedEventTypes).toEqual([]);
   });
 
+  it('never reports drift when the subscription could not be determined', async () => {
+    // A failed fetch must not be conflated with "the App is subscribed to
+    // nothing" -- that would render every handled event type as a false
+    // "drifted" warning on a transient GitHub outage.
+    mockGetRegisteredWebhooks.mockRejectedValue(new Error('GitHub App is not configured'));
+
+    const result = (await load(createEvent())) as WebhooksLoadResult;
+
+    expect(result.driftedEventTypes).toEqual([]);
+    expect(result.subscriptionStatusKnown).toBe(false);
+  });
+
   it('includes subscribed events in the successful case', async () => {
     const result = (await load(createEvent())) as WebhooksLoadResult;
 
     expect(result.subscribedEventTypes).toEqual(['push']);
+  });
+
+  it('reports drift when the subscription is missing handled event types', async () => {
+    mockGetRegisteredWebhooks.mockResolvedValue({ registered: ['check_suite'], unregistered: [] });
+
+    const result = (await load(createEvent())) as WebhooksLoadResult;
+
+    expect(result.subscriptionStatusKnown).toBe(true);
+    expect(result.driftedEventTypes).toContain('push');
+    expect(result.driftedEventTypes).toContain('pull_request');
+    expect(result.driftedEventTypes).not.toContain('check_suite');
+  });
+
+  it('reports no drift once the App is subscribed to every handled event type', async () => {
+    mockGetRegisteredWebhooks.mockResolvedValue({
+      registered: [
+        'pull_request',
+        'pull_request_review',
+        'pull_request_review_comment',
+        'check_run',
+        'check_suite',
+        'installation',
+        'installation_repositories',
+        'installation_target',
+        'github_app_authorization',
+        'push',
+        'issue_comment',
+        'pull_request_review_thread',
+      ],
+      unregistered: [],
+    });
+
+    const result = (await load(createEvent())) as WebhooksLoadResult;
+
+    expect(result.driftedEventTypes).toEqual([]);
   });
 
   it('parses filters from the query string', async () => {

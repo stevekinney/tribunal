@@ -13,8 +13,9 @@
   import { Pagination } from '@lostgradient/cinder/pagination';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
+  import type { PageData } from './$types';
 
-  let { data } = $props();
+  let { data }: { data: PageData } = $props();
 
   /** Navigates to the given page, preserving every other filter in the URL. */
   function goToPage(nextPage: number): void {
@@ -62,6 +63,20 @@
       data.filters.ref,
     ),
   );
+
+  const receivedEventTypeSet = $derived(new Set(data.filterOptions.receivedEventTypes ?? []));
+  // Partition (not duplicate) subscribed events by whether Tribunal has
+  // actually received one yet -- "subscribed but zero received" and
+  // "receiving events normally" are different operational situations that
+  // otherwise render identically.
+  const activeSubscribedEventTypes = $derived(
+    data.subscribedEventTypes.filter((eventType) => receivedEventTypeSet.has(eventType)),
+  );
+  const quietSubscribedEventTypes = $derived(
+    data.subscribedEventTypes.filter((eventType) => !receivedEventTypeSet.has(eventType)),
+  );
+
+  const driftIsSingular = $derived(data.driftedEventTypes.length === 1);
 </script>
 
 <Page title="Webhook events" {subtitle}>
@@ -80,6 +95,25 @@
       </EmptyState>
     </Card>
   {:else}
+    {#if data.driftedEventTypes.length > 0}
+      <Alert variant="warning">
+        Tribunal can act on <strong>{data.driftedEventTypes.join(', ')}</strong>, but the GitHub App
+        is not currently subscribed to {driftIsSingular ? 'it' : 'them'}. Webhook deliveries for {driftIsSingular
+          ? 'this event type'
+          : 'these event types'} will never arrive until the App's webhook event subscription is updated.
+        See "Subscribed events" in
+        <code>documentation/INTEGRATIONS.md</code> for the expected subscription list, update it in
+        the GitHub App settings, then confirm with <code>GET /api/webhooks/github</code>.
+      </Alert>
+    {/if}
+
+    {#if !data.subscriptionStatusKnown}
+      <Alert variant="warning">
+        Could not determine the GitHub App's webhook subscription, so subscription drift cannot be
+        checked right now. This does not necessarily mean any events are missing.
+      </Alert>
+    {/if}
+
     <Card title="Filters" headingLevel={2}>
       <form method="GET" class="filter-form">
         <Select
@@ -118,12 +152,27 @@
     </Card>
 
     {#if data.subscribedEventTypes.length > 0}
-      <Card title="Subscribed events" description="Events GitHub currently sends to this App.">
-        <div class="subscribed-events">
-          {#each data.subscribedEventTypes as eventType (eventType)}
-            <Badge size="sm" variant="neutral">{eventType}</Badge>
-          {/each}
-        </div>
+      <Card
+        title="Subscribed events"
+        description="Events GitHub currently sends to this App."
+        headingLevel={2}
+      >
+        {#if activeSubscribedEventTypes.length > 0}
+          <p class="subscribed-events-heading">Receiving events:</p>
+          <div class="subscribed-events">
+            {#each activeSubscribedEventTypes as eventType (eventType)}
+              <Badge size="sm" variant="success">{eventType}</Badge>
+            {/each}
+          </div>
+        {/if}
+        {#if quietSubscribedEventTypes.length > 0}
+          <p class="subscribed-events-heading">Subscribed, but no events received yet:</p>
+          <div class="subscribed-events">
+            {#each quietSubscribedEventTypes as eventType (eventType)}
+              <Badge size="sm" variant="neutral">{eventType}</Badge>
+            {/each}
+          </div>
+        {/if}
       </Card>
     {/if}
 
@@ -163,5 +212,16 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2);
+  }
+
+  .subscribed-events-heading {
+    margin-top: var(--space-3);
+    margin-bottom: var(--space-2);
+    color: var(--cinder-text-muted);
+    font-size: var(--cinder-text-sm);
+  }
+
+  .subscribed-events-heading:first-child {
+    margin-top: 0;
   }
 </style>
