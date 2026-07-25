@@ -85,6 +85,21 @@ class UnexpectedNotModifiedError extends Error {
   }
 }
 
+/**
+ * Marker base class a `fetchFunction` passed to `cachedRead` can throw to
+ * signal its own deliberate abort — e.g. a caller-side quota/budget check
+ * inside the fetch function that decides not to call GitHub at all. Neither
+ * `fetchAndStore` nor the eTag conditional-request path logs an
+ * `[github-cache] ... api-error` line for this class (or a subclass of it):
+ * that log is meant for GitHub/network failures, and logging a caller's own
+ * expected, self-inflicted control-flow decision the same way would produce
+ * a false alert every time it fires — the same reasoning that already
+ * exempts `UnexpectedNotModifiedError` above. The error still propagates to
+ * the caller, which remains responsible for its own logging/classification
+ * of the condition if it wants any visibility.
+ */
+export class CachedReadAbortedError extends Error {}
+
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -172,8 +187,11 @@ export async function cachedRead<T>(
         logCacheEvent(policy.operationId, cacheKey, 'conditional-200', startTime);
         return { value: result.data, source: 'api' };
       } catch (error) {
-        // GitHub error during conditional request — propagate
-        logCacheEvent(policy.operationId, cacheKey, 'api-error', startTime);
+        // GitHub error during conditional request — propagate. Skip logging
+        // for the caller's own deliberate abort (see `CachedReadAbortedError`).
+        if (!(error instanceof CachedReadAbortedError)) {
+          logCacheEvent(policy.operationId, cacheKey, 'api-error', startTime);
+        }
         throw error;
       }
     }
@@ -220,8 +238,12 @@ async function fetchAndStore<T>(
     logCacheEvent(policy.operationId, cacheKey, 'miss', startTime);
     return { value: result.data, source: 'api' };
   } catch (error) {
-    // Skip duplicate logging for unexpected-304 — already logged above
-    if (!(error instanceof UnexpectedNotModifiedError)) {
+    // Skip duplicate logging for unexpected-304 (already logged above) and
+    // for the caller's own deliberate abort (see `CachedReadAbortedError`).
+    if (
+      !(error instanceof UnexpectedNotModifiedError) &&
+      !(error instanceof CachedReadAbortedError)
+    ) {
       logCacheEvent(policy.operationId, cacheKey, 'api-error', startTime);
     }
     throw error;

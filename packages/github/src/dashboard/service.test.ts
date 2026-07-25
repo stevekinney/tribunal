@@ -871,11 +871,20 @@ describe('buildRepositoryDashboard', () => {
   });
 
   it('does not attempt a live branch-head lookup once the api budget is exhausted', async () => {
-    expect.assertions(3);
+    expect.assertions(4);
     // Budget exhaustion is this build's own deliberate choice to stop, not a
     // bug or a GitHub failure, so it logs at `console.debug` — a `warn`/
     // `error` here would page an operator for expected behavior at scale.
     const consoleDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    // Regression: the budget-exhaustion marker is thrown *inside* the fetch
+    // function passed to `cachedRead`, so the cache layer's own
+    // `fetchAndStore` catch would otherwise still log its generic
+    // `[github-cache] ... api-error` line at `console.error` for this same,
+    // fully-expected event — a downgrade in this module alone would not have
+    // prevented that alert. `DashboardBudgetExhaustedError` extends
+    // `CachedReadAbortedError` specifically so the cache layer recognizes and
+    // skips it too.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
       const octokit = makeOctokit({ pullRequests: [], getBranch });
@@ -900,8 +909,10 @@ describe('buildRepositoryDashboard', () => {
           'getBranchHeadSha skipped for acme/widgets (#1): API budget exhausted',
         ),
       );
+      expect(consoleError).not.toHaveBeenCalled();
     } finally {
       consoleDebug.mockRestore();
+      consoleError.mockRestore();
     }
   });
 

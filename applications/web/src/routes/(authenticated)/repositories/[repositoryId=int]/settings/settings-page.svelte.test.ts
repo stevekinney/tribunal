@@ -441,6 +441,28 @@ describe('/repositories/[repositoryId]/settings page', () => {
     await expect.element(page.getByRole('button', { name: 'Stop watching' })).toBeVisible();
   });
 
+  it('disables the stop-watching button while a save is in flight so the two writes cannot race', async () => {
+    // Regression: the settings save always writes `watched: true`, while
+    // Stop watching submits `watched` absent (off) with the agentIds/
+    // ignoreGlobs snapshot taken at render. Submitting both at once could
+    // race, so Stop watching must be inert for the duration of a save.
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const stopWatchingButton = page.getByRole('button', { name: 'Stop watching' });
+    await expect.element(stopWatchingButton).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Save settings' }).click();
+
+    await expect.element(stopWatchingButton).toBeDisabled();
+
+    await enhancedFormTesting.onSubmitted?.({
+      result: { type: 'success', status: 200, data: { success: true } },
+      update: vi.fn(),
+    });
+
+    await expect.element(stopWatchingButton).not.toBeDisabled();
+  });
+
   it('hides the danger zone stop-watching control for a repository that is not watched', async () => {
     render(SettingsPage, {
       data: {

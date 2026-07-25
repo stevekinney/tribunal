@@ -198,7 +198,17 @@
           name="ignoreGlobs"
           value={data.repository.review.ignoreGlobs.join('\n')}
         />
-        <Button type="button" variant="danger" onclick={openUnwatchConfirmation}>
+        <!--
+          Disabled while the settings form's save is in flight: that save
+          always writes `watched: true` (see `submitRepositorySettingsForm`),
+          while this form's hidden `agentIds`/`ignoreGlobs` snapshot the
+          settings as of render, not whatever the in-flight save is about to
+          persist. Submitting both at once would race — whichever request
+          finishes last could unexpectedly re-watch the repository or
+          overwrite the newly saved configuration with this form's stale
+          values.
+        -->
+        <Button type="button" variant="danger" disabled={saving} onclick={openUnwatchConfirmation}>
           {#snippet leadingIcon()}<EyeOff size={14} aria-hidden="true" />{/snippet}
           Stop watching
         </Button>

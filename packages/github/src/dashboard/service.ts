@@ -26,7 +26,7 @@
  */
 import type { GithubServiceContext } from '../context.js';
 import { requirePolicy } from '../core/cache-policy.js';
-import { cachedRead } from '../core/github-read-client.js';
+import { cachedRead, CachedReadAbortedError } from '../core/github-read-client.js';
 import { isRateLimitError } from '../errors.js';
 import { resolveHasNextPage } from '@tribunal/github/shared';
 import { listPullRequests, type PullRequestFilterOptions } from '../pull-requests/service.js';
@@ -411,8 +411,18 @@ interface RulesetReadResult {
  * the network produced. `logDashboardReadFailure` checks for this base class
  * to log budget exhaustion at a quiet, non-alerting level instead of
  * `console.error`/`console.warn`.
+ *
+ * Extends `CachedReadAbortedError` rather than plain `Error`: both budget-
+ * exhaustion throw sites below (`readDefaultBranchStatus`'s branch-head-SHA
+ * read, `readRulesetRequiredChecks`) throw from *inside* the fetch function
+ * passed to `cachedRead`, so without this the cache layer's own
+ * `fetchAndStore`/conditional-request catch would log an
+ * `[github-cache] ... api-error` line at `console.error` for this build's own
+ * deliberate, expected stop — before this module's `logDashboardReadFailure`
+ * ever gets a chance to downgrade it to `console.debug`. The dashboard-level
+ * downgrade alone does not prevent that cache-layer alert.
  */
-class DashboardBudgetExhaustedError extends Error {}
+class DashboardBudgetExhaustedError extends CachedReadAbortedError {}
 
 /** True for a budget-exhaustion signal this build threw at itself — never a real GitHub/network failure. */
 function isBudgetExhaustionError(error: unknown): error is DashboardBudgetExhaustedError {
