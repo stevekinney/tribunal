@@ -507,6 +507,31 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(submitSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('disables saving as soon as unwatching is confirmed, not just while a save is already in flight', async () => {
+    // Regression: confirming "Stop watching" starts a real (non-enhanced)
+    // cross-document navigation to /repositories, which the old page stays
+    // interactive through until it completes — the disabled={saving} guard
+    // on the save button only blocks a save that was already in flight
+    // *before* unwatch was confirmed. Without also gating on `unwatching`, a
+    // slow network lets the user click "Save settings" after confirming
+    // unwatch, sending the inverse pair of concurrent writes (watched: false
+    // with the old values vs. watched: true with the edited ones).
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
+    vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
+
+    const saveButton = page.getByRole('button', { name: 'Save settings' });
+    await expect.element(saveButton).not.toBeDisabled();
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Stop watching' }).click();
+
+    await expect.element(saveButton).toBeDisabled();
+  });
+
   it('posts the repository id, saved agents, and saved ignore globs to the repositories list watch action, preserving them for a later re-add', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 

@@ -28,10 +28,31 @@
   let confirmUnwatchOpen = $state(false);
   let unwatchTriggerRef = $state<HTMLElement | null>(null);
   let unwatchFormElement = $state<HTMLFormElement | null>(null);
+  /**
+   * Set the instant unwatching is confirmed, not when the unwatch form's
+   * submission resolves — it never does, in the observable sense. This is a
+   * plain (non-enhanced) form, so confirming it starts a real cross-document
+   * navigation to `/repositories` rather than an awaitable fetch; the old
+   * page (and this state) stays around, interactive, until that navigation
+   * completes. If GitHub or the network is slow, that can be a while. Gating
+   * the settings form on `saving` alone only blocks a save that's already in
+   * flight from racing a *new* unwatch click — it does nothing once unwatch
+   * has already been confirmed and is silently in flight itself, which is
+   * exactly when a "Save settings" click would race it: the save always
+   * writes `watched: true` with the edited values, the unwatch write is
+   * already in flight with `watched: false` and a snapshot of the old
+   * values, and whichever request the server finishes last wins.
+   */
+  let unwatching = $state(false);
 
   function openUnwatchConfirmation(event: MouseEvent) {
     unwatchTriggerRef = event.currentTarget as HTMLElement;
     confirmUnwatchOpen = true;
+  }
+
+  function confirmUnwatch() {
+    unwatching = true;
+    unwatchFormElement?.requestSubmit();
   }
 
   /**
@@ -99,7 +120,7 @@
           defaultValue={data.repository.review.ignoreGlobs}
           commitOnSubmit
           placeholder="dist/**"
-          disabled={saving}
+          disabled={saving || unwatching}
         />
       </FormField>
     </Card>
@@ -141,7 +162,7 @@
                 value={agent.id}
                 checked={selected}
                 aria-label={`Assign ${agent.slug} to repository`}
-                disabled={!canToggle || saving}
+                disabled={!canToggle || saving || unwatching}
                 onValueChange={(next) => {
                   const nextSelectedAgentIds = new Set(selectedAgentIds);
                   if (next) {
@@ -160,7 +181,7 @@
     </Card>
 
     <div class="settings-actions">
-      <Button type="submit" variant="primary" size="sm" disabled={saving}>
+      <Button type="submit" variant="primary" size="sm" disabled={saving || unwatching}>
         {#snippet leadingIcon()}<Save size={14} aria-hidden="true" />{/snippet}
         {saving ? 'Saving…' : 'Save settings'}
       </Button>
@@ -199,16 +220,24 @@
           value={data.repository.review.ignoreGlobs.join('\n')}
         />
         <!--
-          Disabled while the settings form's save is in flight: that save
-          always writes `watched: true` (see `submitRepositorySettingsForm`),
-          while this form's hidden `agentIds`/`ignoreGlobs` snapshot the
-          settings as of render, not whatever the in-flight save is about to
-          persist. Submitting both at once would race — whichever request
-          finishes last could unexpectedly re-watch the repository or
-          overwrite the newly saved configuration with this form's stale
-          values.
+          Disabled while the settings form's save is in flight, or once
+          unwatching has itself been confirmed: that save always writes
+          `watched: true` (see `submitRepositorySettingsForm`), while this
+          form's hidden `agentIds`/`ignoreGlobs` snapshot the settings as of
+          render, not whatever a save is about to persist. Submitting both at
+          once would race — whichever request finishes last could
+          unexpectedly re-watch the repository or overwrite the newly saved
+          configuration with this form's stale values. The `unwatching` half
+          of the guard is defensive (this button is normally already hidden
+          behind the confirm dialog by the time it would matter) — the real
+          fix for the reverse direction is disabling "Save settings" below.
         -->
-        <Button type="button" variant="danger" disabled={saving} onclick={openUnwatchConfirmation}>
+        <Button
+          type="button"
+          variant="danger"
+          disabled={saving || unwatching}
+          onclick={openUnwatchConfirmation}
+        >
           {#snippet leadingIcon()}<EyeOff size={14} aria-hidden="true" />{/snippet}
           Stop watching
         </Button>
@@ -224,7 +253,7 @@
   description="Tribunal removes it from the repositories list and stops reviewing its pull requests. Saved ignore globs and agent assignments are kept for next time."
   destructive
   confirmLabel="Stop watching"
-  onconfirm={() => unwatchFormElement?.requestSubmit()}
+  onconfirm={confirmUnwatch}
 />
 
 <style>
