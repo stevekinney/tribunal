@@ -19,6 +19,8 @@ describe('cache-policy', () => {
     it('has policies for all expected pull request operations', () => {
       expect(getPolicy('list-pull-requests')).toBeDefined();
       expect(getPolicy('get-pull-request')).toBeDefined();
+      expect(getPolicy('get-pull-request-metadata')).toBeDefined();
+      expect(getPolicy('get-pull-request-diff-context')).toBeDefined();
     });
 
     it('has policies for all expected issue operations', () => {
@@ -50,6 +52,200 @@ describe('cache-policy', () => {
   });
 
   describe('policy key factories', () => {
+    it('keeps identity dimensions from coalescing across cache policies', () => {
+      const cases: Array<{
+        operationId: string;
+        baselineArguments: unknown[];
+        variantArguments: unknown[][];
+      }> = [
+        {
+          operationId: 'list-user-installations',
+          baselineArguments: [1],
+          variantArguments: [[2]],
+        },
+        {
+          operationId: 'list-pull-requests',
+          baselineArguments: [7, 's:open|sort:updated'],
+          variantArguments: [
+            [8, 's:open|sort:updated'],
+            [7, 's:closed|sort:updated'],
+          ],
+        },
+        {
+          operationId: 'list-issues',
+          baselineArguments: [7, 's:open|sort:updated'],
+          variantArguments: [
+            [8, 's:open|sort:updated'],
+            [7, 's:closed|sort:updated'],
+          ],
+        },
+        {
+          operationId: 'get-pull-request',
+          baselineArguments: ['owner', 'repo', 42],
+          variantArguments: [
+            ['other-owner', 'repo', 42],
+            ['owner', 'other-repo', 42],
+            ['owner', 'repo', 43],
+          ],
+        },
+        {
+          operationId: 'get-pull-request-metadata',
+          baselineArguments: ['owner', 'repo', 42],
+          variantArguments: [
+            ['other-owner', 'repo', 42],
+            ['owner', 'other-repo', 42],
+            ['owner', 'repo', 43],
+          ],
+        },
+        {
+          operationId: 'get-pull-request-diff-context',
+          baselineArguments: [7, 42, 'aaa111'],
+          variantArguments: [
+            [8, 42, 'aaa111'],
+            [7, 43, 'aaa111'],
+            [7, 42, 'bbb222'],
+          ],
+        },
+        {
+          operationId: 'mint-single-repository-read-token',
+          baselineArguments: [11, 7],
+          variantArguments: [
+            [12, 7],
+            [11, 8],
+          ],
+        },
+        {
+          operationId: 'list-installation-repositories',
+          baselineArguments: [11],
+          variantArguments: [[12]],
+        },
+        {
+          operationId: 'get-installation',
+          baselineArguments: [11],
+          variantArguments: [[12]],
+        },
+        {
+          operationId: 'get-issue',
+          baselineArguments: ['owner', 'repo', 5],
+          variantArguments: [
+            ['other-owner', 'repo', 5],
+            ['owner', 'other-repo', 5],
+            ['owner', 'repo', 6],
+          ],
+        },
+        {
+          operationId: 'list-issue-comments',
+          baselineArguments: ['owner', 'repo', 5, 'p:1'],
+          variantArguments: [
+            ['other-owner', 'repo', 5, 'p:1'],
+            ['owner', 'other-repo', 5, 'p:1'],
+            ['owner', 'repo', 6, 'p:1'],
+            ['owner', 'repo', 5, 'p:2'],
+          ],
+        },
+        {
+          operationId: 'list-review-comments',
+          baselineArguments: ['owner', 'repo', 42, 'p:1'],
+          variantArguments: [
+            ['other-owner', 'repo', 42, 'p:1'],
+            ['owner', 'other-repo', 42, 'p:1'],
+            ['owner', 'repo', 43, 'p:1'],
+            ['owner', 'repo', 42, 'p:2'],
+          ],
+        },
+        {
+          operationId: 'validate-thread-ownership',
+          baselineArguments: ['thread1', 'owner', 'repo'],
+          variantArguments: [
+            ['thread2', 'owner', 'repo'],
+            ['thread1', 'other-owner', 'repo'],
+            ['thread1', 'owner', 'other-repo'],
+          ],
+        },
+        {
+          operationId: 'find-thread-for-comment',
+          baselineArguments: ['owner', 'repo', 42, 'node1'],
+          variantArguments: [
+            ['other-owner', 'repo', 42, 'node1'],
+            ['owner', 'other-repo', 42, 'node1'],
+            ['owner', 'repo', 43, 'node1'],
+            ['owner', 'repo', 42, 'node2'],
+          ],
+        },
+        {
+          operationId: 'get-aggregate-review-state',
+          baselineArguments: ['owner', 'repo', 42],
+          variantArguments: [
+            ['other-owner', 'repo', 42],
+            ['owner', 'other-repo', 42],
+            ['owner', 'repo', 43],
+          ],
+        },
+        {
+          operationId: 'get-review-thread-counts',
+          baselineArguments: ['owner', 'repo', 42],
+          variantArguments: [
+            ['other-owner', 'repo', 42],
+            ['owner', 'other-repo', 42],
+            ['owner', 'repo', 43],
+          ],
+        },
+        {
+          operationId: 'get-failing-check-count',
+          baselineArguments: ['owner', 'repo', 'aaa111'],
+          variantArguments: [
+            ['other-owner', 'repo', 'aaa111'],
+            ['owner', 'other-repo', 'aaa111'],
+            ['owner', 'repo', 'bbb222'],
+          ],
+        },
+        {
+          operationId: 'get-branch-ci-status',
+          baselineArguments: ['owner', 'repo', 'main'],
+          variantArguments: [
+            ['other-owner', 'repo', 'main'],
+            ['owner', 'other-repo', 'main'],
+            ['owner', 'repo', 'release'],
+          ],
+        },
+        {
+          operationId: 'get-branch-head-sha',
+          baselineArguments: ['owner', 'repo', 'main'],
+          variantArguments: [
+            ['other-owner', 'repo', 'main'],
+            ['owner', 'other-repo', 'main'],
+            ['owner', 'repo', 'release'],
+          ],
+        },
+        {
+          operationId: 'get-branch-rules',
+          baselineArguments: ['owner', 'repo', 'main'],
+          variantArguments: [
+            ['other-owner', 'repo', 'main'],
+            ['owner', 'other-repo', 'main'],
+            ['owner', 'repo', 'release'],
+          ],
+        },
+        {
+          operationId: 'worker-aggregate-pull-requests',
+          baselineArguments: [7, 's:open'],
+          variantArguments: [
+            [8, 's:open'],
+            [7, 's:closed'],
+          ],
+        },
+      ];
+
+      for (const testCase of cases) {
+        const policy = getPolicy(testCase.operationId)!;
+        const baselineKey = policy.keyFactory(...testCase.baselineArguments);
+
+        for (const variantArguments of testCase.variantArguments) {
+          expect(policy.keyFactory(...variantArguments)).not.toBe(baselineKey);
+        }
+      }
+    });
+
     it('list-pull-requests generates correct cache key', () => {
       const policy = getPolicy('list-pull-requests')!;
       const key = policy.keyFactory(123, 's:open|sort:updated');
@@ -63,6 +259,13 @@ describe('cache-policy', () => {
       expect(key).toContain('owner');
       expect(key).toContain('repo');
       expect(key).toContain('42');
+    });
+
+    it('get-pull-request-metadata generates a distinct raw metadata cache key', () => {
+      const policy = getPolicy('get-pull-request-metadata')!;
+      const key = policy.keyFactory('owner', 'repo', 42);
+      expect(key).toBe('github:response:owner:repo:pr:42:metadata');
+      expect(key).not.toBe(getPolicy('get-pull-request')!.keyFactory('owner', 'repo', 42));
     });
 
     it('list-issues generates correct cache key', () => {
@@ -178,6 +381,7 @@ describe('cache-policy', () => {
   describe('eTag support flags', () => {
     it('single-resource REST endpoints support eTag', () => {
       expect(getPolicy('get-pull-request')?.supportsEtag).toBe(true);
+      expect(getPolicy('get-pull-request-metadata')?.supportsEtag).toBe(true);
       expect(getPolicy('get-issue')?.supportsEtag).toBe(true);
       expect(getPolicy('list-issue-comments')?.supportsEtag).toBe(true);
       expect(getPolicy('list-review-comments')?.supportsEtag).toBe(true);

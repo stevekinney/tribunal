@@ -96,6 +96,14 @@ registerPolicy({
 });
 
 registerPolicy({
+  operationId: 'get-pull-request-metadata',
+  keyFactory: (owner: string, repo: string, pullNumber: number) =>
+    CACHE_KEYS.GITHUB_PR_METADATA(owner, repo, pullNumber),
+  ttlSeconds: GITHUB_RESPONSE_CACHE_TTL_SECONDS,
+  supportsEtag: true,
+});
+
+registerPolicy({
   operationId: 'get-pull-request-diff-context',
   keyFactory: (repositoryId: number, pullNumber: number, headSha: string) =>
     CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber, headSha),
