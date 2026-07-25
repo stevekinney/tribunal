@@ -59,18 +59,154 @@ function findSvelteFiles(dir: string): string[] {
  * `data-*` (scripting hooks). Attributes that legitimately carry visible
  * text (`aria-label`, `alt`, `title`, `placeholder`, `value`, plain text
  * children) are deliberately left untouched.
+ *
+ * The attribute/class/id stripping only makes sense for markup attributes —
+ * it has no way to tell `name="..."` (an HTML attribute) apart from
+ * `const name = 'Repo settings';` (an ordinary assignment) using regex
+ * alone, since both read as "word, optional whitespace, `=`, optional
+ * whitespace, quote". Applying it inside `<script>` would corrupt a real
+ * script-composed string like that into `const ;` before the literal
+ * scanner (`collectLiterals`, below) ever reaches it, hiding real rendered
+ * copy. `<script>` blocks are protected with a placeholder while the
+ * attribute regexes run, then restored verbatim; the literal scanner sees
+ * the untouched original.
  */
 function stripNonProse(source: string): string {
-  return source
+  const withoutStyleAndComments = source
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/^\s*import\b[^;]*;/gm, '')
+    .replace(/^\s*import\b[^;]*;/gm, '');
+
+  const placeholderPrefix = 'SCRIPT_PLACEHOLDER_';
+  const scripts: string[] = [];
+  const withPlaceholders = withoutStyleAndComments.replace(
+    /<script\b[^>]*>[\s\S]*?<\/script>/gi,
+    (block) => {
+      scripts.push(block);
+      return ` ${placeholderPrefix}${scripts.length - 1}_END `;
+    },
+  );
+
+  const stripped = withPlaceholders
     .replace(/\b\w*[Cc]lass\s*=\s*(["'`])(?:(?!\1)[\s\S])*\1/g, '')
     .replace(/\bclass:[\w-]+(?:=\{[^}]*\})?/g, '')
     .replace(
       /\b(?:id|for|href|src|action|formaction|rel|target|name|type|data-[\w-]+)\s*=\s*(["'`])(?:(?!\1)[\s\S])*\1/g,
       '',
     );
+
+  return stripped.replace(
+    new RegExp(`${placeholderPrefix}(\\d+)_END`, 'g'),
+    (_match, index) => scripts[Number(index)],
+  );
+}
+
+/**
+ * Characters and keywords after which a `/` can only start a regex literal,
+ * never begin a division operator — used to tell the two apart when
+ * scanning for string delimiters, so that quote characters inside a regex
+ * body (`/['"]/`) are never mistaken for the start of a string literal.
+ * Deliberately excludes `<`/`>`: in Svelte source those precede tag
+ * boundaries (`</script>`, `<br />`) far more often than a comparison
+ * operator would precede a regex literal, and misreading them as
+ * regex-literal context would swallow real markup that follows.
+ */
+const REGEX_PRECEDING_CHARS = new Set([
+  '(',
+  ',',
+  '=',
+  ':',
+  '[',
+  '!',
+  '&',
+  '|',
+  '?',
+  '{',
+  '}',
+  ';',
+  '+',
+  '-',
+  '*',
+  '%',
+  '^',
+  '~',
+  '\n',
+]);
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  'return',
+  'typeof',
+  'case',
+  'in',
+  'of',
+  'instanceof',
+  'new',
+  'delete',
+  'void',
+  'throw',
+  'yield',
+  'await',
+  'do',
+  'else',
+]);
+
+/**
+ * Returns whether `source[index]` (a `/`) plausibly opens a regex literal
+ * rather than being a division operator, based on the previous significant
+ * token — the standard "regex vs. divide" heuristic hand-rolled JS lexers
+ * use, since telling the two apart in general requires a full parser.
+ */
+function isRegexLiteralStart(source: string, index: number): boolean {
+  let previous = index - 1;
+  while (previous >= 0 && /\s/.test(source[previous])) previous -= 1;
+
+  if (previous < 0) return true;
+
+  const previousChar = source[previous];
+  if (REGEX_PRECEDING_CHARS.has(previousChar)) return true;
+
+  if (/[A-Za-z0-9_$]/.test(previousChar)) {
+    let wordStart = previous;
+    while (wordStart >= 0 && /[A-Za-z0-9_$]/.test(source[wordStart])) wordStart -= 1;
+    return REGEX_PRECEDING_KEYWORDS.has(source.slice(wordStart + 1, previous + 1));
+  }
+
+  return false;
+}
+
+/**
+ * Returns the index just past a regex literal's closing `/` and any
+ * trailing flags, given `source[start]` is its opening `/`. Tracks
+ * character-class (`[...]`) state so a `/` inside `[...]` (like the one in
+ * `/[/]/`) doesn't end the literal early.
+ */
+function findRegexLiteralEnd(source: string, start: number): number {
+  let index = start + 1;
+  let inCharacterClass = false;
+
+  while (index < source.length) {
+    const char = source[index];
+
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
+
+    if (char === '\n') return index;
+
+    if (char === '[') {
+      inCharacterClass = true;
+    } else if (char === ']') {
+      inCharacterClass = false;
+    } else if (char === '/' && !inCharacterClass) {
+      index += 1;
+      while (index < source.length && /[a-z]/i.test(source[index])) index += 1;
+      return index;
+    }
+
+    index += 1;
+  }
+
+  return index;
 }
 
 /**
@@ -117,8 +253,10 @@ function findLiteralEnd(source: string, start: number): number {
  * Returns the index just past the `}` that closes a `${...}` interpolation
  * whose content starts at `source[start]` (right after its `${`). Tracks
  * brace depth so a nested object literal (`${ { a: 1 } }`) doesn't close it
- * early, and defers to `findLiteralEnd` for any nested quote/backtick so
- * that literal's own braces and quotes are skipped rather than counted.
+ * early, defers to `findLiteralEnd` for any nested quote/backtick so that
+ * literal's own braces and quotes are skipped rather than counted, and
+ * defers to `findRegexLiteralEnd` for a regex literal for the same reason —
+ * an interpolation can itself contain one (`` `${str.replace(/PR/g, x)}` ``).
  */
 function findInterpolationEnd(source: string, start: number): number {
   let depth = 0;
@@ -137,6 +275,11 @@ function findInterpolationEnd(source: string, start: number): number {
       continue;
     }
 
+    if (char === '/' && isRegexLiteralStart(source, index)) {
+      index = findRegexLiteralEnd(source, index);
+      continue;
+    }
+
     if (char === '{') {
       depth += 1;
     } else if (char === '}') {
@@ -150,7 +293,14 @@ function findInterpolationEnd(source: string, start: number): number {
   return index;
 }
 
-/** Finds every top-level (unnested) string/template literal in `source`. */
+/**
+ * Finds every top-level (unnested) string/template literal in `source`.
+ * Regex literals are recognized and skipped as opaque spans (not just
+ * scanned character-by-character) so a quote character inside one, like the
+ * `'` and `"` in `/['"]/`, is never mistaken for the start of a real string
+ * — which would otherwise mispair with the next real quote later in the
+ * file and swallow whatever string sits between them.
+ */
 function findTopLevelLiterals(source: string): string[] {
   const literals: string[] = [];
   let index = 0;
@@ -162,6 +312,11 @@ function findTopLevelLiterals(source: string): string[] {
       const end = findLiteralEnd(source, index);
       literals.push(source.slice(index, end));
       index = end;
+      continue;
+    }
+
+    if (char === '/' && isRegexLiteralStart(source, index)) {
+      index = findRegexLiteralEnd(source, index);
       continue;
     }
 
@@ -336,5 +491,27 @@ describe('user-facing copy avoids banned abbreviations: regression cases', () =>
       0,
     );
     expect(findViolations('<input placeholder="Search repos" />').length).toBeGreaterThan(0);
+  });
+
+  it('does not let a script-assigned prose variable hide behind attribute stripping', () => {
+    const source = "<script>\n  const name = 'Repo settings';\n</script>\n<h1>{name}</h1>";
+    expect(findViolations(source).length).toBeGreaterThan(0);
+  });
+
+  it('still strips a real id/name/href attribute value from a script-adjacent element', () => {
+    const source = '<input id="repo-1" name="repo-1" href="/repos/1" />';
+    expect(findViolations(source)).toEqual([]);
+  });
+
+  it('does not let a regex literal with quote characters swallow later copy', () => {
+    const source =
+      "<script>\n  const quotePattern = /['\"]/;\n  const label = 'Open PR';\n</script>\n<span>{label}</span>";
+    expect(findViolations(source).length).toBeGreaterThan(0);
+  });
+
+  it('still allows a division expression next to real copy', () => {
+    const source =
+      '<script>\n  const ratio = total / count;\n  const label = `Average: ${ratio}`;\n</script>\n<span>{label}</span>';
+    expect(findViolations(source)).toEqual([]);
   });
 });

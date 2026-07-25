@@ -30,14 +30,36 @@ const EMPTY_LENGTH_CHECKS = [
  * `no-restricted-syntax` selectors have no type information, so a plain
  * `.length` member access matches a `string` exactly the same as an array
  * (`searchQuery.length === 0` reads identically to `items.length === 0`).
- * Requiring an `{#each}` block somewhere in the guard's subtree is a
- * purely-structural stand-in for "this is actually a collection": a string
- * length check has no reason to render one, while a real list fallback
- * pairs with the `{#each}` that renders its populated branch.
+ * Requiring an `{#each}` block somewhere nearby is a purely-structural
+ * stand-in for "this is actually a collection": a string length check has
+ * no reason to render one, while a real list fallback pairs with the
+ * `{#each}` that renders its populated branch.
+ *
+ * "Nearby" has to mean more than "inside the `{#if}` block's own subtree".
+ * The populated list can also be rendered as a *sibling* of the guard
+ * instead of in its `{:else}` — see `runs/[runId]/+page.svelte`'s
+ * agent-runs section, where `{#if run.agentRuns.length === 0}...{/if}` is
+ * immediately followed by a sibling `{#each run.agentRuns as agentRun}`.
+ * esquery's `:has()` only traverses *descendants* of the node it's applied
+ * to (see estraverse.traverse in esquery's `has` matcher) — there is no way
+ * to express "has a sibling matching X" from the `{#if}` node itself, and
+ * `:has(~ X)` silently matches nothing rather than erroring, which is what
+ * made this gap easy to miss. The fix moves the `:has(SvelteEachBlock)`
+ * check up to the *shared parent* of both blocks (a `<section>`, `<Card>`,
+ * or the component root) and asks for the `{#if}` as one of its direct
+ * children: the each-block only has to be somewhere in the parent's
+ * subtree, which covers both the nested-in-`{:else}` case and the
+ * sibling-in-the-same-container case, without reaching into unrelated
+ * content elsewhere on the page (the `> SvelteIfBlock` keeps it scoped to a
+ * direct child, not just page-wide "there's an each-block somewhere").
  */
-const HAS_EACH_BLOCK = ':has(SvelteEachBlock)';
+function requireNearbyEachBlock(ifBlockSelector) {
+  return `*:has(SvelteEachBlock) > ${ifBlockSelector}`;
+}
 
-const EMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})${HAS_EACH_BLOCK}`;
+const EMPTY_LENGTH_SELECTOR = requireNearbyEachBlock(
+  `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})`,
+);
 
 /**
  * The mirror image of `EMPTY_LENGTH_CHECKS`: AST shapes that mean "this
@@ -56,7 +78,9 @@ const NONEMPTY_LENGTH_CHECKS = [
   "[expression.type='BinaryExpression'][expression.operator='>='][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=1]",
 ];
 
-const NONEMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${NONEMPTY_LENGTH_CHECKS.join(', ')})${HAS_EACH_BLOCK}`;
+const NONEMPTY_LENGTH_SELECTOR = requireNearbyEachBlock(
+  `SvelteIfBlock:matches(${NONEMPTY_LENGTH_CHECKS.join(', ')})`,
+);
 
 export default defineConfig(
   {
