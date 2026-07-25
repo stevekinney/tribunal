@@ -9,9 +9,42 @@ import type { PageData } from './$types';
 const { invalidateAll } = vi.hoisted(() => ({ invalidateAll: vi.fn() }));
 vi.mock('$app/navigation', () => ({ invalidateAll }));
 
+// This route renders outside (authenticated)/+layout.svelte and starts its
+// own Neon Auth session refresh (see useNeonSessionRefresh's own jsdoc for
+// why -- onboarding can run long enough for the bridged cookie to otherwise
+// expire mid-flow). Mock it out so the nav/picker assertions below don't
+// depend on PUBLIC_NEON_AUTH_URL being configured in this browser test
+// environment; the wiring itself is covered by the dedicated test below.
+const mocks = vi.hoisted(() => ({
+  getNeonAuthClient: vi.fn(),
+  startNeonSessionRefresh: vi.fn(),
+}));
+vi.mock('$lib/auth/neon-client', () => ({
+  getNeonAuthClient: mocks.getNeonAuthClient,
+  startNeonSessionRefresh: mocks.startNeonSessionRefresh,
+}));
+
 describe('/onboarding page', () => {
   beforeEach(() => {
     invalidateAll.mockReset();
+    mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: vi.fn() });
+    mocks.startNeonSessionRefresh.mockReset().mockReturnValue(vi.fn());
+  });
+
+  it('starts periodic Neon Auth session refresh on mount, same as the authenticated layout', async () => {
+    const fakeClient = { getSession: vi.fn() };
+    mocks.getNeonAuthClient.mockReturnValue(fakeClient);
+
+    const data = {
+      repositories: [],
+      installations: [],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    await expect.poll(() => mocks.startNeonSessionRefresh.mock.calls.length).toBeGreaterThan(0);
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(fakeClient);
   });
 
   function onboardingStepItems(): HTMLElement[] {

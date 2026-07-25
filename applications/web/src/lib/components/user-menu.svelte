@@ -1,3 +1,26 @@
+<script module lang="ts">
+  // `use:enhance` awaits signOutBeforeSubmit() before dispatching the form's
+  // actual POST -- so a Neon Auth signOut() call that stalls (rather than
+  // rejecting outright) would block local logout indefinitely. This bounds
+  // it: a stalled or unreachable identity provider must never prevent
+  // clearing Tribunal's own session. Exported (not a component-local const)
+  // so tests can assert against the exact value instead of duplicating the
+  // magic number.
+  export const neonAuthSignOutTimeoutMs = 3000;
+
+  export function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error(`Neon Auth sign-out did not respond within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  }
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { enhance } from '$app/forms';
@@ -49,12 +72,13 @@
     broadcastNeonSessionLogout();
 
     try {
-      await getNeonAuthClient().signOut();
+      await withTimeout(getNeonAuthClient().signOut(), neonAuthSignOutTimeoutMs);
     } catch (signOutError) {
       // Continue to the native form submission (which still clears
-      // Tribunal's own cookie) even if Neon Auth itself is unreachable --
-      // but still log it, since this failure mode (the cookie clears, the
-      // Neon Auth session itself doesn't) is otherwise silent.
+      // Tribunal's own cookie) even if Neon Auth itself is unreachable or
+      // unresponsive -- but still log it, since this failure mode (the
+      // cookie clears, the Neon Auth session itself doesn't) is otherwise
+      // silent.
       console.error('Failed to end the Neon Auth session during sign-out', signOutError);
     }
   }

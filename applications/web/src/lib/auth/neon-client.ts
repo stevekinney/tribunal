@@ -12,16 +12,6 @@ const neonSessionBridgeEndpoint = '/api/auth/neon-session';
 // the JWT's own `exp`) never goes stale while the user is active.
 export const neonSessionRefreshIntervalMs = 5 * 60 * 1000;
 
-// A visible-but-untouched tab (foregrounded, but the user has walked away or
-// it's obscured behind another window) still passes the visibility check.
-// Two full refresh cycles with zero recorded activity is long enough that a
-// genuinely active user -- who generates pointer/keyboard/scroll events far
-// more often than every five minutes -- would never trip it, while an
-// abandoned tab stops polling instead of indefinitely keeping
-// `deployment/fly/web.toml`'s scale-to-zero web machine and Neon Postgres
-// warm.
-export const neonSessionIdleThresholdMs = neonSessionRefreshIntervalMs * 2;
-
 // Cross-tab logout signal: `$lib/components/user-menu.svelte`'s sign-out
 // form broadcasts on this channel (via `broadcastNeonSessionLogout`, in its
 // `use:enhance` submit handler) before its POST to `/logout`
@@ -176,27 +166,49 @@ export function getNeonAuthClient() {
  *
  * Calls `getSession()` immediately (in addition to the interval) rather than
  * only after the first `neonSessionRefreshIntervalMs` elapses. The bridged
- * cookie's `expires` mirrors the JWT's own `exp`, which is set once, at
- * whatever moment the token was minted -- not when this interval starts. A
- * page reload can mount this well into that 15-minute window (SvelteKit's
- * server load only requires the cookie to still be valid, not fresh), so
- * without a leading call the cookie can expire before the first scheduled
- * refresh ever fires.
+ * cookie's `expires` mirrors the *most recently posted* token's own `exp`
+ * (`neon-session.ts`'s `setNeonAuthTokenCookie` call), reset fresh on every
+ * successful refresh -- not fixed at sign-in. A page reload can mount this
+ * well into the current 15-minute window (SvelteKit's server load only
+ * requires the cookie to still be valid, not fresh), so without a leading
+ * call the cookie can expire before the first scheduled refresh ever fires.
  *
- * Scheduled (interval) refreshes are skipped while the tab is hidden, and a
- * refresh fires once when the tab becomes visible again. `deployment/fly/web.toml`
- * sets `auto_stop_machines = "stop"` / `min_machines_running = 0`; an
- * authenticated tab left open and merely backgrounded would otherwise poll
- * forever, waking the web machine and Neon Postgres every five minutes and
- * defeating scale-to-zero. The leading call above is unconditional -- it
- * exists to cover a page that mounts deep into the JWT's window, which can
- * happen even if the tab starts out hidden.
+ * Deliberately does NOT gate scheduled refreshes on recent user activity
+ * (mouse/keyboard/scroll), only on tab visibility (see below). An earlier
+ * revision added an activity-based idle cutoff on top of the visibility
+ * gate; it was removed after review (see `.claude/rules/authentication.md`'s
+ * "Gate polling on tab visibility, not recent user activity" section)
+ * because it let the cookie's lease lapse *before* the JWT it was tracking
+ * actually expired, and the fix for that (an immediate refresh on the first
+ * activity/visibility event after idling) raced the very next user gesture:
+ * a `pointerdown` that both records activity and immediately navigates can
+ * reach the server before the fire-and-forget refresh completes. Gating
+ * only on hidden vs. visible removes that self-inflicted race entirely,
+ * because the cookie then never has a chance to actually expire while the
+ * tab is visible: this file's own refresh cadence (once every
+ * `neonSessionRefreshIntervalMs`, a third of the JWT's lifetime) keeps
+ * renewing it. The residual, irreducible cost/correctness trade-off left
+ * genuinely open here: a visible-but-truly-unattended tab (nobody at the
+ * keyboard, but not switched away or minimized either) keeps polling every
+ * five minutes indefinitely, at one lightweight request per interval --
+ * accepted deliberately, because the alternative (silently expiring an
+ * open, visible session) is the exact bug this PR exists to fix.
+ *
+ * Scheduled (interval) refreshes ARE skipped while the tab is hidden
+ * (`document.visibilityState === 'hidden'`), and a refresh fires once when
+ * the tab becomes visible again. `deployment/fly/web.toml` sets
+ * `auto_stop_machines = "stop"` / `min_machines_running = 0`; a tab that's
+ * been switched away from or minimized would otherwise poll forever,
+ * waking the web machine and Neon Postgres every five minutes and defeating
+ * scale-to-zero for no visible benefit to anyone. The leading call above is
+ * unconditional -- it exists to cover a page that mounts deep into the
+ * JWT's window, which can happen even if the tab starts out hidden.
  *
  * The returned teardown function aborts both the in-flight `getSession()`
  * request AND the bridge POST it may have already kicked off (the same
  * `AbortSignal` is threaded through `refreshNeonSessionCookie` into
  * `postNeonSessionToken`'s own `fetch`), in addition to stopping the
- * interval and the visibility/activity listeners. Aborting only the outer
+ * interval and the visibility listener. Aborting only the outer
  * `getSession()` call is not enough: better-fetch resolves `getSession()`
  * only after awaiting its success hooks, but this module's own bridge POST is
  * fired-and-forgotten from inside that hook, so by the time `getSession()`
@@ -211,56 +223,12 @@ export function getNeonAuthClient() {
  * a visibility- and abort-signal-scoped fix only covers this one tab, and a
  * still-valid JWT minted before sign-out lets a *different* tab's refresh
  * outlive `/logout` and recreate the cookie there instead.
- *
- * Scheduled refreshes also stop once the tab has recorded no
- * pointer/keyboard/scroll activity for `neonSessionIdleThresholdMs`, even
- * while `visibilityState` stays `"visible"` (a foregrounded-but-abandoned
- * tab, or one merely obscured behind another window, still reports
- * `"visible"`). The first activity (or regained visibility) recorded after
- * the tab was idle triggers an immediate refresh rather than merely
- * resetting the idle clock for the next scheduled tick -- otherwise the
- * bridged cookie, last refreshed up to `neonSessionIdleThresholdMs` earlier,
- * could already have outlived the JWT's own lifetime by the time the next
- * tick would have run.
  */
 export function startNeonSessionRefresh(
   authClient: Pick<ReturnType<typeof getNeonAuthClient>, 'getSession'>,
 ): () => void {
   const abortController = new AbortController();
-  let lastActivityAt = Date.now();
   let stopped = false;
-
-  function isIdle(): boolean {
-    return Date.now() - lastActivityAt >= neonSessionIdleThresholdMs;
-  }
-
-  function markActive(): void {
-    lastActivityAt = Date.now();
-  }
-
-  /**
-   * Records activity and, if the tab had already gone idle, refreshes
-   * immediately. Merely resetting the clock without this would leave the
-   * bridged cookie to expire on its own: the last successful refresh could
-   * be up to `neonSessionIdleThresholdMs` old by the time activity resumes,
-   * and the *next* refresh wouldn't fire until the following scheduled tick
-   * (up to `neonSessionRefreshIntervalMs` later) -- comfortably past the
-   * JWT's own 15-minute lifetime for a tab idle long enough to trip the
-   * threshold. Refreshing the moment activity resumes closes that gap
-   * instead of leaving the user to hit an expired cookie on their first
-   * navigation back.
-   *
-   * `pointerdown`/`keydown`/`scroll` listeners call this directly.
-   * `handleVisibilityChange` uses the lower-level `markActive` instead and
-   * refreshes unconditionally itself, so a visibility change that also
-   * happens to resolve an idle period doesn't trigger two refreshes back to
-   * back.
-   */
-  function recordActivity(): void {
-    const wasIdle = isIdle();
-    markActive();
-    if (wasIdle) refresh();
-  }
 
   function refresh(): void {
     void authClient
@@ -279,41 +247,21 @@ export function startNeonSessionRefresh(
       });
   }
 
-  function refreshIfActive(): void {
+  function refreshIfVisible(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    if (isIdle()) return;
     refresh();
   }
 
   function handleVisibilityChange(): void {
     if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-    // Switching back to this tab is itself a sign of activity -- don't skip
-    // the resulting refresh just because the tab was idle while backgrounded.
-    // Uses markActive (not recordActivity) and refreshes unconditionally
-    // itself: recordActivity would otherwise also refresh whenever the tab
-    // happened to be idle, doubling up with the explicit call below.
-    markActive();
     refresh();
   }
 
-  const activityEventNames = ['pointerdown', 'keydown', 'scroll'] as const;
-
   refresh();
-  const intervalId = setInterval(refreshIfActive, neonSessionRefreshIntervalMs);
+  const intervalId = setInterval(refreshIfVisible, neonSessionRefreshIntervalMs);
 
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    for (const eventName of activityEventNames) {
-      // `capture: true` matters specifically for `scroll`: unlike
-      // `pointerdown`/`keydown`, `scroll` events fired on an inner
-      // `overflow`-scrolling element (e.g. `#main-content` in
-      // `(authenticated)/+layout.svelte`) do not bubble, so a
-      // bubble-phase-only listener on `document` would never see them and a
-      // user scrolling a long diff or log for the entire idle threshold
-      // would be wrongly marked idle. A capture-phase listener on `document`
-      // sees every scroll in the capture pass regardless of bubbling.
-      document.addEventListener(eventName, recordActivity, { capture: true, passive: true });
-    }
   }
 
   const logoutChannel =
@@ -329,9 +277,6 @@ export function startNeonSessionRefresh(
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      for (const eventName of activityEventNames) {
-        document.removeEventListener(eventName, recordActivity, { capture: true });
-      }
     }
     logoutChannel?.close();
   }

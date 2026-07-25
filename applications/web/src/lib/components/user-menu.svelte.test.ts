@@ -2,7 +2,7 @@ import { createRawSnippet } from 'svelte';
 import { page } from 'vitest/browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'vitest-browser-svelte';
-import UserMenu from './user-menu.svelte';
+import UserMenu, { neonAuthSignOutTimeoutMs } from './user-menu.svelte';
 
 const TEST_USER = { username: 'testuser', avatarUrl: null };
 
@@ -94,6 +94,37 @@ describe('UserMenu', () => {
       expect(mocks.broadcastNeonSessionLogout).toHaveBeenCalledTimes(1);
       expect(mocks.signOut).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('does not block local logout when Neon Auth sign-out stalls instead of rejecting', async () => {
+    // A hung (never-settling) signOut() must not block use:enhance's await
+    // forever -- withTimeout races it against neonAuthSignOutTimeoutMs so
+    // local logout (clearing Tribunal's own cookie) can never be held
+    // hostage by a stalled or unreachable identity provider.
+    mocks.signOut.mockReturnValueOnce(new Promise(() => {}));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    try {
+      render(UserMenu, { id: 'test-menu', user: TEST_USER });
+
+      await openUserMenu();
+      const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
+      await signOutItem.click();
+
+      await vi.advanceTimersByTimeAsync(neonAuthSignOutTimeoutMs);
+
+      expect(mocks.broadcastNeonSessionLogout).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Failed to end the Neon Auth session during sign-out',
+        expect.objectContaining({
+          message: `Neon Auth sign-out did not respond within ${neonAuthSignOutTimeoutMs}ms`,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it('still submits the logout form (and logs, but does not throw) when ending the Neon Auth session fails', async () => {

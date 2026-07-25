@@ -8,7 +8,7 @@
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import SkipLinks from '$lib/components/skip-links.svelte';
   import UserMenu from '$lib/components/user-menu.svelte';
-  import { getNeonAuthClient, startNeonSessionRefresh } from '$lib/auth/neon-client';
+  import { useNeonSessionRefresh } from '$lib/auth/neon-session-refresh.svelte';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Bot from 'lucide-svelte/icons/bot';
   import Activity from 'lucide-svelte/icons/activity';
@@ -21,22 +21,10 @@
   let { data, children }: LayoutProps = $props();
 
   // Keeps the bridged Tribunal session cookie alive for as long as this
-  // authenticated shell is mounted: periodic getSession() calls trigger
-  // Neon Auth's own JWT refresh, and startNeonSessionRefresh bridges each
-  // refreshed token back to the cookie itself. Not fatal if Neon Auth isn't
-  // configured -- this is a background durability measure, not a page-load
-  // precondition.
-  $effect(() => {
-    let stopSessionRefresh: (() => void) | undefined;
-    try {
-      stopSessionRefresh = startNeonSessionRefresh(getNeonAuthClient());
-    } catch (refreshError) {
-      console.error('Failed to start Neon Auth session refresh', refreshError);
-      return;
-    }
-
-    return () => stopSessionRefresh?.();
-  });
+  // authenticated shell is mounted -- see useNeonSessionRefresh's own
+  // jsdoc. `/onboarding` (which renders outside this layout) calls the same
+  // helper for the same reason.
+  useNeonSessionRefresh();
 
   // NavigationItem owns the active styling; the app owns the routing match.
   const repositoriesActive = $derived(

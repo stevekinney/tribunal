@@ -10,12 +10,19 @@
   import { SearchField } from '@lostgradient/cinder/search-field';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Steps } from '@lostgradient/cinder/steps';
+  import { useNeonSessionRefresh } from '$lib/auth/neon-session-refresh.svelte';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Gavel from 'lucide-svelte/icons/gavel';
   import GitBranch from 'lucide-svelte/icons/git-branch';
   import GithubIcon from 'lucide-svelte/icons/github';
 
   let { data, form }: PageProps = $props();
+
+  // This route renders outside (authenticated)/+layout.svelte (see this
+  // page's own +page.server.ts) but is itself authenticated and can run long
+  // enough -- installing the GitHub App, picking repositories -- for the
+  // bridged session cookie to otherwise expire mid-flow without this.
+  useNeonSessionRefresh();
 
   // Pre-select repositories that are already being watched. untrack keeps this a
   // one-time seed (the set is then user-mutated) and avoids state_referenced_locally.
