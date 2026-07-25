@@ -27,11 +27,14 @@
 
   /**
    * `use:enhance`'s submit callback is awaited before the form's actual POST
-   * to `/logout` (`routes/logout/+server.ts`, which deletes the Tribunal
-   * bridge cookie and redirects home) is dispatched. Running the cross-tab
-   * broadcast and the Neon Auth sign-out here, before that POST, gives every
-   * other tab the best chance to abort its own in-flight session refresh
-   * before this request's response deletes the shared cookie.
+   * to `/logout` (`routes/logout/+page.server.ts`'s default action, which
+   * deletes the Tribunal bridge cookie and redirects home) is dispatched.
+   * A real form action, not a `+server.ts` endpoint: `use:enhance` expects
+   * an action-result response it can deserialize, which a plain endpoint's
+   * raw HTTP redirect doesn't satisfy. Running the cross-tab broadcast and
+   * the Neon Auth sign-out here, before that POST, gives every other tab the
+   * best chance to abort its own in-flight session refresh before this
+   * request's response deletes the shared cookie.
    *
    * Returning nothing (the default) falls back to `use:enhance`'s own
    * post-submission handling, which follows the server's redirect -- so

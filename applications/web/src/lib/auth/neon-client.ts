@@ -25,8 +25,9 @@ export const neonSessionIdleThresholdMs = neonSessionRefreshIntervalMs * 2;
 // Cross-tab logout signal: `$lib/components/user-menu.svelte`'s sign-out
 // form broadcasts on this channel (via `broadcastNeonSessionLogout`, in its
 // `use:enhance` submit handler) before its POST to `/logout`
-// (`routes/logout/+server.ts`) deletes the bridge cookie. Every tab running
-// `startNeonSessionRefresh` listens and tears itself down immediately.
+// (`routes/logout/+page.server.ts`'s default action) deletes the bridge
+// cookie. Every tab running `startNeonSessionRefresh` listens and tears
+// itself down immediately.
 // Without this, a JWT minted before sign-out is still cryptographically
 // valid, so a *different* tab's already-scheduled `getSession()`/bridge POST
 // can complete after logout and silently recreate the session cookie --
@@ -215,8 +216,12 @@ export function getNeonAuthClient() {
  * pointer/keyboard/scroll activity for `neonSessionIdleThresholdMs`, even
  * while `visibilityState` stays `"visible"` (a foregrounded-but-abandoned
  * tab, or one merely obscured behind another window, still reports
- * `"visible"`). Any recorded activity, or the tab regaining visibility,
- * counts as activity and unblocks the next refresh immediately.
+ * `"visible"`). The first activity (or regained visibility) recorded after
+ * the tab was idle triggers an immediate refresh rather than merely
+ * resetting the idle clock for the next scheduled tick -- otherwise the
+ * bridged cookie, last refreshed up to `neonSessionIdleThresholdMs` earlier,
+ * could already have outlived the JWT's own lifetime by the time the next
+ * tick would have run.
  */
 export function startNeonSessionRefresh(
   authClient: Pick<ReturnType<typeof getNeonAuthClient>, 'getSession'>,
@@ -225,12 +230,36 @@ export function startNeonSessionRefresh(
   let lastActivityAt = Date.now();
   let stopped = false;
 
-  function recordActivity(): void {
+  function isIdle(): boolean {
+    return Date.now() - lastActivityAt >= neonSessionIdleThresholdMs;
+  }
+
+  function markActive(): void {
     lastActivityAt = Date.now();
   }
 
-  function isIdle(): boolean {
-    return Date.now() - lastActivityAt >= neonSessionIdleThresholdMs;
+  /**
+   * Records activity and, if the tab had already gone idle, refreshes
+   * immediately. Merely resetting the clock without this would leave the
+   * bridged cookie to expire on its own: the last successful refresh could
+   * be up to `neonSessionIdleThresholdMs` old by the time activity resumes,
+   * and the *next* refresh wouldn't fire until the following scheduled tick
+   * (up to `neonSessionRefreshIntervalMs` later) -- comfortably past the
+   * JWT's own 15-minute lifetime for a tab idle long enough to trip the
+   * threshold. Refreshing the moment activity resumes closes that gap
+   * instead of leaving the user to hit an expired cookie on their first
+   * navigation back.
+   *
+   * `pointerdown`/`keydown`/`scroll` listeners call this directly.
+   * `handleVisibilityChange` uses the lower-level `markActive` instead and
+   * refreshes unconditionally itself, so a visibility change that also
+   * happens to resolve an idle period doesn't trigger two refreshes back to
+   * back.
+   */
+  function recordActivity(): void {
+    const wasIdle = isIdle();
+    markActive();
+    if (wasIdle) refresh();
   }
 
   function refresh(): void {
@@ -260,7 +289,10 @@ export function startNeonSessionRefresh(
     if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
     // Switching back to this tab is itself a sign of activity -- don't skip
     // the resulting refresh just because the tab was idle while backgrounded.
-    recordActivity();
+    // Uses markActive (not recordActivity) and refreshes unconditionally
+    // itself: recordActivity would otherwise also refresh whenever the tab
+    // happened to be idle, doubling up with the explicit call below.
+    markActive();
     refresh();
   }
 

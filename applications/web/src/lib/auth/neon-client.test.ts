@@ -482,6 +482,25 @@ describe('startNeonSessionRefresh', () => {
       expect(getSession).toHaveBeenCalledTimes(3);
     });
 
+    it('refreshes immediately when activity resumes after the tab has gone idle', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2); // idle now, tick skipped
+
+      // Resuming activity after the tab went idle must refresh right away --
+      // not just reset the clock for the next scheduled tick (up to
+      // neonSessionRefreshIntervalMs away, long enough for the bridged
+      // cookie's JWT to have already expired by then).
+      fireEvent('keydown');
+      expect(getSession).toHaveBeenCalledTimes(3);
+    });
+
     it('treats becoming visible again as activity, unblocking the next scheduled refresh', () => {
       const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
       startNeonSessionRefresh({ getSession });
