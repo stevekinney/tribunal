@@ -58,6 +58,38 @@ export default defineConfig(
     },
   },
   {
+    // Empty collections/lists must render Cinder's <EmptyState>, not a bare
+    // paragraph or unwrapped text. A hand-rolled `<p>No X yet.</p>` silently
+    // drops the accessible group labelling EmptyState provides (role="group"
+    // + aria-labelledby to its title). See .claude/skills/component-standards.
+    //
+    files: ['src/**/*.svelte'],
+    ignores: [
+      'test/**/*',
+      // Concurrently restructured by another change; has two genuine
+      // hand-rolled empty states (one at :385). Remove this entry — do not
+      // weaken the rule — once that restructuring lands and fixes them.
+      // Tracked in the pull request description.
+      'src/routes/(authenticated)/repositories/+page.svelte',
+    ],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "SvelteIfBlock[expression.type='BinaryExpression'][expression.operator='==='][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0] > SvelteElement[kind='html'][name.name='p'], SvelteIfBlock[expression.type='BinaryExpression'][expression.operator='==='][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0] > :not(SvelteElseBlock) SvelteElement[kind='html'][name.name='p']",
+          message:
+            'Render <EmptyState> from @lostgradient/cinder/empty-state for a `.length === 0` branch instead of a bare <p>. A hand-rolled paragraph drops the accessible group labelling EmptyState provides.',
+        },
+        {
+          selector: 'SvelteEachBlock > SvelteElseBlock SvelteText[value=/\\S/]',
+          message:
+            'An {#each}{:else} fallback renders when the collection is empty — use <EmptyState> from @lostgradient/cinder/empty-state instead of raw text so the empty state gets a labelled group and (optionally) an icon/action.',
+        },
+      ],
+    },
+  },
+  {
     files: ['test/**/*.svelte'],
     languageOptions: {
       parserOptions: {

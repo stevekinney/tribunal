@@ -43,7 +43,7 @@
   /** Compact, non-inferred rendering of the related GitHub object for a row. */
   function relatedObjectLabel(event: WebhookEventRow): string | null {
     const parts: string[] = [];
-    if (event.prNumber !== null) parts.push(`PR #${event.prNumber}`);
+    if (event.prNumber !== null) parts.push(`Pull request #${event.prNumber}`);
     if (event.issueNumber !== null) parts.push(`Issue #${event.issueNumber}`);
     if (event.ref) parts.push(event.ref);
     if (event.commitSha) parts.push(event.commitSha.slice(0, 7));

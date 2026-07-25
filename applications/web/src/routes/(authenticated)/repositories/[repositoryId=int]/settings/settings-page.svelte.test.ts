@@ -419,6 +419,7 @@ describe('/repositories/[repositoryId]/settings page', () => {
       params: { repositoryId: '101' },
     });
 
+    await expect.element(page.getByRole('group', { name: 'No review agents' })).toBeVisible();
     await expect
       .element(page.getByText('Create an agent before assigning repository reviewers.'))
       .toBeVisible();

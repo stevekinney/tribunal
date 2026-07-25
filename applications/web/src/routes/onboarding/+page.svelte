@@ -258,12 +258,15 @@
                 </label>
               </li>
             {:else}
-              <li class="no-results" role="status">
-                {#if searchQuery.trim()}
-                  No repositories matching "{searchQuery}".
-                {:else}
-                  No repositories found.
-                {/if}
+              <li role="status">
+                <EmptyState
+                  title={searchQuery.trim()
+                    ? `No repositories matching "${searchQuery}".`
+                    : 'No repositories found.'}
+                  headingLevel={2}
+                >
+                  {#snippet icon()}<FolderGit2 size={48} aria-hidden="true" />{/snippet}
+                </EmptyState>
               </li>
             {/each}
           </ul>
@@ -522,13 +525,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .no-results {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-    padding: var(--space-4) 0;
-    text-align: center;
   }
 
   /* ── Footer ────────────────────────────────────────────────────── */

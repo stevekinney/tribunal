@@ -161,6 +161,10 @@ describe('/costs page', () => {
       form: null,
     });
 
-    await expect.element(page.getByText('No cost events for this dimension.')).toBeInTheDocument();
+    const emptyState = page.getByRole('group', { name: 'No cost events' });
+    await expect.element(emptyState).toBeInTheDocument();
+    await expect
+      .element(emptyState.getByText('No cost events for this dimension.'))
+      .toBeInTheDocument();
   });
 });

@@ -4,6 +4,7 @@
   import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
   import { DescriptionList } from '@lostgradient/cinder/description-list';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Feed } from '@lostgradient/cinder/feed';
   import type { PageData } from './$types';
 
@@ -53,7 +54,7 @@
       <Card>
         <h2>Recent runs</h2>
         {#if data.runs.length === 0}
-          <p class="muted">No review workflows recorded.</p>
+          <EmptyState title="No review workflows" description="No review workflows recorded." />
         {:else}
           <Feed aria-label="Recent review runs">
             {#each recentWorkflowRuns as run (run.id)}
@@ -104,7 +105,10 @@
       <Card>
         <h2>Child tree</h2>
         {#if data.runs.length === 0}
-          <p class="muted">No child workflow records loaded.</p>
+          <EmptyState
+            title="No child workflow records"
+            description="No child workflow records loaded."
+          />
         {:else}
           <ul>
             {#each data.runs.slice(0, 10) as run (run.id)}
@@ -167,10 +171,6 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-2);
-  }
-
-  .muted {
-    color: var(--text-muted);
   }
 
   small {

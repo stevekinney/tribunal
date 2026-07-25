@@ -3,6 +3,7 @@
   import Page from '$lib/components/page.svelte';
   import { Card } from '@lostgradient/cinder/card';
   import { Badge } from '@lostgradient/cinder/badge';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Meter } from '@lostgradient/cinder/meter';
   import { SegmentedControl } from '@lostgradient/cinder/segmented-control';
   import { Segment } from '@lostgradient/cinder/segment';
@@ -146,7 +147,11 @@
     {/snippet}
 
     {#if activeRows.length === 0}
-      <p class="empty-note">No cost events for this dimension.</p>
+      <EmptyState
+        title="No cost events"
+        description="No cost events for this dimension."
+        headingLevel={2}
+      />
     {:else}
       <div class="breakdown-rows">
         {#each activeRows as row (row.label)}
@@ -281,13 +286,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-  }
-
-  .empty-note {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-    padding-block: var(--space-4);
-    text-align: center;
   }
 
   /* Breakdown footer */

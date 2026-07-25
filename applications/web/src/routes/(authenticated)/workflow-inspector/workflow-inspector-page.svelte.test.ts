@@ -153,7 +153,16 @@ describe('/workflow-inspector page', () => {
   it('shows empty states for recent runs and the child tree when no runs are recorded', async () => {
     render(WorkflowInspectorPage, { data: { ...data, runs: [] } });
 
-    await expect.element(page.getByText('No review workflows recorded.')).toBeInTheDocument();
-    await expect.element(page.getByText('No child workflow records loaded.')).toBeInTheDocument();
+    const recentRunsEmptyState = page.getByRole('group', { name: 'No review workflows' });
+    await expect.element(recentRunsEmptyState).toBeInTheDocument();
+    await expect
+      .element(recentRunsEmptyState.getByText('No review workflows recorded.'))
+      .toBeInTheDocument();
+
+    const childTreeEmptyState = page.getByRole('group', { name: 'No child workflow records' });
+    await expect.element(childTreeEmptyState).toBeInTheDocument();
+    await expect
+      .element(childTreeEmptyState.getByText('No child workflow records loaded.'))
+      .toBeInTheDocument();
   });
 });
