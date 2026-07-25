@@ -502,6 +502,16 @@ async function releaseReviewIntentsAndTryKickEngine(
   return true;
 }
 
+export async function retryReviewIntentEngineWakeup() {
+  const result = await postReviewEngineControl('/review-intents/kick');
+  if (result.status === 'not_configured') return { success: true };
+  if (result.status === 'sent' && result.ok) return { success: true };
+  return fail(503, {
+    error: 'Review engine wake-up failed. Please try again.',
+    engineWakeupFailed: true,
+  });
+}
+
 async function releaseReviewIntentsWaitingForEligibleAgent(
   userId: number,
   repositoryIds?: number[],
@@ -513,7 +523,6 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
   await db
     .update(reviewIntent)
     .set({
-      claimedAt: null,
       failedAt: null,
       lastError: null,
       nextAttemptAt: null,

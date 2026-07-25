@@ -36,6 +36,7 @@ import {
   hasWatchedRepositories,
   listAgents,
   normalizeIgnoreGlobs,
+  retryReviewIntentEngineWakeup,
   saveAgent,
   saveRepositoryWatchSettings,
   setRepositoryWatched,
@@ -779,6 +780,18 @@ describe('review operator server helpers', () => {
       failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_claimed_after_deleted_assignment',
+      deliveryId: 'delivery_2',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 8,
+      claimedAt: new Date('2026-06-17T12:00:30Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
     const formData = new FormData();
     formData.set('id', reviewAgent.id);
 
@@ -797,6 +810,16 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_deleted_assignment'));
     expect(intent).toMatchObject({
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+    const [claimedIntent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_claimed_after_deleted_assignment'));
+    expect(claimedIntent).toMatchObject({
+      claimedAt: new Date('2026-06-17T12:00:30Z'),
       failedAt: null,
       lastError: null,
       nextAttemptAt: null,
@@ -841,6 +864,41 @@ describe('review operator server helpers', () => {
       failedAt: null,
       lastError: null,
       nextAttemptAt: null,
+    });
+  });
+
+  it('retries a review intent engine wake-up without requiring the deleted agent', async () => {
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 202 }));
+
+    const result = await retryReviewIntentEngineWakeup();
+
+    expect(result).toEqual({ success: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('https://engine.tribunal.test/review-intents/kick'),
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      },
+    );
+  });
+
+  it('surfaces retry wake-up failures without requiring the deleted agent', async () => {
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+
+    const result = await retryReviewIntentEngineWakeup();
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: {
+        error: 'Review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      },
     });
   });
 

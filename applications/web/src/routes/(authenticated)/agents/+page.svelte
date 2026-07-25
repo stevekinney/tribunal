@@ -22,8 +22,17 @@
     </Button>
   {/snippet}
 
-  {#if form?.error}
-    <Alert variant="danger">{form.error}</Alert>
+  {#if form?.error || data.engineWakeupFailed || form?.engineWakeupFailed}
+    <Alert variant="danger">
+      <div class="engine-wakeup-alert">
+        <span>{form?.error ?? 'Agent deleted, but the review engine wake-up failed.'}</span>
+        {#if data.engineWakeupFailed || form?.engineWakeupFailed}
+          <form method="POST" action="?/retryEngineWakeup">
+            <Button type="submit" variant="secondary">Retry wake-up</Button>
+          </form>
+        {/if}
+      </div>
+    </Alert>
   {/if}
 
   {#if data.agents.length === 0}
@@ -134,9 +143,21 @@
     flex-shrink: 0;
   }
 
+  .engine-wakeup-alert {
+    align-items: center;
+    display: flex;
+    gap: var(--space-3);
+    justify-content: space-between;
+  }
+
   @media (max-width: 760px) {
     .agent-row {
       align-items: stretch;
+      flex-direction: column;
+    }
+
+    .engine-wakeup-alert {
+      align-items: flex-start;
       flex-direction: column;
     }
   }

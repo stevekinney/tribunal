@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockListAgents, mockSetAgentEnabled } = vi.hoisted(() => ({
-  mockListAgents: vi.fn(),
-  mockSetAgentEnabled: vi.fn(),
-}));
+const { mockListAgents, mockRetryReviewIntentEngineWakeup, mockSetAgentEnabled } = vi.hoisted(
+  () => ({
+    mockListAgents: vi.fn(),
+    mockRetryReviewIntentEngineWakeup: vi.fn(),
+    mockSetAgentEnabled: vi.fn(),
+  }),
+);
 
 vi.mock('@sveltejs/kit', () => ({
   redirect: (status: number, location: string) => {
@@ -13,6 +16,7 @@ vi.mock('@sveltejs/kit', () => ({
 
 vi.mock('$lib/server/review/operator', () => ({
   listAgents: mockListAgents,
+  retryReviewIntentEngineWakeup: mockRetryReviewIntentEngineWakeup,
   setAgentEnabled: mockSetAgentEnabled,
 }));
 
@@ -34,10 +38,24 @@ describe('/agents load', () => {
   it('returns the agent list for the authenticated user', async () => {
     mockListAgents.mockResolvedValue([{ id: 'agent_1' }]);
 
-    const data = await load({ locals: { user: { id: 1 } } } as never);
+    const data = await load({
+      locals: { user: { id: 1 } },
+      url: new URL('https://tribunal.test/agents'),
+    } as never);
 
     expect(mockListAgents).toHaveBeenCalledWith(1);
-    expect(data).toEqual({ agents: [{ id: 'agent_1' }] });
+    expect(data).toEqual({ agents: [{ id: 'agent_1' }], engineWakeupFailed: false });
+  });
+
+  it('surfaces a committed-delete engine wake-up failure from the query string', async () => {
+    mockListAgents.mockResolvedValue([]);
+
+    const data = await load({
+      locals: { user: { id: 1 } },
+      url: new URL('https://tribunal.test/agents?engineWakeupFailed=true'),
+    } as never);
+
+    expect(data).toEqual({ agents: [], engineWakeupFailed: true });
   });
 });
 
@@ -66,6 +84,28 @@ describe('/agents actions.setEnabled', () => {
     } as never);
 
     expect(mockSetAgentEnabled).toHaveBeenCalledWith(1, formData);
+    expect(result).toEqual({ success: true });
+  });
+});
+
+describe('/agents actions.retryEngineWakeup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('redirects to /login when no user is present', async () => {
+    await expect(actions.retryEngineWakeup({ locals: {} } as never)).rejects.toMatchObject({
+      status: 302,
+      location: '/login',
+    });
+  });
+
+  it('delegates to retryReviewIntentEngineWakeup', async () => {
+    mockRetryReviewIntentEngineWakeup.mockResolvedValue({ success: true });
+
+    const result = await actions.retryEngineWakeup({ locals: { user: { id: 1 } } } as never);
+
+    expect(mockRetryReviewIntentEngineWakeup).toHaveBeenCalledWith();
     expect(result).toEqual({ success: true });
   });
 });

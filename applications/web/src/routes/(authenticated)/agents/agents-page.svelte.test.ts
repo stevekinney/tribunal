@@ -30,6 +30,7 @@ const data = {
   user,
   reviewsEnabled: true,
   agents: [],
+  engineWakeupFailed: false,
 } satisfies PageData;
 
 describe('/agents page', () => {
@@ -128,6 +129,24 @@ describe('/agents page', () => {
     });
 
     await expect.element(page.getByText('Could not update the agent.')).toBeVisible();
+  });
+
+  it('surfaces a committed-delete wake-up failure with a retry action', async () => {
+    render(AgentsPage, {
+      data: { ...data, agents: [baseAgent], engineWakeupFailed: true },
+      form: null,
+      params: {},
+    });
+
+    await expect
+      .element(page.getByText('Agent deleted, but the review engine wake-up failed.'))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Retry wake-up' }))
+      .toHaveAttribute('type', 'submit');
+    expect(
+      document.querySelector('form[action="?/retryEngineWakeup"] button')?.textContent,
+    ).toContain('Retry wake-up');
   });
 
   it('submits the enabled-toggle form when the toggle is flipped', async () => {
