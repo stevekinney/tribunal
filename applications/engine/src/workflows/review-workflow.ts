@@ -1071,6 +1071,7 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(
         verifiedAgentResults,
+        reviewRun.costEstimateUsd,
         diffContext,
         input.checkConclusionMode ?? 'advisory',
       ),
@@ -1804,6 +1805,7 @@ function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): s
 
 function buildCompletedCheckRunPatch(
   agentResults: AgentResult[],
+  costEstimateUsd: number,
   diffContext: DiffContext,
   checkConclusionMode: CheckConclusionMode,
 ): CheckRunPatch {
@@ -1812,7 +1814,6 @@ function buildCompletedCheckRunPatch(
   const hasErrorSeverityFinding = agentResults.some((result) =>
     result.findings.some((finding) => finding.severity === 'error'),
   );
-  const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
   const commentableLineKeys = createCommentableLineKeys(diffContext);
   const annotations = agentResults.flatMap((result) =>
     result.findings.flatMap((finding) =>

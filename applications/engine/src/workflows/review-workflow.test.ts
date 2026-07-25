@@ -1080,6 +1080,30 @@ describe('ReviewWorkflowEngine', () => {
     ).toMatchObject({ amountUsd: 0.42 });
   });
 
+  it('reports the persisted completed run total in the Check Run cost headline', async () => {
+    const ports = createFakePorts({
+      triageCostEstimateUsd: 0.02,
+      verificationCostEstimateUsd: 0.03,
+    });
+    const engine = createEngine(ports);
+
+    const result = await engine.startPullRequestReview(baseInput);
+
+    expect(result.status).toBe('posted');
+    expect(result.costEstimateUsd).toBeCloseTo(0.06);
+
+    const completedPatch = ports.github.checkRunPatches.at(-1)?.patch;
+    expect(completedPatch).toMatchObject({
+      status: 'completed',
+      output: {
+        summary: expect.stringContaining('Estimated cost: $0.0600.'),
+      },
+    });
+    expect(completedPatch?.output?.summary).toContain(
+      '- security-review: completed; model sonnet; effort medium; findings 1 (info 0, warning 1, error 0); estimated cost $0.0100.',
+    );
+  });
+
   it('preserves zero-cost partial failed agent details from the sandbox', async () => {
     const ports = createFakePorts({
       failAgentRuns: true,
