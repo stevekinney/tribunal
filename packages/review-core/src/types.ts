@@ -7,7 +7,6 @@ export type AgentRunRole = 'triage' | 'specialist' | 'verifier';
 
 export interface AgentSpec {
   id: string;
-  userId: number;
   slug: string;
   description: string;
   body: string;
@@ -45,7 +44,6 @@ export interface Finding {
 export interface TriageDecision {
   skip: boolean;
   reason: string;
-  riskFlags: string[];
 }
 
 export interface VerificationDecision {

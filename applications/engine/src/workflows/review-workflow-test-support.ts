@@ -15,7 +15,6 @@ import type {
   SandboxCostInput,
   SandboxOptions,
   SandboxPort,
-  ScopedToken,
 } from '@tribunal/review-core';
 import {
   ReviewWorkflowEngine,
@@ -43,7 +42,6 @@ const repository = { owner: 'lostgradient', name: 'tribunal' };
 
 export const reviewAgent: AgentSpec = {
   id: 'agent_security',
-  userId: 1,
   slug: 'security-review',
   description: 'Looks for risky changes.',
   body: 'Review the pull request for security issues.',
@@ -78,8 +76,6 @@ export function createEngine(
   return new ReviewWorkflowEngine(
     ports,
     {
-      sandboxImage: 'tribunal-reviewer:test',
-      proxyUrl: 'https://proxy.example.test',
       proxySigningKey: 'proxy-signing-key',
       runTokenTtlSeconds: 60 * 60,
       idleSuspendSeconds: 900,
@@ -405,7 +401,6 @@ class FakeGitHubPort implements GitHubPort {
   }> = [];
   readonly reviews: ReviewPayload[] = [];
   readonly postedReviews = new Map<string, number>();
-  readonly mintReadTokenCalls: Array<{ repositoryId: number; installationId: number }> = [];
   readonly createdCheckRuns: string[] = [];
   private nextCheckRunId = 9000;
   private checkRunCreationFailuresRemaining: number;
@@ -429,11 +424,6 @@ class FakeGitHubPort implements GitHubPort {
     this.checkRunUpdateFailuresRemaining = options.failCheckRunUpdatesRemaining ?? 0;
     this.reviewPostFailuresRemaining = options.failReviewPostsRemaining ?? 0;
     this.postedReviewLookupFailuresRemaining = options.failPostedReviewLookupsRemaining ?? 0;
-  }
-
-  async mintReadToken(repositoryId: number, installationId: number): Promise<ScopedToken> {
-    this.mintReadTokenCalls.push({ repositoryId, installationId });
-    return { token: 'read-token', expiresAt: new Date('2026-06-17T13:00:00.000Z') };
   }
 
   async getDiffContext(
@@ -668,7 +658,6 @@ class FakeSandboxPort implements SandboxPort {
         triage: {
           skip: this.options.triageSkip !== undefined && this.options.triageSkip !== false,
           reason: typeof this.options.triageSkip === 'string' ? this.options.triageSkip : '',
-          riskFlags: [],
         },
         costEstimateUsd: this.options.triageCostEstimateUsd ?? 0,
       });
@@ -767,8 +756,6 @@ class FakeSandboxPort implements SandboxPort {
       resolve();
     }
   }
-
-  async suspend(): Promise<void> {}
 
   async terminate(sandboxId: string): Promise<void> {
     this.terminateCalls.push(sandboxId);
@@ -890,9 +877,6 @@ class FakeCostPort implements CostPort {
     const spendUsd = this.spendTodayEstimateValue;
     return {
       allowed: spendUsd < capUsd,
-      capUsd,
-      spendUsd,
-      remainingUsd: Math.max(0, capUsd - spendUsd),
     };
   }
 

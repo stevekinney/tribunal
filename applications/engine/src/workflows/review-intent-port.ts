@@ -327,7 +327,6 @@ async function buildPullRequestReviewInput(
   const repositoryAssignedAgents = await database
     .select({
       id: agent.id,
-      userId: agent.userId,
       slug: agent.slug,
       description: agent.description,
       body: agent.body,
@@ -605,7 +604,6 @@ function toReviewTrigger(kind: ReviewIntentKind): PullRequestReviewInput['trigge
 
 function toAgentSpec(row: {
   id: string;
-  userId: number;
   slug: string;
   description: string;
   body: string;
@@ -615,7 +613,6 @@ function toAgentSpec(row: {
 }): AgentSpec {
   return {
     id: row.id,
-    userId: row.userId,
     slug: row.slug,
     description: row.description,
     body: row.body,

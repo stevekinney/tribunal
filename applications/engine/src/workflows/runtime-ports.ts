@@ -18,7 +18,6 @@ import { createCache } from '@tribunal/github/cache';
 import { createInstallationSyncWorkflow } from '@tribunal/github/sync/workflow';
 import { createCheckRun, updateCheckRun } from '@tribunal/github/reviews/check-runs';
 import { getDiffContext, getPullRequestMetadata } from '@tribunal/github/reviews/diff-context';
-import { mintSingleRepositoryReadToken } from '@tribunal/github/reviews/read-tokens';
 import {
   findPostedPullRequestReview,
   postPullRequestReview,
@@ -113,11 +112,6 @@ export function createReviewIntentConsumer(
       state: createDatabaseReviewWorkflowStatePort(database),
     },
     {
-      sandboxImage: requireEnvironmentValue(
-        environment.TRIBUNAL_SANDBOX_IMAGE,
-        'TRIBUNAL_SANDBOX_IMAGE',
-      ),
-      proxyUrl: requireEnvironmentValue(environment.TRIBUNAL_PROXY_URL, 'TRIBUNAL_PROXY_URL'),
       proxySigningKey: requireEnvironmentValue(environment.PROXY_SIGNING_KEY, 'PROXY_SIGNING_KEY'),
       runTokenTtlSeconds: 60 * 60,
       idleSuspendSeconds: parsePositiveInteger(
@@ -311,10 +305,6 @@ export function createEngineGitHubPort(
   context: GithubServiceContext,
 ): EngineGitHubPort {
   return {
-    async mintReadToken(repositoryId: number, installationId: number) {
-      const token = await mintSingleRepositoryReadToken(context, { installationId, repositoryId });
-      return { token: token.token, expiresAt: new Date(token.expiresAt) };
-    },
     async getDiffContext(
       repository: RepoRef,
       pullRequestNumber: number,
@@ -952,11 +942,6 @@ export class TensorlakeSandboxAdapter implements SandboxAdapter {
     const sandbox = await this.getSandbox(sandboxId);
     const pid = Number(processId);
     if (Number.isInteger(pid) && pid > 0) await sandbox.killProcess(pid);
-  }
-
-  async suspend(sandboxId: string) {
-    const sandbox = await this.getSandbox(sandboxId);
-    await sandbox.suspend();
   }
 
   async terminate(sandboxId: string) {

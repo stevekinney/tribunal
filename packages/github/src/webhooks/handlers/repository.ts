@@ -19,7 +19,6 @@ import type { WebhookPayload } from '../types.js';
 /**
  * Handle repository metadata events (rename, transfer, edit).
  * These events require updating our stored repository metadata.
- * Does not return a HandlerResult since these events don't short-circuit processing.
  */
 export async function handleRepositoryMetadataEvents(
   context: GithubServiceContext,

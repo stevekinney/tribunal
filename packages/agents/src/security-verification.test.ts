@@ -37,7 +37,6 @@ describe('agent security verification', () => {
     const mapped = toAgentDefinition(
       {
         id: 'agent_security',
-        userId: 1,
         slug: 'security-review',
         description: 'Find security defects.',
         body: adversarialPromptInjectionFixture,

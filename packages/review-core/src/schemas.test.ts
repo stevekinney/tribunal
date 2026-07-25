@@ -20,7 +20,6 @@ describe('review-core schemas', () => {
     expect(
       agentSpecSchema.parse({
         id: 'agent_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review the changed files.',
@@ -35,7 +34,6 @@ describe('review-core schemas', () => {
     expect(() =>
       agentSpecSchema.parse({
         id: 'agent_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review the changed files.',

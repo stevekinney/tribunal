@@ -42,7 +42,6 @@ export type SandboxAdapter = {
     signal?: AbortSignal,
   ): Promise<SandboxCommandResult>;
   killProcess(sandboxId: string, processId: string): Promise<void>;
-  suspend(sandboxId: string): Promise<void>;
   terminate(sandboxId: string): Promise<void>;
 };
 
@@ -191,9 +190,6 @@ export function createSandboxPort(
       if (execution.processId !== undefined) {
         await adapter.killProcess(sandboxId, execution.processId);
       }
-    },
-    async suspend(sandboxId: string) {
-      await adapter.suspend(sandboxId);
     },
     async terminate(sandboxId: string) {
       await adapter.terminate(sandboxId);

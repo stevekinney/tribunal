@@ -381,7 +381,6 @@ export async function saveAgent(userId: number, formData: FormData) {
   const effortValue = String(formData.get('effort') ?? '').trim();
   const payload: AgentFormValues = {
     id: id || `agent_${crypto.randomUUID()}`,
-    userId,
     slug: String(formData.get('slug') ?? '').trim(),
     description: String(formData.get('description') ?? '').trim(),
     body: String(formData.get('body') ?? '').trim(),
@@ -404,7 +403,7 @@ export async function saveAgent(userId: number, formData: FormData) {
 
   await db
     .insert(agent)
-    .values(validation.data)
+    .values({ ...validation.data, userId })
     .onConflictDoUpdate({
       target: agent.id,
       set: {

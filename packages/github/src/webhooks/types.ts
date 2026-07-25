@@ -10,11 +10,6 @@
 export type WebhookPayload = Record<string, unknown>;
 
 /**
- * Result type for webhook handlers that may or may not handle an event.
- */
-export type HandlerResult = { handled: true; response: Response } | { handled: false };
-
-/**
  * Maximum webhook payload size (5MB).
  * GitHub allows up to 25MB but most legitimate webhooks are <100KB.
  */

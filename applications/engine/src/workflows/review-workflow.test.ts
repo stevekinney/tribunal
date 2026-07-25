@@ -1504,7 +1504,6 @@ describe('ReviewWorkflowEngine', () => {
       }),
     });
     expect(ports.sandbox.runAgentCalls[0]?.runToken).toBe(runToken);
-    expect(ports.github.mintReadTokenCalls).toEqual([]);
   });
 
   it('passes resolved model and effort to the sandbox and records effective effort', async () => {

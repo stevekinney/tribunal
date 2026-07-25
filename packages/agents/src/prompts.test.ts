@@ -68,7 +68,7 @@ describe('buildReviewPrompt', () => {
 });
 
 describe('buildTriagePrompt', () => {
-  it('lists available specialists and asks for a skip decision and risk flags', () => {
+  it('lists available specialists and asks for a skip decision', () => {
     const prompt = buildTriagePrompt({
       diffContext,
       guidelines: 'Prefer concrete evidence.',
@@ -77,7 +77,6 @@ describe('buildTriagePrompt', () => {
 
     expect(prompt).toContain('correctness-review, security-review');
     expect(prompt).toContain('skip: true');
-    expect(prompt).toContain('riskFlags');
     expect(prompt).toContain('Pull request diff');
   });
 

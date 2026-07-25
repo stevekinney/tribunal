@@ -27,7 +27,6 @@ const updateCheckRunMock = vi.fn();
 const getDiffContextMock = vi.fn();
 const getInstallationOctokitMock = vi.fn();
 const getPullRequestMetadataMock = vi.fn();
-const mintReadTokenMock = vi.fn();
 const findPostedReviewMock = vi.fn();
 const postReviewMock = vi.fn();
 const createCacheMock = vi.fn((getRedisUrl: () => string | undefined) => {
@@ -54,7 +53,6 @@ class MockSandbox {
   followOutput = vi.fn();
   getProcess = vi.fn();
   killProcess = vi.fn();
-  suspend = vi.fn();
   terminate = vi.fn();
 
   constructor(sandboxId: string) {
@@ -78,10 +76,6 @@ vi.mock('@tribunal/github/reviews/check-runs', () => ({
 vi.mock('@tribunal/github/reviews/diff-context', () => ({
   getDiffContext: getDiffContextMock,
   getPullRequestMetadata: getPullRequestMetadataMock,
-}));
-
-vi.mock('@tribunal/github/reviews/read-tokens', () => ({
-  mintSingleRepositoryReadToken: mintReadTokenMock,
 }));
 
 vi.mock('@tribunal/github/reviews/pull-request-reviews', () => ({
@@ -932,10 +926,6 @@ describe('engine GitHub port', () => {
     const { repository: createdRepository, installation } = await createRepositoryInstallation();
     const context = createGithubContext();
     const port = createEngineGitHubPort(testDatabase.db, context);
-    mintReadTokenMock.mockResolvedValue({
-      token: 'github-token',
-      expiresAt: '2026-06-17T12:00:00.000Z',
-    });
     getDiffContextMock.mockResolvedValue({
       changedFiles: [
         {
@@ -956,12 +946,6 @@ describe('engine GitHub port', () => {
       repositoryId: createdRepository.id,
     };
 
-    await expect(
-      port.mintReadToken(createdRepository.id, installation.installationId),
-    ).resolves.toEqual({
-      token: 'github-token',
-      expiresAt: new Date('2026-06-17T12:00:00.000Z'),
-    });
     await expect(port.getDiffContext(repositoryContext, 7, 'head', 'base')).resolves.toMatchObject({
       headSha: 'head',
       baseSha: 'base',
@@ -1095,7 +1079,7 @@ describe('Tensorlake sandbox adapter', () => {
     expect(sandboxClientForCloudMock).not.toHaveBeenCalled();
   });
 
-  it('creates, reuses, commands, stops, suspends, and terminates sandboxes', async () => {
+  it('creates, reuses, commands, stops, and terminates sandboxes', async () => {
     const sandbox = new MockSandbox('sandbox_1');
     MockSandbox.connect.mockResolvedValue(sandbox);
     sandbox.run.mockResolvedValue({ exitCode: 0, stdout: '{"ok":true}', stderr: '' });
@@ -1131,7 +1115,6 @@ describe('Tensorlake sandbox adapter', () => {
     ).resolves.toEqual({ exitCode: 0, stdout: '{"ok":true}', stderr: 'warning' });
     await adapter.killProcess('sandbox_1', '123');
     await adapter.killProcess('sandbox_1', 'agent-run-id');
-    await adapter.suspend('sandbox_1');
     await adapter.terminate('sandbox_1');
 
     expect(sandboxClientCreateMock).toHaveBeenCalledWith(
@@ -1150,7 +1133,6 @@ describe('Tensorlake sandbox adapter', () => {
       env: { A: 'B' },
     });
     expect(sandbox.killProcess).toHaveBeenCalledTimes(1);
-    expect(sandbox.suspend).toHaveBeenCalledTimes(1);
     expect(sandbox.terminate).toHaveBeenCalledTimes(1);
   });
 
@@ -1352,8 +1334,6 @@ describe('Tensorlake sandbox adapter', () => {
 
     await expect(
       port.ensure('tribunal-pr-42-7', {
-        image: 'ignored',
-        proxyUrl: 'ignored',
         idleSuspendSeconds: 900,
       }),
     ).resolves.toEqual({

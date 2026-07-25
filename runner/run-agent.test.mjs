@@ -482,15 +482,16 @@ describe('runner agent wiring', () => {
           type: 'result',
           usage: {},
           total_cost_usd: 0.001,
-          structured_output: { skip: false, reason: 'Touches auth logic.', riskFlags: ['auth'] },
+          structured_output: { skip: false, reason: 'Touches auth logic.' },
         };
       },
     });
 
-    expect(queryOptions.outputFormat.schema.required).toEqual(['skip', 'reason', 'riskFlags']);
+    expect(queryOptions.outputFormat.schema.required).toEqual(['skip', 'reason']);
+    expect(Object.keys(queryOptions.outputFormat.schema.properties)).toEqual(['skip', 'reason']);
     expect(result).toMatchObject({
       findings: [],
-      triage: { skip: false, reason: 'Touches auth logic.', riskFlags: ['auth'] },
+      triage: { skip: false, reason: 'Touches auth logic.' },
     });
   });
 

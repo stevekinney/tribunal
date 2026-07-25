@@ -35,7 +35,6 @@ export const agentRunRoleSchema = z.enum(['triage', 'specialist', 'verifier']);
 
 export const agentSpecSchema = z.object({
   id: z.string().min(1),
-  userId: z.number().int().positive(),
   slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   description: z.string().min(1),
   body: z.string().min(1),
@@ -51,7 +50,6 @@ export const agentSpecSchema = z.object({
 export const triageDecisionSchema = z.object({
   skip: z.boolean(),
   reason: z.string(),
-  riskFlags: z.array(z.string()),
 });
 
 export const verificationDecisionSchema = z.object({
