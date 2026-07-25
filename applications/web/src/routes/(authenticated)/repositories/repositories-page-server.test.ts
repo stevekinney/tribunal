@@ -6,12 +6,14 @@ const {
   mockListAgents,
   mockBuildRepositoryDashboard,
   mockSaveRepositoryWatchSettings,
+  mockSetRepositoryWatched,
 } = vi.hoisted(() => ({
   mockGetRepositoriesForUser: vi.fn(),
   mockGetRepositoryOperatorDetails: vi.fn(),
   mockListAgents: vi.fn(),
   mockBuildRepositoryDashboard: vi.fn(),
   mockSaveRepositoryWatchSettings: vi.fn(),
+  mockSetRepositoryWatched: vi.fn(),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -43,6 +45,7 @@ vi.mock('$lib/server/review/operator', () => ({
   operatorSurfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
   parseIgnoreGlobs: (value: string) => value.split('\n').filter(Boolean),
   saveRepositoryWatchSettings: mockSaveRepositoryWatchSettings,
+  setRepositoryWatched: mockSetRepositoryWatched,
 }));
 
 import { actions, load } from './+page.server';
@@ -321,6 +324,24 @@ describe('/repositories actions.watch', () => {
     } as never);
 
     expect(result).toMatchObject({ status: 400, data: { error: 'Repository is invalid.' } });
+  });
+
+  it('unwatches with a watched-only update and redirects, never rewriting settings', async () => {
+    mockSetRepositoryWatched.mockResolvedValue({ success: true });
+
+    // The settings page's danger-zone form submits only `repositoryId`. That
+    // absence is the signal to take the atomic path: reading the current
+    // configuration and writing it back would clobber anything another tab
+    // saved between the read and the write.
+    await expect(
+      actions.watch({
+        locals: { user: { id: 1 } },
+        request: createRequest({ repositoryId: '2' }),
+      } as never),
+    ).rejects.toMatchObject({ status: 303, location: '/repositories' });
+
+    expect(mockSetRepositoryWatched).toHaveBeenCalledWith(1, 2, false);
+    expect(mockSaveRepositoryWatchSettings).not.toHaveBeenCalled();
   });
 
   it('saves watch settings using the submitted ignoreGlobs and agentIds', async () => {

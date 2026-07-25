@@ -14,6 +14,7 @@ import {
   operatorSurfaceStates,
   parseIgnoreGlobs,
   saveRepositoryWatchSettings,
+  setRepositoryWatched,
   type RepositoryOperatorDetails,
 } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
@@ -292,6 +293,21 @@ export const actions: Actions = {
 
     const watched = formData.get('watched') === 'on';
     const submittedAgentIds = formData.getAll('agentIds').map(String);
+
+    // Unwatching submits no configuration at all (see the settings page's
+    // danger-zone form). Flip just that column rather than reading the current
+    // settings and writing them back: a read-then-rewrite loses anything
+    // another tab saves in between, which is the whole reason the form stopped
+    // sending its own snapshot.
+    if (!watched && !formData.has('ignoreGlobs') && submittedAgentIds.length === 0) {
+      await setRepositoryWatched(user.id, repositoryId, false);
+      // `redirect` throws, so nothing after this runs. The result object is
+      // deliberately dropped: this path is only ever reached by the settings
+      // page's plain, non-enhanced form, which has no JavaScript to read a
+      // JSON body and needs the 303 to land on a clean GET instead.
+      redirect(303, '/repositories');
+    }
+
     let ignoreGlobs = parseIgnoreGlobs(String(formData.get('ignoreGlobs') ?? ''));
     let agentIds = submittedAgentIds;
 

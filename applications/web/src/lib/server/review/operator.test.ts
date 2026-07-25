@@ -37,6 +37,7 @@ import {
   normalizeIgnoreGlobs,
   saveAgent,
   saveRepositoryWatchSettings,
+  setRepositoryWatched,
   saveUserReviewSettings,
   setAgentEnabled,
   stopAgent,
@@ -252,6 +253,38 @@ describe('review operator server helpers', () => {
           agentIds: [],
         }),
       ),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('unwatches without touching ignore globs or agent assignments', async () => {
+    const { owner, otherUser, reviewAgent } = await seedRepositoryOwnership();
+
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: true,
+        ignoreGlobs: ['docs/**'],
+        agentIds: [reviewAgent.id],
+      }),
+    );
+
+    await withTestDatabase(() => setRepositoryWatched(owner.id, 9001, false));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+    const assignments = await testDb.db.select().from(repositoryAgent);
+
+    // The point of this path: unwatching must not rewrite configuration.
+    // Reading the current settings and writing them back would lose whatever
+    // another tab saved between the read and the write, so only `watched`
+    // changes here and the rest is left exactly as stored.
+    expect(settings).toMatchObject({ watched: false, ignoreGlobs: ['docs/**'] });
+    expect(assignments).toHaveLength(1);
+
+    await expect(
+      withTestDatabase(() => setRepositoryWatched(otherUser.id, 9001, false)),
     ).rejects.toMatchObject({ status: 403 });
   });
 
