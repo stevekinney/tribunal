@@ -50,6 +50,73 @@ describe('cache-policy', () => {
   });
 
   describe('policy key factories', () => {
+    it('keeps identity dimensions from coalescing across cache policies', () => {
+      const cases: Array<{
+        operationId: string;
+        firstArguments: unknown[];
+        secondArguments: unknown[];
+      }> = [
+        {
+          operationId: 'list-user-installations',
+          firstArguments: [1],
+          secondArguments: [2],
+        },
+        {
+          operationId: 'list-pull-requests',
+          firstArguments: [7, 's:open|sort:updated'],
+          secondArguments: [8, 's:open|sort:updated'],
+        },
+        {
+          operationId: 'list-issues',
+          firstArguments: [7, 's:open|sort:updated'],
+          secondArguments: [8, 's:open|sort:updated'],
+        },
+        {
+          operationId: 'get-pull-request-diff-context',
+          firstArguments: [7, 42, 'aaa111'],
+          secondArguments: [7, 42, 'bbb222'],
+        },
+        {
+          operationId: 'mint-single-repository-read-token',
+          firstArguments: [11, 7],
+          secondArguments: [11, 8],
+        },
+        {
+          operationId: 'list-installation-repositories',
+          firstArguments: [11],
+          secondArguments: [12],
+        },
+        {
+          operationId: 'get-failing-check-count',
+          firstArguments: ['owner', 'repo', 'aaa111'],
+          secondArguments: ['owner', 'repo', 'bbb222'],
+        },
+        {
+          operationId: 'get-branch-ci-status',
+          firstArguments: ['owner', 'repo', 'main'],
+          secondArguments: ['owner', 'repo', 'release'],
+        },
+        {
+          operationId: 'get-branch-head-sha',
+          firstArguments: ['owner', 'repo', 'main'],
+          secondArguments: ['owner', 'repo', 'release'],
+        },
+        {
+          operationId: 'get-branch-rules',
+          firstArguments: ['owner', 'repo', 'main'],
+          secondArguments: ['owner', 'repo', 'release'],
+        },
+      ];
+
+      for (const testCase of cases) {
+        const policy = getPolicy(testCase.operationId)!;
+
+        expect(policy.keyFactory(...testCase.firstArguments)).not.toBe(
+          policy.keyFactory(...testCase.secondArguments),
+        );
+      }
+    });
+
     it('list-pull-requests generates correct cache key', () => {
       const policy = getPolicy('list-pull-requests')!;
       const key = policy.keyFactory(123, 's:open|sort:updated');
