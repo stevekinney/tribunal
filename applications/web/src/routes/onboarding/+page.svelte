@@ -152,7 +152,7 @@
     </div>
   {/if}
 
-  <div class="onboarding-card">
+  <div class="onboarding-card" inert={neonSessionRefresh.isResumingSession}>
     <!-- ── Brand panel ──────────────────────────────────────────────── -->
     <aside class="brand-panel" data-theme="dark">
       <div class="wordmark">

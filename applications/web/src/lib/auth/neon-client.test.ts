@@ -431,6 +431,52 @@ describe('startNeonSessionRefresh', () => {
       expect(pendingChanges).toEqual([true, false]);
     });
 
+    it('does not let an older resume refresh clear a newer pending gate', async () => {
+      const pendingChanges: boolean[] = [];
+      const bridgePostResolutions: Array<(response: Response) => void> = [];
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            bridgePostResolutions.push(resolve);
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-old' } },
+          error: null,
+        })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-new' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(pendingChanges).toEqual([true]);
+
+      bridgePostResolutions[0]?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pendingChanges).toEqual([true]);
+
+      bridgePostResolutions[1]?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pendingChanges).toEqual([true, false]);
+    });
+
     it('does not mark routine interval refreshes as pending', () => {
       const pendingChanges: boolean[] = [];
       const getSession = vi.fn().mockResolvedValue({ data: null, error: null });

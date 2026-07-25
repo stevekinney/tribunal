@@ -91,9 +91,11 @@ describe('/onboarding page', () => {
     latestSessionRefreshOptions().onResumeRefreshPendingChange?.(true);
     await expect.element(page.getByRole('status')).toHaveTextContent('Restoring your session...');
     await expect.element(page.getByTestId('session-resume-overlay')).toBeInTheDocument();
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(true);
 
     latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
     await expect.element(page.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('.onboarding-card')?.hasAttribute('inert')).toBe(false);
   });
 
   function onboardingStepItems(): HTMLElement[] {

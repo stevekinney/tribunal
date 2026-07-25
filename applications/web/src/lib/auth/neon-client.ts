@@ -238,6 +238,7 @@ export function startNeonSessionRefresh(
   let stopped = false;
   let resumeRefreshPendingTimeout: ReturnType<typeof setTimeout> | undefined;
   let resumeRefreshPending = false;
+  let resumeRefreshGeneration = 0;
 
   function setResumeRefreshPending(pending: boolean): void {
     if (resumeRefreshPending === pending) return;
@@ -245,7 +246,9 @@ export function startNeonSessionRefresh(
     options.onResumeRefreshPendingChange?.(pending);
   }
 
-  function clearResumeRefreshPending(): void {
+  function clearResumeRefreshPending(generation?: number): void {
+    if (generation !== undefined && generation !== resumeRefreshGeneration) return;
+
     if (resumeRefreshPendingTimeout) {
       clearTimeout(resumeRefreshPendingTimeout);
       resumeRefreshPendingTimeout = undefined;
@@ -256,15 +259,20 @@ export function startNeonSessionRefresh(
   function trackResumeRefresh(refreshPromise: Promise<void>): void {
     if (!options.onResumeRefreshPendingChange) return;
 
-    clearResumeRefreshPending();
+    resumeRefreshGeneration += 1;
+    const generation = resumeRefreshGeneration;
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
     setResumeRefreshPending(true);
 
     resumeRefreshPendingTimeout = setTimeout(
-      clearResumeRefreshPending,
+      () => clearResumeRefreshPending(generation),
       options.resumeRefreshPendingMaximumMs ?? neonSessionResumeRefreshPendingMaximumMs,
     );
 
-    void refreshPromise.finally(clearResumeRefreshPending);
+    void refreshPromise.finally(() => clearResumeRefreshPending(generation));
   }
 
   function refresh(): Promise<void> {
@@ -311,6 +319,7 @@ export function startNeonSessionRefresh(
     stopped = true;
 
     clearInterval(intervalId);
+    resumeRefreshGeneration += 1;
     clearResumeRefreshPending();
     abortController.abort();
     if (typeof document !== 'undefined') {

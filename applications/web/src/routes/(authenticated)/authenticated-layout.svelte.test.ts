@@ -120,9 +120,13 @@ describe('(authenticated) layout', () => {
       .element(browserPage.getByRole('status'))
       .toHaveTextContent('Restoring your session...');
     await expect.element(browserPage.getByTestId('session-resume-overlay')).toBeInTheDocument();
+    expect(document.querySelector('#main-content')?.hasAttribute('inert')).toBe(true);
+    expect(document.querySelector('.mobile-topbar')?.hasAttribute('inert')).toBe(true);
+    expect(document.querySelector('.desktop-sidebar-shell')?.hasAttribute('inert')).toBe(true);
 
     latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
     await expect.element(browserPage.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('#main-content')?.hasAttribute('inert')).toBe(false);
   });
 
   it('does not crash the shell when Neon Auth session refresh fails to start', async () => {

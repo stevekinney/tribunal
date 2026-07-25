@@ -107,7 +107,7 @@
     a Drawer overlay. The hamburger button opens the drawer by setting
     collapsed=false; the Drawer's built-in close button sets it back to true.
   -->
-  <div class="mobile-topbar" data-theme="dark">
+  <div class="mobile-topbar" data-theme="dark" inert={neonSessionRefresh.isResumingSession}>
     <Button
       variant="ghost"
       size="md"
@@ -129,7 +129,12 @@
     (breakpoint handled inside the Cinder Sidebar component via MediaQuery).
     data-theme="dark" is forwarded via rest props to the underlying element.
   -->
-  <div class="desktop-sidebar-shell" data-theme="dark" data-collapsed={collapsed}>
+  <div
+    class="desktop-sidebar-shell"
+    data-theme="dark"
+    data-collapsed={collapsed}
+    inert={neonSessionRefresh.isResumingSession}
+  >
     <a href="/repositories" class="brand-link desktop-brand-link">
       <span class="brand-name">Tribunal</span>
     </a>
@@ -188,7 +193,7 @@
     </Sidebar>
   </div>
 
-  <main id="main-content">
+  <main id="main-content" inert={neonSessionRefresh.isResumingSession}>
     {@render children()}
   </main>
 </div>
