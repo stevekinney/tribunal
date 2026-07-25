@@ -64,7 +64,6 @@
 
   <form
     method="POST"
-    action="?/save"
     class="settings-form"
     use:enhance={() => {
       saving = true;
@@ -175,7 +174,30 @@
         reviewing its pull requests immediately. Saved ignore globs and agent assignments are kept,
         so re-adding it later restores this configuration.
       </p>
-      <form method="POST" action="?/unwatch" bind:this={unwatchFormElement} class="unwatch-form">
+      <!--
+        Posts to the repositories list's existing `?/watch` action (not a
+        second named action on this route — see the note on this route's
+        `default` action in +page.server.ts) with the repository's current
+        agent assignment and ignore globs, exactly like the removed
+        repositories-list row toggle used to, so unwatching preserves this
+        configuration for a later re-add. `watched` is omitted (absent =
+        off) since this form only ever turns watching off.
+      -->
+      <form
+        method="POST"
+        action="/repositories?/watch"
+        bind:this={unwatchFormElement}
+        class="unwatch-form"
+      >
+        <input type="hidden" name="repositoryId" value={data.repository.id} />
+        {#each data.repository.review.agents as agent (agent.id)}
+          <input type="hidden" name="agentIds" value={agent.id} />
+        {/each}
+        <input
+          type="hidden"
+          name="ignoreGlobs"
+          value={data.repository.review.ignoreGlobs.join('\n')}
+        />
         <Button type="button" variant="danger" onclick={openUnwatchConfirmation}>
           {#snippet leadingIcon()}<EyeOff size={14} aria-hidden="true" />{/snippet}
           Stop watching

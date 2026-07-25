@@ -604,7 +604,12 @@ describe('buildRepositoryDashboard', () => {
 
   it('renders unknown, not a classic-only verdict, when the ruleset read fails', async () => {
     expect.assertions(2);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // `getBranchRules` routes through `cachedRead`, which already logs its
+    // own `[github-cache] ... api-error` line at `console.error` before
+    // rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert for the
+    // same failure.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const getBranch = vi.fn().mockResolvedValue({
         data: {
@@ -643,12 +648,12 @@ describe('buildRepositoryDashboard', () => {
       expect(rows[0].defaultBranchStatus).toBe('unknown');
       // Regression: the readRulesetRequiredChecks catch used to discard this
       // error entirely — nothing in service.ts logged anything.
-      expect(consoleError).toHaveBeenCalledWith(
+      expect(consoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('getBranchRules failed for acme/widgets'),
         expect.any(Error),
       );
     } finally {
-      consoleError.mockRestore();
+      consoleWarn.mockRestore();
     }
   });
 
@@ -867,7 +872,10 @@ describe('buildRepositoryDashboard', () => {
 
   it('does not attempt a live branch-head lookup once the api budget is exhausted', async () => {
     expect.assertions(3);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Budget exhaustion is this build's own deliberate choice to stop, not a
+    // bug or a GitHub failure, so it logs at `console.debug` — a `warn`/
+    // `error` here would page an operator for expected behavior at scale.
+    const consoleDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     try {
       const getBranch = vi.fn().mockResolvedValue({ data: { commit: { sha: 'resolved-sha' } } });
       const octokit = makeOctokit({ pullRequests: [], getBranch });
@@ -887,12 +895,13 @@ describe('buildRepositoryDashboard', () => {
       expect(getBranch).not.toHaveBeenCalled();
       // Regression: the get-branch-head-sha catch used to discard this error
       // entirely — nothing in service.ts logged anything.
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('getBranchHeadSha failed for acme/widgets'),
-        expect.any(Error),
+      expect(consoleDebug).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'getBranchHeadSha skipped for acme/widgets (#1): API budget exhausted',
+        ),
       );
     } finally {
-      consoleError.mockRestore();
+      consoleDebug.mockRestore();
     }
   });
 
@@ -971,7 +980,11 @@ describe('buildRepositoryDashboard', () => {
 
   it('renders unknown default-branch status when the CI check-run fetch throws', async () => {
     expect.assertions(2);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // `getDefaultBranchCiStatus` routes through `cachedRead`, which already
+    // logs its own `[github-cache] ... api-error` line at `console.error`
+    // before rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const octokit = makeOctokit({
         pullRequests: [],
@@ -987,12 +1000,12 @@ describe('buildRepositoryDashboard', () => {
       expect(rows[0].defaultBranchStatus).toBe('unknown');
       // Regression: the getDefaultBranchCiStatus catch used to discard this
       // error entirely — nothing in service.ts logged anything.
-      expect(consoleError).toHaveBeenCalledWith(
+      expect(consoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('getDefaultBranchCiStatus failed for acme/widgets'),
         expect.any(Error),
       );
     } finally {
-      consoleError.mockRestore();
+      consoleWarn.mockRestore();
     }
   });
 
@@ -1037,7 +1050,11 @@ describe('buildRepositoryDashboard', () => {
 
   it('renders a github-error row when inventory list fails for one repository, without failing the build', async () => {
     expect.assertions(4);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // `listPullRequests` routes through `cachedRead`, which already logs its
+    // own `[github-cache] ... api-error` line at `console.error` before
+    // rethrowing — so this failure logs at `console.warn` here, not
+    // `console.error`, to avoid a duplicate error-severity alert.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const failingOctokit = makeOctokit({ listPullsError: new Error('boom') });
       const healthyOctokit = makeOctokit({ pullRequests: [makePullRequest()] });
@@ -1060,12 +1077,12 @@ describe('buildRepositoryDashboard', () => {
       expect(rows[1].dataStatus).toBe('ok');
       // Regression: the listPullRequests catch used to discard this error
       // entirely — nothing in service.ts logged anything.
-      expect(consoleError).toHaveBeenCalledWith(
+      expect(consoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('listPullRequests failed for acme/widgets (#1)'),
         expect.any(Error),
       );
     } finally {
-      consoleError.mockRestore();
+      consoleWarn.mockRestore();
     }
   });
 

@@ -474,12 +474,35 @@ describe('/repositories/[repositoryId]/settings page', () => {
   it('submits the unwatch form when the confirmation dialog is confirmed', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    const unwatchForm = document.querySelector<HTMLFormElement>('form[action="?/unwatch"]')!;
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
     const submitSpy = vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
 
     await page.getByRole('button', { name: 'Stop watching' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Stop watching' }).click();
 
     expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts the repository id, saved agents, and saved ignore globs to the repositories list watch action, preserving them for a later re-add', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    // Regression: unwatching used to be the repositories-list row toggle,
+    // which preserved the current agent assignment and ignore globs so a
+    // later re-add restored them. The danger-zone form must submit the same
+    // fields to the same `?/watch` action rather than a route-local action,
+    // so a stale settings tab open from before this change keeps working —
+    // and `watched` is intentionally never set on this form, since it only
+    // ever turns watching off.
+    const unwatchForm = document.querySelector<HTMLFormElement>(
+      'form[action="/repositories?/watch"]',
+    )!;
+    const formData = new FormData(unwatchForm);
+
+    expect(formData.get('repositoryId')).toBe('101');
+    expect(formData.getAll('agentIds')).toEqual(['agent_1']);
+    expect(formData.get('ignoreGlobs')).toBe('dist/**\ncoverage/**');
+    expect(formData.get('watched')).toBeNull();
   });
 });

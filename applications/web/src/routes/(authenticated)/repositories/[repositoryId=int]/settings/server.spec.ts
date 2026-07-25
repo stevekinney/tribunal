@@ -6,7 +6,6 @@ const {
   mockGetRepositoryOperatorDetails,
   mockListAgents,
   mockSubmitRepositorySettingsForm,
-  mockSaveRepositoryWatchSettings,
 } = vi.hoisted(() => ({
   mockGetRepositoryById: vi.fn(),
   mockUserCanAccessRepository: vi.fn(),
@@ -15,9 +14,6 @@ const {
     Promise.resolve([]),
   ),
   mockSubmitRepositorySettingsForm: vi.fn(() => Promise.resolve({ success: true })),
-  mockSaveRepositoryWatchSettings: vi.fn<
-    () => Promise<{ success: true } | { status: number; data: { error: string } }>
-  >(() => Promise.resolve({ success: true })),
 }));
 
 vi.mock('@sveltejs/kit', () => ({
@@ -46,7 +42,6 @@ vi.mock('$lib/server/review/operator', () => ({
   getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
   listAgents: mockListAgents,
   submitRepositorySettingsForm: mockSubmitRepositorySettingsForm,
-  saveRepositoryWatchSettings: mockSaveRepositoryWatchSettings,
 }));
 
 import { actions, load } from './+page.server';
@@ -164,7 +159,7 @@ describe('/repositories/[repositoryId]/settings server action', () => {
       params: { repositoryId: '101' },
       locals: { user: { id: 1, username: 'test-user' } },
       request: { formData: () => Promise.resolve(formData) },
-    } as unknown as Parameters<(typeof actions)['save']>[0];
+    } as unknown as Parameters<(typeof actions)['default']>[0];
   }
 
   it('redirects unauthenticated submissions to login', async () => {
@@ -172,9 +167,9 @@ describe('/repositories/[repositoryId]/settings server action', () => {
       params: { repositoryId: '101' },
       locals: {},
       request: { formData: () => Promise.resolve(new FormData()) },
-    } as unknown as Parameters<(typeof actions)['save']>[0];
+    } as unknown as Parameters<(typeof actions)['default']>[0];
 
-    await expect(actions.save(event)).rejects.toMatchObject({
+    await expect(actions.default(event)).rejects.toMatchObject({
       status: 302,
       location: '/login',
     });
@@ -185,7 +180,7 @@ describe('/repositories/[repositoryId]/settings server action', () => {
     formData.append('ignoreGlobs', 'dist/**');
     formData.append('agentIds', 'agent_1');
 
-    await actions.save(createActionEvent(formData));
+    await actions.default(createActionEvent(formData));
 
     expect(mockSubmitRepositorySettingsForm).toHaveBeenCalledWith(1, 101, formData);
   });
@@ -193,7 +188,7 @@ describe('/repositories/[repositoryId]/settings server action', () => {
   it('returns 404 when the user cannot access the repository', async () => {
     mockUserCanAccessRepository.mockResolvedValue(false);
 
-    await expect(actions.save(createActionEvent(new FormData()))).rejects.toMatchObject({
+    await expect(actions.default(createActionEvent(new FormData()))).rejects.toMatchObject({
       status: 404,
     });
   });
@@ -203,117 +198,10 @@ describe('/repositories/[repositoryId]/settings server action', () => {
       params: { repositoryId: 'not-a-number' },
       locals: { user: { id: 1, username: 'test-user' } },
       request: { formData: () => Promise.resolve(new FormData()) },
-    } as unknown as Parameters<(typeof actions)['save']>[0];
+    } as unknown as Parameters<(typeof actions)['default']>[0];
 
-    const result = await actions.save(event);
-
-    expect(result).toMatchObject({ status: 400, data: { error: 'Repository is invalid.' } });
-  });
-});
-
-describe('/repositories/[repositoryId]/settings unwatch action', () => {
-  beforeEach(() => {
-    mockUserCanAccessRepository.mockReset();
-    mockUserCanAccessRepository.mockResolvedValue(true);
-    mockGetRepositoryOperatorDetails.mockReset();
-    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
-    mockSaveRepositoryWatchSettings.mockReset();
-    mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
-  });
-
-  function createUnwatchEvent() {
-    return {
-      params: { repositoryId: '101' },
-      locals: { user: { id: 1, username: 'test-user' } },
-    } as unknown as Parameters<(typeof actions)['unwatch']>[0];
-  }
-
-  it('redirects unauthenticated submissions to login', async () => {
-    const event = {
-      params: { repositoryId: '101' },
-      locals: {},
-    } as unknown as Parameters<(typeof actions)['unwatch']>[0];
-
-    await expect(actions.unwatch(event)).rejects.toMatchObject({
-      status: 302,
-      location: '/login',
-    });
-  });
-
-  it('rejects an invalid repository id', async () => {
-    const event = {
-      params: { repositoryId: 'not-a-number' },
-      locals: { user: { id: 1, username: 'test-user' } },
-    } as unknown as Parameters<(typeof actions)['unwatch']>[0];
-
-    const result = await actions.unwatch(event);
+    const result = await actions.default(event);
 
     expect(result).toMatchObject({ status: 400, data: { error: 'Repository is invalid.' } });
-  });
-
-  it('returns 404 when the user cannot access the repository', async () => {
-    mockUserCanAccessRepository.mockResolvedValue(false);
-
-    await expect(actions.unwatch(createUnwatchEvent())).rejects.toMatchObject({ status: 404 });
-  });
-
-  it('saves watched:false while preserving the saved ignore globs and agent assignment, then redirects to the repositories list', async () => {
-    mockGetRepositoryOperatorDetails.mockResolvedValue(
-      new Map([
-        [
-          101,
-          {
-            hasSavedSettings: true,
-            watched: true,
-            ignoreGlobs: ['dist/**', 'coverage/**'],
-            agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
-            lastRunStatus: null,
-            estimatedCostLast30DaysUsd: 0,
-          },
-        ],
-      ]),
-    );
-
-    await expect(actions.unwatch(createUnwatchEvent())).rejects.toMatchObject({
-      status: 303,
-      location: '/repositories',
-    });
-
-    expect(mockSaveRepositoryWatchSettings).toHaveBeenCalledWith(1, {
-      repositoryId: 101,
-      watched: false,
-      ignoreGlobs: ['dist/**', 'coverage/**'],
-      agentIds: ['agent_1'],
-    });
-  });
-
-  it('unwatches a never-configured repository with empty saved settings', async () => {
-    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map());
-
-    await expect(actions.unwatch(createUnwatchEvent())).rejects.toMatchObject({
-      status: 303,
-      location: '/repositories',
-    });
-
-    expect(mockSaveRepositoryWatchSettings).toHaveBeenCalledWith(1, {
-      repositoryId: 101,
-      watched: false,
-      ignoreGlobs: [],
-      agentIds: [],
-    });
-  });
-
-  it('returns the failure instead of redirecting when saveRepositoryWatchSettings fails', async () => {
-    mockSaveRepositoryWatchSettings.mockResolvedValue({
-      status: 400,
-      data: { error: 'One or more selected agents are unavailable.' },
-    });
-
-    const result = await actions.unwatch(createUnwatchEvent());
-
-    expect(result).toMatchObject({
-      status: 400,
-      data: { error: 'One or more selected agents are unavailable.' },
-    });
   });
 });

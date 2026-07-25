@@ -115,24 +115,48 @@ const DASHBOARD_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
 
 /**
  * Logs a GitHub read failure that a dashboard-row catch block would otherwise
- * silently discard. Every catch site below already classifies the failure
- * (rate limit vs. everything else) to decide whether to trip the shared
- * budget; this reuses that same classification to pick the log level, so a
- * rate limit (an expected operational condition once traffic grows) doesn't
- * page anyone at `console.error` severity the way a genuine GitHub/network
- * failure should.
+ * silently discard.
+ *
+ * Three severities, not two:
+ *
+ * - Budget exhaustion (`isBudgetExhaustionError`) is this build's own
+ *   deliberate choice to stop, not a bug or a GitHub problem — at scale
+ *   (a dashboard with many repositories) it is an expected, routine outcome
+ *   already reflected in the row's `unavailableReason`. Logging it at `error`
+ *   or `warn` would page an operator for normal behavior; `console.debug` is
+ *   enough to trace that it happened.
+ * - A rate limit is real, but expected once traffic grows — `console.warn`.
+ * - Anything else is a genuine, unexpected GitHub/network failure —
+ *   `console.error`.
+ *
+ * `options.cached` marks call sites that route through `cachedRead`
+ * (`core/github-read-client.ts`), which already logs its own
+ * `[github-cache] ... api-error` line at `console.error` for any failure it
+ * wraps, before rethrowing here. Logging *this* call at `console.error` too
+ * would double an already-fired alert for the exact same failure — so cached
+ * call sites cap out at `console.warn`, adding the operation/repository/error
+ * detail the generic cache-layer line lacks without duplicating the alert.
  */
 function logDashboardReadFailure(
   operation: string,
   repository: Pick<DashboardRepositoryIdentity, 'id' | 'owner' | 'name'>,
   error: unknown,
+  options: { cached?: boolean } = {},
 ): void {
   const identity = `${repository.owner}/${repository.name} (#${repository.id})`;
+  if (isBudgetExhaustionError(error)) {
+    console.debug(`[dashboard] ${operation} skipped for ${identity}: API budget exhausted`);
+    return;
+  }
   if (isRateLimitError(error)) {
     console.warn(`[dashboard] ${operation} rate-limited for ${identity}`, error);
-  } else {
-    console.error(`[dashboard] ${operation} failed for ${identity}`, error);
+    return;
   }
+  if (options.cached) {
+    console.warn(`[dashboard] ${operation} failed for ${identity}`, error);
+    return;
+  }
+  console.error(`[dashboard] ${operation} failed for ${identity}`, error);
 }
 
 /**
@@ -231,7 +255,7 @@ async function buildRepositoryRow(
     pullRequests = result.pullRequests;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    logDashboardReadFailure('listPullRequests', repository, error);
+    logDashboardReadFailure('listPullRequests', repository, error, { cached: true });
     return unavailableRow(
       identity,
       refreshedAt,
@@ -382,6 +406,20 @@ interface RulesetReadResult {
 }
 
 /**
+ * Marker base class for an error this build threw at itself on purpose,
+ * because the shared `ApiBudget` ran out mid-read — never an error GitHub or
+ * the network produced. `logDashboardReadFailure` checks for this base class
+ * to log budget exhaustion at a quiet, non-alerting level instead of
+ * `console.error`/`console.warn`.
+ */
+class DashboardBudgetExhaustedError extends Error {}
+
+/** True for a budget-exhaustion signal this build threw at itself — never a real GitHub/network failure. */
+function isBudgetExhaustionError(error: unknown): error is DashboardBudgetExhaustedError {
+  return error instanceof DashboardBudgetExhaustedError;
+}
+
+/**
  * Thrown when the `ApiBudget` runs out mid-pagination of `getBranchRules`.
  * Distinct from any other error `getBranchRules` (or its pagination) can
  * throw: a budget exhaustion is this build's own deliberate choice to stop,
@@ -390,7 +428,10 @@ interface RulesetReadResult {
  * ordinary GitHub error (rate limit, network failure, rulesets unsupported)
  * still degrades to classic-only, per the existing documented tradeoff.
  */
-class RulesetBudgetExhaustedError extends Error {}
+class RulesetBudgetExhaustedError extends DashboardBudgetExhaustedError {}
+
+/** Thrown when the `ApiBudget` runs out before resolving a repository's default-branch head SHA. */
+class BranchHeadBudgetExhaustedError extends DashboardBudgetExhaustedError {}
 
 /** Reads either the current `RulesetReadResult` cache envelope or a bare `RequiredCheck[]` written by a prior deploy. */
 function normalizeCachedRulesetResult(
@@ -524,7 +565,7 @@ async function readRulesetRequiredChecks(
     return normalizeCachedRulesetResult(value);
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    logDashboardReadFailure('getBranchRules', repository, error);
+    logDashboardReadFailure('getBranchRules', repository, error, { cached: true });
     // Any failure here — budget exhaustion (thrown as
     // `RulesetBudgetExhaustedError` above), a rate limit, a network error,
     // or anything else `getBranchRules` can throw — is incomplete evidence,
@@ -564,7 +605,9 @@ async function readDefaultBranchStatus(
       policy,
       async () => {
         if (!budget.canSpend(1)) {
-          throw new Error('API budget exhausted before resolving branch head SHA');
+          throw new BranchHeadBudgetExhaustedError(
+            'API budget exhausted before resolving branch head SHA',
+          );
         }
         budget.spend(1);
         const { data: branch } = await octokit.rest.repos.getBranch({
@@ -594,7 +637,7 @@ async function readDefaultBranchStatus(
     requiredChecks = head.requiredChecks;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    logDashboardReadFailure('getBranchHeadSha', repository, error);
+    logDashboardReadFailure('getBranchHeadSha', repository, error, { cached: true });
     if (!commitSha) return 'unknown';
   }
 
@@ -642,7 +685,7 @@ async function readDefaultBranchStatus(
     return ciState.ciStatus;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
-    logDashboardReadFailure('getDefaultBranchCiStatus', repository, error);
+    logDashboardReadFailure('getDefaultBranchCiStatus', repository, error, { cached: true });
     return 'unknown';
   }
 }
