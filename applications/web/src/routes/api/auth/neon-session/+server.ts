@@ -1,5 +1,6 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
 import { createNeonSessionFromToken, setNeonAuthTokenCookie } from '$lib/server/auth/neon-session';
+import { hasWatchedRepositories } from '$lib/server/review/operator';
 import type { RequestHandler } from './$types';
 
 const unexpectedSessionErrorMessage = 'Tribunal could not create a local session';
@@ -51,11 +52,22 @@ export const POST: RequestHandler = async (event) => {
   const { user, neonSession } = sessionResult;
   setNeonAuthTokenCookie(event, token, neonSession.expiresAt);
 
+  // Resolved here, once, so the auth callback page can skip the intermediate
+  // '/' hop (whose own load function makes this exact same "watched
+  // repositories?" check before redirecting to '/repositories' or
+  // '/onboarding') when it has no more specific destination of its own. The
+  // callback only uses this when its `returnTo` is the default '/' — an
+  // explicit deep link the user was headed to before signing in is still
+  // respected as-is. '/' itself keeps this same check for anyone who lands
+  // there directly (e.g. a bookmark), independent of this shortcut.
+  const postLoginPath = (await hasWatchedRepositories(user.id)) ? '/repositories' : '/onboarding';
+
   return json({
     user,
     neonSession: {
       neonAuthUserId: neonSession.neonAuthUserId,
       expiresAt: neonSession.expiresAt.toISOString(),
     },
+    postLoginPath,
   });
 };

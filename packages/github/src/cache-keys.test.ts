@@ -64,6 +64,14 @@ describe('CACHE_KEYS', () => {
     );
   });
 
+  it('builds the user-installations key and its invalidation pattern', () => {
+    expect.assertions(2);
+    expect(CACHE_KEYS.GITHUB_USER_INSTALLATIONS(42)).toBe('github:response:user:42:installations');
+    expect(CACHE_KEYS.GITHUB_USER_INSTALLATIONS_PATTERN).toBe(
+      'github:response:user:*:installations',
+    );
+  });
+
   it('builds review state, thread counts, and CI check keys', () => {
     expect.assertions(3);
     expect(CACHE_KEYS.GITHUB_REVIEW_STATE('octo', 'repo', 9)).toBe(

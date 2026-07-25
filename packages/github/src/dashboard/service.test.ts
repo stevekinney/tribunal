@@ -1022,17 +1022,17 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[1].dataStatus).toBe('ok');
   });
 
-  it('trips the budget on a rate-limit error and stops calling GitHub for remaining repositories', async () => {
+  it('trips the budget on a rate-limit error and stops calling GitHub for remaining repositories (sequential, concurrency: 1)', async () => {
     expect.assertions(4);
     const rateLimitedOctokit = makeOctokit({ listPullsError: rateLimitError });
     const getInstallationOctokit = vi.fn().mockResolvedValue(rateLimitedOctokit);
     const context = createMockContext({ getInstallationOctokit });
 
-    const rows = await buildRepositoryDashboard(context, [
-      makeRepository({ id: 1 }),
-      makeRepository({ id: 2 }),
-      makeRepository({ id: 3 }),
-    ]);
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ id: 1 }), makeRepository({ id: 2 }), makeRepository({ id: 3 })],
+      { concurrency: 1 },
+    );
 
     expect(rows[0].unavailableReason).toBe('rate-limited');
     expect(rows[1].unavailableReason).toBe('rate-limited');
@@ -1042,7 +1042,31 @@ describe('buildRepositoryDashboard', () => {
     expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
   });
 
-  it('exhausts the api budget mid-dashboard and renders remaining repositories as unavailable without issuing more requests', async () => {
+  // With concurrency > 1, the shared budget's exhaustion (or, here, its
+  // rate-limited trip) is only checked synchronously at the top of each
+  // repository's row build. Every repository already dispatched when the
+  // rate limit hits completes its own attempt rather than aborting
+  // mid-flight — an overshoot of up to `concurrency - 1` calls, bounded by
+  // the configured concurrency rather than unbounded. This is the tradeoff
+  // documented on `DEFAULT_DASHBOARD_CONCURRENCY`.
+  it('bounds rate-limit exposure to the configured concurrency instead of one repository at a time', async () => {
+    expect.assertions(3);
+    const rateLimitedOctokit = makeOctokit({ listPullsError: rateLimitError });
+    const getInstallationOctokit = vi.fn().mockResolvedValue(rateLimitedOctokit);
+    const context = createMockContext({ getInstallationOctokit });
+
+    const repositories = Array.from({ length: 6 }, (_, index) => makeRepository({ id: index + 1 }));
+    const rows = await buildRepositoryDashboard(context, repositories, { concurrency: 3 });
+
+    expect(rows.map((row) => row.repository.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(rows.every((row) => row.unavailableReason === 'rate-limited')).toBe(true);
+    // The first `concurrency` repositories are already in flight (and each
+    // asks for an installation client) before any of them can observe the
+    // trip; the rest are queued behind them and never ask for one.
+    expect(getInstallationOctokit).toHaveBeenCalledTimes(3);
+  });
+
+  it('exhausts the api budget mid-dashboard and renders remaining repositories as unavailable without issuing more requests (sequential, concurrency: 1)', async () => {
     expect.assertions(4);
     const octokit = makeOctokit({
       pullRequests: [],
@@ -1055,7 +1079,7 @@ describe('buildRepositoryDashboard', () => {
     const rows = await buildRepositoryDashboard(
       context,
       [makeRepository({ id: 1 }), makeRepository({ id: 2 })],
-      { apiBudget: 2 },
+      { apiBudget: 2, concurrency: 1 },
     );
 
     expect(rows[0].dataStatus).toBe('ok');
@@ -1063,6 +1087,51 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[1].unavailableReason).toBe('api-budget-exhausted');
     expect(getInstallationOctokit).toHaveBeenCalledTimes(1);
   });
+
+  it('overshoots the api budget by up to concurrency - 1 in-flight calls instead of stopping at the cap', async () => {
+    expect.assertions(4);
+    const octokit = makeOctokit({
+      pullRequests: [],
+      checkRuns: { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    });
+    const getInstallationOctokit = vi.fn().mockResolvedValue(octokit);
+    const context = createMockContext({ getInstallationOctokit, db: withDbSelectResult([]) });
+
+    // A budget of 1 "intends" to cover a single repository, but with
+    // concurrency 3 the first 3 repositories all pass the top-of-function
+    // exhaustion check before any of them has spent anything against the
+    // shared budget — so all 3 complete successfully, and only the
+    // repositories queued behind them see the budget already exhausted.
+    const repositories = Array.from({ length: 6 }, (_, index) => makeRepository({ id: index + 1 }));
+    const rows = await buildRepositoryDashboard(context, repositories, {
+      apiBudget: 1,
+      concurrency: 3,
+    });
+
+    expect(rows.map((row) => row.repository.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(rows.slice(0, 3).map((row) => row.dataStatus)).toEqual(['ok', 'ok', 'ok']);
+    expect(rows.slice(3).map((row) => row.dataStatus)).toEqual([
+      'unavailable',
+      'unavailable',
+      'unavailable',
+    ]);
+    expect(rows.slice(3).every((row) => row.unavailableReason === 'api-budget-exhausted')).toBe(
+      true,
+    );
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects a non-positive-integer concurrency (%s) instead of silently producing an incomplete or hanging result',
+    async (concurrency) => {
+      expect.assertions(1);
+      const context = createMockContext({ db: withDbSelectResult([]) });
+      const repositories = [makeRepository({ id: 1 })];
+
+      await expect(
+        buildRepositoryDashboard(context, repositories, { concurrency }),
+      ).rejects.toThrow(RangeError);
+    },
+  );
 
   it('always passes repositoryId to listPullRequests so it never bypasses the cache', async () => {
     expect.assertions(1);
@@ -1170,15 +1239,16 @@ describe('buildRepositoryDashboard', () => {
     expect(rows[0].unavailableReason).toBe('github-error');
   });
 
-  it('marks the shared budget rate-limited when installation token resolution throws a rate-limit error', async () => {
+  it('marks the shared budget rate-limited when installation token resolution throws a rate-limit error (sequential, concurrency: 1)', async () => {
     expect.assertions(3);
     const getInstallationOctokit = vi.fn().mockRejectedValue(rateLimitError);
     const context = createMockContext({ getInstallationOctokit });
 
-    const rows = await buildRepositoryDashboard(context, [
-      makeRepository({ id: 1 }),
-      makeRepository({ id: 2 }),
-    ]);
+    const rows = await buildRepositoryDashboard(
+      context,
+      [makeRepository({ id: 1 }), makeRepository({ id: 2 })],
+      { concurrency: 1 },
+    );
 
     expect(rows[0].unavailableReason).toBe('rate-limited');
     // The budget trips for the whole build, so the second repository never

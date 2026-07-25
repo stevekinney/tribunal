@@ -53,6 +53,58 @@ export const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 /** GitHub caps `pulls.list` at 100 items per page; more requires a second page. */
 const OPEN_PULL_REQUEST_PAGE_SIZE = 100;
 
+/**
+ * Default number of repositories built concurrently by `buildRepositoryDashboard`.
+ *
+ * The shared `ApiBudget` still bounds the *total* number of live GitHub calls
+ * across the whole build, but repositories are no longer built one at a time
+ * waiting on each other's network round trips. With `N` repositories in
+ * flight at once, the budget can overshoot its cap by up to `N - 1` calls
+ * before any of them observes the exhaustion: the budget snapshot is only
+ * checked once, synchronously, at the top of `buildRepositoryRow`, so every
+ * repository already in flight when the cap is hit completes its own calls
+ * rather than aborting mid-flight. This is an accepted tradeoff — bounded by
+ * `DEFAULT_DASHBOARD_CONCURRENCY`, not unbounded — in exchange for the
+ * dashboard no longer taking `repositoryCount * perRepositoryLatency` to
+ * build.
+ */
+export const DEFAULT_DASHBOARD_CONCURRENCY = 6;
+
+/**
+ * Runs `fn` over `items` with at most `concurrency` calls in flight at once,
+ * preserving input order in the returned array regardless of which call
+ * settles first. A small hand-rolled worker pool rather than a dependency:
+ * each worker pulls the next unclaimed index off a shared, monotonically
+ * increasing counter and writes its result directly into the pre-sized
+ * output array by index, so completion order never affects result order.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError(
+      `DashboardOptions.concurrency must be a positive integer, got ${concurrency}`,
+    );
+  }
+
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 const DASHBOARD_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
   state: 'open',
   sort: 'updated',
@@ -64,10 +116,15 @@ const DASHBOARD_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
 /**
  * Build one dashboard row per authorized repository.
  *
- * Repositories are processed sequentially (not concurrently) so the shared
- * `ApiBudget` bounds fan-out deterministically: once exhausted, every
- * remaining repository short-circuits to an `unavailable` row without
- * attempting further GitHub calls.
+ * Repositories are built with bounded concurrency (see
+ * `DEFAULT_DASHBOARD_CONCURRENCY`) rather than one at a time — each row's
+ * live GitHub calls run independently, so the total build time is no longer
+ * `repositoryCount * perRepositoryLatency`. The shared `ApiBudget` still caps
+ * the total number of live GitHub calls across the whole build: once it
+ * reports exhausted, every repository whose row build had not yet started
+ * short-circuits to an `unavailable` row without attempting further GitHub
+ * calls. Results are returned in the same order as `repositories`,
+ * regardless of which row finishes first.
  */
 export async function buildRepositoryDashboard(
   context: GithubServiceContext,
@@ -77,12 +134,11 @@ export async function buildRepositoryDashboard(
   const budget = new ApiBudget(options.apiBudget ?? DEFAULT_DASHBOARD_API_BUDGET);
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const now = options.now ?? (() => new Date());
+  const concurrency = options.concurrency ?? DEFAULT_DASHBOARD_CONCURRENCY;
 
-  const rows: RepositoryDashboardRow[] = [];
-  for (const repository of repositories) {
-    rows.push(await buildRepositoryRow(context, repository, budget, staleAfterMs, now()));
-  }
-  return rows;
+  return mapWithConcurrency(repositories, concurrency, (repository) =>
+    buildRepositoryRow(context, repository, budget, staleAfterMs, now()),
+  );
 }
 
 async function buildRepositoryRow(
@@ -623,7 +679,15 @@ function isFresh(updatedAt: Date | null | undefined, nowMs: number, staleAfterMs
   return nowMs - updatedAt.getTime() <= staleAfterMs;
 }
 
-function unavailableRow(
+/**
+ * Build a placeholder row for a repository whose dashboard data could not be
+ * read this build. Exported so callers that fail the whole
+ * `buildRepositoryDashboard` call outright (e.g. a shared-step DB read
+ * throwing before any per-repository row starts) can degrade to the same
+ * "unavailable" shape the UI already renders for a single failed row,
+ * instead of silently omitting the repository from the dashboard entirely.
+ */
+export function unavailableRow(
   repository: RepositoryDashboardRow['repository'],
   refreshedAt: string,
   reason: DashboardUnavailableReason,

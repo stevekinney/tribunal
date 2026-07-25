@@ -108,9 +108,23 @@ vi.mock('$lib/server/github/github-application', () => ({
   getGithubApplication: () => mockGithubApp.value,
 }));
 
-// Mock github-context adapter (provides DI context to package functions)
+// Mock github-context adapter (provides DI context to package functions).
+// `listUserInstallations` reads through `cachedRead` (with `bypass: true`
+// here, since this is the write-then-read install-verification path) and
+// still needs a real (mocked) `cache.setCache` to store the fetched result —
+// an empty object would throw inside `cachedRead`'s fail-open catch, which
+// is harmless but noisy.
 vi.mock('$lib/server/github-context', () => ({
-  githubContext: {},
+  githubContext: {
+    cache: {
+      getCached: vi.fn().mockResolvedValue(null),
+      setCache: vi.fn().mockResolvedValue(true),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    },
+  },
 }));
 
 // Mock installation records module (moved to package)

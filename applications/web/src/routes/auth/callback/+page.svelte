@@ -53,7 +53,18 @@
         throw new Error('Tribunal could not establish a Neon Auth session');
       }
 
-      await goto(returnTo);
+      // When the caller didn't ask for a specific destination (the default
+      // '/'), go straight to the destination the session bridge already
+      // resolved (`postLoginPath`) instead of navigating to '/' and letting
+      // its own load function redirect — that would otherwise cost a second
+      // server round trip for a decision already made. An explicit deep
+      // link (anything other than '/') is still respected as-is.
+      if (returnTo === '/') {
+        const sessionBody = (await response.json()) as { postLoginPath?: string };
+        await goto(sessionBody.postLoginPath ?? '/');
+      } else {
+        await goto(returnTo);
+      }
     } catch (error) {
       console.error('Neon Auth callback failed', error);
       status = 'error';

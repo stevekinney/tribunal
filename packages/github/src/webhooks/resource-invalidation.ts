@@ -89,6 +89,10 @@ export async function invalidateGitHubResourceCacheForEvent(
         await invalidateInstallationRepositoriesCache(context, data);
         break;
 
+      case 'installation':
+        await invalidateUserInstallationsCache(context);
+        break;
+
       case 'repository':
         if (owner && repo) {
           await invalidateEntireRepoCache(context, owner, repo);
@@ -363,6 +367,23 @@ async function invalidateInstallationRepositoriesCache(
   await context.cache.deleteCacheByPattern(
     CACHE_KEYS.GITHUB_RESPONSE_INSTALLATION_PATTERN(installation.id),
   );
+}
+
+/**
+ * Invalidates every cached `list-user-installations` entry (see
+ * `core/cache-policy.ts`) on any `installation` lifecycle event (created,
+ * deleted, suspend, unsuspend, new_permissions_accepted). Unlike the other
+ * caches invalidated here, this one is keyed by local user id, not by
+ * anything the webhook payload carries — an installation event names the
+ * installation (and its account), not which Tribunal users' cached
+ * `GET /user/installations` results might now be stale. Clearing every
+ * user's cached list is the only mapping available; the entries are cheap
+ * to rebuild (a single paginated GitHub call) and this event is rare, so the
+ * blanket invalidation costs little in exchange for never leaving a revoked
+ * or newly granted installation stale for the full 30s TTL.
+ */
+async function invalidateUserInstallationsCache(context: GithubServiceContext): Promise<void> {
+  await context.cache.deleteCacheByPattern(CACHE_KEYS.GITHUB_USER_INSTALLATIONS_PATTERN);
 }
 
 async function invalidateEntireRepoCache(

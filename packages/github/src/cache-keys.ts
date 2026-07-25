@@ -60,6 +60,17 @@ export const CACHE_KEYS = {
   GITHUB_INSTALLATION_REPOSITORIES: (installationId: number) =>
     `github:response:installation:${installationId}:repositories`,
 
+  // GitHub `GET /user/installations` — the installations a user's own OAuth
+  // token can see. Keyed by user, not installation, because it authorizes a
+  // person, not a repository.
+  GITHUB_USER_INSTALLATIONS: (userId: number) => `github:response:user:${userId}:installations`,
+  // No per-user pattern here: an `installation` lifecycle webhook carries an
+  // installation id, not the set of local user ids who might have that
+  // installation cached. Invalidation clears every cached user's list rather
+  // than trying (and failing) to target just the affected one — see
+  // `webhooks/resource-invalidation.ts`.
+  GITHUB_USER_INSTALLATIONS_PATTERN: 'github:response:user:*:installations',
+
   // GitHub review state and CI check caches (Redis)
   GITHUB_REVIEW_STATE: (owner: string, repo: string, prNumber: number) =>
     `github:response:${owner}:${repo}:pr:${prNumber}:review-state`,

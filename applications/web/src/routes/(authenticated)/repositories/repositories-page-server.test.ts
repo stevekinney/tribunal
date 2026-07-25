@@ -29,9 +29,13 @@ vi.mock('$lib/server/github-context', () => ({
   githubContext: {},
 }));
 
-vi.mock('@tribunal/github/dashboard/service', () => ({
-  buildRepositoryDashboard: mockBuildRepositoryDashboard,
-}));
+vi.mock('@tribunal/github/dashboard/service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tribunal/github/dashboard/service')>();
+  return {
+    ...actual,
+    buildRepositoryDashboard: mockBuildRepositoryDashboard,
+  };
+});
 
 vi.mock('$lib/server/review/operator', () => ({
   getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
@@ -186,10 +190,41 @@ describe('/repositories load: added repositories only', () => {
 
     // PR #1 (passing/clean/no unresolved threads) never needs attention; #2
     // (failing CI) and #3 (unresolved threads) do, newest-updated first.
-    expect(data.attentionPullRequests.map((pr: { number: number }) => pr.number)).toEqual([3, 2]);
-    expect(data.attentionPullRequests[0]).toMatchObject({
+    const attentionPullRequests = await data.attentionPullRequests;
+    expect(attentionPullRequests.map((pr: { number: number }) => pr.number)).toEqual([3, 2]);
+    expect(attentionPullRequests[0]).toMatchObject({
       repositoryOwner: 'test-org',
       repositoryName: 'z-repo',
+    });
+  });
+
+  it('degrades to per-repository unavailable rows instead of an unhandled rejection when the fan-out throws', async () => {
+    const watched = makeAccessibleRepository(2, 'test-org', 'z-repo');
+
+    mockGetRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      repositories: [watched],
+      installations: [{ installationId: 999, accountLogin: 'test-org', accountAvatarUrl: null }],
+    });
+    mockGetRepositoryOperatorDetails.mockResolvedValue(new Map([[2, watchedDetails()]]));
+    mockBuildRepositoryDashboard.mockRejectedValue(new Error('database unavailable'));
+
+    const data = await runLoad();
+
+    // A total fan-out failure must not be indistinguishable from "zero
+    // repositories" — the summary strip and per-row "Unknown" banner both
+    // depend on an unavailable row existing for every added repository, not
+    // an empty result.
+    await expect(data.summary).resolves.toMatchObject({
+      totalRepositoryCount: 1,
+      hasUnavailableRepositories: true,
+    });
+    await expect(data.attentionPullRequests).resolves.toEqual([]);
+
+    const dashboardRowsById = await data.dashboardRowsById;
+    expect(dashboardRowsById.get(2)).toMatchObject({
+      dataStatus: 'unavailable',
+      unavailableReason: 'github-error',
     });
   });
 });

@@ -135,6 +135,16 @@ describe('POST /api/auth/neon-session', () => {
     expect.assertions(2);
   });
 
+  it('resolves postLoginPath to /onboarding for a freshly created user with no watched repositories', async () => {
+    // The auth callback page uses this to skip the intermediate '/' hop
+    // (whose own load function makes this exact same check) when it has no
+    // more specific returnTo destination of its own.
+    const { response } = await postToken(await createToken());
+    const body = (await response.json()) as { postLoginPath: string };
+
+    expect(body.postLoginPath).toBe('/onboarding');
+  });
+
   it('rejects a malformed JSON body', async () => {
     const event = createMockRequestEvent({
       url: 'http://localhost/api/auth/neon-session',

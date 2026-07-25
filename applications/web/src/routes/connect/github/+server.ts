@@ -14,6 +14,7 @@ import {
   getSingleInstallationConfigurationUrl,
   listUserInstallations,
 } from '$lib/server/github/user-installations';
+import { githubContext } from '$lib/server/github-context';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals, cookies, url }) => {
@@ -35,7 +36,18 @@ export const GET: RequestHandler = async ({ locals, cookies, url }) => {
   let existingInstallationConfigurationUrl: string | null = null;
   if (octokitResult.ok) {
     try {
-      const installations = await listUserInstallations(octokitResult.octokit);
+      // Read-only redirect optimization, not an authorization check: a cache
+      // hit up to 30s stale only risks sending the user to GitHub's "create a
+      // new installation" flow instead of straight to an existing one's
+      // configuration page — GitHub itself handles that gracefully. No
+      // `bypass` needed here, unlike the write-then-read check in
+      // connect/github/callback/+server.ts (right after an install
+      // completes, where a stale cache entry would incorrectly reject it).
+      const installations = await listUserInstallations(
+        githubContext.cache,
+        locals.user.id,
+        octokitResult.octokit,
+      );
       existingInstallationConfigurationUrl = getSingleInstallationConfigurationUrl(
         installations,
         appName,

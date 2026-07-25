@@ -117,6 +117,8 @@ export interface DashboardOptions {
   staleAfterMs?: number;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
+  /** Maximum number of repositories built concurrently. Defaults to `DEFAULT_DASHBOARD_CONCURRENCY`. */
+  concurrency?: number;
 }
 
 // ============================================================================
