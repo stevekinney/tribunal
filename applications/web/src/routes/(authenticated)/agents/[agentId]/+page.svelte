@@ -1,13 +1,17 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
-  import AgentEditor from '../agent-editor.svelte';
+  import AgentEditor, { AGENT_EDITOR_FORM_ID } from '../agent-editor.svelte';
   import { Button } from '@lostgradient/cinder/button';
-  import { Card } from '@lostgradient/cinder/card';
+  import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { Collapsible } from '@lostgradient/cinder/collapsible';
   import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import Trash2 from 'lucide-svelte/icons/trash-2';
+  import { untrack } from 'svelte';
   import type { PageProps } from './$types';
 
   let { data, form }: PageProps = $props();
+
+  let enabled = $state(untrack(() => form?.values?.enabled ?? data.agent.enabled));
 
   let confirmDeleteOpen = $state(false);
   let deleteTriggerRef = $state<HTMLElement | null>(null);
@@ -27,6 +31,16 @@
     { label: data.agent.slug, href: `/agents/${data.agent.id}` },
   ]}
 >
+  {#snippet actions()}
+    <Checkbox
+      id="agent-enabled"
+      label="Enabled"
+      name="enabled"
+      form={AGENT_EDITOR_FORM_ID}
+      bind:checked={enabled}
+    />
+  {/snippet}
+
   <AgentEditor
     agent={{
       id: data.agent.id,
@@ -35,7 +49,6 @@
       body: data.agent.body,
       model: data.agent.model,
       effort: data.agent.effort,
-      enabled: data.agent.enabled,
     }}
     defaultModel={data.defaultModel}
     modelOptions={data.modelOptions}
@@ -44,7 +57,7 @@
     submitLabel="Save changes"
   />
 
-  <Card title="Danger zone" tone="danger" headingLevel={2}>
+  <Collapsible trigger="Danger zone" class="danger-zone">
     <p class="danger-copy">
       Permanently delete this agent. It stops running for repository automation immediately. This
       action cannot be undone.
@@ -56,7 +69,7 @@
         Delete agent
       </Button>
     </form>
-  </Card>
+  </Collapsible>
 </Page>
 
 <ConfirmDialog
@@ -70,6 +83,12 @@
 />
 
 <style>
+  :global(.danger-zone) {
+    border: 1px solid var(--danger-bg-strong);
+    border-radius: var(--radius-lg);
+    background: var(--danger-bg);
+  }
+
   .danger-copy {
     color: var(--text-muted);
     font-size: var(--text-sm);

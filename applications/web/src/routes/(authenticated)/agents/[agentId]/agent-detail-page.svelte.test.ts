@@ -42,7 +42,7 @@ describe('/agents/[agentId] page', () => {
       .not.toBeInTheDocument();
   });
 
-  it('renders identity before the prompt editor and a danger zone with delete', async () => {
+  it('renders identity before the prompt editor and a collapsed danger zone', async () => {
     render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
 
     const headings = page.getByRole('heading', { level: 2 }).all();
@@ -50,14 +50,44 @@ describe('/agents/[agentId] page', () => {
       headings.map((heading) => heading.element().textContent),
     );
 
-    expect(headingTexts.indexOf('Agent basics')).toBeLessThan(headingTexts.indexOf('Prompt'));
-    expect(headingTexts).toContain('Danger zone');
+    expect(headingTexts).toContain('Identity');
+    expect(headingTexts.indexOf('Identity')).toBeLessThan(headingTexts.indexOf('Runtime'));
+    expect(headingTexts).not.toContain('Danger zone');
+
+    await expect
+      .element(page.getByRole('button', { name: 'Danger zone' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    await expect
+      .element(page.getByRole('button', { name: 'Delete agent' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('reveals the delete action once the danger zone is expanded', async () => {
+    render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
+
+    await page.getByRole('button', { name: 'Danger zone' }).click();
+
     await expect.element(page.getByRole('button', { name: 'Delete agent' })).toBeVisible();
+  });
+
+  it('moves the Enabled control into the page header as a deferred checkbox, bound to the enabled form field', async () => {
+    render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
+
+    const banner = page.getByRole('banner');
+    await expect.element(banner.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
+
+    const saveForm = document.querySelector<HTMLFormElement>('form[action="?/save"]')!;
+    expect(new FormData(saveForm).get('enabled')).toBe('on');
+
+    await banner.getByRole('checkbox', { name: 'Enabled' }).click();
+    expect(new FormData(saveForm).get('enabled')).toBeNull();
   });
 
   it('gates deletion behind a confirmation dialog', async () => {
     render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
 
+    await page.getByRole('button', { name: 'Danger zone' }).click();
+    await expect.element(page.getByRole('button', { name: 'Delete agent' })).toBeVisible();
     await page.getByRole('button', { name: 'Delete agent' }).click();
 
     const dialog = page.getByRole('dialog');
@@ -67,6 +97,10 @@ describe('/agents/[agentId] page', () => {
 
   it('submits the delete form when the confirmation dialog is confirmed', async () => {
     render(AgentDetailPage, { data, form: null, params: { agentId: data.agent.id } });
+
+    // The delete form only mounts once the collapsed danger zone is expanded.
+    await page.getByRole('button', { name: 'Danger zone' }).click();
+    await expect.element(page.getByRole('button', { name: 'Delete agent' })).toBeVisible();
 
     const deleteForm = document.querySelector<HTMLFormElement>('form[action="?/delete"]')!;
     const submitSpy = vi.spyOn(deleteForm, 'requestSubmit').mockImplementation(() => {});

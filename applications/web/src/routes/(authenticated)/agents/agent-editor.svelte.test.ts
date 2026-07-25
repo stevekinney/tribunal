@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
-import AgentEditor from './agent-editor.svelte';
+import AgentEditor, { AGENT_EDITOR_FORM_ID } from './agent-editor.svelte';
 
 const baseAgent = {
   id: 'agent_security',
@@ -10,7 +10,6 @@ const baseAgent = {
   body: 'Review security changes.',
   model: 'sonnet',
   effort: 'xhigh',
-  enabled: true,
 };
 
 const modelOptions = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as const;
@@ -19,7 +18,7 @@ const effortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 describe('agent editor', () => {
   afterEach(() => cleanup());
 
-  it('orders agent basics before the prompt editor before runtime controls', async () => {
+  it('orders identity before the prompt editor before runtime controls', async () => {
     render(AgentEditor, {
       agent: baseAgent,
       defaultModel: 'sonnet',
@@ -34,13 +33,13 @@ describe('agent editor', () => {
       headings.map((heading) => heading.element().textContent),
     );
 
-    const basicsIndex = headingTexts.indexOf('Agent basics');
-    const promptIndex = headingTexts.indexOf('Prompt');
+    const identityIndex = headingTexts.indexOf('Identity');
     const runtimeIndex = headingTexts.indexOf('Runtime');
 
-    expect(basicsIndex).toBeGreaterThanOrEqual(0);
-    expect(promptIndex).toBeGreaterThan(basicsIndex);
-    expect(runtimeIndex).toBeGreaterThan(promptIndex);
+    expect(identityIndex).toBeGreaterThanOrEqual(0);
+    expect(runtimeIndex).toBeGreaterThan(identityIndex);
+    expect(headingTexts).not.toContain('Prompt');
+    expect(headingTexts).not.toContain('Agent basics');
   });
 
   it('does not render a separate prompt preview card', async () => {
@@ -58,7 +57,7 @@ describe('agent editor', () => {
       .not.toBeInTheDocument();
   });
 
-  it('shows availability copy that is not review-specific', async () => {
+  it('does not render its own enabled control or redundant status indicators', async () => {
     render(AgentEditor, {
       agent: baseAgent,
       defaultModel: 'sonnet',
@@ -68,8 +67,42 @@ describe('agent editor', () => {
       submitLabel: 'Save changes',
     });
 
-    await expect.element(page.getByText('Available for repository automation.')).toBeVisible();
-    await expect.element(page.getByText('Runs on watched repositories.')).not.toBeInTheDocument();
+    await expect.element(page.getByRole('switch')).not.toBeInTheDocument();
+    await expect.element(page.getByRole('checkbox', { name: 'Enabled' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByText('Available for repository automation.'))
+      .not.toBeInTheDocument();
+  });
+
+  it('exposes a stable form id so an external Enabled toggle can associate with it', async () => {
+    const { container } = render(AgentEditor, {
+      agent: baseAgent,
+      defaultModel: 'sonnet',
+      modelOptions,
+      effortOptions,
+      form: null,
+      submitLabel: 'Save changes',
+    });
+
+    expect(container.querySelector(`form#${AGENT_EDITOR_FORM_ID}[action="?/save"]`)).toBeTruthy();
+  });
+
+  it('defaults to the library-provided WYSIWYG editor mode', async () => {
+    render(AgentEditor, {
+      agent: baseAgent,
+      defaultModel: 'sonnet',
+      modelOptions,
+      effortOptions,
+      form: null,
+      submitLabel: 'Save changes',
+    });
+
+    await expect
+      .element(page.getByRole('radio', { name: 'Rich' }))
+      .toHaveAttribute('aria-checked', 'true');
+    await expect
+      .element(page.getByRole('radio', { name: 'Raw' }))
+      .toHaveAttribute('aria-checked', 'false');
   });
 
   it('removes the generic effort helper text but keeps specific fallback warnings', async () => {
@@ -108,7 +141,6 @@ describe('agent editor', () => {
           body: 'Attempted body',
           model: 'sonnet',
           effort: 'xhigh',
-          enabled: false,
         },
       },
       submitLabel: 'Save changes',
@@ -143,6 +175,10 @@ describe('agent editor', () => {
       submitLabel: 'Save changes',
     });
 
+    // The editor now defaults to WYSIWYG mode, where "System prompt" labels both
+    // the outer application region and the inner ProseMirror textbox. Switch to
+    // Raw mode first so the label resolves to the single source textarea.
+    await page.getByRole('radio', { name: 'Raw' }).click();
     await page.getByLabelText('System prompt').fill('Review authz changes carefully.');
 
     expect(container.querySelector<HTMLInputElement>('input[name="body"]')?.value).toBe(

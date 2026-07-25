@@ -1,14 +1,22 @@
+<script lang="ts" module>
+  /**
+   * DOM id of the agent form. The page header renders the Enabled checkbox
+   * outside this component (see agents/[agentId]/+page.svelte and
+   * agents/new/+page.svelte) — a submit-deferred checkbox, not a switch, since
+   * this value only takes effect on Save. It associates with this form via the
+   * native HTML `form` attribute rather than living inside it.
+   */
+  export const AGENT_EDITOR_FORM_ID = 'agent-editor-form';
+</script>
+
 <script lang="ts">
   import { getEffortFallbackNotice } from '$lib/review/operator-ui';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { Badge } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Input } from '@lostgradient/cinder/input';
   import { MarkdownEditor } from '@lostgradient/editor/markdown-editor';
   import { Select } from '@lostgradient/cinder/select';
-  import { StatusDot } from '@lostgradient/cinder/status-dot';
-  import { Toggle } from '@lostgradient/cinder/toggle';
   import Save from 'lucide-svelte/icons/save';
   import { untrack } from 'svelte';
   import { enhance } from '$app/forms';
@@ -20,7 +28,6 @@
     body: string;
     model: string;
     effort: string | null;
-    enabled: boolean;
   };
 
   type Props = {
@@ -44,10 +51,8 @@
   let slug = $state(untrack(() => form?.values?.slug ?? agent.slug));
   let description = $state(untrack(() => form?.values?.description ?? agent.description));
   let body = $state(untrack(() => form?.values?.body ?? agent.body));
-  let enabled = $state(untrack(() => form?.values?.enabled ?? agent.enabled));
   let selectedModel = $state(untrack(() => form?.values?.model ?? agent.model));
   let selectedEffort = $state(untrack(() => form?.values?.effort ?? agent.effort ?? ''));
-  let editorMode = $state<'source' | 'wysiwyg'>('source');
 
   const modelSelectOptions = $derived(
     modelOptions.map((model) => ({
@@ -69,13 +74,13 @@
   <Alert variant="danger">{form.error}</Alert>
 {/if}
 
-<form method="POST" action="?/save" class="agent-form" use:enhance>
+<form id={AGENT_EDITOR_FORM_ID} method="POST" action="?/save" class="agent-form" use:enhance>
   {#if agent.id}
     <input type="hidden" name="id" value={agent.id} />
   {/if}
   <input type="hidden" name="body" value={body} />
 
-  <Card title="Agent basics" headingLevel={2}>
+  <Card title="Identity" headingLevel={2}>
     <div class="field-grid">
       <Input
         id="agent-slug"
@@ -96,30 +101,13 @@
         placeholder="Finds authentication and permission issues"
       />
     </div>
-
-    <div class="enabled-row">
-      <div>
-        <span class="enabled-label">Enabled</span>
-        <p>Available for repository automation.</p>
-      </div>
-      <Toggle id="agent-enabled" label="Enabled" hideLabel name="enabled" bind:checked={enabled} />
-    </div>
-
-    <div class="agent-meta">
-      <StatusDot
-        status={enabled ? 'success' : 'offline'}
-        label={enabled ? 'Enabled' : 'Disabled'}
-      />
-      <Badge size="sm">{selectedModel}</Badge>
-    </div>
   </Card>
 
-  <Card title="Prompt" headingLevel={2}>
+  <Card>
     <MarkdownEditor
       id="agent-body"
       label="System prompt"
       bind:value={body}
-      bind:mode={editorMode}
       showToolbar
       showModeToggle
       placeholder="Describe what this agent should look for in every pull request..."
@@ -169,33 +157,6 @@
     display: grid;
     gap: var(--space-4);
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .agent-meta {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin-top: var(--space-4);
-  }
-
-  .enabled-label {
-    color: var(--text);
-    font-size: var(--text-sm);
-    font-weight: var(--font-medium);
-  }
-
-  .enabled-row p {
-    color: var(--text-subtle);
-    font-size: var(--text-sm);
-    margin: 0;
-  }
-
-  .enabled-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    margin-top: var(--space-4);
   }
 
   .form-actions {
