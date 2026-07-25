@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
+import '../../../layout.css';
 import RunInspectorPage from './+page.svelte';
 import type { PageData } from './$types';
 
@@ -116,9 +117,40 @@ const data = {
   reviewsEnabled: false,
 } satisfies PageData;
 
+const streamStatusPermutations = [
+  { theme: 'light', width: 375, height: 667 },
+  { theme: 'dark', width: 375, height: 667 },
+  { theme: 'light', width: 1280, height: 720 },
+  { theme: 'dark', width: 1280, height: 720 },
+] as const;
+
+function streamStatusLabel(state: string): string {
+  return `Run event stream: ${state}`;
+}
+
+function getRunStreamStatus(label: string) {
+  return page.getByRole('status', { name: label });
+}
+
+function findRunStreamStatusRow(): HTMLElement {
+  const statusRow = document.querySelector<HTMLElement>('.status-row');
+
+  expect(statusRow).not.toBeNull();
+  return statusRow!;
+}
+
+async function expectStatusDotLiveLabel(label: string) {
+  await expect.element(getRunStreamStatus(label)).toBeInTheDocument();
+  expect(getRunStreamStatus(label).elements()).toHaveLength(1);
+  expect((getRunStreamStatus(label).element() as HTMLElement).getAttribute('aria-live')).toBe(
+    'polite',
+  );
+}
+
 describe('/runs/[runId] page', () => {
   afterEach(() => {
     cleanup();
+    delete document.documentElement.dataset.theme;
     invalidateAllMock.mockClear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -246,9 +278,7 @@ describe('/runs/[runId] page', () => {
     expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 10_000);
 
     eventSources[0].onopen?.();
-    await expect
-      .element(page.getByLabelText('Run event stream state'))
-      .toHaveTextContent('streaming');
+    await expectStatusDotLiveLabel(streamStatusLabel('streaming'));
 
     eventSources[0].listeners.get('agent_event')?.forEach((listener) => listener());
     expect(invalidateAllMock).toHaveBeenCalledOnce();
@@ -270,10 +300,29 @@ describe('/runs/[runId] page', () => {
     expect(eventSources[0].close).toHaveBeenCalledOnce();
     expect(clearIntervalSpy).toHaveBeenCalledWith(123);
     expect(eventSources).toHaveLength(1);
-    await expect
-      .element(page.getByLabelText('Run event stream state'))
-      .toHaveTextContent('disconnected');
+    await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
   });
+
+  for (const { theme, width, height } of streamStatusPermutations) {
+    it(`keeps the stream status compact in ${theme} theme at ${width}px`, async () => {
+      await page.viewport(width, height);
+      document.documentElement.dataset.theme = theme;
+      vi.stubGlobal('EventSource', undefined);
+
+      render(RunInspectorPage, { data });
+
+      await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
+      const statusDot = getRunStreamStatus(
+        streamStatusLabel('disconnected'),
+      ).element() as HTMLElement;
+      const statusRow = findRunStreamStatusRow();
+      const statusDotWidth = statusDot.getBoundingClientRect().width;
+
+      expect(statusDotWidth).toBeGreaterThan(0);
+      expect(statusDotWidth).toBeLessThanOrEqual(24);
+      expect(statusRow.scrollWidth).toBeLessThanOrEqual(statusRow.clientWidth);
+    });
+  }
 
   it('computes the event stream cursor without spreading all event ids', async () => {
     const manyEvents = Array.from({ length: 10_000 }, (_, index) => ({
@@ -452,9 +501,7 @@ describe('/runs/[runId] page', () => {
 
     const rendered = render(RunInspectorPage, { data });
 
-    await expect
-      .element(page.getByLabelText('Run event stream state'))
-      .toHaveTextContent('disconnected');
+    await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
 
     rendered.unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
@@ -491,9 +538,7 @@ describe('/runs/[runId] page', () => {
 
     // Trigger the live onerror path first (connectionState -> disconnected).
     source.onerror?.();
-    await expect
-      .element(page.getByLabelText('Run event stream state'))
-      .toHaveTextContent('disconnected');
+    await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
 
     // Tearing the run down (no longer stoppable) closes the stream and flips
     // streamIsActive to false, so late callbacks on the stale EventSource
@@ -503,8 +548,6 @@ describe('/runs/[runId] page', () => {
 
     source.onopen?.();
     source.onerror?.();
-    await expect
-      .element(page.getByLabelText('Run event stream state'))
-      .toHaveTextContent('disconnected');
+    await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
   });
 });

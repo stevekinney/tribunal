@@ -12,7 +12,6 @@
   import { StatGroup } from '@lostgradient/cinder/stat-group';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
-  import { VisuallyHidden } from '@lostgradient/cinder/visually-hidden';
   import { invalidateAll } from '$app/navigation';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import { Square } from 'lucide-svelte';
@@ -34,7 +33,9 @@
         ? 'connecting'
         : 'disconnected',
   );
-  const connectionLabel = $derived(canStopRun ? connectionState : 'disconnected');
+  const connectionLabel = $derived(
+    `Run event stream: ${canStopRun ? connectionState : 'disconnected'}`,
+  );
   const latestAgentEventId = $derived.by(() => {
     let latestId = 0;
     for (const agentRun of run.agentRuns) {
@@ -270,10 +271,12 @@
 
   <div class="status-row">
     <Badge variant={runStatusVariant(run.status)}>{formatStatus(run.status)}</Badge>
-    {#if canStopRun}
-      <StatusDot connectionState={eventStreamConnectionState} size="sm" />
-    {/if}
-    <VisuallyHidden aria-label="Run event stream state">{connectionLabel}</VisuallyHidden>
+    <StatusDot
+      connectionState={eventStreamConnectionState}
+      label={connectionLabel}
+      showLabel={false}
+      size="sm"
+    />
     {#if run.status === 'superseded'}
       {#if replacementRunHref}
         <Link href={replacementRunHref}>Superseded by a newer run</Link>
