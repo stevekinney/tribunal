@@ -84,6 +84,29 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent?.processedAt).toEqual(new Date('2026-06-17T12:01:00.000Z'));
   });
 
+  it("carries the user's stored default_model onto the claimed review workflow input", async () => {
+    const { user, repository } = await createReviewIntentFixture({ defaultModel: 'opus' });
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'inherit',
+      effort: 'high',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    const claimed = await port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z'));
+
+    expect(claimed?.pullRequest.defaultModel).toBe('opus');
+  });
+
   it('carries the intent-supplied Check Run id onto the claimed review workflow input', async () => {
     const { user, repository } = await createReviewIntentFixture({ checkRunId: 5551234 });
     await testDatabase.db.insert(agent).values({
@@ -1087,6 +1110,7 @@ async function createReviewIntentFixture(
     createPullRequestState?: boolean;
     checkRunId?: number;
     checkConclusionMode?: 'advisory' | 'gating';
+    defaultModel?: string;
   } = {},
 ) {
   const factories = createFactories(testDatabase.db);
@@ -1110,6 +1134,7 @@ async function createReviewIntentFixture(
     userId: user.id,
     dailyCostCapUsd: '25.00',
     reviewsEnabled: true,
+    ...(options.defaultModel !== undefined ? { defaultModel: options.defaultModel } : {}),
   });
   await testDatabase.db.insert(repositoryReviewSettings).values({
     userId: user.id,

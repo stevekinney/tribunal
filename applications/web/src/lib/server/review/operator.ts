@@ -16,12 +16,17 @@ import {
   userReviewSettings,
   webhookEventHandlerRun,
 } from '@tribunal/database/schema';
-import { agentSpecSchema, agentModelSchema, effortSchema } from '@tribunal/review-core/schemas';
+import {
+  agentSpecSchema,
+  defaultReviewModelSchema,
+  effortSchema,
+} from '@tribunal/review-core/schemas';
 import { db } from '$lib/server/database';
 import { postReviewEngineControl } from '$lib/server/review/engine-client';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
-const reviewModelOptions = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as const;
+const defaultModelOptions = defaultReviewModelSchema.options;
+const reviewModelOptions = ['inherit', ...defaultModelOptions] as const;
 const reviewEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type SurfaceState = 'empty' | 'loading' | 'streaming' | 'success' | 'error' | 'disconnected';
@@ -928,8 +933,7 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
     return fail(400, { error: 'Daily cost cap must be zero or greater.' });
   }
 
-  const modelValidation = agentModelSchema.safeParse(defaultModel);
-  if (!modelValidation.success || modelValidation.data === 'inherit') {
+  if (!defaultReviewModelSchema.safeParse(defaultModel).success) {
     return fail(400, { error: 'Default model is invalid.' });
   }
 
@@ -946,6 +950,11 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
 
 export function getReviewModelOptions() {
   return reviewModelOptions;
+}
+
+/** The options for `user_review_settings.default_model` — `reviewModelOptions` minus `'inherit'`. */
+export function getDefaultModelOptions(): readonly (typeof defaultModelOptions)[number][] {
+  return defaultModelOptions;
 }
 
 export function getReviewEffortOptions() {

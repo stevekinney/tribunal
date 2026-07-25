@@ -7,6 +7,18 @@ export const agentModelSchema = z.union([
   z.string().regex(/^claude-[a-z0-9-]+$/),
 ]);
 
+/**
+ * The models a user can pick as their per-user review default
+ * (`user_review_settings.default_model`), which agents whose own `model` is
+ * `'inherit'` resolve to. Deliberately narrower than `agentModelSchema`,
+ * which also accepts `'inherit'` and raw `claude-*` model IDs for per-agent
+ * `model` fields — the per-user default has nothing to inherit from and must
+ * always resolve to a concrete model the settings UI actually offers. Shared
+ * between the web app's save-time validation and the engine's boundary
+ * validation so both enforce the identical contract.
+ */
+export const defaultReviewModelSchema = z.enum(['sonnet', 'opus', 'haiku', 'fable']);
+
 export const findingSchema = z.object({
   path: z.string().min(1),
   startLine: z.number().int().positive().nullable(),

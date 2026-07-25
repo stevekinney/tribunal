@@ -1,0 +1,2 @@
+ALTER TABLE "user_review_settings" ALTER COLUMN "default_model" SET DEFAULT 'sonnet';--> statement-breakpoint
+UPDATE "user_review_settings" SET "default_model" = 'sonnet' WHERE "default_model" = 'claude-sonnet-4-6';

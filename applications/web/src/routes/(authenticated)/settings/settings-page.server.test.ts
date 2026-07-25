@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetReviewModelOptions, mockGetUserReviewSettings, mockSaveUserReviewSettings } =
+const { mockGetDefaultModelOptions, mockGetUserReviewSettings, mockSaveUserReviewSettings } =
   vi.hoisted(() => ({
-    mockGetReviewModelOptions: vi.fn(),
+    mockGetDefaultModelOptions: vi.fn(),
     mockGetUserReviewSettings: vi.fn(),
     mockSaveUserReviewSettings: vi.fn(),
   }));
@@ -14,7 +14,7 @@ vi.mock('@sveltejs/kit', () => ({
 }));
 
 vi.mock('$lib/server/review/operator', () => ({
-  getReviewModelOptions: mockGetReviewModelOptions,
+  getDefaultModelOptions: mockGetDefaultModelOptions,
   getUserReviewSettings: mockGetUserReviewSettings,
   operatorSurfaceStates: ['empty', 'success'],
   saveUserReviewSettings: mockSaveUserReviewSettings,
@@ -25,7 +25,7 @@ import { load, actions } from './+page.server';
 describe('/settings load', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetReviewModelOptions.mockReturnValue(['inherit', 'sonnet', 'opus']);
+    mockGetDefaultModelOptions.mockReturnValue(['sonnet', 'opus']);
   });
 
   it('redirects to /login when no user is present', async () => {
@@ -35,15 +35,13 @@ describe('/settings load', () => {
     });
   });
 
-  it('resolves the inherited default model to sonnet and excludes inherit from options', async () => {
-    mockGetUserReviewSettings.mockResolvedValue([
-      { defaultModel: 'inherit', reviewsEnabled: true },
-    ]);
+  it('passes the stored default model and options straight through, unmodified', async () => {
+    mockGetUserReviewSettings.mockResolvedValue([{ defaultModel: 'opus', reviewsEnabled: true }]);
 
     const data = await load({ locals: { user: { id: 1 } } } as never);
 
     expect(data).toEqual({
-      settings: { defaultModel: 'sonnet', reviewsEnabled: true },
+      settings: { defaultModel: 'opus', reviewsEnabled: true },
       modelOptions: ['sonnet', 'opus'],
       surfaceStates: ['empty', 'success'],
     });

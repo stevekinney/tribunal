@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { agentResultSchema, agentSpecSchema, findingSchema } from './schemas';
+import {
+  agentResultSchema,
+  agentSpecSchema,
+  defaultReviewModelSchema,
+  findingSchema,
+} from './schemas';
 
 describe('review-core schemas', () => {
+  it("accepts each of the four per-user default review models but not 'inherit' or a raw model ID", () => {
+    for (const model of ['sonnet', 'opus', 'haiku', 'fable']) {
+      expect(defaultReviewModelSchema.safeParse(model).success).toBe(true);
+    }
+    expect(defaultReviewModelSchema.safeParse('inherit').success).toBe(false);
+    expect(defaultReviewModelSchema.safeParse('claude-sonnet-4-6').success).toBe(false);
+    expect(defaultReviewModelSchema.safeParse('').success).toBe(false);
+  });
+
   it('accepts a valid agent spec', () => {
     expect(
       agentSpecSchema.parse({

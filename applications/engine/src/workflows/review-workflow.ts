@@ -9,6 +9,7 @@ import {
 } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
+import { defaultReviewModelSchema } from '@tribunal/review-core/schemas';
 import type {
   AgentEvent,
   AgentResult,
@@ -68,6 +69,14 @@ export type PullRequestReviewInput = {
   headSha: string;
   trigger: PullRequestReviewTrigger;
   agents: AgentSpec[];
+  /**
+   * The user's configured default model for agents whose own `model` is
+   * `'inherit'` (`user_review_settings.default_model`). Undefined only for
+   * callers that predate this field (older tests, hand-built fixtures) — the
+   * workflow falls back to `ReviewWorkflowConfiguration.defaultModel` in that
+   * case.
+   */
+  defaultModel?: Exclude<AgentSpec['model'], 'inherit'>;
   ignoreGlobs: string[];
   /** Check Run created at webhook-intent time (T-1); the engine PATCHes this instead of creating its own. */
   checkRunId?: number;
@@ -360,7 +369,7 @@ export class ReviewWorkflowEngine {
       }
     }
 
-    return this.startReviewRun(supervisor, input.headSha, input.trigger);
+    return this.startReviewRun(supervisor, input, input.headSha, input.trigger);
   }
 
   async signalCommitPushed(input: PullRequestReviewInput): Promise<ReviewRunRecord> {
@@ -401,7 +410,7 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId = await this.ensureInProgressCheckRun(input);
     }
 
-    return this.startReviewRun(supervisor, input.headSha, 'synchronize', previousHeadSha);
+    return this.startReviewRun(supervisor, input, input.headSha, 'synchronize', previousHeadSha);
   }
 
   async signalPullRequestClosed(
@@ -550,15 +559,40 @@ export class ReviewWorkflowEngine {
     await this.signalPullRequestClosed(intent.pullRequest, intent.prState ?? 'closed');
   }
 
+  /**
+   * Every caller re-adopts the freshly claimed `input` onto the returned
+   * supervisor — not just `signalCommitPushed`, which already did this
+   * explicitly. Without it, a manual re-review (`startPullRequestReview`) on
+   * a pull request whose supervisor already exists would run against
+   * whatever `agents`/`defaultModel`/`ignoreGlobs` were current the last time
+   * the supervisor was created, silently ignoring any settings the user
+   * changed since (the same class of staleness this input field exists to
+   * avoid). `signalCommitPushed` still assigns `supervisor.input` itself
+   * afterward — redundant with this, but harmless, since it happens before
+   * anything reads `supervisor.input` again.
+   *
+   * This includes the in-flight-creation case: two calls can race in before
+   * either's `createSupervisor()` (sandbox/Check-Run/DB setup) resolves. The
+   * second caller must not silently adopt the first caller's `input` forever
+   * — it awaits the same in-progress creation, then re-adopts its own input
+   * on the result, same as the already-created branch above.
+   */
   private async ensureSupervisor(input: PullRequestReviewInput): Promise<SupervisorState> {
     const workflowId = createPullRequestWorkflowId({
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
     });
     const existingSupervisor = this.supervisors.get(workflowId);
-    if (existingSupervisor !== undefined) return existingSupervisor;
+    if (existingSupervisor !== undefined) {
+      existingSupervisor.input = input;
+      return existingSupervisor;
+    }
     const existingPromise = this.supervisorPromises.get(workflowId);
-    if (existingPromise !== undefined) return existingPromise;
+    if (existingPromise !== undefined) {
+      const supervisor = await existingPromise;
+      supervisor.input = input;
+      return supervisor;
+    }
 
     const supervisorPromise = this.createSupervisor(workflowId, input).finally(() => {
       this.supervisorPromises.delete(workflowId);
@@ -635,8 +669,21 @@ export class ReviewWorkflowEngine {
     return checkRunId;
   }
 
+  /**
+   * `input` is the caller's own snapshot of `PullRequestReviewInput` —
+   * captured once by `startPullRequestReview`/`signalCommitPushed` and
+   * threaded through explicitly, rather than read back off
+   * `supervisor.input`. `ensureSupervisor()` can reassign `supervisor.input`
+   * out from under an in-flight call (a concurrent request for the same
+   * pull request racing supervisor creation, or a manual re-review arriving
+   * while this run is still executing) — a run's own `agents`/
+   * `defaultModel`/etc. must resolve from what its own caller passed in, not
+   * from whatever the shared mutable field happens to hold by the time this
+   * run reads it.
+   */
   private async startReviewRun(
     supervisor: SupervisorState,
+    input: PullRequestReviewInput,
     headSha: string,
     trigger: PullRequestReviewTrigger,
     previousHeadSha?: string,
@@ -653,7 +700,14 @@ export class ReviewWorkflowEngine {
     const existingRun = this.reviewRuns.get(runId);
     if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
 
-    const runPromise = this.executeReviewRun(supervisor, runId, headSha, trigger, previousHeadSha)
+    const runPromise = this.executeReviewRun(
+      supervisor,
+      input,
+      runId,
+      headSha,
+      trigger,
+      previousHeadSha,
+    )
       .catch((error) => {
         supervisor.runPromises.delete(runId);
         if (error instanceof ReviewPostAlreadyClaimedError) throw error;
@@ -670,7 +724,7 @@ export class ReviewWorkflowEngine {
           run.finishedAt = this.now();
         }
         return this.persistReviewRun(run).then(async () => {
-          await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
+          await this.updateCheckRun(input, supervisor.checkRunId, {
             status: 'completed',
             // Terminal engine failure (§1 conclusion table): the run never
             // posted, so there is nothing advisory to soften — `failure`.
@@ -696,12 +750,12 @@ export class ReviewWorkflowEngine {
 
   private async executeReviewRun(
     supervisor: SupervisorState,
+    input: PullRequestReviewInput,
     runId: string,
     headSha: string,
     trigger: PullRequestReviewTrigger,
     previousHeadSha?: string,
   ): Promise<ReviewRunRecord> {
-    const input = supervisor.input;
     const existingRun = this.reviewRuns.get(runId);
     const reviewRun: ReviewRunRecord = {
       id: runId,
@@ -827,6 +881,7 @@ export class ReviewWorkflowEngine {
       enabledAgents,
       runToken,
       diffContext,
+      input.defaultModel,
     );
 
     if (isStoppedReviewRun(reviewRun)) return reviewRun;
@@ -1036,6 +1091,7 @@ export class ReviewWorkflowEngine {
     agents: AgentSpec[],
     runToken: string,
     diffContext: DiffContext,
+    defaultModel: PullRequestReviewInput['defaultModel'],
   ): Promise<{ results: AgentResult[]; quotaBlocked: boolean }> {
     const results: AgentResult[] = [];
 
@@ -1049,7 +1105,16 @@ export class ReviewWorkflowEngine {
         return { results, quotaBlocked: true };
       }
 
-      results.push(await this.runAgentReview(supervisor, reviewRun, agent, runToken, diffContext));
+      results.push(
+        await this.runAgentReview(
+          supervisor,
+          reviewRun,
+          agent,
+          runToken,
+          diffContext,
+          defaultModel,
+        ),
+      );
     }
 
     return { results, quotaBlocked: false };
@@ -1061,9 +1126,10 @@ export class ReviewWorkflowEngine {
     agent: AgentSpec,
     runToken: string,
     diffContext: DiffContext,
+    defaultModel: PullRequestReviewInput['defaultModel'],
   ): Promise<AgentResult> {
     const agentRunId = createAgentRunId(reviewRun.id, agent);
-    const mappedAgent = toAgentDefinition(agent, this.configuration.defaultModel);
+    const mappedAgent = toAgentDefinition(agent, this.resolveDefaultModel(defaultModel));
     const effectiveAgent: AgentSpec = {
       ...agent,
       model: mappedAgent.effectiveModel,
@@ -1081,6 +1147,29 @@ export class ReviewWorkflowEngine {
       diffContext,
       sanitizeResult: (result) => sanitizeAgentResultFindings(result, diffContext),
     });
+  }
+
+  /**
+   * Resolves what an `'inherit'` agent model falls back to: the user's
+   * configured default model, or `ReviewWorkflowConfiguration.defaultModel`
+   * (`TRIBUNAL_DEFAULT_MODEL`) when the user has none. Re-validates
+   * `userSetting` against `defaultReviewModelSchema` rather than trusting the
+   * caller to have already excluded bad values — the web app's save-time
+   * validation is enforced at its own boundary, not this one, and
+   * `defaultModel` ultimately comes from a column with no database-level
+   * CHECK constraint. Anything that isn't one of the four real options
+   * (`'inherit'`, a raw `claude-*` ID, a stale pre-migration value, garbage)
+   * falls back to the configured floor instead of being forwarded to the
+   * sandbox as a model name.
+   */
+  private resolveDefaultModel(
+    userSetting: PullRequestReviewInput['defaultModel'],
+  ): Exclude<AgentSpec['model'], 'inherit'> {
+    const parsed = defaultReviewModelSchema.safeParse(userSetting);
+    if (!parsed.success) {
+      return this.configuration.defaultModel;
+    }
+    return parsed.data;
   }
 
   /**

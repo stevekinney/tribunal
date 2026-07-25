@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import {
-  getReviewModelOptions,
+  getDefaultModelOptions,
   getUserReviewSettings,
   operatorSurfaceStates,
   saveUserReviewSettings,
@@ -13,11 +13,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 
   const [settings] = await getUserReviewSettings(user.id);
   return {
-    settings: {
-      ...settings,
-      defaultModel: settings.defaultModel === 'inherit' ? 'sonnet' : settings.defaultModel,
-    },
-    modelOptions: getReviewModelOptions().filter((model) => model !== 'inherit'),
+    settings,
+    modelOptions: getDefaultModelOptions(),
     surfaceStates: operatorSurfaceStates,
   };
 };
