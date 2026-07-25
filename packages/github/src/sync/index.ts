@@ -79,7 +79,7 @@ export async function dispatchInstallationSync(
   options: EnqueueInstallationSyncOptions,
 ): Promise<EnqueueInstallationSyncResult> {
   const workflowId = `github:installations:${options.installationId}:sync`;
-  const handle = await client.startOrSignal(
+  await client.startOrSignal(
     'installation-sync',
     options,
     {
@@ -92,5 +92,5 @@ export async function dispatchInstallationSync(
       onTerminalConflict: 'start-new',
     },
   );
-  return { workflowId, status: 'started', outcome: handle.outcome };
+  return { workflowId, status: 'started' };
 }

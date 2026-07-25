@@ -320,9 +320,8 @@ against the shipped `dist/` before filing:
 
 - `@lostgradient/weft` upgraded `^0.3.0` → `^0.4.0` in `applications/web` and
   `packages/github`. Producer seams adopt the shipped APIs: `isWeftFault` replaces
-  the `isWeftErrorLike(e) && e.code === …` pattern; `startOrSignal` returns a
-  handle whose `outcome` (`'started' | 'signalled'`) is propagated; the sync e2e
-  uses `getHandle(id).result()`.
+  the `isWeftErrorLike(e) && e.code === …` pattern; `startOrSignal` starts or
+  signals the stable workflow id; the sync e2e uses `getHandle(id).result()`.
 - **Workflow definitions ported and registered** on the in-process engine
   (`createEngine` → `registerWorkflows`): `pull-request-orchestrator` (sliding
   debounce + supersede + idle timeout + final-analysis-on-close, via

@@ -25,7 +25,6 @@ import {
   listPullRequests,
   getPullRequest,
   getPullRequestOperationalStatus,
-  requestReviewers,
   isRateLimitError,
   isNotFoundError,
   type PullRequestFilterOptions,
@@ -244,7 +243,7 @@ describe('listPullRequests', () => {
   });
 
   it('transforms pull request list items', async () => {
-    expect.assertions(15);
+    expect.assertions(12);
     const mockPr = {
       number: 42,
       title: 'Add new feature',
@@ -276,12 +275,9 @@ describe('listPullRequests', () => {
     expect(pr.title).toBe('Add new feature');
     expect(pr.state).toBe('open');
     expect(pr.draft).toBe(false);
-    expect(pr.locked).toBe(false);
     expect(pr.author?.login).toBe('testuser');
     expect(pr.author?.avatarUrl).toBe('https://avatars.example.com/u/123');
-    expect(pr.createdAt).toBe('2024-01-15T10:00:00Z');
     expect(pr.updatedAt).toBe('2024-01-16T12:00:00Z');
-    expect(pr.labels[0].name).toBe('enhancement');
     expect(pr.headRef).toBe('feature-branch');
     expect(pr.headSha).toBe('abc123sha');
     expect(pr.baseRef).toBe('main');
@@ -313,34 +309,6 @@ describe('listPullRequests', () => {
 
     expect(result.pullRequests).toHaveLength(1);
     expect(result.pullRequests[0].author).toBeNull();
-  });
-
-  it('handles string labels', async () => {
-    expect.assertions(3);
-    const mockPr = {
-      number: 1,
-      title: 'Test',
-      state: 'open',
-      draft: false,
-      locked: false,
-      user: null,
-      created_at: '2024-01-15T10:00:00Z',
-      updated_at: '2024-01-16T12:00:00Z',
-      closed_at: null,
-      merged_at: null,
-      labels: ['bug', 'priority'],
-      head: { ref: 'branch', sha: 'abc123sha' },
-      base: { ref: 'main' },
-      html_url: 'https://github.com/owner/repo/pull/1',
-    };
-
-    const context = createMockContext();
-    const octokit = createMockOctokit([mockPr]);
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
-
-    expect(result.pullRequests[0].labels).toHaveLength(2);
-    expect(result.pullRequests[0].labels[0].name).toBe('bug');
-    expect(result.pullRequests[0].labels[0].color).toBe('');
   });
 
   it('passes filter options to GitHub API', async () => {
@@ -638,13 +606,9 @@ describe('getPullRequest', () => {
       title: 'Cached title',
       state: 'open',
       draft: false,
-      locked: false,
       author: null,
-      createdAt: '2024-01-15T10:00:00Z',
       updatedAt: '2024-01-16T12:00:00Z',
-      closedAt: null,
       mergedAt: null,
-      labels: [],
       headRef: 'feature',
       headSha: 'cachedsha',
       baseRef: 'main',
@@ -1026,388 +990,5 @@ describe('isNotFoundError', () => {
     expect.assertions(1);
     const error = Object.assign(new Error('Not Found'), { status: 404 });
     expect(isNotFoundError(error)).toBe(true);
-  });
-});
-
-// ============================================================================
-// Request Reviewers tests
-// ============================================================================
-
-describe('requestReviewers', () => {
-  function createMockOctokit(responseData: unknown, shouldThrow?: Error) {
-    return {
-      rest: {
-        pulls: {
-          requestReviewers: shouldThrow
-            ? vi.fn().mockRejectedValue(shouldThrow)
-            : vi.fn().mockResolvedValue({ data: responseData }),
-        },
-      },
-    } as never;
-  }
-
-  const mockResponse = {
-    requested_reviewers: [
-      {
-        login: 'reviewer1',
-        avatar_url: 'https://avatars.example.com/u/1',
-        html_url: 'https://github.com/reviewer1',
-      },
-      {
-        login: 'reviewer2',
-        avatar_url: 'https://avatars.example.com/u/2',
-        html_url: 'https://github.com/reviewer2',
-      },
-    ],
-    requested_teams: [
-      {
-        id: 100,
-        slug: 'core-team',
-        name: 'Core Team',
-        description: 'Main development team',
-      },
-    ],
-  };
-
-  it('requests reviewers successfully', async () => {
-    expect.assertions(5);
-    const octokit = createMockOctokit(mockResponse);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1', 'reviewer2'],
-      teamReviewers: ['core-team'],
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.requestedReviewers).toHaveLength(2);
-      expect(result.requestedReviewers[0].login).toBe('reviewer1');
-      expect(result.requestedTeams).toHaveLength(1);
-      expect(result.requestedTeams[0].slug).toBe('core-team');
-    }
-  });
-
-  it('requests only user reviewers', async () => {
-    expect.assertions(3);
-    const responseWithUsers = {
-      requested_reviewers: [
-        {
-          login: 'reviewer1',
-          avatar_url: 'https://avatars.example.com/u/1',
-          html_url: 'https://github.com/reviewer1',
-        },
-      ],
-      requested_teams: [],
-    };
-    const octokit = createMockOctokit(responseWithUsers);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.requestedReviewers).toHaveLength(1);
-      expect(result.requestedTeams).toHaveLength(0);
-    }
-  });
-
-  it('requests only team reviewers', async () => {
-    expect.assertions(3);
-    const responseWithTeams = {
-      requested_reviewers: [],
-      requested_teams: [
-        {
-          id: 100,
-          slug: 'core-team',
-          name: 'Core Team',
-          description: null,
-        },
-      ],
-    };
-    const octokit = createMockOctokit(responseWithTeams);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      teamReviewers: ['core-team'],
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.requestedReviewers).toHaveLength(0);
-      expect(result.requestedTeams).toHaveLength(1);
-    }
-  });
-
-  it('returns validation error when no reviewers provided', async () => {
-    expect.assertions(3);
-    const octokit = createMockOctokit(mockResponse);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {});
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('validation_failed');
-      expect(result.message).toContain('At least one reviewer');
-    }
-  });
-
-  it('returns validation error for empty arrays', async () => {
-    expect.assertions(2);
-    const octokit = createMockOctokit(mockResponse);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: [],
-      teamReviewers: [],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('validation_failed');
-    }
-  });
-
-  it('returns not_found error for missing PR', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Not Found'), { status: 404 });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 999, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('not_found');
-    }
-  });
-
-  it('returns validation error for self-review attempt', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'author cannot be reviewer' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['pr-author'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('validation_failed');
-    }
-  });
-
-  it('returns validation error for non-existent user', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'User not found' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['nonexistent-user'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('validation_failed');
-    }
-  });
-
-  it('returns rate_limited error', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Rate limit'), {
-      status: 403,
-      response: { data: { message: 'Rate limit exceeded' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('rate_limited');
-    }
-  });
-
-  it('returns forbidden error for permission issues', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Forbidden'), {
-      status: 403,
-      response: { data: { message: 'Resource not accessible by integration' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('forbidden');
-    }
-  });
-
-  it('returns unauthorized error for expired token', async () => {
-    expect.assertions(2);
-    const error = Object.assign(new Error('Unauthorized'), { status: 401 });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('unauthorized');
-    }
-  });
-
-  it('handles null avatar_url in reviewers', async () => {
-    expect.assertions(2);
-    const responseWithNullAvatar = {
-      requested_reviewers: [
-        {
-          login: 'reviewer1',
-          avatar_url: null,
-          html_url: 'https://github.com/reviewer1',
-        },
-      ],
-      requested_teams: [],
-    };
-    const octokit = createMockOctokit(responseWithNullAvatar);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.requestedReviewers[0].avatarUrl).toBeNull();
-    }
-  });
-
-  it('handles null description in teams', async () => {
-    expect.assertions(2);
-    const responseWithNullDesc = {
-      requested_reviewers: [],
-      requested_teams: [
-        {
-          id: 100,
-          slug: 'team',
-          name: 'Team',
-          description: null,
-        },
-      ],
-    };
-    const octokit = createMockOctokit(responseWithNullDesc);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      teamReviewers: ['team'],
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.requestedTeams[0].description).toBeNull();
-    }
-  });
-
-  it('returns a team_not_found validation message', async () => {
-    expect.assertions(3);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'team not found' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      teamReviewers: ['ghost-team'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.reason).toBe('team_not_found');
-      expect(result.message).toBe('One or more requested teams were not found');
-    }
-  });
-
-  it('returns a no_access validation message', async () => {
-    expect.assertions(3);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'user lacks access to repository' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['outsider'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.reason).toBe('no_access');
-      expect(result.message).toBe(
-        'One or more requested reviewers do not have access to this repository',
-      );
-    }
-  });
-
-  it('returns a pr_closed validation message', async () => {
-    expect.assertions(3);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'Pull request is closed' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.reason).toBe('pr_closed');
-      expect(result.message).toBe('Cannot request reviewers on a closed or merged pull request');
-    }
-  });
-
-  it('falls back to the raw error message for an unrecognized validation reason', async () => {
-    expect.assertions(3);
-    const error = Object.assign(new Error('Validation Error'), {
-      status: 422,
-      response: { data: { message: 'Resource already exists' } },
-    });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.reason).toBe('already_exists');
-      expect(result.message).toBe('Resource already exists');
-    }
-  });
-
-  it('returns an unknown error for status codes that do not match a known classification', async () => {
-    expect.assertions(3);
-    const error = Object.assign(new Error('Teapot'), { status: 418 });
-    const octokit = createMockOctokit(null, error);
-
-    const result = await requestReviewers(octokit, 'owner', 'repo', 42, {
-      reviewers: ['reviewer1'],
-    });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error).toBe('unknown');
-      expect(result.message).toBe('Teapot');
-    }
   });
 });

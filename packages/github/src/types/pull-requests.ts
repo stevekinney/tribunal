@@ -22,24 +22,14 @@ export interface PullRequestFilterOptions {
 /** @see Author - Uses shared author type for consistency */
 export type PullRequestAuthor = Author;
 
-export interface PullRequestLabel {
-  name: string;
-  color: string;
-  description: string | null;
-}
-
 export interface PullRequestListItem {
   number: number;
   title: string;
   state: 'open' | 'closed';
   draft: boolean;
-  locked: boolean;
   author: PullRequestAuthor | null;
-  createdAt: string;
   updatedAt: string;
-  closedAt: string | null;
   mergedAt: string | null;
-  labels: PullRequestLabel[];
   headRef: string;
   headSha: string;
   baseRef: string;

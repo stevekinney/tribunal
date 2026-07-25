@@ -62,7 +62,6 @@ import {
   updatePRDescription,
 } from './action-items.js';
 import type { DerivedActionItem, ConversationState } from './action-items.js';
-import { computeActionItemStatus } from './compute-action-item-status.js';
 import { extractSourceType } from './extract-source-type.js';
 import { sanitizeActionItemCandidate } from './sanitization.js';
 import { deterministicSummary } from './summarize.js';
@@ -325,13 +324,6 @@ export async function analyzePullRequest(
   // Step 7c: Persist to database
   const actionItemInputs = reconciledItems.map((item) => ({
     stableKey: item.id,
-    subject: item.description,
-    description: item.description,
-    status: computeActionItemStatus({
-      completed: item.completed,
-      currentHeadSha: prStateRow.headSha,
-      existingFirstSeenHeadSha: existingItemShas.get(item.id) ?? null,
-    }),
     firstSeenHeadSha: existingItemShas.get(item.id) ?? prStateRow.headSha,
   }));
 
@@ -345,7 +337,6 @@ export async function analyzePullRequest(
         {
           sourceType: extractSourceType(upsertedItem.stableKey),
           sourceIdentifier: upsertedItem.stableKey,
-          sourceUrl: reconciledItem.sourceUrl,
         },
       ]);
     }

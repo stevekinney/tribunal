@@ -785,7 +785,6 @@ describe('createEngineServerOptions', () => {
     const enqueueInstallationSync = vi.fn().mockResolvedValue({
       workflowId: 'github:installations:100:sync',
       status: 'started',
-      outcome: 'started',
     });
     const scheduler = {
       kick: vi.fn(),
@@ -841,7 +840,6 @@ describe('createEngineServerOptions', () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       workflowId: 'github:installations:100:sync',
-      outcome: 'started',
     });
   });
 
