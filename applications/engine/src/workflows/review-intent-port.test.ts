@@ -907,6 +907,121 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('continues claiming later eligible intents after releasing an intent with disabled assignments', async () => {
+    const { user, installation, repository } = await createReviewIntentFixture();
+    const factories = createFactories(testDatabase.db);
+    const secondRepository = await factories.repository.create({
+      id: 43,
+      owner: 'lostgradient',
+      name: 'tribunal-docs',
+      installationId: installation.installationId,
+    });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: installation.installationId,
+      repositoryId: secondRepository.id,
+      isActive: true,
+    });
+    await testDatabase.db.insert(repositoryReviewSettings).values({
+      userId: user.id,
+      repositoryId: secondRepository.id,
+      watched: true,
+      ignoreGlobs: [],
+      checkConclusionMode: 'advisory',
+    });
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: secondRepository.id,
+      prNumber: 8,
+      state: 'open',
+      headSha: 'b'.repeat(40),
+    });
+    await testDatabase.db.insert(reviewIntent).values({
+      id: 'intent_2',
+      deliveryId: 'delivery_2',
+      kind: 'start',
+      repositoryId: secondRepository.id,
+      userId: user.id,
+      prNumber: 8,
+      headSha: null,
+    });
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_disabled',
+        userId: user.id,
+        slug: 'disabled-review',
+        description: 'Disabled.',
+        body: 'Skip.',
+        model: 'claude-sonnet-4-6',
+        enabled: false,
+      },
+      {
+        id: 'agent_unassigned',
+        userId: user.id,
+        slug: 'unassigned-review',
+        description: 'Unassigned.',
+        body: 'Review repositories without explicit assignments.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toMatchObject({
+      id: 'intent_2',
+      pullRequest: {
+        repositoryId: secondRepository.id,
+        agents: [{ id: 'agent_unassigned' }],
+      },
+    });
+
+    const [deferredIntent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(deferredIntent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+    });
+  });
+
+  it('omits eligible-agent waits from queue status so persistent configuration gaps do not pin idle engines', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_disabled',
+      userId: user.id,
+      slug: 'disabled-review',
+      description: 'Disabled.',
+      body: 'Skip.',
+      model: 'claude-sonnet-4-6',
+      enabled: false,
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+
+    await expect(
+      getReviewIntentQueueStatus(testDatabase.db, new Date('2026-06-17T12:01:00.000Z')),
+    ).resolves.toEqual({
+      readyCount: 0,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
+  });
+
   it('releases watched intents without any eligible agents for retry', async () => {
     await createReviewIntentFixture();
     const port = createDatabaseReviewIntentPort(testDatabase.db);

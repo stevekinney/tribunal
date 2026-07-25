@@ -18,6 +18,8 @@ type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 
 const maxReviewIntentFailures = 5;
 const backoffMinutesByFailureCount = [1, 2, 4, 8] as const;
+const waitingForEligibleReviewAgentReason =
+  'Review intent is waiting for an eligible review agent.';
 
 type ClaimedReviewIntentRow = {
   id: string;
@@ -57,35 +59,38 @@ export function createDatabaseReviewIntentPort(
   return {
     async claimNextReviewIntent(now: Date) {
       if (options.reviewsEnabled === false) return null;
-      const row = await claimNextIntentRow(database, now);
-      if (row === null) return null;
 
-      const normalizedRow = normalizeClaimedReviewIntentRow(row);
-      const result = await buildPullRequestReviewInput(database, normalizedRow);
-      if (result.status === 'missing_target') {
-        await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
-        return null;
-      }
-      if (result.status === 'temporarily_unavailable') {
-        await deferReviewIntentRetry(
-          database,
-          normalizedRow.id,
-          normalizedRow.claimedAt,
-          now,
-          result.reason,
-        );
-        return null;
-      }
+      while (true) {
+        const row = await claimNextIntentRow(database, now);
+        if (row === null) return null;
 
-      return {
-        id: normalizedRow.id,
-        deliveryId: normalizedRow.deliveryId,
-        kind: normalizedRow.kind,
-        pullRequest: result.pullRequest,
-        prState: normalizedRow.prState ?? undefined,
-        createdAt: normalizedRow.createdAt,
-        claimedAt: normalizedRow.claimedAt,
-      };
+        const normalizedRow = normalizeClaimedReviewIntentRow(row);
+        const result = await buildPullRequestReviewInput(database, normalizedRow);
+        if (result.status === 'missing_target') {
+          await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
+          return null;
+        }
+        if (result.status === 'temporarily_unavailable') {
+          await deferReviewIntentRetry(
+            database,
+            normalizedRow.id,
+            normalizedRow.claimedAt,
+            now,
+            result.reason,
+          );
+          continue;
+        }
+
+        return {
+          id: normalizedRow.id,
+          deliveryId: normalizedRow.deliveryId,
+          kind: normalizedRow.kind,
+          pullRequest: result.pullRequest,
+          prState: normalizedRow.prState ?? undefined,
+          createdAt: normalizedRow.createdAt,
+          claimedAt: normalizedRow.claimedAt,
+        };
+      }
     },
     markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date) {
       return markReviewIntentProcessed(database, intentId, claimedAt, now);
@@ -146,6 +151,10 @@ export async function getReviewIntentQueueStatus(
         OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
       )
       AND ${reviewIntent.deadLetteredAt} IS NULL
+      AND (
+        ${reviewIntent.lastError} IS NULL
+        OR ${reviewIntent.lastError} IS DISTINCT FROM ${waitingForEligibleReviewAgentReason}
+      )
       AND ${repositoryReviewSettings.watched} = true
       AND ${userReviewSettings.reviewsEnabled} = true
       AND ${githubInstallation.status} = 'active'
@@ -330,7 +339,7 @@ async function buildPullRequestReviewInput(
   if (agents.length === 0 && intent.kind !== 'pr_closed') {
     return {
       status: 'temporarily_unavailable',
-      reason: 'Review intent is waiting for an eligible review agent.',
+      reason: waitingForEligibleReviewAgentReason,
     };
   }
 

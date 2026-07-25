@@ -12,6 +12,7 @@ import {
   repository,
   repositoryAgent,
   repositoryReviewSettings,
+  reviewIntent,
   tribunalRun,
   userReviewSettings,
   webhookEventHandlerRun,
@@ -28,6 +29,8 @@ export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 const defaultModelOptions = defaultReviewModelSchema.options;
 const reviewModelOptions = ['inherit', ...defaultModelOptions] as const;
 const reviewEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const waitingForEligibleReviewAgentReason =
+  'Review intent is waiting for an eligible review agent.';
 
 export type SurfaceState = 'empty' | 'loading' | 'streaming' | 'success' | 'error' | 'disconnected';
 
@@ -317,6 +320,11 @@ export async function saveRepositoryWatchSettings(
     ON CONFLICT DO NOTHING
   `);
 
+  if (input.watched) {
+    await releaseReviewIntentsWaitingForEligibleAgent(userId, input.repositoryId);
+    await postReviewEngineControl('/review-intents/kick');
+  }
+
   return { success: true };
 }
 
@@ -404,6 +412,11 @@ export async function saveAgent(userId: number, formData: FormData) {
       },
     });
 
+  if (validation.data.enabled) {
+    await releaseReviewIntentsWaitingForEligibleAgent(userId);
+    await postReviewEngineControl('/review-intents/kick');
+  }
+
   return { success: true, id: validation.data.id };
 }
 
@@ -440,7 +453,34 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
     return fail(404, { error: 'Agent not found.' });
   }
 
+  if (enabled) {
+    await releaseReviewIntentsWaitingForEligibleAgent(userId);
+    await postReviewEngineControl('/review-intents/kick');
+  }
+
   return { success: true };
+}
+
+async function releaseReviewIntentsWaitingForEligibleAgent(
+  userId: number,
+  repositoryId?: number,
+): Promise<void> {
+  const repositoryScope =
+    repositoryId === undefined ? undefined : eq(reviewIntent.repositoryId, repositoryId);
+  await db
+    .update(reviewIntent)
+    .set({
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.userId, userId),
+        eq(reviewIntent.lastError, waitingForEligibleReviewAgentReason),
+        repositoryScope,
+      ),
+    );
 }
 
 export async function getRunsOverview(userId: number) {
