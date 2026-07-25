@@ -487,6 +487,12 @@ describe('GET /api/webhooks/github', () => {
     expect(await response.json()).toEqual({ webhooks: [{ id: 1 }] });
   });
 
+  it('bypasses the cache so this documented confirmation endpoint cannot report stale subscription state', async () => {
+    await GET({ locals: { user: { id: 1 } } } as never);
+
+    expect(mockGetRegisteredWebhooks).toHaveBeenCalledWith(expect.anything(), { bypass: true });
+  });
+
   it('returns 400 when the GitHub App is not configured', async () => {
     const { ValidationError } = await import('@tribunal/github/error-taxonomy');
     mockGetRegisteredWebhooks.mockRejectedValue(new ValidationError('not configured'));

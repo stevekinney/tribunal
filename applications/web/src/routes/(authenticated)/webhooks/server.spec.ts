@@ -87,7 +87,7 @@ describe('/webhooks server load', () => {
     mockListWebhookEvents.mockReset();
     mockListWebhookEvents.mockResolvedValue({ events: [], page: 1, perPage: 25, totalCount: 0 });
     mockGetFilterOptions.mockReset();
-    mockGetFilterOptions.mockResolvedValue({ eventTypes: [], actions: [] });
+    mockGetFilterOptions.mockResolvedValue({ eventTypes: [], actions: [], receivedEventTypes: [] });
     mockGetRegisteredWebhooks.mockReset();
     mockGetRegisteredWebhooks.mockResolvedValue({ registered: ['push'], unregistered: [] });
   });
@@ -120,6 +120,17 @@ describe('/webhooks server load', () => {
 
     expect(result.hasRepositories).toBe(false);
     expect(mockListWebhookEvents).toHaveBeenCalledWith([], 1, expect.any(Object));
+  });
+
+  it('still computes subscription drift when the user has no repositories -- drift is a GitHub App property, not a per-user one', async () => {
+    mockRepositoriesResult.value = { ok: true, repositories: [], installations: [] };
+    mockGetRegisteredWebhooks.mockResolvedValue({ registered: ['check_suite'], unregistered: [] });
+
+    const result = (await load(createEvent())) as WebhooksLoadResult;
+
+    expect(result.hasRepositories).toBe(false);
+    expect(result.subscriptionStatusKnown).toBe(true);
+    expect(result.driftedEventTypes).toContain('push');
   });
 
   it('surfaces subscribed App events without throwing when the App is unconfigured', async () => {
@@ -160,27 +171,25 @@ describe('/webhooks server load', () => {
   });
 
   it('reports no drift once the App is subscribed to every handled event type', async () => {
+    // Sourced from the real constant (not a hand-copied list) so this test
+    // cannot silently pass against a stale baseline as the handled-event set
+    // grows.
+    const { HANDLED_GITHUB_WEBHOOK_EVENT_TYPES } =
+      await import('$lib/server/github/webhooks/handled-event-types');
     mockGetRegisteredWebhooks.mockResolvedValue({
-      registered: [
-        'pull_request',
-        'pull_request_review',
-        'pull_request_review_comment',
-        'check_run',
-        'check_suite',
-        'installation',
-        'installation_repositories',
-        'installation_target',
-        'github_app_authorization',
-        'push',
-        'issue_comment',
-        'pull_request_review_thread',
-      ],
+      registered: [...HANDLED_GITHUB_WEBHOOK_EVENT_TYPES],
       unregistered: [],
     });
 
     const result = (await load(createEvent())) as WebhooksLoadResult;
 
     expect(result.driftedEventTypes).toEqual([]);
+  });
+
+  it('bypasses the cache so the page cannot report stale subscription drift after an operator fixes it', async () => {
+    await load(createEvent());
+
+    expect(mockGetRegisteredWebhooks).toHaveBeenCalledWith(expect.anything(), { bypass: true });
   });
 
   it('parses filters from the query string', async () => {

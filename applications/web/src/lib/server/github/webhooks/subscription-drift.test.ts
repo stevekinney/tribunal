@@ -91,6 +91,17 @@ describe('warnOnHandledWebhookEventDriftAtStartup', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('bypasses the cache so a redeploy cannot keep logging drift an operator already fixed', async () => {
+    mockGetRegisteredWebhooks.mockResolvedValue({
+      registered: [...HANDLED_GITHUB_WEBHOOK_EVENT_TYPES],
+      unregistered: [],
+    });
+
+    await warnOnHandledWebhookEventDriftAtStartup();
+
+    expect(mockGetRegisteredWebhooks).toHaveBeenCalledWith(expect.anything(), { bypass: true });
+  });
+
   it('warns with the missing event types when the subscription has drifted', async () => {
     mockGetRegisteredWebhooks.mockResolvedValue({
       registered: ['check_suite'],

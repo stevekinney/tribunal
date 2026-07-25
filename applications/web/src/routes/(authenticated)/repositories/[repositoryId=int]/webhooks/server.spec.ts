@@ -46,7 +46,7 @@ describe('/repositories/[repositoryId]/webhooks server load', () => {
     mockListWebhookEvents.mockReset();
     mockListWebhookEvents.mockResolvedValue({ events: [], page: 1, perPage: 25, totalCount: 0 });
     mockGetFilterOptions.mockReset();
-    mockGetFilterOptions.mockResolvedValue({ eventTypes: [], actions: [] });
+    mockGetFilterOptions.mockResolvedValue({ eventTypes: [], actions: [], receivedEventTypes: [] });
   });
 
   function createEvent(search = '') {

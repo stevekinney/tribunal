@@ -114,7 +114,7 @@ describe('/webhooks page', () => {
     // ever been received (`filterOptions.receivedEventTypes`).
     const { container } = render(WebhooksPage, { data: createData() });
 
-    await expect.element(page.getByText('Receiving events:')).toBeInTheDocument();
+    await expect.element(page.getByText('Received at least once:')).toBeInTheDocument();
     await expect
       .element(page.getByText('Subscribed, but no events received yet:'))
       .toBeInTheDocument();
@@ -149,7 +149,7 @@ describe('/webhooks page', () => {
       }),
     });
 
-    await expect.element(page.getByText('Receiving events:')).toBeInTheDocument();
+    await expect.element(page.getByText('Received at least once:')).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('no events received yet');
   });
 
@@ -190,6 +190,41 @@ describe('/webhooks page', () => {
     });
 
     await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+  });
+
+  it('shows app-level subscription drift even when the user has no repositories added', async () => {
+    // Subscription drift is a property of the GitHub App, not of any
+    // particular user's repository list -- a brand-new operator account
+    // with zero repositories added should still be warned about it.
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        driftedEventTypes: ['push'],
+      }),
+    });
+
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('not currently subscribed');
+  });
+
+  it('shows the subscription-unknown warning even when the user has no repositories added', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        subscriptionStatusKnown: false,
+      }),
+    });
+
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+    await expect
+      .element(page.getByText('Could not determine the GitHub App', { exact: false }))
+      .toBeInTheDocument();
   });
 
   it('shows a load error distinct from the "no repositories" empty state when GitHub is unreachable', async () => {

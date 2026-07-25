@@ -63,11 +63,17 @@ export function computeHandledWebhookEventDrift(
  * unconfigured in some environments (local dev, CI, preview sandboxes); that
  * already-expected case is logged at most and is never reported as drift,
  * since we have no subscription data to diff in the first place.
+ *
+ * Bypasses the cache: a redeploy shortly after an operator fixes the
+ * subscription is exactly when a fresh check is most valuable -- a cached
+ * (up to 24h stale) read here would keep logging the pre-fix drift warning
+ * on every restart until the cache entry naturally expires, per
+ * `.claude/rules/github-api.md`'s write-then-read bypass carve-out.
  */
 export async function warnOnHandledWebhookEventDriftAtStartup(): Promise<void> {
   let registered: string[];
   try {
-    ({ registered } = await getRegisteredWebhooks(githubContext));
+    ({ registered } = await getRegisteredWebhooks(githubContext, { bypass: true }));
   } catch (error) {
     console.warn(
       '[webhook-subscription] Could not determine the GitHub App webhook subscription at ' +

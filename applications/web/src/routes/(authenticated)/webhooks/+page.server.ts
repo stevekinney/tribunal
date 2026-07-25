@@ -23,10 +23,17 @@ type SubscribedEventTypesFetch = { ok: true; registered: string[] } | { ok: fals
  * from "we could not determine the App's subscription" — conflating the two
  * would let a transient GitHub outage render a false "everything is
  * unsubscribed" drift warning.
+ *
+ * Bypasses the cache: this page's entire purpose is telling an operator
+ * whether the App's webhook subscription currently matches reality. A
+ * cached (up to 24h stale) read would keep showing yesterday's drift after
+ * an operator fixes the subscription in GitHub's settings UI, defeating the
+ * page's own diagnostic purpose (see `.claude/rules/github-api.md`'s
+ * write-then-read bypass carve-out).
  */
 async function getSubscribedEventTypesSafely(): Promise<SubscribedEventTypesFetch> {
   try {
-    const { registered } = await getRegisteredWebhooks(githubContext);
+    const { registered } = await getRegisteredWebhooks(githubContext, { bypass: true });
     return { ok: true, registered };
   } catch (error) {
     console.warn('Could not fetch subscribed GitHub App webhook events:', error);

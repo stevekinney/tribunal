@@ -407,7 +407,13 @@ export const GET: RequestHandler = async (event) => {
 
   try {
     const { getRegisteredWebhooks } = await import('@tribunal/github/webhooks/registered-webhooks');
-    const result = await getRegisteredWebhooks(githubContext);
+    // Bypass the cache: documentation/INTEGRATIONS.md tells operators to hit
+    // this endpoint immediately after updating the GitHub App's webhook
+    // subscription to confirm the fix took effect. A cached (up to 24h
+    // stale) response would report the pre-fix subscription and make the
+    // confirmation step lie — a write-then-read pattern where stale data
+    // would be incorrect, per `.claude/rules/github-api.md`.
+    const result = await getRegisteredWebhooks(githubContext, { bypass: true });
     return json(result);
   } catch (err) {
     if (err instanceof ValidationError) {

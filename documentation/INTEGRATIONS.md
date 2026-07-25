@@ -90,7 +90,9 @@ Installation lifecycle events do perform real work — they upsert or update ins
 
 The GitHub App's webhook event subscription is **tracked configuration, not code** — it lives entirely in the App's settings on GitHub (Settings → Developer settings → GitHub Apps → your App → Permissions & events), and nothing in this repository can change it. Getting it right (and keeping it right) is a manual step, so it needs a paper trail here.
 
-**Expected subscription.** Tribunal's ingress route can act on exactly these 12 event types (the union of the typed-router path and the manual-fallback path in `+server.ts` — see `applications/web/src/lib/server/github/webhooks/handled-event-types.ts`, the single source of truth both the route and the drift check import from):
+**Expected subscription.** Tribunal has real, code-level behavior tied to exactly these 19 event types — see `applications/web/src/lib/server/github/webhooks/handled-event-types.ts`, the single source of truth the ingress route, the drift check, and this list all derive from:
+
+Dispatched through a typed handler or the manual-fallback path in `+server.ts`:
 
 - `check_run`
 - `check_suite`
@@ -105,21 +107,28 @@ The GitHub App's webhook event subscription is **tracked configuration, not code
 - `pull_request_review_thread`
 - `push`
 
-\* Non-configurable — GitHub delivers these three regardless of the App's subscription settings, so they never need to be (and cannot be) toggled on. The other nine must be explicitly checked in the App's webhook event list.
+No dedicated per-type handler, but reached unconditionally on every request via repository-metadata sync, access/resource cache invalidation, or webhook-event storage — a missing subscription here is a real functional gap, just a quieter one:
 
-**Catalog vs. subscription — do not confuse these.** `packages/github/src/webhooks/registered-webhooks.ts` also exports `SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG` (every event type `@octokit/webhooks` knows about) and `CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG` (that catalog minus the three non-configurable events above). Those describe everything GitHub _could_ send — dozens of event types Tribunal has no handler for and has no reason to subscribe to. The expected-subscription list above, not the catalog, is the drift baseline.
+- `repository` (rename/transfer/edit — the only path that keeps stored repository owner, name, and default branch in sync for an already-installed repository)
+- `member`, `team`, `organization`, `membership` (repository access-cache invalidation)
+- `issues` (audit storage and cache invalidation, same as `issue_comment`)
+- `status` (CI-status cache invalidation, same as `check_run`/`check_suite`)
 
-**Drift detection.** `applications/web/src/lib/server/github/webhooks/subscription-drift.ts` diffs the App's live subscription (`getRegisteredWebhooks`, via `GET /api/webhooks/github`) against the expected-subscription list above, excluding the three non-configurable events so they're never reported as false positives. Two things consume that diff:
+\* Non-configurable — GitHub delivers these three regardless of the App's subscription settings, so they never need to be (and cannot be) toggled on. The other sixteen must be explicitly checked in the App's webhook event list.
+
+**Catalog vs. subscription — do not confuse these.** `packages/github/src/webhooks/registered-webhooks.ts` also exports `SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG` (every event type `@octokit/webhooks` knows about) and `CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG` (that catalog minus the three non-configurable events above). Those describe everything GitHub _could_ send — dozens of event types Tribunal has no handler for and has no reason to subscribe to. The expected-subscription list above, not the catalog, is the drift baseline. `installation_target` in particular is deliberately treated as a normal, configurable event here (not grouped with the three non-configurable ones): GitHub's webhook documentation states plainly, for each of `installation`/`installation_repositories`/`github_app_authorization`, that "All GitHub Apps receive this event by default. You cannot manually subscribe to this event" — `installation_target`'s entry has no such language, only a generic app-availability tag, meaning it must be explicitly checked like any other event.
+
+**Drift detection.** `applications/web/src/lib/server/github/webhooks/subscription-drift.ts` diffs the App's live subscription (`getRegisteredWebhooks`, via `GET /api/webhooks/github`) against the expected-subscription list above, excluding the three non-configurable events so they're never reported as false positives. Every read on this confirmation path bypasses the Redis cache (`{ bypass: true }`) — the underlying `get-app-webhook-configuration` cache policy has a 24-hour TTL, and a cached read here would keep reporting an already-fixed subscription as still drifted for up to a day. Two things consume the diff:
 
 - **A startup warning.** `hooks.server.ts` runs the check once via SvelteKit's `init` server hook and logs a `console.warn` (never fatal — this is an operational signal, not a security gate) listing any handled event type the App is not subscribed to. Check the web application's logs after a deploy.
-- **The `/webhooks` page.** When drift exists, the page shows a banner naming the missing event types. It also splits the "Subscribed events" summary into events actually receiving deliveries versus events the App is subscribed to but that have never arrived yet — those are different situations that otherwise look identical (a quiet integration vs. one where GitHub simply never learned to send that event type).
+- **The `/webhooks` page.** When drift exists, the page shows a banner naming the missing event types. It also splits the "Subscribed events" summary into events that have ever been received versus events the App is subscribed to but that have never arrived — those are different situations that otherwise look identical (a quiet integration vs. one where GitHub simply never learned to send that event type). "Received at least once" is an unbounded, all-time check, not a recent-activity signal — an event type can stay in that group long after deliveries have actually stopped arriving.
 
 **If you change the App's webhook subscription in production:**
 
 1. In the GitHub App settings, check every event type listed above under "Subscribe to events" (the three non-configurable ones cannot be unchecked and do not appear in that list).
 2. Save. GitHub applies the new subscription immediately; no redeploy is required.
-3. Confirm the fix: `GET /api/webhooks/github` (authenticated) returns `{ registered, unregistered }` — `registered` should now include the event types you just added. `/webhooks` should stop showing the drift banner, and new event types should start appearing in the "Event type" filter and in the `webhook_event` table as GitHub sends real traffic.
-4. If a newly-subscribed event type starts failing with `403`s once traffic resumes, that is a **separate** problem: a missing GitHub App **permission**, not a missing event subscription. Permissions and event subscriptions are configured independently in the same settings page — check the "Permissions" tab for the resource the new event type covers (for example, `pull_request_review_thread` requires the "Pull requests" repository permission).
+3. Confirm the fix: `GET /api/webhooks/github` (authenticated) returns `{ registered, unregistered }` — `registered` should now include the event types you just added, immediately (this endpoint bypasses the cache). `/webhooks` should stop showing the drift banner, and new event types should start appearing in the "Event type" filter and in the `webhook_event` table as GitHub sends real traffic.
+4. If a newly-subscribed event type starts failing with `403`s once traffic resumes, that is a **separate** problem: a missing GitHub App **permission**, not a missing event subscription. Permissions and event subscriptions are configured independently in the same settings page — check the "Permissions" tab for the resource the new event type covers (for example, `pull_request_review_thread` requires the "Pull requests" repository permission, and `repository`/`member`/`team`/`organization`/`membership` require the corresponding organization or repository administration permissions).
 
 ## Data model produced by these integrations
 

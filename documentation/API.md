@@ -92,10 +92,16 @@ the endpoint returns 500.
 Handled event types include `pull_request`, `pull_request_review`,
 `pull_request_review_comment`, `check_run`, `check_suite`, `installation`,
 `installation_repositories`, `installation_target`, `github_app_authorization`,
-`push`, `issue_comment`, and `pull_request_review_thread` — sourced from
-`applications/web/src/lib/server/github/webhooks/handled-event-types.ts`, which is
-also the drift baseline the GitHub App's webhook subscription is checked against
-(see "Subscribed events" in [`documentation/INTEGRATIONS.md`](./INTEGRATIONS.md)).
+`push`, `issue_comment`, and `pull_request_review_thread` — the typed-router and
+manual-fallback dispatch paths, sourced from
+`ROUTER_HANDLED_GITHUB_WEBHOOK_EVENT_TYPES` and
+`MANUAL_FALLBACK_GITHUB_WEBHOOK_EVENT_TYPES` in
+`applications/web/src/lib/server/github/webhooks/handled-event-types.ts`. The GitHub
+App's webhook subscription drift check uses a broader baseline
+(`HANDLED_GITHUB_WEBHOOK_EVENT_TYPES` in the same file) that also covers event
+types with real but non-dispatched side effects, such as `repository` — see
+"Subscribed events" in [`documentation/INTEGRATIONS.md`](./INTEGRATIONS.md) for
+the full list.
 
 A successful delivery returns `200 { ok: true }`.
 

@@ -425,8 +425,8 @@ export interface WebhookEventFilterOptions {
   eventTypes: string[];
   actions: string[];
   /**
-   * Distinct event types with at least one row actually received in this
-   * scope — independent of subscription status, and never merged with
+   * Distinct event types with at least one row ever received in this scope
+   * — independent of subscription status, and never merged with
    * `subscribedEventTypes`.
    *
    * `eventTypes` alone cannot tell a caller whether a given event type is
@@ -435,11 +435,19 @@ export interface WebhookEventFilterOptions {
    * received" (present in `subscribedEventTypes`, absent here) from a type
    * that has actually been observed.
    *
-   * Optional (rather than required) so existing fixtures/callers that
-   * predate this field — such as the repository-scoped webhooks page, which
-   * does not surface subscription state — do not need to supply it.
+   * This is an unbounded, all-time check (an unfiltered `selectDistinct`
+   * over every stored row in scope), not a recent-activity window. It proves
+   * "at least one delivery ever arrived," not "deliveries are still
+   * arriving" — a type can remain in this set long after its subscription
+   * (or Tribunal's permission for it) has drifted away. Callers presenting
+   * this to a human must label it accordingly (e.g. "received at least
+   * once"), not as "currently receiving" or similar.
+   *
+   * Required, not optional: an omitted field would silently default every
+   * subscribed event type to looking "quiet," which is exactly the kind of
+   * unrepresented failure state this module exists to make visible.
    */
-  receivedEventTypes?: string[];
+  receivedEventTypes: string[];
 }
 
 /**
