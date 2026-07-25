@@ -424,6 +424,30 @@ export async function listWebhookEvents(
 export interface WebhookEventFilterOptions {
   eventTypes: string[];
   actions: string[];
+  /**
+   * Distinct event types with at least one row ever received in this scope
+   * — independent of subscription status, and never merged with
+   * `subscribedEventTypes`.
+   *
+   * `eventTypes` alone cannot tell a caller whether a given event type is
+   * present because it was received, because the App is subscribed to it, or
+   * both — this field lets `/webhooks` distinguish "subscribed but zero
+   * received" (present in `subscribedEventTypes`, absent here) from a type
+   * that has actually been observed.
+   *
+   * This is an unbounded, all-time check (an unfiltered `selectDistinct`
+   * over every stored row in scope), not a recent-activity window. It proves
+   * "at least one delivery ever arrived," not "deliveries are still
+   * arriving" — a type can remain in this set long after its subscription
+   * (or Tribunal's permission for it) has drifted away. Callers presenting
+   * this to a human must label it accordingly (e.g. "received at least
+   * once"), not as "currently receiving" or similar.
+   *
+   * Required, not optional: an omitted field would silently default every
+   * subscribed event type to looking "quiet," which is exactly the kind of
+   * unrepresented failure state this module exists to make visible.
+   */
+  receivedEventTypes: string[];
 }
 
 /**
@@ -444,6 +468,7 @@ export async function getWebhookEventFilterOptions(
     return {
       eventTypes: [...new Set(subscribedEventTypes)].sort(),
       actions: [],
+      receivedEventTypes: [],
     };
   }
 
@@ -454,8 +479,10 @@ export async function getWebhookEventFilterOptions(
     db.selectDistinct({ action: webhookEvent.action }).from(webhookEvent).where(whereClause),
   ]);
 
+  const receivedEventTypes = [...new Set(eventTypeRows.map((row) => row.eventType))].sort();
+
   const eventTypes = new Set(subscribedEventTypes);
-  for (const row of eventTypeRows) eventTypes.add(row.eventType);
+  for (const eventType of receivedEventTypes) eventTypes.add(eventType);
 
   const actions = new Set<string>();
   for (const row of actionRows) {
@@ -465,6 +492,7 @@ export async function getWebhookEventFilterOptions(
   return {
     eventTypes: [...eventTypes].sort(),
     actions: [...actions].sort(),
+    receivedEventTypes,
   };
 }
 

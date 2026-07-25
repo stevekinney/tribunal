@@ -71,7 +71,7 @@ function createData(overrides: Partial<PageData> = {}): PageData {
       page: 1,
       perPage: 25,
     },
-    filterOptions: { eventTypes: ['push'], actions: [] },
+    filterOptions: { eventTypes: ['push'], actions: [], receivedEventTypes: ['push'] },
     ...overrides,
   } as PageData;
 }
@@ -169,7 +169,13 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
 
   it('renders the action filter options from the loaded filter options', async () => {
     render(RepositoryWebhooksPage, {
-      data: createData({ filterOptions: { eventTypes: ['push'], actions: ['opened', 'closed'] } }),
+      data: createData({
+        filterOptions: {
+          eventTypes: ['push'],
+          actions: ['opened', 'closed'],
+          receivedEventTypes: ['push'],
+        },
+      }),
     });
 
     await expect.element(page.getByRole('option', { name: 'opened' })).toBeInTheDocument();

@@ -64,8 +64,14 @@ function createData(overrides: Partial<PageData> = {}): PageData {
       page: 1,
       perPage: 25,
     },
-    filterOptions: { eventTypes: ['pull_request'], actions: ['opened'] },
+    filterOptions: {
+      eventTypes: ['pull_request'],
+      actions: ['opened'],
+      receivedEventTypes: ['pull_request'],
+    },
     subscribedEventTypes: ['pull_request', 'push'],
+    driftedEventTypes: [],
+    subscriptionStatusKnown: true,
     loadError: null,
     ...overrides,
   } as PageData;
@@ -103,12 +109,122 @@ describe('/webhooks page', () => {
     await expect.element(page.getByText('push')).toBeInTheDocument();
   });
 
+  it('distinguishes a subscribed-but-quiet event type from one actually receiving events', async () => {
+    // Fixture: subscribed to pull_request + push, but only pull_request has
+    // ever been received (`filterOptions.receivedEventTypes`).
+    const { container } = render(WebhooksPage, { data: createData() });
+
+    await expect.element(page.getByText('Received at least once:')).toBeInTheDocument();
+    await expect
+      .element(page.getByText('Subscribed, but no events received yet:'))
+      .toBeInTheDocument();
+
+    // Assert group membership directly via the two `.subscribed-events`
+    // badge groups, rather than just checking both strings appear somewhere
+    // on the page -- this is the actual partition the feature depends on,
+    // and would catch an inverted filter that a plain text-presence check
+    // would not. Scoped to these two groups specifically (not the whole
+    // page) because `WebhookEventsTable` also renders a neutral-variant
+    // event-type Badge per row, which would otherwise pollute the count.
+    const [activeGroup, quietGroup] = container.querySelectorAll('.subscribed-events');
+    const activeBadges = [...(activeGroup?.querySelectorAll('[data-cinder-variant]') ?? [])].map(
+      (badge) => badge.textContent?.trim(),
+    );
+    const quietBadges = [...(quietGroup?.querySelectorAll('[data-cinder-variant]') ?? [])].map(
+      (badge) => badge.textContent?.trim(),
+    );
+    expect(activeBadges).toEqual(['pull_request']);
+    expect(quietBadges).toEqual(['push']);
+  });
+
+  it('does not show the "no events received yet" heading when every subscribed event is active', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        subscribedEventTypes: ['pull_request'],
+        filterOptions: {
+          eventTypes: ['pull_request'],
+          actions: ['opened'],
+          receivedEventTypes: ['pull_request'],
+        },
+      }),
+    });
+
+    await expect.element(page.getByText('Received at least once:')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('no events received yet');
+  });
+
+  it('shows a drift warning listing handled event types the GitHub App is not subscribed to', async () => {
+    render(WebhooksPage, {
+      data: createData({ driftedEventTypes: ['check_suite', 'push'] }),
+    });
+
+    await expect.element(page.getByText('check_suite, push', { exact: false })).toBeInTheDocument();
+    expect(document.body.textContent).toContain('not currently subscribed');
+  });
+
+  it('shows no drift warning when there is no drift', async () => {
+    render(WebhooksPage, { data: createData({ driftedEventTypes: [] }) });
+
+    expect(document.body.textContent).not.toContain('not currently subscribed');
+  });
+
+  it('shows a distinct warning when the subscription status could not be determined', async () => {
+    render(WebhooksPage, {
+      data: createData({ subscriptionStatusKnown: false, driftedEventTypes: [] }),
+    });
+
+    await expect
+      .element(page.getByText('Could not determine the GitHub App', { exact: false }))
+      .toBeInTheDocument();
+  });
+
+  it('shows no subscription-unknown warning when the subscription status is known', async () => {
+    render(WebhooksPage, { data: createData({ subscriptionStatusKnown: true }) });
+
+    expect(document.body.textContent).not.toContain('Could not determine the GitHub App');
+  });
+
   it('shows a "no repositories" empty state distinct from "no events match"', async () => {
     render(WebhooksPage, {
       data: createData({ hasRepositories: false, repositories: [], events: [], totalCount: 0 }),
     });
 
     await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+  });
+
+  it('shows app-level subscription drift even when the user has no repositories added', async () => {
+    // Subscription drift is a property of the GitHub App, not of any
+    // particular user's repository list -- a brand-new operator account
+    // with zero repositories added should still be warned about it.
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        driftedEventTypes: ['push'],
+      }),
+    });
+
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('not currently subscribed');
+  });
+
+  it('shows the subscription-unknown warning even when the user has no repositories added', async () => {
+    render(WebhooksPage, {
+      data: createData({
+        hasRepositories: false,
+        repositories: [],
+        events: [],
+        totalCount: 0,
+        subscriptionStatusKnown: false,
+      }),
+    });
+
+    await expect.element(page.getByText('No repositories added')).toBeInTheDocument();
+    await expect
+      .element(page.getByText('Could not determine the GitHub App', { exact: false }))
+      .toBeInTheDocument();
   });
 
   it('shows a load error distinct from the "no repositories" empty state when GitHub is unreachable', async () => {

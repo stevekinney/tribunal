@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const claimWebhookDeliveryMock = vi.fn();
 const dispatchPullRequestStateMock = vi.fn();
@@ -131,8 +131,26 @@ function createEvent() {
 }
 
 describe('GitHub webhook route', () => {
+  // Loaded once in `beforeAll` (not per-test) -- per this repository's testing
+  // convention, expensive first-time imports belong in `beforeAll`, not
+  // charged against an individual test's timeout budget. Re-importing here
+  // added no isolation value: no test calls `vi.resetModules()`, so every
+  // `await import(...)` after the first was already returning the same
+  // cached module instance.
+  let POST: typeof import('../../src/routes/api/webhooks/github/+server').POST;
+
+  beforeAll(async () => {
+    ({ POST } = await import('../../src/routes/api/webhooks/github/+server'));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` does not clear a mock's queued `mockResolvedValueOnce`
+    // values, only its call history. Every test queues its own values for
+    // this mock before use, so an explicit reset here guarantees a clean
+    // queue regardless of whether the previous test consumed all of its
+    // queued values (for example if it was interrupted by a timeout).
+    claimWebhookDeliveryMock.mockReset();
     validateRequestMock.mockResolvedValue({
       payload: JSON.stringify(payload),
       signature: 'sha256=signature',
@@ -157,7 +175,6 @@ describe('GitHub webhook route', () => {
   it('claims review-engine deliveries before dispatch so redelivery cannot enqueue twice', async () => {
     expect.assertions(7);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     const firstResponse = await POST(createEvent() as Parameters<typeof POST>[0]);
     const secondResponse = await POST(createEvent() as Parameters<typeof POST>[0]);
@@ -201,7 +218,6 @@ describe('GitHub webhook route', () => {
       eventType: 'check_suite',
       deliveryId: 'delivery-1',
     });
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     const response = await POST(createEvent() as Parameters<typeof POST>[0]);
 
@@ -262,7 +278,6 @@ describe('GitHub webhook route', () => {
       eventType: 'check_suite',
       deliveryId: 'delivery-1',
     });
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     const response = await POST(createEvent() as Parameters<typeof POST>[0]);
 
@@ -281,7 +296,6 @@ describe('GitHub webhook route', () => {
     handlePullRequestEventMock
       .mockRejectedValueOnce(new Error('database unavailable'))
       .mockResolvedValueOnce(undefined);
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
       status: 500,
@@ -307,7 +321,6 @@ describe('GitHub webhook route', () => {
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
     releaseWebhookDeliveryClaimMock.mockResolvedValueOnce(false);
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
       status: 500,
@@ -329,7 +342,6 @@ describe('GitHub webhook route', () => {
     expect.assertions(3);
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     handlePullRequestEventMock.mockRejectedValueOnce(new Error('database unavailable'));
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
       status: 500,
@@ -349,7 +361,6 @@ describe('GitHub webhook route', () => {
     storeWebhookEventMock
       .mockRejectedValueOnce(new Error('connection reset'))
       .mockResolvedValueOnce({ id: 999, eventType: 'pull_request' });
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     const response = await POST(createEvent() as Parameters<typeof POST>[0]);
 
@@ -366,7 +377,6 @@ describe('GitHub webhook route', () => {
     claimWebhookDeliveryMock.mockResolvedValueOnce(true);
     storeWebhookEventMock.mockRejectedValue(new Error('database unavailable'));
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const { POST } = await import('../../src/routes/api/webhooks/github/+server');
 
     const response = await POST(createEvent() as Parameters<typeof POST>[0]);
 

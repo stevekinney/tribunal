@@ -318,4 +318,36 @@ describe('getRegisteredWebhooks', () => {
     // This ensures cache hits skip App resolution entirely.
     expect(getGithubApplication).toHaveBeenCalledTimes(1);
   });
+
+  it('defaults to reading through the cache when no options are passed', async () => {
+    const { cachedRead } = await import('../core/github-read-client.js');
+    const app = createMockApp(['push']);
+    const context = createMockContext({ getGithubApplication: vi.fn().mockReturnValue(app) });
+
+    await getRegisteredWebhooks(context);
+
+    expect(cachedRead).toHaveBeenLastCalledWith(
+      context.cache,
+      expect.anything(),
+      expect.any(Function),
+      [],
+      {},
+    );
+  });
+
+  it('forwards { bypass: true } to cachedRead so a confirmation check never reads stale data', async () => {
+    const { cachedRead } = await import('../core/github-read-client.js');
+    const app = createMockApp(['push']);
+    const context = createMockContext({ getGithubApplication: vi.fn().mockReturnValue(app) });
+
+    await getRegisteredWebhooks(context, { bypass: true });
+
+    expect(cachedRead).toHaveBeenLastCalledWith(
+      context.cache,
+      expect.anything(),
+      expect.any(Function),
+      [],
+      { bypass: true },
+    );
+  });
 });

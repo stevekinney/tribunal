@@ -328,6 +328,7 @@ describe('webhook-events server helper', () => {
 
         expect(options.eventTypes).toEqual(['pull_request']);
         expect(options.actions).toEqual(['opened']);
+        expect(options.receivedEventTypes).toEqual(['pull_request']);
       });
     });
 
@@ -341,13 +342,34 @@ describe('webhook-events server helper', () => {
         ]);
 
         expect(options.eventTypes).toEqual(['check_suite', 'pull_request']);
+        // Nothing was actually received -- `receivedEventTypes` must stay
+        // empty even though both are present in the merged `eventTypes`,
+        // otherwise a caller cannot distinguish "subscribed but quiet" from
+        // "actually receiving events".
+        expect(options.receivedEventTypes).toEqual([]);
+      });
+    });
+
+    it('distinguishes subscribed-but-quiet event types from received ones', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        await createWebhookEvent({ repositoryId: repo.id, eventType: 'pull_request' });
+
+        const options = await getWebhookEventFilterOptions([repo.id], undefined, [
+          'pull_request',
+          'push',
+        ]);
+
+        expect(options.eventTypes).toEqual(['pull_request', 'push']);
+        expect(options.receivedEventTypes).toEqual(['pull_request']);
       });
     });
 
     it('returns only subscribed events when the authorized set is empty', async () => {
       await withTestDatabase(async () => {
         const options = await getWebhookEventFilterOptions([], undefined, ['push']);
-        expect(options).toEqual({ eventTypes: ['push'], actions: [] });
+        expect(options).toEqual({ eventTypes: ['push'], actions: [], receivedEventTypes: [] });
       });
     });
 
@@ -362,6 +384,7 @@ describe('webhook-events server helper', () => {
         // An event type not present in any known catalog still surfaces, because
         // options are derived from stored rows, not filtered against a catalog.
         expect(options.eventTypes).toEqual(['a_totally_novel_event']);
+        expect(options.receivedEventTypes).toEqual(['a_totally_novel_event']);
       });
     });
   });

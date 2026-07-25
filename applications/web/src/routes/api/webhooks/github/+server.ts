@@ -25,6 +25,7 @@ import {
   claimWebhookDelivery,
   releaseWebhookDeliveryClaim,
 } from '@tribunal/github/webhooks/claim-delivery';
+import { ROUTER_HANDLED_GITHUB_WEBHOOK_EVENT_TYPES } from '$lib/server/github/webhooks/handled-event-types';
 
 // Import typed webhook handlers
 import { handlePullRequestEvent } from './handlers/pull-request.server';
@@ -59,19 +60,12 @@ import { createGithubWebhookRouter } from 'github-webhook-schemas/registry';
 /**
  * Event types that are handled by the typed router (not the manual fallback path).
  * Used to detect Zod validation failures that would otherwise silently skip review intents.
+ *
+ * Sourced from `$lib/server/github/webhooks/handled-event-types` — the single
+ * source of truth also used by the webhook subscription drift check, so the
+ * two never disagree about what Tribunal actually handles.
  */
-const ROUTER_HANDLED_EVENT_TYPES = new Set([
-  'pull_request',
-  'pull_request_review',
-  'pull_request_review_comment',
-  'check_run',
-  'check_suite',
-  'installation',
-  'installation_repositories',
-  'installation_target',
-  'github_app_authorization',
-  'push',
-]);
+const ROUTER_HANDLED_EVENT_TYPES = new Set<string>(ROUTER_HANDLED_GITHUB_WEBHOOK_EVENT_TYPES);
 
 function isPreDatabaseIgnoredWebhook(
   eventType: string | null,
@@ -413,7 +407,13 @@ export const GET: RequestHandler = async (event) => {
 
   try {
     const { getRegisteredWebhooks } = await import('@tribunal/github/webhooks/registered-webhooks');
-    const result = await getRegisteredWebhooks(githubContext);
+    // Bypass the cache: documentation/INTEGRATIONS.md tells operators to hit
+    // this endpoint immediately after updating the GitHub App's webhook
+    // subscription to confirm the fix took effect. A cached (up to 24h
+    // stale) response would report the pre-fix subscription and make the
+    // confirmation step lie — a write-then-read pattern where stale data
+    // would be incorrect, per `.claude/rules/github-api.md`.
+    const result = await getRegisteredWebhooks(githubContext, { bypass: true });
     return json(result);
   } catch (err) {
     if (err instanceof ValidationError) {

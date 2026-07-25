@@ -84,11 +84,20 @@ export interface RegisteredWebhooks {
  * This call uses the cache policy `"get-app-webhook-configuration"` with
  * key `GITHUB_APP_WEBHOOK_CONFIGURATION`. If the GitHub App's webhook
  * subscriptions are changed (for example, via the GitHub App settings UI),
- * delete that cache key to force a fresh fetch on the next request.
- * The entry will also naturally expire after 24 hours.
+ * delete that cache key to force a fresh fetch on the next request, or pass
+ * `{ bypass: true }`. The entry will also naturally expire after 24 hours.
+ *
+ * @param options.bypass - Skip the cache and always call GitHub. Callers on
+ * the webhook-subscription-drift confirmation path (`/webhooks`,
+ * `GET /api/webhooks/github`, and the startup drift check) pass this,
+ * because a stale-but-cached read there would report drift the operator has
+ * already fixed as still present for up to 24 hours -- a write-then-read
+ * pattern where stale data would be actively misleading, per
+ * `.claude/rules/github-api.md`.
  */
 export async function getRegisteredWebhooks(
   context: GithubServiceContext,
+  options: { bypass?: boolean } = {},
 ): Promise<RegisteredWebhooks> {
   const policy = requirePolicy('get-app-webhook-configuration');
 
@@ -137,6 +146,12 @@ export async function getRegisteredWebhooks(
     }
   };
 
-  const { value } = await cachedRead<RegisteredWebhooks>(context.cache, policy, fetchFunction, []);
+  const { value } = await cachedRead<RegisteredWebhooks>(
+    context.cache,
+    policy,
+    fetchFunction,
+    [],
+    options,
+  );
   return value;
 }
