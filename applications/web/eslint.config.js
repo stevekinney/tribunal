@@ -7,6 +7,27 @@ import ts from 'typescript-eslint';
 import svelteConfig from './svelte.config.js';
 import oxlint from 'eslint-plugin-oxlint';
 
+/**
+ * Every AST shape that means "this collection/list is empty", scoping the
+ * `no-restricted-syntax` empty-state entries below to `{#if}` blocks that
+ * actually guard emptiness: `x.length === 0`, `== 0`, `<= 0`, `< 1`, and
+ * `!x.length`. Each variant is duplicated for optional-chained member access
+ * (`x?.length`), which the ESTree spec wraps in a `ChainExpression` one
+ * level above the underlying `MemberExpression`.
+ */
+const EMPTY_LENGTH_CHECKS = [
+  ...['===', '==', '<='].flatMap((operator) => [
+    `[expression.type='BinaryExpression'][expression.operator='${operator}'][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0]`,
+    `[expression.type='BinaryExpression'][expression.operator='${operator}'][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=0]`,
+  ]),
+  "[expression.type='BinaryExpression'][expression.operator='<'][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=1]",
+  "[expression.type='BinaryExpression'][expression.operator='<'][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=1]",
+  "[expression.type='UnaryExpression'][expression.operator='!'][expression.argument.type='MemberExpression'][expression.argument.property.name='length']",
+  "[expression.type='UnaryExpression'][expression.operator='!'][expression.argument.type='ChainExpression'][expression.argument.expression.type='MemberExpression'][expression.argument.expression.property.name='length']",
+];
+
+const EMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})`;
+
 export default defineConfig(
   {
     ignores: [
@@ -76,13 +97,13 @@ export default defineConfig(
       'no-restricted-syntax': [
         'error',
         {
-          selector:
-            "SvelteIfBlock[expression.type='BinaryExpression'][expression.operator='==='][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0] > SvelteElement[kind='html'][name.name='p'], SvelteIfBlock[expression.type='BinaryExpression'][expression.operator='==='][expression.left.type='MemberExpression'][expression.left.property.name='length'][expression.right.value=0] > :not(SvelteElseBlock) SvelteElement[kind='html'][name.name='p']",
+          selector: `${EMPTY_LENGTH_SELECTOR} > SvelteElement[kind='html'][name.name='p'], ${EMPTY_LENGTH_SELECTOR} > :not(SvelteElseBlock) SvelteElement[kind='html'][name.name='p']`,
           message:
-            'Render <EmptyState> from @lostgradient/cinder/empty-state for a `.length === 0` branch instead of a bare <p>. A hand-rolled paragraph drops the accessible group labelling EmptyState provides.',
+            'Render <EmptyState> from @lostgradient/cinder/empty-state for a `.length` empty check instead of a bare <p>. A hand-rolled paragraph drops the accessible group labelling EmptyState provides.',
         },
         {
-          selector: 'SvelteEachBlock > SvelteElseBlock SvelteText[value=/\\S/]',
+          selector:
+            "SvelteEachBlock > SvelteElseBlock SvelteText[value=/\\S/]:not(SvelteElement[kind='component'][name.name='EmptyState'] SvelteText)",
           message:
             'An {#each}{:else} fallback renders when the collection is empty — use <EmptyState> from @lostgradient/cinder/empty-state instead of raw text so the empty state gets a labelled group and (optionally) an icon/action.',
         },

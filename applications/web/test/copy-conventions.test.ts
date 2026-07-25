@@ -19,16 +19,16 @@ const EXCLUDED_FILES = [join('routes', '(authenticated)', 'repositories', '+page
  * `CI` is explicitly exempted (see .claude/rules/conventions.md) and is not
  * on the denylist.
  *
- * Every pattern is case-sensitive and whole-word (`\b...\b`) so it matches
- * only the standalone abbreviation, never a substring of a longer identifier
- * or word: `prNumber`, `prHref`, `pr-link`, `repositoryOwner`, `configurable`,
- * and `organization` all pass untouched. Lowercase `pr`/`repo` inside
- * identifiers (for example the `review-pr:` workflow-type string) also pass,
- * because the denylist requires the capitalized form for `PR` and does not
- * flag lowercase `pr` at all — this deliberately leaves engine identifiers
- * like `review-pr:<repositoryId>` alone, since those are not authored prose.
+ * Every pattern is whole-word (`\b...\b`) so it matches only the standalone
+ * abbreviation, never a substring of a longer identifier or word:
+ * `prNumber`, `prHref`, `pr-link`, `repositoryOwner`, `configurable`, and
+ * `organization` all pass untouched. `repo`/`config`/`org` are matched in
+ * both lowercase and title case (`Repo`, `Config`, `Org`) since prose
+ * capitalizes them at the start of a heading or sentence. `PR` stays
+ * uppercase-only and lowercase `pr` is never flagged, so engine identifiers
+ * like `review-pr:<repositoryId>` (not authored prose) still pass.
  */
-const DENYLIST: RegExp[] = [/\bPRs?\b/, /\brepos?\b/, /\bconfigs?\b/, /\borgs?\b/];
+const DENYLIST: RegExp[] = [/\bPRs?\b/, /\b[Rr]epos?\b/, /\b[Cc]onfigs?\b/, /\b[Oo]rgs?\b/];
 
 const SRC_ROOT = join(import.meta.dirname, '..', 'src');
 
@@ -71,10 +71,14 @@ function stripNonProse(source: string): string {
  * of violation that a template-only scan would miss entirely.
  *
  * Template-literal interpolations (`${...}`) and Svelte mustache expressions
- * (`{...}`) are stripped before matching: they hold identifiers and
- * expressions (loop variables like `repo`, member access like
- * `run.prNumber`), never authored prose, so leaving them in would flag
- * variable names instead of copy.
+ * (`{...}`) are blanked from the outer literal/text before matching: they
+ * hold identifiers and expressions (loop variables like `repo`, member access
+ * like `run.prNumber`), never authored prose, so leaving them in would flag
+ * variable names instead of copy. But an interpolation can itself embed
+ * authored string literals — a plural ternary like
+ * `` `${count} ${count === 1 ? 'repository' : 'repositories'}` `` — so each
+ * interpolation's contents are separately re-scanned for nested string
+ * literals instead of being discarded wholesale.
  *
  * The plain-text-node pass additionally drops entire `<script>` blocks
  * (tags and content, not just tags): once tags are stripped, raw script
@@ -85,12 +89,35 @@ function stripNonProse(source: string): string {
  */
 function extractProseCandidates(source: string): string[] {
   const literalPattern = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
-  const literals = [...source.matchAll(literalPattern)].map((match) =>
-    match[0].replace(/\$\{[^}]*\}/g, ''),
-  );
+  const interpolationPattern = /\$\{[^}]*\}/g;
+
+  const literals = [...source.matchAll(literalPattern)].flatMap((match) => {
+    const literal = match[0];
+    const nestedLiterals = [...literal.matchAll(interpolationPattern)].flatMap((interpolation) =>
+      [...interpolation[0].matchAll(literalPattern)].map((nested) => nested[0]),
+    );
+    return [literal.replace(interpolationPattern, ''), ...nestedLiterals];
+  });
   const templateOnly = source.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
   const textNodes = templateOnly.replace(/<[^>]+>/g, '\n').replace(/\{[^{}]*\}/g, '');
   return [...literals, textNodes];
+}
+
+/** Returns every banned-abbreviation match found in `source`'s user-facing copy. */
+function findViolations(source: string): string[] {
+  const prose = stripNonProse(source);
+  const violations: string[] = [];
+
+  for (const candidate of extractProseCandidates(prose)) {
+    for (const pattern of DENYLIST) {
+      const match = candidate.match(pattern);
+      if (match) {
+        violations.push(`"${match[0]}" in: ${candidate.trim().slice(0, 100)}`);
+      }
+    }
+  }
+
+  return violations;
 }
 
 describe('user-facing copy avoids banned abbreviations', () => {
@@ -112,19 +139,29 @@ describe('user-facing copy avoids banned abbreviations', () => {
     const relativePath = relative(SRC_ROOT, file);
 
     it(`${relativePath} has no banned abbreviations in user-facing copy`, () => {
-      const prose = stripNonProse(readFileSync(file, 'utf-8'));
-      const violations: string[] = [];
-
-      for (const candidate of extractProseCandidates(prose)) {
-        for (const pattern of DENYLIST) {
-          const match = candidate.match(pattern);
-          if (match) {
-            violations.push(`"${match[0]}" in: ${candidate.trim().slice(0, 100)}`);
-          }
-        }
-      }
-
-      expect(violations).toEqual([]);
+      expect(findViolations(readFileSync(file, 'utf-8'))).toEqual([]);
     });
   }
+});
+
+describe('user-facing copy avoids banned abbreviations: regression cases', () => {
+  it('flags a banned abbreviation hidden inside a template interpolation', () => {
+    const source = "<span>{`${count} ${count === 1 ? 'PR' : 'PRs'}`}</span>";
+    expect(findViolations(source).length).toBeGreaterThan(0);
+  });
+
+  it('still allows the same interpolation shape when it uses full words', () => {
+    const source = "<span>{`${count} ${count === 1 ? 'repository' : 'repositories'}`}</span>";
+    expect(findViolations(source)).toEqual([]);
+  });
+
+  it('flags title-case abbreviations at the start of a heading or sentence', () => {
+    expect(findViolations('<h2>Repo settings</h2>').length).toBeGreaterThan(0);
+    expect(findViolations('<p>Config values are missing.</p>').length).toBeGreaterThan(0);
+    expect(findViolations('<p>Org access required.</p>').length).toBeGreaterThan(0);
+  });
+
+  it('still allows the lowercase-only engine identifier exemption for pr', () => {
+    expect(findViolations('<span>review-pr:{repositoryId}</span>')).toEqual([]);
+  });
 });
