@@ -1,6 +1,6 @@
 import { page } from 'vitest/browser';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from 'vitest-browser-svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render } from 'vitest-browser-svelte';
 import OnboardingPage from './+page.svelte';
 import type { PageData } from './$types';
 
@@ -15,13 +15,20 @@ vi.mock('$app/navigation', () => ({ invalidateAll }));
 // expire mid-flow). Mock it out so the nav/picker assertions below don't
 // depend on PUBLIC_NEON_AUTH_URL being configured in this browser test
 // environment; the wiring itself is covered by the dedicated test below.
+// broadcastNeonSessionLogout is also mocked (even though this page doesn't
+// call it directly) because it lives in the same module as the two exports
+// above -- if UserMenu (which does call it) is ever pulled into this page's
+// render tree, an incomplete mock would return undefined and throw at
+// sign-out instead of failing cleanly.
 const mocks = vi.hoisted(() => ({
   getNeonAuthClient: vi.fn(),
   startNeonSessionRefresh: vi.fn(),
+  broadcastNeonSessionLogout: vi.fn(),
 }));
 vi.mock('$lib/auth/neon-client', () => ({
   getNeonAuthClient: mocks.getNeonAuthClient,
   startNeonSessionRefresh: mocks.startNeonSessionRefresh,
+  broadcastNeonSessionLogout: mocks.broadcastNeonSessionLogout,
 }));
 
 describe('/onboarding page', () => {
@@ -29,7 +36,17 @@ describe('/onboarding page', () => {
     invalidateAll.mockReset();
     mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: vi.fn() });
     mocks.startNeonSessionRefresh.mockReset().mockReturnValue(vi.fn());
+    mocks.broadcastNeonSessionLogout.mockReset();
   });
+
+  // useNeonSessionRefresh's $effect starts a real interval and a real
+  // visibilitychange listener (mocked getSession/startNeonSessionRefresh
+  // notwithstanding) on every render() below. Without tearing the component
+  // down between tests, those mounts -- and their listeners -- pile up
+  // across the whole describe block, and the very first test's "was
+  // startNeonSessionRefresh called" assertion would keep passing for the
+  // wrong reason once any later test has also mounted.
+  afterEach(() => cleanup());
 
   it('starts periodic Neon Auth session refresh on mount, same as the authenticated layout', async () => {
     const fakeClient = { getSession: vi.fn() };
