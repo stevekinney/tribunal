@@ -39,7 +39,11 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await page.getByRole('link', { name: 'security-review' }).click();
   await expect(page).toHaveURL(/\/agents\/agent-e2e-\d+$/);
   await expect(page.getByRole('heading', { name: 'security-review' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Agent basics' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Identity' })).toBeVisible();
+  // The Enabled control now lives in the page header, not inside the form
+  // section — assert both, so a regression moving it back or losing its
+  // checked state is caught here rather than only in an isolated component test.
+  await expect(page.getByRole('checkbox', { name: 'Enabled' })).toBeChecked();
 
   await page.goto('/runs');
   await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();

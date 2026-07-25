@@ -1,9 +1,13 @@
 <script lang="ts">
   import Page from '$lib/components/page.svelte';
-  import AgentEditor from '../agent-editor.svelte';
+  import AgentEditor, { AGENT_EDITOR_FORM_ID } from '../agent-editor.svelte';
+  import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { untrack } from 'svelte';
   import type { PageProps } from './$types';
 
   let { data, form }: PageProps = $props();
+
+  let enabled = $state(untrack(() => form?.values?.enabled ?? true));
 </script>
 
 <Page
@@ -14,6 +18,16 @@
     { label: 'New agent', href: '/agents/new' },
   ]}
 >
+  {#snippet actions()}
+    <Checkbox
+      id="agent-enabled"
+      label="Enabled"
+      name="enabled"
+      form={AGENT_EDITOR_FORM_ID}
+      bind:checked={enabled}
+    />
+  {/snippet}
+
   <AgentEditor
     agent={{
       slug: '',
@@ -21,7 +35,6 @@
       body: '',
       model: 'inherit',
       effort: null,
-      enabled: true,
     }}
     defaultModel={data.defaultModel}
     modelOptions={data.modelOptions}

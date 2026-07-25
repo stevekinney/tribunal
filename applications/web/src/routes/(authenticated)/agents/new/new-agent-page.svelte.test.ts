@@ -26,8 +26,19 @@ describe('/agents/new page', () => {
     render(NewAgentPage, { data, form: null, params: {} });
 
     await expect.element(page.getByRole('heading', { name: 'New agent' })).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: 'Agent basics' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Identity' })).toBeVisible();
     await expect.element(page.getByLabelText('Slug')).toHaveValue('');
     await expect.element(page.getByRole('button', { name: 'Create agent' })).toBeVisible();
+  });
+
+  it('defaults a new agent to enabled in the header checkbox and the submitted form', async () => {
+    render(NewAgentPage, { data, form: null, params: {} });
+
+    await expect
+      .element(page.getByRole('banner').getByRole('checkbox', { name: 'Enabled' }))
+      .toBeChecked();
+
+    const saveForm = document.querySelector<HTMLFormElement>('form[action="?/save"]')!;
+    expect(new FormData(saveForm).get('enabled')).toBe('on');
   });
 });
