@@ -571,6 +571,7 @@ export type SignalShutdownInput = {
   clearIntervalFunction?: (timer: ReturnType<typeof setInterval>) => void;
   releaseAttempts?: number;
   releaseDeadlineMs?: number;
+  serverStopBudgetMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
 };
@@ -591,6 +592,15 @@ const RELEASE_RETRY_DELAY_MS = 1_000;
 // Leaves ~5s of the 20s kill_timeout for the `stop()` calls above and the
 // `exit()` call itself, on top of whatever this loop already spent.
 const DEFAULT_RELEASE_DEADLINE_MS = 15_000;
+// A hard ceiling on how much of that 15s window `server.stop(true)` may
+// consume, regardless of how long it actually takes. Without this, a hung
+// `server.stop()` would race against (and could exhaust) the *entire*
+// release deadline, leaving zero time for release() to even attempt once --
+// silently degrading back to the TTL-bound handoff this whole handler exists
+// to avoid, while still technically reaching `exit(0)` in time. Reserves at
+// least `DEFAULT_RELEASE_DEADLINE_MS - DEFAULT_SERVER_STOP_BUDGET_MS` (10s)
+// for release() no matter what server.stop() does.
+const DEFAULT_SERVER_STOP_BUDGET_MS = 5_000;
 
 /**
  * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
@@ -630,6 +640,11 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     Number.isFinite(requestedReleaseDeadlineMs) && requestedReleaseDeadlineMs > 0
       ? requestedReleaseDeadlineMs
       : DEFAULT_RELEASE_DEADLINE_MS;
+  const requestedServerStopBudgetMs = input.serverStopBudgetMs ?? DEFAULT_SERVER_STOP_BUDGET_MS;
+  const serverStopBudgetMs =
+    Number.isFinite(requestedServerStopBudgetMs) && requestedServerStopBudgetMs > 0
+      ? requestedServerStopBudgetMs
+      : DEFAULT_SERVER_STOP_BUDGET_MS;
   const now = input.now ?? (() => Date.now());
   const sleep =
     input.sleep ??
@@ -653,16 +668,17 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     // lease release below — that release is the whole point of the handler.
     // Force active connections closed (`stop(true)`): a lease handoff must not
     // be held hostage by an in-flight control/health request that could consume
-    // the whole kill_timeout before release() ever runs. Raced against the
-    // same overall deadline as the release loop below: an unbounded
-    // `server.stop()` could otherwise block the release loop from ever
-    // starting at all, or consume so much of the window that the loop starts
-    // with no time left, defeating the deadline entirely regardless of how
-    // correctly it is anchored.
+    // the whole kill_timeout before release() ever runs. Raced against a
+    // *reserved* share of the overall deadline (DEFAULT_SERVER_STOP_BUDGET_MS),
+    // not the full remaining budget: an unbounded `server.stop()` could
+    // otherwise consume the entire release deadline itself, leaving zero time
+    // for release() to even attempt once and silently degrading back to the
+    // TTL-bound handoff this handler exists to avoid, even though it would
+    // still technically reach `exit(0)` in time.
     try {
       input.scheduler.stop();
       if (input.sandboxReaperTimer !== undefined) clearIntervalFunction(input.sandboxReaperTimer);
-      const remainingMsForServerStop = releaseDeadlineAt - now();
+      const remainingMsForServerStop = Math.min(releaseDeadlineAt - now(), serverStopBudgetMs);
       if (remainingMsForServerStop > 0) {
         await raceAgainstRemainingBudget(
           Promise.resolve(input.server.stop(true)),

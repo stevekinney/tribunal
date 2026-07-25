@@ -1390,24 +1390,57 @@ describe('createSignalShutdown', () => {
   // fires, not before.
   it('anchors the release deadline at signal receipt, reducing the budget left for release() by however long server.stop() took', async () => {
     vi.useFakeTimers();
-    const serverStop = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 10_000)));
+    // Real (fake-timer-backed) delay, kept under the default 5s
+    // server-stop budget so it resolves for real rather than being cut off
+    // by that reserved cap -- this test is specifically about the deadline
+    // accounting, not the cap itself (see the dedicated cap test below).
+    const serverStop = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 4_000)));
     const release = vi.fn().mockRejectedValue(new Error('lease already gone'));
     const harness = createHarness({
       runtime: { release },
       server: { stop: serverStop },
       releaseAttempts: 8,
-      releaseDeadlineMs: 15_000,
+      releaseDeadlineMs: 6_000,
       sleep: undefined,
     });
 
     const shutdownPromise = harness.shutdown();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await shutdownPromise;
+
+    // Only ~2s of the 6s deadline remained once the 4s server-stop phase
+    // finished -- at ~1s per rejected attempt, nowhere near all 8 should run.
+    expect(release.mock.calls.length).toBeLessThan(8);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  // A P1 review concern on #217: without a reserved cap, a hung
+  // server.stop() would race against (and could exhaust) the *entire*
+  // release deadline, leaving release() no time to attempt even once --
+  // silently degrading back to the TTL-bound handoff this handler exists to
+  // avoid, while still technically reaching exit(0) on schedule.
+  it('reserves budget for release() even when server.stop() hangs for the whole release deadline', async () => {
+    vi.useFakeTimers();
+    const serverStop = vi.fn(() => new Promise<void>(() => {}));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseDeadlineMs: 15_000,
+      serverStopBudgetMs: 5_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    // The stop phase is capped at 5s regardless of the 15s overall deadline.
     await vi.advanceTimersByTimeAsync(5_000);
     await shutdownPromise;
 
-    // Only ~5s of the 15s deadline remained once the 10s server-stop phase
-    // finished -- at ~1s per rejected attempt, nowhere near all 8 should run.
-    expect(release.mock.calls.length).toBeLessThan(8);
+    // release() still gets called -- and here succeeds immediately -- using
+    // the ~10s of release-deadline budget the reserved cap preserved.
+    expect(release).toHaveBeenCalledTimes(1);
     expect(harness.exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
