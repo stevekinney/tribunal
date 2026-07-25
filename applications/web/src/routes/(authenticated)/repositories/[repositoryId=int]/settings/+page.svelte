@@ -7,10 +7,12 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { ConfirmDialog } from '@lostgradient/cinder/confirm-dialog';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { FormField } from '@lostgradient/cinder/form-field';
   import { Link } from '@lostgradient/cinder/link';
   import { TagInput } from '@lostgradient/cinder/tag-input';
+  import EyeOff from 'lucide-svelte/icons/eye-off';
   import Save from 'lucide-svelte/icons/save';
   import type { PageProps } from './$types';
 
@@ -22,6 +24,15 @@
     { label: repositoryName, href: `/repositories/${data.repository.id}/pull-requests` },
     { label: 'Settings' },
   ]);
+
+  let confirmUnwatchOpen = $state(false);
+  let unwatchTriggerRef = $state<HTMLElement | null>(null);
+  let unwatchFormElement = $state<HTMLFormElement | null>(null);
+
+  function openUnwatchConfirmation(event: MouseEvent) {
+    unwatchTriggerRef = event.currentTarget as HTMLElement;
+    confirmUnwatchOpen = true;
+  }
 
   /**
    * First-time setup (not watched, no saved settings) defaults the agent
@@ -53,6 +64,7 @@
 
   <form
     method="POST"
+    action="?/save"
     class="settings-form"
     use:enhance={() => {
       saving = true;
@@ -155,7 +167,33 @@
       </Button>
     </div>
   </form>
+
+  {#if data.repository.review.watched}
+    <Card title="Danger zone" tone="danger" headingLevel={2}>
+      <p class="danger-copy">
+        Stop watching this repository. Tribunal removes it from the repositories list and stops
+        reviewing its pull requests immediately. Saved ignore globs and agent assignments are kept,
+        so re-adding it later restores this configuration.
+      </p>
+      <form method="POST" action="?/unwatch" bind:this={unwatchFormElement} class="unwatch-form">
+        <Button type="button" variant="danger" onclick={openUnwatchConfirmation}>
+          {#snippet leadingIcon()}<EyeOff size={14} aria-hidden="true" />{/snippet}
+          Stop watching
+        </Button>
+      </form>
+    </Card>
+  {/if}
 </Page>
+
+<ConfirmDialog
+  bind:open={confirmUnwatchOpen}
+  triggerRef={unwatchTriggerRef}
+  title="Stop watching this repository?"
+  description="Tribunal removes it from the repositories list and stops reviewing its pull requests. Saved ignore globs and agent assignments are kept for next time."
+  destructive
+  confirmLabel="Stop watching"
+  onconfirm={() => unwatchFormElement?.requestSubmit()}
+/>
 
 <style>
   .settings-form {
@@ -196,5 +234,16 @@
   .settings-actions {
     display: flex;
     justify-content: flex-end;
+  }
+
+  .danger-copy {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-4);
+  }
+
+  .unwatch-form {
+    display: flex;
+    justify-content: flex-start;
   }
 </style>

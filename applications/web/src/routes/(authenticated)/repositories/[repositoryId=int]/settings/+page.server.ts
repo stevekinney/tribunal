@@ -5,6 +5,7 @@ import { userCanAccessRepository } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
   listAgents,
+  saveRepositoryWatchSettings,
   submitRepositorySettingsForm,
 } from '$lib/server/review/operator';
 import type { PageServerLoad } from './$types';
@@ -57,7 +58,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 };
 
 export const actions: Actions = {
-  default: async ({ locals, request, params }) => {
+  // SvelteKit forbids mixing a `default` action with named actions, so this
+  // route uses `save`/`unwatch` rather than `default`/`unwatch`. The form's
+  // `action` attribute must be updated to `?/save` to match.
+  save: async ({ locals, request, params }) => {
     const { user } = locals;
     if (!user) redirect(302, '/login');
 
@@ -73,5 +77,38 @@ export const actions: Actions = {
 
     const formData = await request.formData();
     return submitRepositorySettingsForm(user.id, repositoryId, formData);
+  },
+
+  /**
+   * Stops watching (unwatches) this repository — the only place to do so
+   * once the repositories list dropped its per-row toggle. Preserves the
+   * repository's saved ignore globs and agent assignment exactly like the
+   * removed table toggle did, so a later re-add restores the same
+   * configuration instead of resetting to first-time defaults.
+   */
+  unwatch: async ({ locals, params }) => {
+    const { user } = locals;
+    if (!user) redirect(302, '/login');
+
+    const repositoryId = Number(params.repositoryId);
+    if (!Number.isInteger(repositoryId) || repositoryId <= 0) {
+      return fail(400, { error: 'Repository is invalid.' });
+    }
+
+    const canAccess = await userCanAccessRepository(user.id, repositoryId);
+    if (!canAccess) {
+      error(404, 'Repository not found');
+    }
+
+    const details = (await getRepositoryOperatorDetails(user.id, [repositoryId])).get(repositoryId);
+    const result = await saveRepositoryWatchSettings(user.id, {
+      repositoryId,
+      watched: false,
+      ignoreGlobs: details?.ignoreGlobs ?? [],
+      agentIds: details?.agents.map((agent) => agent.id) ?? [],
+    });
+    if (result && 'status' in result) return result;
+
+    redirect(303, '/repositories');
   },
 };

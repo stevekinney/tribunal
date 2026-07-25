@@ -433,4 +433,53 @@ describe('/repositories/[repositoryId]/settings page', () => {
     expect(enhancedFormTesting.submissions).toHaveLength(1);
     expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['agent_1']);
   });
+
+  it('shows a danger zone with a stop-watching control for a watched repository', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await expect.element(page.getByRole('heading', { name: 'Danger zone' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Stop watching' })).toBeVisible();
+  });
+
+  it('hides the danger zone stop-watching control for a repository that is not watched', async () => {
+    render(SettingsPage, {
+      data: {
+        ...baseData,
+        repository: {
+          ...baseData.repository,
+          review: { ...baseData.repository.review, watched: false },
+        },
+      },
+      form: null,
+      params: { repositoryId: '101' },
+    });
+
+    await expect
+      .element(page.getByRole('button', { name: 'Stop watching' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('gates unwatching behind a confirmation dialog', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect
+      .element(dialog.getByRole('heading', { name: 'Stop watching this repository?' }))
+      .toBeVisible();
+    await expect.element(dialog.getByRole('button', { name: 'Stop watching' })).toBeVisible();
+  });
+
+  it('submits the unwatch form when the confirmation dialog is confirmed', async () => {
+    render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
+
+    const unwatchForm = document.querySelector<HTMLFormElement>('form[action="?/unwatch"]')!;
+    const submitSpy = vi.spyOn(unwatchForm, 'requestSubmit').mockImplementation(() => {});
+
+    await page.getByRole('button', { name: 'Stop watching' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Stop watching' }).click();
+
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+  });
 });

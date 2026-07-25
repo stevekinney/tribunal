@@ -1,6 +1,6 @@
 import { page } from 'vitest/browser';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from 'vitest-browser-svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render } from 'vitest-browser-svelte';
 // Rendering a route component directly (rather than through the root
 // `+layout.svelte`) skips `layout.css`, the only place Cinder's design tokens
 // and `@layer` order get imported. Without it, the computed-style assertions
@@ -15,12 +15,6 @@ import { render } from 'vitest-browser-svelte';
 import '@lostgradient/cinder/styles';
 import RepositoriesPage from './+page.svelte';
 import type { PageData } from './$types';
-
-const invalidateAllMock = vi.hoisted(() => vi.fn());
-
-vi.mock('$app/navigation', () => ({
-  invalidateAll: invalidateAllMock,
-}));
 
 const enhancedFormTesting = vi.hoisted(() => {
   function createDeferred() {
@@ -227,8 +221,15 @@ const baseData: PageData = {
 describe('/repositories page', () => {
   beforeEach(() => {
     enhancedFormTesting.reset();
-    invalidateAllMock.mockReset();
   });
+
+  // Cinder's Tooltip portals its accessible text span to `document.body`
+  // rather than the component's own render root, so it survives past a bare
+  // unmount. Without explicit cleanup, portalled tooltip spans from an
+  // earlier test in this file leak into the next one and make `getByText`
+  // ambiguous (multiple rate-limit/tooltip strings sitting in the DOM at
+  // once).
+  afterEach(() => cleanup());
 
   it('prompts users to install the GitHub App when no installation exists', async () => {
     render(RepositoriesPage, { data: baseData, form: null, params: {} });
@@ -434,7 +435,7 @@ describe('/repositories page', () => {
     await expect.element(page.getByText('3 unresolved')).toBeInTheDocument();
   });
 
-  it('renders unknown statuses and a partial-failure alert when GitHub data is unavailable', async () => {
+  it('names the specific reason in the banner when every unavailable repository shares one cause', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
@@ -467,12 +468,95 @@ describe('/repositories page', () => {
       params: {},
     });
 
-    await expect.element(page.getByText(/could not be refreshed this build/)).toBeInTheDocument();
+    // Regression: a single vague "could not be refreshed" banner used to be
+    // the most specific information available anywhere, including to an
+    // engineer with the source open. A rate limit and a GitHub error are
+    // different operational situations and must read differently.
+    await expect
+      .element(page.getByText(/GitHub rate-limited Tribunal partway through this page load/))
+      .toBeInTheDocument();
     const unknownCells = page.getByText('Unknown');
     await expect.element(unknownCells.first()).toBeInTheDocument();
   });
 
-  it('flags the "needs attention" empty state as partial when data is unavailable', async () => {
+  it('falls back to a generic banner pointing at per-row indicators when unavailable repositories disagree on the reason', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [
+          makeRepository(),
+          makeRepository({ id: 202, owner: 'other-org', name: 'widgets' }),
+        ],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({ dataStatus: 'unavailable', unavailableReason: 'rate-limited' }),
+          makeDashboardRow({
+            repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
+            dataStatus: 'unavailable',
+            unavailableReason: 'github-error',
+          }),
+        ]),
+        summary: Promise.resolve({
+          totalRepositoryCount: 2,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: false,
+          openPullRequestCount: 0,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: true,
+        }),
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect
+      .element(page.getByText(/could not be refreshed this build, for more than\s+one\s+reason/))
+      .toBeInTheDocument();
+  });
+
+  it('shows a per-row tooltip trigger naming the specific unavailable reason', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            dataStatus: 'unavailable',
+            unavailableReason: 'api-budget-exhausted',
+            defaultBranchStatus: 'unknown',
+            openPullRequestCount: null,
+            attentionPullRequestCount: null,
+            unresolvedThreadCount: null,
+          }),
+        ]),
+        summary: Promise.resolve(okSummaryForOne),
+      },
+      form: null,
+      params: {},
+    });
+
+    await expect
+      .element(page.getByRole('button', { name: 'Repository data unavailable' }))
+      .toBeInTheDocument();
+    // Regression: budget exhaustion (a deliberate skip) and a GitHub error
+    // used to render identically as an unlabeled "Unknown" — distinguish them.
+    await expect
+      .element(
+        page.getByText(
+          /Skipped this build: Tribunal's shared GitHub API budget ran out before reaching this repository/,
+        ),
+      )
+      .toBeInTheDocument();
+  });
+
+  it('flags the "needs attention" empty state as partial and points at the per-row indicator when data is unavailable', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
@@ -510,10 +594,50 @@ describe('/repositories page', () => {
     // attention" or "some repositories were never inspected" (rate limit,
     // budget exhaustion, no installation, GitHub error). These must not read
     // the same to the user.
-    await expect.element(page.getByText(/Attention data is incomplete/)).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('heading', { name: 'This list may be incomplete' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText(/could not be checked this build/)).toBeInTheDocument();
     await expect
       .element(page.getByText('No open pull requests need attention right now.'))
       .not.toBeInTheDocument();
+  });
+
+  it('explains a stale/capped attention list without pointing at a nonexistent warning icon when no row is fully unavailable', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({ openPullRequestCount: 100, openPullRequestCountAtCap: true }),
+        ]),
+        attentionPullRequests: Promise.resolve([]),
+        summary: Promise.resolve({
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 100,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: false,
+        }),
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: `attentionPullRequestCountExact` also goes false purely
+    // from the 100-item pull request page cap, with zero unavailable rows and
+    // therefore zero warning icons on the page — the copy must not send the
+    // reader looking for an icon that isn't there.
+    await expect
+      .element(page.getByText(/exceeded the per-repository results limit/))
+      .toBeInTheDocument();
+    await expect.element(page.getByText(/see the warning icon/i)).not.toBeInTheDocument();
   });
 
   it('marks the failing default branch stat as partial when data is unavailable', async () => {
@@ -720,99 +844,6 @@ describe('/repositories page', () => {
     await expect.element(page.getByText('No results')).toBeInTheDocument();
   });
 
-  it('submits the row form with preserved agents and ignore globs when removing a repository', async () => {
-    render(RepositoriesPage, {
-      data: {
-        ...baseData,
-        installations: [
-          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
-        ],
-        repositories: [
-          makeRepository({
-            review: {
-              hasSavedSettings: true,
-              watched: true,
-              lastRunStatus: null,
-              estimatedCostLast30DaysUsd: 0,
-              ignoreGlobs: ['generated/**', 'vendor/**'],
-              agents: [{ id: '2', slug: 'documentation', enabled: true }],
-            },
-          }),
-        ],
-        summary: Promise.resolve(okSummaryForOne),
-      },
-      form: null,
-      params: {},
-    });
-
-    // The table only ever holds added repositories, so its toggle removes them —
-    // and it submits the current agents/globs so a later re-add restores them.
-    await page.getByRole('switch', { name: 'Repository watched' }).click();
-
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-    expect(enhancedFormTesting.submissions[0]?.formData.getAll('agentIds')).toEqual(['2']);
-    expect(enhancedFormTesting.submissions[0]?.formData.get('ignoreGlobs')).toBe(
-      'generated/**\nvendor/**',
-    );
-    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('');
-  });
-
-  it('queues rapid watch re-toggles so the final submitted state wins', async () => {
-    render(RepositoriesPage, {
-      data: {
-        ...baseData,
-        installations: [
-          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
-        ],
-        repositories: [makeRepository()],
-        summary: Promise.resolve(okSummaryForOne),
-      },
-      form: null,
-      params: {},
-    });
-
-    await page.getByRole('switch', { name: 'Repository watched' }).click();
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-    expect(enhancedFormTesting.submissions[0]?.formData.get('watched')).toBe('');
-
-    await page.getByRole('switch', { name: 'Repository watched' }).click();
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-
-    enhancedFormTesting.submissions[0]?.resolveResult();
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-    enhancedFormTesting.submissions[0]?.resolveUpdate();
-
-    await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
-    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('on');
-  });
-
-  it('allows watch toggles after an enhanced update rejects', async () => {
-    render(RepositoriesPage, {
-      data: {
-        ...baseData,
-        installations: [
-          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
-        ],
-        repositories: [makeRepository()],
-        summary: Promise.resolve(okSummaryForOne),
-      },
-      form: null,
-      params: {},
-    });
-
-    await page.getByRole('switch', { name: 'Repository watched' }).click();
-    expect(enhancedFormTesting.submissions).toHaveLength(1);
-
-    enhancedFormTesting.submissions[0]?.resolveResult();
-    enhancedFormTesting.submissions[0]?.rejectUpdate(new Error('Network failed'));
-
-    await expect.element(page.getByRole('switch', { name: 'Repository watched' })).toBeVisible();
-
-    await page.getByRole('switch', { name: 'Repository watched' }).click();
-    await expect.poll(() => enhancedFormTesting.submissions.length).toBe(2);
-    expect(enhancedFormTesting.submissions[1]?.formData.get('watched')).toBe('');
-  });
-
   it('shows a top-level alert when the page failed to load some data', async () => {
     render(RepositoriesPage, {
       data: { ...baseData, loadError: 'Could not reach GitHub. Showing cached data.' },
@@ -962,55 +993,76 @@ describe('/repositories page', () => {
       .toHaveAttribute('href', '/connect/github/account');
   });
 
-  it('falls back to a fetch-based watch submission and refreshes when the row form has been removed from the DOM', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('does not render a Watching column or toggle in the list view', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve(okSummaryForOne),
+      },
+      form: null,
+      params: {},
+    });
 
-    try {
-      render(RepositoriesPage, {
-        data: {
-          ...baseData,
-          installations: [
-            { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
-          ],
-          repositories: [
-            makeRepository({
-              review: {
-                hasSavedSettings: true,
-                watched: true,
-                lastRunStatus: null,
-                estimatedCostLast30DaysUsd: 0,
-                ignoreGlobs: [],
-                agents: [{ id: '1', slug: 'security', enabled: true }],
-              },
-            }),
-          ],
-          summary: Promise.resolve(okSummaryForOne),
-        },
-        form: null,
-        params: {},
-      });
+    await expect
+      .element(page.getByRole('columnheader', { name: 'Watching' }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('switch', { name: 'Repository watched' }))
+      .not.toBeInTheDocument();
+  });
 
-      // First toggle starts a submission; the second (while it's in flight)
-      // is queued instead of submitted immediately.
-      await page.getByRole('switch', { name: 'Repository watched' }).click();
-      await page.getByRole('switch', { name: 'Repository watched' }).click();
-      expect(enhancedFormTesting.submissions).toHaveLength(1);
+  it('links each row to the repository settings page, the only place to stop watching a repository now', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve(okSummaryForOne),
+      },
+      form: null,
+      params: {},
+    });
 
-      // Filtering the table removes the row's form from the DOM before the
-      // first submission settles, so the queued re-toggle can no longer find
-      // it via document.getElementById and must fall back to a direct fetch.
-      await page.getByRole('searchbox', { name: 'Search repositories' }).fill('no-match');
+    await expect
+      .element(page.getByRole('link', { name: 'Repository settings' }))
+      .toHaveAttribute('href', '/repositories/101/settings');
+  });
 
-      enhancedFormTesting.submissions[0]?.resolveResult();
-      enhancedFormTesting.submissions[0]?.resolveUpdate();
+  it('uses full-word column headers and explains what "Needs attention" means', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve(okSummaryForOne),
+      },
+      form: null,
+      params: {},
+    });
 
-      await expect
-        .poll(() => fetchMock)
-        .toHaveBeenCalledWith('?/watch', expect.objectContaining({ method: 'POST' }));
-      await expect.poll(() => invalidateAllMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    await expect
+      .element(page.getByRole('columnheader', { name: 'Open pull requests' }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole('columnheader', { name: 'Open PRs' }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(
+        page.getByText(
+          'A pull request needs attention when its own CI is failing or erroring, it has a merge conflict with the base branch, or it has unresolved review threads.',
+        ),
+      )
+      .toBeInTheDocument();
   });
 });

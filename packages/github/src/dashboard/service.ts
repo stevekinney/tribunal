@@ -114,6 +114,28 @@ const DASHBOARD_PULL_REQUEST_FILTERS: PullRequestFilterOptions = {
 };
 
 /**
+ * Logs a GitHub read failure that a dashboard-row catch block would otherwise
+ * silently discard. Every catch site below already classifies the failure
+ * (rate limit vs. everything else) to decide whether to trip the shared
+ * budget; this reuses that same classification to pick the log level, so a
+ * rate limit (an expected operational condition once traffic grows) doesn't
+ * page anyone at `console.error` severity the way a genuine GitHub/network
+ * failure should.
+ */
+function logDashboardReadFailure(
+  operation: string,
+  repository: Pick<DashboardRepositoryIdentity, 'id' | 'owner' | 'name'>,
+  error: unknown,
+): void {
+  const identity = `${repository.owner}/${repository.name} (#${repository.id})`;
+  if (isRateLimitError(error)) {
+    console.warn(`[dashboard] ${operation} rate-limited for ${identity}`, error);
+  } else {
+    console.error(`[dashboard] ${operation} failed for ${identity}`, error);
+  }
+}
+
+/**
  * Build one dashboard row per authorized repository.
  *
  * Repositories are built with bounded concurrency (see
@@ -182,6 +204,7 @@ async function buildRepositoryRow(
     // load instead of short-circuiting on the rate limit / surfacing the
     // real failure.
     if (isRateLimitError(error)) budget.markRateLimited();
+    logDashboardReadFailure('getInstallationOctokit', repository, error);
     return unavailableRow(
       identity,
       refreshedAt,
@@ -208,6 +231,7 @@ async function buildRepositoryRow(
     pullRequests = result.pullRequests;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
+    logDashboardReadFailure('listPullRequests', repository, error);
     return unavailableRow(
       identity,
       refreshedAt,
@@ -500,6 +524,7 @@ async function readRulesetRequiredChecks(
     return normalizeCachedRulesetResult(value);
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
+    logDashboardReadFailure('getBranchRules', repository, error);
     // Any failure here — budget exhaustion (thrown as
     // `RulesetBudgetExhaustedError` above), a rate limit, a network error,
     // or anything else `getBranchRules` can throw — is incomplete evidence,
@@ -569,6 +594,7 @@ async function readDefaultBranchStatus(
     requiredChecks = head.requiredChecks;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
+    logDashboardReadFailure('getBranchHeadSha', repository, error);
     if (!commitSha) return 'unknown';
   }
 
@@ -616,6 +642,7 @@ async function readDefaultBranchStatus(
     return ciState.ciStatus;
   } catch (error) {
     if (isRateLimitError(error)) budget.markRateLimited();
+    logDashboardReadFailure('getDefaultBranchCiStatus', repository, error);
     return 'unknown';
   }
 }
