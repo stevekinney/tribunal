@@ -20,7 +20,7 @@ Core technologies:
 The implemented MVP topology is designed around three application containers:
 
 - `applications/web`: SvelteKit web UI, authentication, GitHub webhooks, operator pages, and test-only E2E harness.
-- `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, and GitHub review posting. Cost is recorded as estimates only; per-run reconciliation against the Anthropic Usage & Cost API is not achievable on that endpoint (it has no run/request/API-key dimension) and was removed — see #215.
+- `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, and GitHub review posting. Cost is recorded as estimates only; per-run reconciliation against the Anthropic Usage & Cost API is not achievable on that endpoint (it has no run or request dimension) and was removed — see #215.
 - `applications/proxy`: signed egress boundary for reviewer sandboxes.
 
 This file and [`documentation/deployment/containers.md`](./deployment/containers.md) are the source
@@ -107,9 +107,8 @@ the retry-aware error taxonomy (`@tribunal/github/error-taxonomy`, distinguishin
 non-retryable failures such as `ValidationError` and `RateLimitError`).
 
 **`@tribunal/database`** (`packages/database/`) — Database schema, connection factory, Drizzle
-operators, query helpers, and Zod validation schemas (`@tribunal/database/validation/user-api-key`).
-Depends on Drizzle ORM and `@neondatabase/serverless`. This is the single source of truth for all
-table definitions.
+operators, and query helpers. Depends on Drizzle ORM and `@neondatabase/serverless`. This is the
+single source of truth for all table definitions.
 
 Additional supporting packages: **`@tribunal/cost`** (cost ledger), **`@tribunal/sandbox`**
 (sandbox adapter), **`@tribunal/test`** (test utilities), and **`@tribunal/typescript`** (shared
@@ -151,7 +150,6 @@ authorization model.
 ```mermaid
 erDiagram
   USER ||--o{ OAUTH_CONNECTION : "holds API tokens"
-  USER ||--o{ USER_API_KEY : "owns"
   USER ||--o{ GITHUB_INSTALLATION : "connects"
   GITHUB_INSTALLATION ||--o{ GITHUB_INSTALLATION_REPOSITORY : "grants access to"
   REPOSITORY ||--o{ GITHUB_INSTALLATION_REPOSITORY : "linked through"

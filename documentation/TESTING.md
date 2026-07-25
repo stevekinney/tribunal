@@ -155,22 +155,6 @@ Provides `createMockRequestEvent()` for testing SvelteKit server functions:
 - Mocks `RequestEvent` with a custom URL, method, headers, body, and locals
 - Converts plain objects to `FormData` for action testing
 
-### Running API Key Tests
-
-```bash
-# Unit tests (auth, service layer, endpoint contract, form actions)
-bun run test
-
-# Server-side unit tests only
-bun run --cwd applications/web test:unit:server
-
-# End-to-end tests (lifecycle, permissions, key invalidation)
-bun run --cwd applications/web test:e2e
-
-# Full validation (type checking + Svelte check)
-bun run --cwd applications/web check
-```
-
 ## Related Rules
 
 - `../.claude/rules/testing.md`

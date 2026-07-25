@@ -32,7 +32,7 @@ Supporting tables:
 
 - **Auth/identity**: Neon Auth owns identity and sessions. Tribunal exports
   `user` with `neon_auth_user_id`, plus `oauth_connection` for encrypted GitHub
-  API tokens and `user_api_key`.
+  API tokens.
 - **Webhooks**: `webhook_event` (references `repository`) and
   `github_webhook_delivery` for delivery-claim/idempotency.
 - **Workflow tables**: `workflow_run`, `workflow_config`, and

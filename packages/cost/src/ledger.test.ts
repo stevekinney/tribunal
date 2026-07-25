@@ -145,7 +145,7 @@ describe('cost ledger', () => {
 
   // Per-run cost reconciliation was removed (see #215): the Anthropic cost
   // report endpoint only supports daily buckets grouped by description or
-  // workspace_id — it has no run, request, or API-key dimension — so a
+  // workspace_id — it has no run, request, or credential dimension — so a
   // per-run reconcile could only ever attribute the organization's entire
   // daily spend to a single review run. `createCostPort` no longer exposes a
   // `reconcile` capability at all, and nothing writes `source: 'reconciled'`

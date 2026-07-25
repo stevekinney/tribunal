@@ -248,7 +248,7 @@ describe('ReviewWorkflowEngine', () => {
   });
 
   // Per-run cost reconciliation was removed (see #215): the Anthropic cost
-  // report endpoint has no run/request/API-key dimension, so a per-run
+  // report endpoint has no run/request/credential dimension, so a per-run
   // `reconcile()` call can only ever attribute the organization's entire
   // daily spend to one run. `FakeCostPort.reconcile` below is not part of
   // `CostPort` and always throws — it exists purely as a tripwire so a

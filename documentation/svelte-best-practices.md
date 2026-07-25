@@ -289,7 +289,8 @@ returning them, which keeps components simple and the boundary data JSON-ish.
 
 Form actions are the production-stable way to mutate server state. Always:
 
-- Validate input inside the action (we use Zod schemas from `@tribunal/database`, in `packages/database/src/validation/`).
+- Validate input inside the action. Use Zod for structured form data, and move
+  schemas into a shared package only when more than one boundary needs them.
 - Re-check auth and permissions (actions do not inherit layout auth).
 - Return structured errors with `fail` for re-rendering.
 - Never store per-user action results in module scope.
@@ -298,18 +299,32 @@ Each named action re-checks auth, validates form data with a schema, and returns
 `fail(...)` with a structured payload on error:
 
 ```ts
+import { error, fail } from '@sveltejs/kit';
+import { z } from 'zod';
+
+type ActionEvent = {
+  request: Request;
+  locals: { user: { id: number } | null };
+};
+
+const notificationPreferencesSchema = z.object({
+  emailNotifications: z.literal('on').optional().transform(Boolean),
+});
+
 export const actions = {
-  updateSettings: async ({ request, locals }) => {
+  saveNotificationPreferences: async ({ request, locals }: ActionEvent) => {
     if (!locals.user) {
       error(401, 'Authentication required');
     }
 
     const formData = await request.formData();
-    const result = updateSettingsSchema.safeParse({ watched: formData.get('watched') });
+    const result = notificationPreferencesSchema.safeParse({
+      emailNotifications: formData.get('emailNotifications'),
+    });
 
     if (!result.success) {
       return fail(400, {
-        action: 'updateSettings',
+        action: 'saveNotificationPreferences',
         error: 'INVALID_INPUT',
         message: result.error.issues[0].message,
         field: result.error.issues[0].path[0],
@@ -318,10 +333,11 @@ export const actions = {
 
     // ...persist the settings and return a structured success payload
   },
-} satisfies Actions;
+};
 ```
 
-Named actions are invoked via `action="?/updateSettings"` and friends.
+Named actions are invoked via `action="?/saveNotificationPreferences"` and
+friends.
 
 Use `use:enhance` for progressive enhancement where JS should improve UX but is
 not required. If you disable CSR (`export const csr = false`), scripts are
