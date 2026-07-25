@@ -2,9 +2,47 @@ import { createRawSnippet } from 'svelte';
 import { page } from 'vitest/browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'vitest-browser-svelte';
-import UserMenu from './user-menu.svelte';
+import UserMenu, { neonAuthSignOutTimeoutMs } from './user-menu.svelte';
 
 const TEST_USER = { username: 'testuser', avatarUrl: null };
+
+const mocks = vi.hoisted(() => ({
+  broadcastNeonSessionLogout: vi.fn(),
+  signOut: vi.fn(),
+}));
+
+vi.mock('$lib/auth/neon-client', () => ({
+  broadcastNeonSessionLogout: mocks.broadcastNeonSessionLogout,
+  getNeonAuthClient: () => ({ signOut: mocks.signOut }),
+}));
+
+/**
+ * Mirrors the real `use:enhance` contract closely enough for this test:
+ * intercepts the native submit, awaits the passed submit function (the real
+ * implementation awaits it too, before ever dispatching a fetch), and never
+ * lets the form actually POST -- there's no real /logout server to hit in
+ * this component test, and this file only needs to prove the submit
+ * function runs, not exercise SvelteKit's own progressive-enhancement
+ * plumbing (that's SvelteKit's own test suite's job).
+ */
+vi.mock('$app/forms', () => ({
+  enhance: (
+    formElement: HTMLFormElement,
+    submitFunction?: () => void | Promise<void> | (() => void | Promise<void>),
+  ) => {
+    const handleSubmit = (event: SubmitEvent) => {
+      event.preventDefault();
+      void submitFunction?.();
+    };
+
+    formElement.addEventListener('submit', handleSubmit);
+    return {
+      destroy() {
+        formElement.removeEventListener('submit', handleSubmit);
+      },
+    };
+  },
+}));
 
 /**
  * Wait for the trigger to be interactive before opening the dropdown. Under
@@ -21,6 +59,8 @@ async function openUserMenu() {
 describe('UserMenu', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mocks.broadcastNeonSessionLogout.mockReset();
+    mocks.signOut.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -33,12 +73,11 @@ describe('UserMenu', () => {
     await expect.element(trigger).toBeInTheDocument();
   });
 
-  it('submits the logout form when Sign out is clicked', async () => {
+  it('broadcasts the cross-tab logout signal and ends the Neon Auth session before submitting the logout form', async () => {
     render(UserMenu, { id: 'test-menu', user: TEST_USER });
 
     await openUserMenu();
 
-    // Dropdown.Item renders with role="menuitem", not role="button"
     const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
     await expect.element(signOutItem).toBeInTheDocument();
 
@@ -49,12 +88,66 @@ describe('UserMenu', () => {
     await expect.element(signOutItem).toHaveAttribute('type', 'submit');
     await expect.element(signOutItem).toHaveAttribute('form', form.id);
 
-    const submitSpy = vi.fn((e: Event) => e.preventDefault());
-    form.addEventListener('submit', submitSpy);
-
     await signOutItem.click();
 
-    expect(submitSpy).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mocks.broadcastNeonSessionLogout).toHaveBeenCalledTimes(1);
+      expect(mocks.signOut).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not block local logout when Neon Auth sign-out stalls instead of rejecting', async () => {
+    // A hung (never-settling) signOut() must not block use:enhance's await
+    // forever -- withTimeout races it against neonAuthSignOutTimeoutMs so
+    // local logout (clearing Tribunal's own cookie) can never be held
+    // hostage by a stalled or unreachable identity provider.
+    mocks.signOut.mockReturnValueOnce(new Promise(() => {}));
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    try {
+      render(UserMenu, { id: 'test-menu', user: TEST_USER });
+
+      await openUserMenu();
+      const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
+      await signOutItem.click();
+
+      await vi.advanceTimersByTimeAsync(neonAuthSignOutTimeoutMs);
+
+      expect(mocks.broadcastNeonSessionLogout).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Failed to end the Neon Auth session during sign-out',
+        expect.objectContaining({
+          message: `Neon Auth sign-out did not respond within ${neonAuthSignOutTimeoutMs}ms`,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('still submits the logout form (and logs, but does not throw) when ending the Neon Auth session fails', async () => {
+    const signOutError = new Error('network unreachable');
+    mocks.signOut.mockRejectedValueOnce(signOutError);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(UserMenu, { id: 'test-menu', user: TEST_USER });
+
+    await openUserMenu();
+
+    const signOutItem = page.getByRole('menuitem', { name: /sign out/i });
+    await signOutItem.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.broadcastNeonSessionLogout).toHaveBeenCalledTimes(1);
+      expect(mocks.signOut).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'Failed to end the Neon Auth session during sign-out',
+        signOutError,
+      );
+    });
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('displays the username in the dropdown label', async () => {

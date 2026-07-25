@@ -1,5 +1,9 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
-import { createNeonSessionFromToken, setNeonAuthTokenCookie } from '$lib/server/auth/neon-session';
+import {
+  createNeonSessionFromToken,
+  setNeonAuthTokenCookie,
+  validateNeonSessionFromToken,
+} from '$lib/server/auth/neon-session';
 import { hasWatchedRepositories } from '$lib/server/review/operator';
 import type { RequestHandler } from './$types';
 
@@ -32,9 +36,22 @@ export const POST: RequestHandler = async (event) => {
     error(400, 'Missing Neon Auth token');
   }
 
+  // `refreshOnly` requests (the periodic session-refresh path in
+  // `$lib/auth/neon-client.ts`) only verify the token and reset the cookie's
+  // expiry -- they must never create or update the mapped user's profile.
+  // Only the explicit sign-in bridge call (the default, `refreshOnly` unset)
+  // is allowed to do that. See `$lib/auth/neon-client.ts`'s
+  // `PostNeonSessionTokenOptions` for why.
+  const refreshOnly =
+    typeof body === 'object' && body !== null && 'refreshOnly' in body
+      ? body.refreshOnly === true
+      : false;
+
   let sessionResult: Awaited<ReturnType<typeof createNeonSessionFromToken>>;
   try {
-    sessionResult = await createNeonSessionFromToken(token);
+    sessionResult = refreshOnly
+      ? await validateNeonSessionFromToken(token)
+      : await createNeonSessionFromToken(token);
   } catch (sessionError) {
     console.error('Failed to create Tribunal Neon Auth session', sessionError);
     const sessionErrorResponse = getSessionErrorResponse(sessionError);
@@ -60,7 +77,15 @@ export const POST: RequestHandler = async (event) => {
   // explicit deep link the user was headed to before signing in is still
   // respected as-is. '/' itself keeps this same check for anyone who lands
   // there directly (e.g. a bookmark), independent of this shortcut.
-  const postLoginPath = (await hasWatchedRepositories(user.id)) ? '/repositories' : '/onboarding';
+  //
+  // Skipped for `refreshOnly` requests: the periodic background refresh
+  // (`startNeonSessionRefresh`) never reads this field, so computing it (an
+  // extra database query) on every five-minute refresh would be pure waste.
+  const postLoginPath = refreshOnly
+    ? undefined
+    : (await hasWatchedRepositories(user.id))
+      ? '/repositories'
+      : '/onboarding';
 
   return json({
     user,

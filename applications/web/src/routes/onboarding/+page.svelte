@@ -10,12 +10,19 @@
   import { SearchField } from '@lostgradient/cinder/search-field';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Steps } from '@lostgradient/cinder/steps';
+  import { useNeonSessionRefresh } from '$lib/auth/neon-session-refresh.svelte';
   import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
   import Gavel from 'lucide-svelte/icons/gavel';
   import GitBranch from 'lucide-svelte/icons/git-branch';
   import GithubIcon from 'lucide-svelte/icons/github';
 
   let { data, form }: PageProps = $props();
+
+  // This route renders outside (authenticated)/+layout.svelte (see this
+  // page's own +page.server.ts) but is itself authenticated and can run long
+  // enough -- installing the GitHub App, picking repositories -- for the
+  // bridged session cookie to otherwise expire mid-flow without this.
+  useNeonSessionRefresh();
 
   // Pre-select repositories that are already being watched. untrack keeps this a
   // one-time seed (the set is then user-mutated) and avoids state_referenced_locally.
@@ -223,37 +230,38 @@
           </div>
 
           <ul class="repo-list" aria-label="Repositories">
-            {#each filteredRepositories as repo (repo.id)}
+            {#each filteredRepositories as repository (repository.id)}
               <li class="repo-row">
                 <Checkbox
-                  id="repo-{repo.id}"
-                  checked={selectedIds.has(repo.id)}
+                  id="repo-{repository.id}"
+                  checked={selectedIds.has(repository.id)}
                   fieldClass="repo-row-checkbox"
                   onValueChange={(next) => {
                     if (next) {
-                      selectedIds.add(repo.id);
+                      selectedIds.add(repository.id);
                     } else {
-                      selectedIds.delete(repo.id);
+                      selectedIds.delete(repository.id);
                     }
                   }}
                 />
                 <!--
                   The label's for= creates explicit association with the input
-                  inside Checkbox (which receives id="repo-{repo.id}"). Clicking
+                  inside Checkbox (which receives id="repo-{repository.id}"). Clicking
                   anywhere in the label — icon, name, branch badge — toggles the
                   checkbox. No label prop is passed to Checkbox to avoid nesting
                   two <label> elements.
                 -->
-                <label for="repo-{repo.id}" class="repo-row-label">
+                <label for="repo-{repository.id}" class="repo-row-label">
                   <span class="repo-icon" aria-hidden="true">
                     <FolderGit2 size={16} />
                   </span>
                   <div class="repo-identity">
-                    <span class="repo-owner">{repo.owner}</span><span class="repo-separator">/</span
-                    ><span class="repo-name">{repo.name}</span>
+                    <span class="repo-owner">{repository.owner}</span><span class="repo-separator"
+                      >/</span
+                    ><span class="repo-name">{repository.name}</span>
                   </div>
-                  {#if repo.defaultBranch}
-                    <Badge size="sm" variant="neutral">{repo.defaultBranch}</Badge>
+                  {#if repository.defaultBranch}
+                    <Badge size="sm" variant="neutral">{repository.defaultBranch}</Badge>
                   {/if}
                 </label>
               </li>

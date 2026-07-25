@@ -3,11 +3,24 @@ import { error } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { and, eq, ne, sql } from 'drizzle-orm';
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey, type JWTPayload } from 'jose';
+import {
+  createRemoteJWKSet,
+  jwtVerify,
+  errors as joseErrors,
+  type JWTVerifyGetKey,
+  type JWTPayload,
+} from 'jose';
 import { user as userTable } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
 import { suggestHandle, validateHandle } from './handle-generator';
 import { slugify } from '$lib/utilities/slugify';
+import {
+  describeAuthFailureForLogging,
+  isTransientJwksFailure,
+  TransientAuthInfrastructureError,
+} from './neon-auth-failure';
+
+export { TransientAuthInfrastructureError } from './neon-auth-failure';
 
 export const neonAuthTokenCookieName = 'tribunal-neon-auth-token';
 
@@ -99,28 +112,44 @@ export async function verifyNeonAuthToken(
     error(401, 'Missing Neon Auth token');
   }
 
-  const baseUrl = options.baseUrl ?? getConfiguredNeonAuthBaseUrl();
-  const issuerAndAudience = getNeonAuthIssuerAndAudience(baseUrl);
-  const issuer = options.issuer ?? issuerAndAudience;
-  const audience = options.audience ?? issuerAndAudience;
-  const key = options.key ?? getRemoteJwks(baseUrl);
-
+  // Resolving configuration (NEON_AUTH_BASE_URL) and constructing the JWKS
+  // URL happen inside this same try block, not before it: a misconfigured
+  // or momentarily-unparseable base URL is exactly the kind of
+  // infrastructure problem isTransientJwksFailure already knows how to
+  // classify (it throws a plain, non-JOSEError Error/TypeError, which falls
+  // through to that function's transient-by-default case) -- it says
+  // nothing about whether the presented token itself is valid, so it must
+  // not clear the caller's session cookie either.
+  let issuer: string | undefined;
+  let audience: string | undefined;
   let payload: JWTPayload;
   try {
-    const result = await jwtVerify(token, key, {
-      issuer,
-      audience,
-    });
+    const baseUrl = options.baseUrl ?? getConfiguredNeonAuthBaseUrl();
+    const issuerAndAudience = getNeonAuthIssuerAndAudience(baseUrl);
+    issuer = options.issuer ?? issuerAndAudience;
+    audience = options.audience ?? issuerAndAudience;
+    const key = options.key ?? getRemoteJwks(baseUrl);
+
+    const result = await jwtVerify(token, key, { issuer, audience });
     payload = result.payload;
   } catch (verificationError) {
-    if (dev) {
-      console.error('Neon Auth JWT verification failed', {
+    if (isTransientJwksFailure(verificationError)) {
+      throw new TransientAuthInfrastructureError('Neon Auth JWKS verification unavailable', {
+        cause: verificationError,
+      });
+    }
+
+    // isTransientJwksFailure already returned false above, which is only
+    // possible when verificationError is a JOSEError subclass (see its
+    // jsdoc) -- this guard is for TypeScript's benefit, not a real branch.
+    if (verificationError instanceof joseErrors.JOSEError) {
+      // Always logged (not dev-gated): production has no other signal for
+      // why a Neon Auth session was rejected. Never logs the token or
+      // decoded claims -- see describeAuthFailureForLogging.
+      console.error('[neon-session] Rejecting Neon Auth token', {
         issuer,
         audience,
-        message:
-          verificationError instanceof Error
-            ? verificationError.message
-            : 'Unknown verification failure',
+        ...describeAuthFailureForLogging(verificationError),
       });
     }
     error(401, 'Invalid Neon Auth token');
@@ -370,7 +399,18 @@ export async function validateNeonSessionFromToken(
   options?: NeonTokenVerificationOptions,
 ): Promise<NeonSessionValidationResult> {
   const verifiedToken = await verifyNeonAuthToken(token, options);
-  const user = await findMappedUser(verifiedToken.neonAuthUserId);
+
+  // The token is already cryptographically valid at this point, so any
+  // throw from this lookup can only be a database availability problem --
+  // never evidence that the token itself is bad.
+  let user: AuthenticatedApplicationUser | null;
+  try {
+    user = await findMappedUser(verifiedToken.neonAuthUserId);
+  } catch (databaseError) {
+    throw new TransientAuthInfrastructureError('Neon Auth session lookup failed', {
+      cause: databaseError,
+    });
+  }
 
   if (!user) {
     error(401, 'Neon Auth user is not linked to a Tribunal user');

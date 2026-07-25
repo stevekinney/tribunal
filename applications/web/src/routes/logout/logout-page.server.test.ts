@@ -14,9 +14,9 @@ vi.mock('$lib/server/auth/neon-session', () => ({
   deleteNeonAuthTokenCookie: mockDeleteNeonAuthTokenCookie,
 }));
 
-import { POST } from './+server';
+import { actions } from './+page.server';
 
-describe('POST /logout', () => {
+describe('logout default action', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -24,7 +24,7 @@ describe('POST /logout', () => {
   it('deletes the Neon auth token cookie and redirects to /', async () => {
     const cookies = { delete: vi.fn() };
 
-    await expect(POST({ cookies } as never)).rejects.toMatchObject({
+    await expect(actions.default({ cookies } as never)).rejects.toMatchObject({
       status: 302,
       location: '/',
     });

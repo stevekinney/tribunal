@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { getNeonAuthClient } from '$lib/auth/neon-client';
+  import { getNeonAuthClient, postNeonSessionToken } from '$lib/auth/neon-client';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
 
   let status = $state<'loading' | 'error'>('loading');
@@ -35,21 +35,12 @@
         throw new Error(message);
       }
 
-      const response = await fetch('/api/auth/neon-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token }),
-      });
-
-      if (!response.ok) {
+      let sessionBridgeResult: { postLoginPath?: string };
+      try {
+        sessionBridgeResult = await postNeonSessionToken(token);
+      } catch (bridgeError) {
         failureCode = 'neon_auth_session_failed';
-        const responseBody = await response.text();
-        console.error('Tribunal Neon Auth session bridge failed', {
-          status: response.status,
-          body: responseBody,
-        });
+        console.error('Tribunal Neon Auth session bridge failed', bridgeError);
         throw new Error('Tribunal could not establish a Neon Auth session');
       }
 
@@ -60,8 +51,7 @@
       // server round trip for a decision already made. An explicit deep
       // link (anything other than '/') is still respected as-is.
       if (returnTo === '/') {
-        const sessionBody = (await response.json()) as { postLoginPath?: string };
-        await goto(sessionBody.postLoginPath ?? '/');
+        await goto(sessionBridgeResult.postLoginPath ?? '/');
       } else {
         await goto(returnTo);
       }

@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
   },
   goto: vi.fn(),
   getSession: vi.fn(),
-  fetch: vi.fn(),
+  getNeonAuthClient: vi.fn(),
+  postNeonSessionToken: vi.fn(),
 }));
 
 vi.mock('$app/state', () => ({
@@ -23,9 +24,8 @@ vi.mock('$app/navigation', () => ({
 }));
 
 vi.mock('$lib/auth/neon-client', () => ({
-  getNeonAuthClient: () => ({
-    getSession: mocks.getSession,
-  }),
+  getNeonAuthClient: mocks.getNeonAuthClient,
+  postNeonSessionToken: mocks.postNeonSessionToken,
 }));
 
 describe('/auth/callback page', () => {
@@ -35,8 +35,8 @@ describe('/auth/callback page', () => {
     );
     mocks.goto.mockReset();
     mocks.getSession.mockReset();
-    mocks.fetch.mockReset();
-    vi.unstubAllGlobals();
+    mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: mocks.getSession });
+    mocks.postNeonSessionToken.mockReset();
   });
 
   it('bridges the Neon JWT to SvelteKit and redirects to returnTo', async () => {
@@ -44,21 +44,14 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', mocks.fetch);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({});
 
     render(AuthCallbackPage);
 
     await expect.element(browserPage.getByText('Completing sign in...')).toBeInTheDocument();
     await vi.waitFor(() => {
       expect(mocks.getSession).toHaveBeenCalledWith();
-      expect(mocks.fetch).toHaveBeenCalledWith('/api/auth/neon-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token: 'neon-jwt' }),
-      });
+      expect(mocks.postNeonSessionToken).toHaveBeenCalledWith('neon-jwt');
       expect(mocks.goto).toHaveBeenCalledWith('/repositories');
     });
   });
@@ -71,10 +64,7 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ postLoginPath: '/onboarding' }), { status: 200 }),
-    );
-    vi.stubGlobal('fetch', mocks.fetch);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({ postLoginPath: '/onboarding' });
 
     render(AuthCallbackPage);
 
@@ -92,8 +82,7 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', mocks.fetch);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({});
 
     render(AuthCallbackPage);
 
@@ -107,17 +96,11 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          error: {
-            message: 'Failed query: select "email", "neon_auth_user_id" from "user"',
-          },
-        }),
-        { status: 500 },
+    mocks.postNeonSessionToken.mockRejectedValueOnce(
+      new Error(
+        'Tribunal could not establish a Neon Auth session (status 500): {"error":{"message":"Failed query: select \\"email\\", \\"neon_auth_user_id\\" from \\"user\\""}}',
       ),
     );
-    vi.stubGlobal('fetch', mocks.fetch);
 
     render(AuthCallbackPage);
 
