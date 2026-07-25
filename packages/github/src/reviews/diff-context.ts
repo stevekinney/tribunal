@@ -55,7 +55,7 @@ export async function getPullRequestMetadata(
 ): Promise<PullRequestMetadata> {
   validateDiffContextInput(input);
   const octokit = await requireInstallationOctokit(context, input.installationId);
-  const policy = requirePolicy('get-pull-request');
+  const policy = requirePolicy('get-pull-request-metadata');
   const { value } = await cachedRead<PullRequest>(
     context.cache,
     policy,

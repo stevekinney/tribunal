@@ -28,6 +28,9 @@ const pullRequestResponse = {
   user: { login: 'steve' },
 };
 
+const pullRequestDetailCacheKey = 'github:response:lostgradient:tribunal:pr:42';
+const pullRequestMetadataCacheKey = 'github:response:lostgradient:tribunal:pr:42:metadata';
+
 function createContext(
   listFiles: ReturnType<typeof vi.fn>,
   octokit?: Octokit | null,
@@ -266,7 +269,7 @@ describe('getDiffContext', () => {
 });
 
 describe('getPullRequestMetadata', () => {
-  it('uses the cached pull request read policy', async () => {
+  it('uses the cached pull request metadata policy', async () => {
     const getPullRequest = vi.fn().mockResolvedValue({
       status: 200,
       headers: { etag: '"pull-request-etag"' },
@@ -298,6 +301,54 @@ describe('getPullRequestMetadata', () => {
       pull_number: 42,
       headers: undefined,
     });
+    expect(context.cache.getCached).toHaveBeenCalledWith(pullRequestMetadataCacheKey);
+    expect(context.cache.setCache).toHaveBeenCalledWith(
+      pullRequestMetadataCacheKey,
+      expect.objectContaining({
+        value: pullRequestResponse,
+        etag: '"pull-request-etag"',
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it('does not read transformed pull request detail cache entries as raw metadata', async () => {
+    const getPullRequest = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { etag: '"pull-request-metadata-etag"' },
+      data: pullRequestResponse,
+    });
+    const context = createContext(vi.fn(), {
+      rest: { pulls: { get: getPullRequest } },
+    } as unknown as Octokit);
+    vi.mocked(context.cache.getCached).mockImplementation(async (key) => {
+      if (key !== pullRequestDetailCacheKey) return null;
+
+      return {
+        value: {
+          id: 42,
+          number: 42,
+          title: 'Transformed pull request detail',
+          headSha: 'transformed-head-sha',
+        },
+        fetchedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        source: 'api',
+      };
+    });
+
+    await expect(
+      getPullRequestMetadata(context, {
+        installationId: 1,
+        owner: 'lostgradient',
+        repository: 'tribunal',
+        pullRequestNumber: 42,
+      }),
+    ).resolves.toMatchObject({ headSha: 'head-sha' });
+
+    expect(context.cache.getCached).toHaveBeenCalledWith(pullRequestMetadataCacheKey);
+    expect(context.cache.getCached).not.toHaveBeenCalledWith(pullRequestDetailCacheKey);
+    expect(getPullRequest).toHaveBeenCalledTimes(1);
   });
 
   it('returns cached pull request metadata without calling GitHub', async () => {
@@ -320,6 +371,7 @@ describe('getPullRequestMetadata', () => {
         pullRequestNumber: 42,
       }),
     ).resolves.toMatchObject({ headSha: 'head-sha' });
+    expect(context.cache.getCached).toHaveBeenCalledWith(pullRequestMetadataCacheKey);
     expect(getPullRequest).not.toHaveBeenCalled();
   });
 
@@ -345,6 +397,7 @@ describe('getPullRequestMetadata', () => {
         pullRequestNumber: 42,
       }),
     ).resolves.toMatchObject({ headSha: 'head-sha' });
+    expect(context.cache.getCached).toHaveBeenCalledWith(pullRequestMetadataCacheKey);
     expect(getPullRequest).toHaveBeenCalledWith({
       owner: 'lostgradient',
       repo: 'tribunal',

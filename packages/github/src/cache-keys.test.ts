@@ -33,9 +33,12 @@ describe('CACHE_KEYS', () => {
     );
   });
 
-  it('builds PR detail and diff context keys', () => {
-    expect.assertions(2);
+  it('builds PR detail, metadata, and diff context keys', () => {
+    expect.assertions(3);
     expect(CACHE_KEYS.GITHUB_PR_DETAIL('octo', 'repo', 9)).toBe('github:response:octo:repo:pr:9');
+    expect(CACHE_KEYS.GITHUB_PR_METADATA('octo', 'repo', 9)).toBe(
+      'github:response:octo:repo:pr:9:metadata',
+    );
     expect(CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(3, 9, 'sha123')).toBe(
       'github:response:repository:3:pr:9:head:sha123:diff-context',
     );
