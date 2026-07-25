@@ -11,6 +11,7 @@ const neonSessionBridgeEndpoint = '/api/auth/neon-session';
 // inside that window so the bridged Tribunal cookie (whose `expires` mirrors
 // the JWT's own `exp`) never goes stale while the user is active.
 export const neonSessionRefreshIntervalMs = 5 * 60 * 1000;
+export const neonSessionResumeRefreshPendingMaximumMs = 1500;
 
 // Cross-tab logout signal: `$lib/components/user-menu.svelte`'s sign-out
 // form broadcasts on this channel (via `broadcastNeonSessionLogout`, in its
@@ -130,20 +131,25 @@ export type RefreshNeonSessionCookieOptions = {
  * if it fails -- except when the failure is the `signal` above firing, which
  * means the caller already tore this down and isn't waiting for a result.
  */
-export function refreshNeonSessionCookie(
+export async function refreshNeonSessionCookie(
   sessionData: unknown,
   options: RefreshNeonSessionCookieOptions = {},
-): void {
+): Promise<void> {
   const token = extractRefreshedSessionToken(sessionData);
   if (!token || token === lastPostedNeonSessionToken) return;
 
-  void postNeonSessionToken(token, { refreshOnly: true, signal: options.signal }).catch(
-    (error: unknown) => {
-      if (options.signal?.aborted) return;
-      console.error('Failed to refresh the Tribunal Neon Auth session cookie', error);
-    },
-  );
+  try {
+    await postNeonSessionToken(token, { refreshOnly: true, signal: options.signal });
+  } catch (error) {
+    if (options.signal?.aborted) return;
+    console.error('Failed to refresh the Tribunal Neon Auth session cookie', error);
+  }
 }
+
+export type StartNeonSessionRefreshOptions = {
+  onResumeRefreshPendingChange?: (pending: boolean) => void;
+  resumeRefreshPendingMaximumMs?: number;
+};
 
 export function getNeonAuthClient() {
   const authUrl = env.PUBLIC_NEON_AUTH_URL;
@@ -226,19 +232,50 @@ export function getNeonAuthClient() {
  */
 export function startNeonSessionRefresh(
   authClient: Pick<ReturnType<typeof getNeonAuthClient>, 'getSession'>,
+  options: StartNeonSessionRefreshOptions = {},
 ): () => void {
   const abortController = new AbortController();
   let stopped = false;
+  let resumeRefreshPendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let resumeRefreshPending = false;
 
-  function refresh(): void {
-    void authClient
+  function setResumeRefreshPending(pending: boolean): void {
+    if (resumeRefreshPending === pending) return;
+    resumeRefreshPending = pending;
+    options.onResumeRefreshPendingChange?.(pending);
+  }
+
+  function clearResumeRefreshPending(): void {
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
+    setResumeRefreshPending(false);
+  }
+
+  function trackResumeRefresh(refreshPromise: Promise<void>): void {
+    if (!options.onResumeRefreshPendingChange) return;
+
+    clearResumeRefreshPending();
+    setResumeRefreshPending(true);
+
+    resumeRefreshPendingTimeout = setTimeout(
+      clearResumeRefreshPending,
+      options.resumeRefreshPendingMaximumMs ?? neonSessionResumeRefreshPendingMaximumMs,
+    );
+
+    void refreshPromise.finally(clearResumeRefreshPending);
+  }
+
+  function refresh(): Promise<void> {
+    return authClient
       .getSession({ fetchOptions: { signal: abortController.signal } })
       .then((result) => {
         const data =
           typeof result === 'object' && result !== null
             ? (result as { data?: unknown }).data
             : undefined;
-        refreshNeonSessionCookie(data, { signal: abortController.signal });
+        return refreshNeonSessionCookie(data, { signal: abortController.signal });
       })
       .catch(() => {
         // Ignored: a rejected refresh (including one aborted by tearing this
@@ -249,15 +286,15 @@ export function startNeonSessionRefresh(
 
   function refreshIfVisible(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    refresh();
+    void refresh();
   }
 
   function handleVisibilityChange(): void {
     if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-    refresh();
+    trackResumeRefresh(refresh());
   }
 
-  refresh();
+  void refresh();
   const intervalId = setInterval(refreshIfVisible, neonSessionRefreshIntervalMs);
 
   if (typeof document !== 'undefined') {
@@ -274,6 +311,7 @@ export function startNeonSessionRefresh(
     stopped = true;
 
     clearInterval(intervalId);
+    clearResumeRefreshPending();
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);

@@ -7,6 +7,7 @@ vi.mock('$env/dynamic/public', () => ({ env: mockPublicEnv }));
 import {
   broadcastNeonSessionLogout,
   getNeonAuthClient,
+  neonSessionResumeRefreshPendingMaximumMs,
   neonSessionRefreshIntervalMs,
   postNeonSessionToken,
   refreshNeonSessionCookie,
@@ -362,6 +363,89 @@ describe('startNeonSessionRefresh', () => {
       vi.unstubAllGlobals();
     });
 
+    it('marks a visible-tab resume refresh as pending until the bridge post settles', async () => {
+      const pendingChanges: boolean[] = [];
+      let resolveBridgePost: ((response: Response) => void) | undefined;
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveBridgePost = resolve;
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({
+          data: { session: { token: 'resume-token-pending' } },
+          error: null,
+        });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(pendingChanges).toEqual([true]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      resolveBridgePost?.(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(pendingChanges).toEqual([true, false]);
+    });
+
+    it('clears a visible-tab resume pending state after the capped wait when the network hangs', async () => {
+      const pendingChanges: boolean[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Never resolves: offline or captive-portal refresh.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        {
+          onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending),
+          resumeRefreshPendingMaximumMs: 25,
+        },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+
+      expect(pendingChanges).toEqual([true]);
+
+      vi.advanceTimersByTime(24);
+      expect(pendingChanges).toEqual([true]);
+
+      vi.advanceTimersByTime(1);
+      expect(pendingChanges).toEqual([true, false]);
+    });
+
+    it('does not mark routine interval refreshes as pending', () => {
+      const pendingChanges: boolean[] = [];
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+      );
+
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 2);
+
+      expect(getSession).toHaveBeenCalledTimes(3);
+      expect(pendingChanges).toEqual([]);
+    });
+
     it('skips the scheduled interval refresh while the tab is hidden', () => {
       const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
       startNeonSessionRefresh({ getSession });
@@ -412,6 +496,31 @@ describe('startNeonSessionRefresh', () => {
 
       vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 4);
       expect(getSession).toHaveBeenCalledTimes(5);
+    });
+
+    it('uses the default capped wait for visible-tab resume pending state', () => {
+      const pendingChanges: boolean[] = [];
+      const getSession = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockImplementationOnce(
+          () =>
+            new Promise(() => {
+              // Never resolves: the cap clears the UI gate independently.
+            }),
+        );
+
+      startNeonSessionRefresh(
+        { getSession },
+        { onResumeRefreshPendingChange: (pending) => pendingChanges.push(pending) },
+      );
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+
+      vi.advanceTimersByTime(neonSessionResumeRefreshPendingMaximumMs);
+
+      expect(pendingChanges).toEqual([true, false]);
     });
   });
 });

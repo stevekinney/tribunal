@@ -24,7 +24,7 @@
   // authenticated shell is mounted -- see useNeonSessionRefresh's own
   // jsdoc. `/onboarding` (which renders outside this layout) calls the same
   // helper for the same reason.
-  useNeonSessionRefresh();
+  const neonSessionRefresh = useNeonSessionRefresh();
 
   // NavigationItem owns the active styling; the app owns the routing match.
   const repositoriesActive = $derived(
@@ -90,6 +90,18 @@
 <SkipLinks />
 
 <div id="authenticated-shell" class="app-layout">
+  {#if neonSessionRefresh.isResumingSession}
+    <div
+      class="session-resume-overlay"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-testid="session-resume-overlay"
+    >
+      <div class="session-resume-panel">Restoring your session...</div>
+    </div>
+  {/if}
+
   <!--
     Mobile top bar: shown only on narrow viewports where the Sidebar renders as
     a Drawer overlay. The hamburger button opens the drawer by setting
@@ -219,6 +231,29 @@
     height: 100vh;
     overflow: hidden;
     background: var(--surface);
+  }
+
+  .session-resume-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: color-mix(in oklch, var(--surface) 70%, transparent);
+  }
+
+  .session-resume-panel {
+    max-inline-size: 18rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--cinder-surface-raised);
+    color: var(--text);
+    padding: var(--space-3) var(--space-4);
+    box-shadow: var(--shadow-lg);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    text-align: center;
   }
 
   #main-content {

@@ -22,7 +22,7 @@
   // page's own +page.server.ts) but is itself authenticated and can run long
   // enough -- installing the GitHub App, picking repositories -- for the
   // bridged session cookie to otherwise expire mid-flow without this.
-  useNeonSessionRefresh();
+  const neonSessionRefresh = useNeonSessionRefresh();
 
   // Pre-select repositories that are already being watched. untrack keeps this a
   // one-time seed (the set is then user-mutated) and avoids state_referenced_locally.
@@ -140,6 +140,18 @@
 </svelte:head>
 
 <div class="onboarding-page">
+  {#if neonSessionRefresh.isResumingSession}
+    <div
+      class="session-resume-overlay"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-testid="session-resume-overlay"
+    >
+      <div class="session-resume-panel">Restoring your session...</div>
+    </div>
+  {/if}
+
   <div class="onboarding-card">
     <!-- ── Brand panel ──────────────────────────────────────────────── -->
     <aside class="brand-panel" data-theme="dark">
@@ -302,6 +314,7 @@
   /* ── Page ───────────────────────────────────────────────────────── */
 
   .onboarding-page {
+    position: relative;
     display: flex;
     min-height: 100vh;
     align-items: center;
@@ -309,6 +322,29 @@
     /* Dark backdrop so the card floats above a deep navy vignette. */
     background: var(--auth-backdrop);
     padding: var(--space-6) var(--space-4);
+  }
+
+  .session-resume-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: color-mix(in oklch, var(--surface) 70%, transparent);
+  }
+
+  .session-resume-panel {
+    max-inline-size: 18rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--cinder-surface-raised);
+    color: var(--text);
+    padding: var(--space-3) var(--space-4);
+    box-shadow: var(--shadow-lg);
+    font-size: var(--text-sm);
+    font-weight: var(--font-medium);
+    text-align: center;
   }
 
   .onboarding-card {

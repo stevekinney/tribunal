@@ -31,6 +31,16 @@ vi.mock('$lib/auth/neon-client', () => ({
   broadcastNeonSessionLogout: mocks.broadcastNeonSessionLogout,
 }));
 
+type SessionRefreshOptions = {
+  onResumeRefreshPendingChange?: (pending: boolean) => void;
+};
+
+function latestSessionRefreshOptions(): SessionRefreshOptions {
+  const call = mocks.startNeonSessionRefresh.mock.calls.at(-1);
+  if (!call) throw new Error('Expected startNeonSessionRefresh to be called.');
+  return call[1] as SessionRefreshOptions;
+}
+
 describe('/onboarding page', () => {
   beforeEach(() => {
     invalidateAll.mockReset();
@@ -61,7 +71,29 @@ describe('/onboarding page', () => {
     render(OnboardingPage, { data, form: null, params: {} });
 
     await expect.poll(() => mocks.startNeonSessionRefresh.mock.calls.length).toBeGreaterThan(0);
-    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(fakeClient);
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(
+      fakeClient,
+      expect.objectContaining({ onResumeRefreshPendingChange: expect.any(Function) }),
+    );
+  });
+
+  it('blocks onboarding interactions while a hidden-tab session resume refresh is pending', async () => {
+    const data = {
+      repositories: [
+        { id: 1, owner: 'test-org', name: 'tribunal', defaultBranch: 'main', watched: false },
+      ],
+      installations: [{ installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null }],
+      connectReason: null,
+    } satisfies PageData;
+
+    render(OnboardingPage, { data, form: null, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(true);
+    await expect.element(page.getByRole('status')).toHaveTextContent('Restoring your session...');
+    await expect.element(page.getByTestId('session-resume-overlay')).toBeInTheDocument();
+
+    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
+    await expect.element(page.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
   });
 
   function onboardingStepItems(): HTMLElement[] {

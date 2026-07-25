@@ -68,6 +68,16 @@ const expectSidebarReviewStatus = async (label: string) => {
   await expect.element(labels.first()).toBeVisible();
 };
 
+type SessionRefreshOptions = {
+  onResumeRefreshPendingChange?: (pending: boolean) => void;
+};
+
+function latestSessionRefreshOptions(): SessionRefreshOptions {
+  const call = mocks.startNeonSessionRefresh.mock.calls.at(-1);
+  if (!call) throw new Error('Expected startNeonSessionRefresh to be called.');
+  return call[1] as SessionRefreshOptions;
+}
+
 describe('(authenticated) layout', () => {
   beforeEach(() => {
     mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: vi.fn() });
@@ -91,12 +101,28 @@ describe('(authenticated) layout', () => {
     // Exactly once: the effect reads no reactive state, so it must not
     // re-run (and re-start the interval) for the life of the component.
     expect(mocks.startNeonSessionRefresh).toHaveBeenCalledTimes(1);
-    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(fakeClient);
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(
+      fakeClient,
+      expect.objectContaining({ onResumeRefreshPendingChange: expect.any(Function) }),
+    );
     expect(stopRefresh).not.toHaveBeenCalled();
 
     cleanup();
 
     await expect.poll(() => stopRefresh.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('blocks the shell while a hidden-tab session resume refresh is pending', async () => {
+    render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
+
+    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(true);
+    await expect
+      .element(browserPage.getByRole('status'))
+      .toHaveTextContent('Restoring your session...');
+    await expect.element(browserPage.getByTestId('session-resume-overlay')).toBeInTheDocument();
+
+    latestSessionRefreshOptions().onResumeRefreshPendingChange?.(false);
+    await expect.element(browserPage.getByTestId('session-resume-overlay')).not.toBeInTheDocument();
   });
 
   it('does not crash the shell when Neon Auth session refresh fails to start', async () => {
