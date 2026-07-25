@@ -114,15 +114,11 @@ function getRows<T>(result: unknown): T[] {
 
 /**
  * Row shape returned by `listClaimableEventListenerDeliveries`: the delivery
- * plus enough listener/agent state for the caller to re-verify eligibility
- * before doing any work.
+ * plus the listener id the caller re-reads after claiming before doing work.
  */
 export interface ClaimableEventListenerDelivery {
   delivery: EventListenerDelivery;
   listenerId: string;
-  listenerEnabled: boolean;
-  agentId: string;
-  agentEnabled: boolean;
 }
 
 /**
@@ -155,9 +151,6 @@ export async function listClaimableEventListenerDeliveries(
     .select({
       delivery: eventListenerDelivery,
       listenerId: repositoryEventListener.id,
-      listenerEnabled: repositoryEventListener.enabled,
-      agentId: agent.id,
-      agentEnabled: agent.enabled,
     })
     .from(eventListenerDelivery)
     .innerJoin(

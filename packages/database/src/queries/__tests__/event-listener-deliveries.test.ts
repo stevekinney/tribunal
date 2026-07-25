@@ -81,6 +81,10 @@ async function createFixture() {
   return { user, repository, testAgent, listener, event };
 }
 
+function expectClaimableDeliveryShape(row: unknown) {
+  expect(Object.keys(row as Record<string, unknown>).sort()).toEqual(['delivery', 'listenerId']);
+}
+
 describe('insertPendingEventListenerDeliveries', () => {
   it('inserts a pending row per matched listener', async () => {
     const { user, listener, event } = await createFixture();
@@ -360,8 +364,8 @@ describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed',
 });
 
 describe('listClaimableEventListenerDeliveries', () => {
-  it('returns pending and retryable rows for the repository, including listener/agent enabled state', async () => {
-    const { repository, listener, event, testAgent } = await createFixture();
+  it('returns pending and retryable rows for the repository with only the fields needed before claim', async () => {
+    const { repository, listener, event } = await createFixture();
     const [pending] = await insertPendingEventListenerDeliveries(
       testDatabase.db,
       [listener.id],
@@ -375,10 +379,9 @@ describe('listClaimableEventListenerDeliveries', () => {
     );
 
     expect(claimable).toHaveLength(1);
+    expectClaimableDeliveryShape(claimable[0]);
     expect(claimable[0]?.delivery.id).toBe(pending.id);
-    expect(claimable[0]?.listenerEnabled).toBe(true);
-    expect(claimable[0]?.agentId).toBe(testAgent.id);
-    expect(claimable[0]?.agentEnabled).toBe(true);
+    expect(claimable[0]?.listenerId).toBe(listener.id);
   });
 
   it('excludes rows already running, succeeded, failed, or abandoned', async () => {
@@ -400,7 +403,7 @@ describe('listClaimableEventListenerDeliveries', () => {
     expect(claimable).toHaveLength(0);
   });
 
-  it('reflects a listener disabled between matching and drain', async () => {
+  it('still returns a row when a listener is disabled between matching and drain', async () => {
     const { repository, listener, event, user } = await createFixture();
     const [pending] = await insertPendingEventListenerDeliveries(
       testDatabase.db,
@@ -417,13 +420,18 @@ describe('listClaimableEventListenerDeliveries', () => {
       10,
     );
     expect(claimable).toHaveLength(1);
+    expectClaimableDeliveryShape(claimable[0]);
     expect(claimable[0]?.delivery.id).toBe(pending.id);
-    expect(claimable[0]?.listenerEnabled).toBe(false);
+    expect(claimable[0]?.listenerId).toBe(listener.id);
   });
 
-  it('reflects an agent disabled between matching and drain', async () => {
+  it('still returns a row when an agent is disabled between matching and drain', async () => {
     const { repository, listener, event, testAgent } = await createFixture();
-    await insertPendingEventListenerDeliveries(testDatabase.db, [listener.id], event.id);
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
 
     await testDatabase.db.update(agent).set({ enabled: false }).where(eq(agent.id, testAgent.id));
 
@@ -433,7 +441,9 @@ describe('listClaimableEventListenerDeliveries', () => {
       10,
     );
     expect(claimable).toHaveLength(1);
-    expect(claimable[0]?.agentEnabled).toBe(false);
+    expectClaimableDeliveryShape(claimable[0]);
+    expect(claimable[0]?.delivery.id).toBe(pending.id);
+    expect(claimable[0]?.listenerId).toBe(listener.id);
   });
 
   it('excludes ids passed via excludeIds even though they are otherwise claimable', async () => {
