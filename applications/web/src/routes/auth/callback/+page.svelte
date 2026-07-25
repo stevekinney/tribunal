@@ -35,8 +35,9 @@
         throw new Error(message);
       }
 
+      let sessionBridgeResult: { postLoginPath?: string };
       try {
-        await postNeonSessionToken(token);
+        sessionBridgeResult = await postNeonSessionToken(token);
       } catch (bridgeError) {
         failureCode = 'neon_auth_session_failed';
         console.error('Tribunal Neon Auth session bridge failed', bridgeError);
@@ -50,8 +51,7 @@
       // server round trip for a decision already made. An explicit deep
       // link (anything other than '/') is still respected as-is.
       if (returnTo === '/') {
-        const sessionBody = (await response.json()) as { postLoginPath?: string };
-        await goto(sessionBody.postLoginPath ?? '/');
+        await goto(sessionBridgeResult.postLoginPath ?? '/');
       } else {
         await goto(returnTo);
       }

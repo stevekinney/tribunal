@@ -145,6 +145,22 @@ describe('POST /api/auth/neon-session', () => {
     expect(body.postLoginPath).toBe('/onboarding');
   });
 
+  it('omits postLoginPath for refreshOnly requests, since the periodic refresh never reads it', async () => {
+    await userFactory.create({
+      username: 'bridge-refresh-postloginpath',
+      neonAuthUserId: 'neon-bridge-user',
+      email: 'refresh-only@example.com',
+    });
+
+    const { response } = await postToken(await createToken({ email: 'refresh-only@example.com' }), {
+      refreshOnly: true,
+    });
+    const body = (await response.json()) as { postLoginPath?: string };
+
+    expect(body.postLoginPath).toBeUndefined();
+    expect.assertions(1);
+  });
+
   it('rejects a malformed JSON body', async () => {
     const event = createMockRequestEvent({
       url: 'http://localhost/api/auth/neon-session',

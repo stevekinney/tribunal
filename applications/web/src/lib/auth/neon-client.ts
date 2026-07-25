@@ -73,6 +73,18 @@ export type PostNeonSessionTokenOptions = {
   signal?: AbortSignal;
 };
 
+export type PostNeonSessionTokenResult = {
+  /**
+   * Where the sign-in callback should go instead of `/` -- resolved once by
+   * the session bridge (an extra "does this user have watched repositories?"
+   * database check) so the callback can skip the intermediate `/` hop whose
+   * own load function would otherwise make this exact same check. Only
+   * present for the default (non-`refreshOnly`) sign-in request; the
+   * periodic background refresh never reads this field.
+   */
+  postLoginPath?: string;
+};
+
 /**
  * POSTs a Neon Auth JWT to Tribunal's session-bridge endpoint
  * (`/api/auth/neon-session`), which verifies it and resets the httpOnly
@@ -83,7 +95,7 @@ export type PostNeonSessionTokenOptions = {
 export async function postNeonSessionToken(
   token: string,
   options: PostNeonSessionTokenOptions = {},
-): Promise<void> {
+): Promise<PostNeonSessionTokenResult> {
   const response = await fetch(neonSessionBridgeEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -99,6 +111,8 @@ export async function postNeonSessionToken(
   }
 
   lastPostedNeonSessionToken = token;
+
+  return (await response.json()) as PostNeonSessionTokenResult;
 }
 
 function extractRefreshedSessionToken(candidate: unknown): string | null {

@@ -44,7 +44,7 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.postNeonSessionToken.mockResolvedValueOnce(undefined);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({});
 
     render(AuthCallbackPage);
 
@@ -64,10 +64,7 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ postLoginPath: '/onboarding' }), { status: 200 }),
-    );
-    vi.stubGlobal('fetch', mocks.fetch);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({ postLoginPath: '/onboarding' });
 
     render(AuthCallbackPage);
 
@@ -85,8 +82,7 @@ describe('/auth/callback page', () => {
       data: { session: { token: 'neon-jwt' } },
       error: null,
     });
-    mocks.fetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', mocks.fetch);
+    mocks.postNeonSessionToken.mockResolvedValueOnce({});
 
     render(AuthCallbackPage);
 
