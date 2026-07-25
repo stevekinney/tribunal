@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
+import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
@@ -13,7 +14,10 @@ import {
   createPostgresAdvisoryLock,
   HELD_ELSEWHERE_MESSAGE,
 } from './workflows/postgres-advisory-lock';
-import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
+import {
+  createReviewIntentConsumerFromEnvironment,
+  EngineLeaseUnavailableError,
+} from './workflows/runtime-ports';
 import { parseEngineEnvironment } from './environment';
 
 export function parsePort(value: string | undefined, fallback: number): number {
@@ -231,6 +235,20 @@ export function startSandboxReaper(
     void Promise.resolve()
       .then(() => runtime.reapClosedPullRequestSandboxes())
       .catch((error) => {
+        if (isLeaseUnavailableError(error)) {
+          // Expected: a reap tick can be already scheduled when a lease
+          // handoff happens (a deploy SIGTERM or the idle-shutdown path
+          // releasing the lease), and fires just after. Logging this at
+          // `error` with a full stack trace reads as a crash during a
+          // routine, successful shutdown -- see #211, where exactly that
+          // misread it twice. This tick is simply skipped; the next interval
+          // retries once the engine holds its lease again.
+          console.log(
+            '[engine] sandbox reap skipped: engine does not currently hold its ownership lease',
+            error instanceof Error ? error.message : error,
+          );
+          return;
+        }
         console.error('[engine] sandbox reaper failed', error);
       })
       .finally(() => {
@@ -239,6 +257,10 @@ export function startSandboxReaper(
   }, intervalSeconds * 1_000);
   timer.unref?.();
   return timer;
+}
+
+function isLeaseUnavailableError(error: unknown): boolean {
+  return error instanceof EngineLeaseNotHeldError || error instanceof EngineLeaseUnavailableError;
 }
 
 export type SandboxReaperHooks = {
@@ -507,6 +529,10 @@ export function createReviewIntentKickScheduler(
       released = true;
       await runtime.release();
       logger.log('[engine] idle shutdown complete');
+      // Deliberate, expected stop: `auto_start_machines = true` (with
+      // `min_machines_running = 0`) means Fly wakes the machine again on the
+      // next request through `tribunal-engine.flycast` -- this is a
+      // cost-saving scale-to-zero design, not an incident, so 0 is correct.
       exit(0);
     } catch (error) {
       released = false;
@@ -544,11 +570,37 @@ export type SignalShutdownInput = {
   exit?: (code: number) => void;
   clearIntervalFunction?: (timer: ReturnType<typeof setInterval>) => void;
   releaseAttempts?: number;
+  releaseDeadlineMs?: number;
+  serverStopBudgetMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
 };
 
-const DEFAULT_RELEASE_ATTEMPTS = 3;
-const RELEASE_RETRY_DELAY_MS = 500;
+// The previous budget (3 attempts, 500ms apart — under 2s total) gave a
+// transient release failure almost no room to clear before giving up.
+// Widening the attempt count alone is not enough, though: each `release()`
+// call has no bound of its own, so 8 attempts at a couple of seconds apiece
+// could still run well past `deployment/fly/engine.toml`'s 20s
+// `kill_timeout` before ever reaching `exit(0)` — at which point Fly SIGKILLs
+// the process mid-retry and the release this loop exists for never
+// completes anyway. RELEASE_DEADLINE_MS bounds the *loop*, not just the
+// attempt count, so the two settings below only ever describe "at most this
+// many attempts, cut short well inside the kill_timeout" rather than a
+// number that can add up past it.
+const DEFAULT_RELEASE_ATTEMPTS = 8;
+const RELEASE_RETRY_DELAY_MS = 1_000;
+// Leaves ~5s of the 20s kill_timeout for the `stop()` calls above and the
+// `exit()` call itself, on top of whatever this loop already spent.
+const DEFAULT_RELEASE_DEADLINE_MS = 15_000;
+// A hard ceiling on how much of that 15s window `server.stop(true)` may
+// consume, regardless of how long it actually takes. Without this, a hung
+// `server.stop()` would race against (and could exhaust) the *entire*
+// release deadline, leaving zero time for release() to even attempt once --
+// silently degrading back to the TTL-bound handoff this whole handler exists
+// to avoid, while still technically reaching `exit(0)` in time. Reserves at
+// least `DEFAULT_RELEASE_DEADLINE_MS - DEFAULT_SERVER_STOP_BUDGET_MS` (10s)
+// for release() no matter what server.stop() does.
+const DEFAULT_SERVER_STOP_BUDGET_MS = 5_000;
 
 /**
  * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
@@ -583,6 +635,17 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     Number.isFinite(requestedReleaseAttempts) && requestedReleaseAttempts >= 1
       ? Math.floor(requestedReleaseAttempts)
       : DEFAULT_RELEASE_ATTEMPTS;
+  const requestedReleaseDeadlineMs = input.releaseDeadlineMs ?? DEFAULT_RELEASE_DEADLINE_MS;
+  const releaseDeadlineMs =
+    Number.isFinite(requestedReleaseDeadlineMs) && requestedReleaseDeadlineMs > 0
+      ? requestedReleaseDeadlineMs
+      : DEFAULT_RELEASE_DEADLINE_MS;
+  const requestedServerStopBudgetMs = input.serverStopBudgetMs ?? DEFAULT_SERVER_STOP_BUDGET_MS;
+  const serverStopBudgetMs =
+    Number.isFinite(requestedServerStopBudgetMs) && requestedServerStopBudgetMs > 0
+      ? requestedServerStopBudgetMs
+      : DEFAULT_SERVER_STOP_BUDGET_MS;
+  const now = input.now ?? (() => Date.now());
   const sleep =
     input.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -592,17 +655,37 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     if (shuttingDown) return;
     shuttingDown = true;
 
+    // Anchored at signal receipt, not after `server.stop()` -- the 20s
+    // kill_timeout budget is consumed by the *whole* handler, including the
+    // stop-intake phase below. Measuring from later would silently discount
+    // whatever that phase spent, letting the release loop believe it has
+    // more of the window left than it actually does.
+    const releaseDeadlineAt = now() + releaseDeadlineMs;
+
     logger.log('[engine] shutdown signal received; releasing singleton lease');
 
     // Stop accepting new work first, but never let a failure here skip the
     // lease release below — that release is the whole point of the handler.
     // Force active connections closed (`stop(true)`): a lease handoff must not
     // be held hostage by an in-flight control/health request that could consume
-    // the whole kill_timeout before release() ever runs.
+    // the whole kill_timeout before release() ever runs. Raced against a
+    // *reserved* share of the overall deadline (DEFAULT_SERVER_STOP_BUDGET_MS),
+    // not the full remaining budget: an unbounded `server.stop()` could
+    // otherwise consume the entire release deadline itself, leaving zero time
+    // for release() to even attempt once and silently degrading back to the
+    // TTL-bound handoff this handler exists to avoid, even though it would
+    // still technically reach `exit(0)` in time.
     try {
       input.scheduler.stop();
       if (input.sandboxReaperTimer !== undefined) clearIntervalFunction(input.sandboxReaperTimer);
-      await input.server.stop(true);
+      const remainingMsForServerStop = Math.min(releaseDeadlineAt - now(), serverStopBudgetMs);
+      if (remainingMsForServerStop > 0) {
+        await raceAgainstRemainingBudget(
+          Promise.resolve(input.server.stop(true)),
+          remainingMsForServerStop,
+          sleep,
+        );
+      }
     } catch (error) {
       logger.error('[engine] stopping intake failed during shutdown', error);
     }
@@ -610,11 +693,22 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     // Retry the release within the shutdown window (bounded by kill_timeout).
     // release() is retryable — it clears its in-flight promise on failure — and
     // a prompt lease handoff, not a fall back to the lease TTL, is the whole
-    // point of this handler.
+    // point of this handler. Bounded by wall-clock time, not just attempt
+    // count, and on *each* attempt individually, not just between attempts: a
+    // single stuck `release()` call (e.g. a database outage) would otherwise
+    // be awaited to completion no matter how long it takes, regardless of how
+    // little of the deadline remains.
     let released = false;
     for (let attempt = 1; attempt <= releaseAttempts; attempt += 1) {
+      const remainingMs = releaseDeadlineAt - now();
+      if (remainingMs <= 0) {
+        logger.error(
+          `[engine] giving up on releasing the singleton lease after ${attempt - 1}/${releaseAttempts} attempts — the ${releaseDeadlineMs}ms release deadline elapsed`,
+        );
+        break;
+      }
       try {
-        await input.runtime.release();
+        await raceAgainstRemainingBudget(input.runtime.release(), remainingMs, sleep);
         released = true;
         break;
       } catch (error) {
@@ -622,7 +716,10 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
           `[engine] lease release attempt ${attempt}/${releaseAttempts} failed during shutdown`,
           error,
         );
-        if (attempt < releaseAttempts) await sleep(RELEASE_RETRY_DELAY_MS);
+        const remainingAfterFailure = releaseDeadlineAt - now();
+        if (attempt < releaseAttempts && remainingAfterFailure > 0) {
+          await sleep(Math.min(RELEASE_RETRY_DELAY_MS, remainingAfterFailure));
+        }
       }
     }
 
@@ -640,6 +737,29 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     }
     exit(0);
   };
+}
+
+/**
+ * Races `work` against the remaining shutdown budget so a single stuck call
+ * (e.g. `release()` blocked on an unreachable database) cannot be awaited
+ * past however much of the deadline is left, regardless of how many retry
+ * attempts remain. `work` itself is not cancelled -- there is no cancellation
+ * signal to give it -- so on a timeout it keeps running in the background;
+ * `release()` is idempotent, so a value it eventually produces after this
+ * race has moved on is simply discarded, and the *next* attempt still goes
+ * through the same in-flight promise via `bootstrap.ts`'s own memoization.
+ */
+function raceAgainstRemainingBudget<T>(
+  work: Promise<T>,
+  remainingMs: number,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<T> {
+  const timeout = sleep(remainingMs).then((): never => {
+    throw new Error(
+      `release() did not settle within the remaining ${remainingMs}ms of the shutdown deadline`,
+    );
+  });
+  return Promise.race([work, timeout]);
 }
 
 /**

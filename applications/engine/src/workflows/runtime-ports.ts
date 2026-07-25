@@ -1,3 +1,4 @@
+import type { EngineLeaseHealth } from '@lostgradient/weft';
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
 import { and, desc, eq, inArray, isNull, sql } from '@tribunal/database/operators';
@@ -175,6 +176,7 @@ export function createReviewIntentConsumer(
       if (workflowEngine === undefined) {
         return reviewWorkflowEngine.reapClosedPullRequestSandboxes(openPullRequests);
       }
+      assertLeaseHeldForDispatch(workflowEngine);
       const handle = await workflowEngine.start('sandbox-reaper', openPullRequests, {
         id: 'sandbox-reaper',
         onTerminalConflict: 'start-new',
@@ -195,7 +197,51 @@ type ReviewIntentWorkflowEngine = {
       defer: false;
     },
   ): Promise<ReviewIntentWorkflowHandle>;
+  getLeaseHealth(): EngineLeaseHealth;
 };
+
+/**
+ * Thrown when a workflow dispatch is refused because the bound engine does
+ * not currently hold its Weft ownership lease (see `assertLeaseHeldForDispatch`).
+ */
+export class EngineLeaseUnavailableError extends Error {
+  constructor(health: EngineLeaseHealth) {
+    super(
+      `Refusing to dispatch engine workflow: ownership lease is not held (status: ${health.status}).`,
+    );
+    this.name = 'EngineLeaseUnavailableError';
+  }
+}
+
+/**
+ * Verifies the bound workflow engine still holds its Weft ownership lease
+ * before dispatching a `start()` call.
+ *
+ * Weft's own `assertLeaseHeldForEngineWork` throws a raw `EngineLeaseNotHeldError`
+ * for the exact same condition deep inside `start()` -- reachable from any
+ * engine-work dispatch, not just this one (see #211, where it surfaced from
+ * the sandbox reaper). Checking here, at the boundary where every dispatch in
+ * this module originates, lets a lost lease fail through each call site's
+ * normal retry path (a deferred review-intent retry via
+ * `markReviewIntentFailed`, or simply the next `SANDBOX_REAP_INTERVAL` tick)
+ * instead of an unhandled Weft internal assertion.
+ *
+ * Deliberately does not log here: the two call sites disagree on the right
+ * severity for the exact same condition. The sandbox reaper treats it as an
+ * expected, quiet race against a lease handoff (see `startSandboxReaper` in
+ * `index.ts`); review-pr dispatch treats it exactly like any other dispatch
+ * failure, silently recorded via `markReviewIntentFailed` with no console
+ * output at all. Logging here at any fixed level would win one of those
+ * cases and defeat the other -- an earlier revision logged unconditionally
+ * and reintroduced the exact misleading error-level noise during a routine
+ * shutdown that #211's quiet-logging fix was meant to eliminate.
+ */
+function assertLeaseHeldForDispatch(workflowEngine: ReviewIntentWorkflowEngine): void {
+  const health = workflowEngine.getLeaseHealth();
+  if (health.holdsLease) return;
+
+  throw new EngineLeaseUnavailableError(health);
+}
 
 async function listOpenPullRequestSandboxes(
   database: Database,
@@ -217,6 +263,7 @@ async function dispatchReviewIntentWorkflow(
   workflowEngine: ReviewIntentWorkflowEngine,
   intent: ClaimedReviewIntent,
 ): Promise<ReviewIntentWorkflowHandle> {
+  assertLeaseHeldForDispatch(workflowEngine);
   return workflowEngine.start('review-pr', intent, {
     id: createPullRequestWorkflowId({
       repositoryId: intent.pullRequest.repositoryId,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Engine, MemoryStorage } from '@lostgradient/weft';
+import { Engine, MemoryStorage, type EngineLeaseHealth } from '@lostgradient/weft';
 import { eq } from '@tribunal/database/operators';
 import type { GithubServiceContext } from '@tribunal/github/context';
 import type { Database } from '@tribunal/database';
@@ -272,7 +272,7 @@ describe('runtime review intent consumer wiring', () => {
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
     const result = vi.fn().mockResolvedValue({ reaped: true });
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     await expect(consumer.reapClosedPullRequestSandboxes()).resolves.toEqual({ reaped: true });
 
@@ -288,12 +288,42 @@ describe('runtime review intent consumer wiring', () => {
     expect(result).toHaveBeenCalled();
   });
 
+  // Regression for #211: the sandbox reaper must not call Weft's start() while
+  // the engine has lost its ownership lease -- that is exactly the boundary
+  // where production hit an unhandled EngineLeaseNotHeldError.
+  it('refuses to reap sandboxes when the bound engine does not hold its lease', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createRunnableReviewIntentFixture();
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: 42,
+      prNumber: 8,
+      state: 'closed',
+      headSha: 'b'.repeat(40),
+    });
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const start = vi.fn();
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: contestedLeaseHealth });
+
+    await expect(consumer.reapClosedPullRequestSandboxes()).rejects.toThrow(
+      'ownership lease is not held',
+    );
+
+    expect(start).not.toHaveBeenCalled();
+    // The dispatch guard itself must not log -- logging severity for this
+    // exact condition differs by caller (quiet for the reaper, silent for
+    // review-pr dispatch), so it belongs at each call site, not the shared
+    // guard. See `startSandboxReaper` in index.ts for the reaper's own quiet
+    // logging of this same error.
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it('dispatches claimed review intents through the bound Weft engine', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
     const result = vi.fn().mockResolvedValue({ processed: true });
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     await expect(consumer.drain(1)).resolves.toBe(1);
 
@@ -315,12 +345,41 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent?.processedAt).toBeInstanceOf(Date);
   });
 
+  // Regression for #211: the same lease boundary applies to review-pr
+  // dispatch, not just the sandbox reaper -- both call sites reach Weft's
+  // start() identically, so both must be guarded identically.
+  it('records a failed review intent instead of dispatching when the bound engine does not hold its lease', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createRunnableReviewIntentFixture();
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+    const start = vi.fn();
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: contestedLeaseHealth });
+
+    await expect(consumer.drain(1)).resolves.toBe(0);
+
+    expect(start).not.toHaveBeenCalled();
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 1,
+      lastError: expect.stringContaining('ownership lease is not held'),
+    });
+    // Consistent with every other dispatch failure on this path: recorded
+    // silently via markReviewIntentFailed, no console output.
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it('records failed review intents when a started workflow later fails', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
     const result = vi.fn().mockRejectedValue(new Error('workflow result failed'));
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     await expect(consumer.drain(1)).resolves.toBe(0);
     await waitForIntent('intent_1', (intent) => intent.failureCount === 1);
@@ -347,7 +406,7 @@ describe('runtime review intent consumer wiring', () => {
       }),
     );
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     await expect(consumer.drain(1)).resolves.toBe(0);
 
@@ -375,7 +434,7 @@ describe('runtime review intent consumer wiring', () => {
       }),
     );
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     const drain = consumer.drain(1);
     await vi.waitFor(() => expect(result).toHaveBeenCalled());
@@ -413,7 +472,7 @@ describe('runtime review intent consumer wiring', () => {
       }),
     );
     const start = vi.fn().mockResolvedValue({ result });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     const drain = consumer.drain(1);
     await vi.waitFor(() => expect(result).toHaveBeenCalled());
@@ -447,7 +506,10 @@ describe('runtime review intent consumer wiring', () => {
   it('records failed review intents with backoff when bound workflow dispatch fails', async () => {
     await createRunnableReviewIntentFixture();
     const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
-    consumer.bindWorkflowEngine({ start: vi.fn().mockRejectedValue(new Error('workflow failed')) });
+    consumer.bindWorkflowEngine({
+      start: vi.fn().mockRejectedValue(new Error('workflow failed')),
+      getLeaseHealth: healthyLeaseHealth,
+    });
 
     await expect(consumer.drain(1)).resolves.toBe(0);
 
@@ -490,7 +552,7 @@ describe('runtime review intent consumer wiring', () => {
       .fn()
       .mockRejectedValueOnce(new Error('workflow failed'))
       .mockResolvedValueOnce({ result: vi.fn().mockResolvedValue({ processed: true }) });
-    consumer.bindWorkflowEngine({ start });
+    consumer.bindWorkflowEngine({ start, getLeaseHealth: healthyLeaseHealth });
 
     await expect(consumer.drain(2)).resolves.toBe(1);
     await waitForIntent('intent_2', (intent) => intent.processedAt !== null);
@@ -1306,6 +1368,28 @@ describe('Tensorlake sandbox adapter', () => {
     expect(sandbox.run).toHaveBeenCalledWith('node', { args: ['runner.mjs'], env: undefined });
   });
 });
+
+function healthyLeaseHealth(): EngineLeaseHealth {
+  return {
+    mode: 'lease',
+    status: 'healthy',
+    holdsLease: true,
+    holderId: 'test-holder',
+    heldSince: 0,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    lastRenewedAt: 0,
+    fencingEpoch: 1,
+  };
+}
+
+function contestedLeaseHealth(): EngineLeaseHealth {
+  return {
+    mode: 'lease',
+    status: 'contested',
+    holdsLease: false,
+    lossReason: 'deposed',
+  };
+}
 
 function runtimeEnvironment() {
   return {

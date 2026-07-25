@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 
 const { createPostgresAdvisoryLockMock } = vi.hoisted(() => ({
   createPostgresAdvisoryLockMock: vi.fn(() => ({ acquire: vi.fn() })),
@@ -23,6 +24,7 @@ import {
   startSandboxReaper,
 } from './index';
 import { HELD_ELSEWHERE_MESSAGE } from './workflows/postgres-advisory-lock';
+import { EngineLeaseUnavailableError } from './workflows/runtime-ports';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -508,6 +510,10 @@ describe('createStartingEngineServerOptions', () => {
 });
 
 describe('createReviewIntentKickScheduler', () => {
+  // Idle shutdown deliberately exits 0: `auto_start_machines = true` (with
+  // `min_machines_running = 0`) means Fly wakes the machine on the next
+  // request through `tribunal-engine.flycast`, so this is an intentional
+  // scale-to-zero stop, not a crash to recover from.
   it('releases the runtime and exits after the configured idle window', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);
@@ -819,6 +825,104 @@ describe('startSandboxReaper', () => {
     ).toBeUndefined();
 
     expect(setIntervalFunction).not.toHaveBeenCalled();
+  });
+
+  // Regression for #211: a throwing sandbox reap (e.g. Weft's
+  // EngineLeaseNotHeldError) must be logged and swallowed at this boundary,
+  // not left to propagate and terminate the process -- and the interval
+  // itself must keep firing afterward so the next tick still gets a chance
+  // to succeed.
+  it('survives a reaper rejection and still reaps on the next interval tick', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const reapClosedPullRequestSandboxes = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EngineLeaseNotHeldError'))
+      .mockResolvedValueOnce([]);
+    const runtime = { reapClosedPullRequestSandboxes };
+    let tick: (() => void) | undefined;
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      tick = callback;
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+
+    tick?.();
+    await flushPromises();
+
+    expect(reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith('[engine] sandbox reaper failed', expect.any(Error));
+
+    // Nothing about the failed run tore down the timer or the process --
+    // firing the same interval callback again must still invoke the reaper.
+    tick?.();
+    await flushPromises();
+
+    expect(reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(2);
+
+    consoleError.mockRestore();
+  });
+
+  // Regression for #211: a reap tick can already be scheduled when a lease
+  // handoff happens (a deploy SIGTERM, or the idle-shutdown path releasing
+  // the lease) and fire just after -- that produced a full-stack-trace
+  // `console.error` during a routine, successful shutdown and was twice
+  // mistaken for a crash. This specific failure shape must log quietly
+  // instead, while any other reaper failure stays loud.
+  it.each([
+    ['Weft internal', new EngineLeaseNotHeldError()],
+    [
+      'engine-level dispatch guard',
+      new EngineLeaseUnavailableError({
+        mode: 'lease',
+        status: 'contested',
+        holdsLease: false,
+        lossReason: 'deposed',
+      }),
+    ],
+  ])('logs a %s lease-unavailable reap failure quietly, not as an error', async (_label, error) => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtime = { reapClosedPullRequestSandboxes: vi.fn().mockRejectedValue(error) };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await flushPromises();
+
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleLog).toHaveBeenCalledWith(
+      '[engine] sandbox reap skipped: engine does not currently hold its ownership lease',
+      error.message,
+    );
+
+    consoleLog.mockRestore();
+    consoleError.mockRestore();
+  });
+
+  it('still logs a genuine reaper failure as an error, not quietly', async () => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtime = {
+      reapClosedPullRequestSandboxes: vi
+        .fn()
+        .mockRejectedValue(new Error('sandbox API unreachable')),
+    };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await flushPromises();
+
+    expect(consoleError).toHaveBeenCalledWith('[engine] sandbox reaper failed', expect.any(Error));
+    expect(consoleLog).not.toHaveBeenCalled();
+
+    consoleLog.mockRestore();
+    consoleError.mockRestore();
   });
 });
 
@@ -1196,6 +1300,178 @@ describe('createSignalShutdown', () => {
 
     expect(release).toHaveBeenCalledTimes(2);
     expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  // A P1 review concern on #217: 8 default attempts at an unbounded duration
+  // apiece could add up past the 20s `kill_timeout` in engine.toml well
+  // before the loop's attempt count would ever stop it, risking a SIGKILL
+  // mid-retry. The loop must also be bounded by wall-clock time.
+  it('stops retrying once the overall release deadline elapses, independent of releaseAttempts', async () => {
+    let elapsedMs = 0;
+    const release = vi.fn(async () => {
+      // Simulate each attempt itself taking a couple of seconds -- e.g. a
+      // database outage -- so 8 attempts would otherwise run well past the
+      // kill_timeout before the attempt-count limit alone would stop them.
+      elapsedMs += 2_000;
+      throw new Error('lease already gone');
+    });
+    const sleep = async (milliseconds: number) => {
+      elapsedMs += milliseconds;
+    };
+    const harness = createHarness({
+      runtime: { release },
+      releaseAttempts: 8,
+      releaseDeadlineMs: 15_000,
+      now: () => elapsedMs,
+      sleep,
+    });
+
+    await harness.shutdown();
+
+    // 8 attempts at ~2s each plus ~1s sleeps between them would total ~27s,
+    // comfortably past the 20s kill_timeout -- the deadline must cut this off
+    // well before all 8 attempts run.
+    expect(release.mock.calls.length).toBeLessThan(8);
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('release deadline elapsed'),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('does not apply the release deadline to a misconfigured (non-positive) override', async () => {
+    const release = vi.fn(async () => {});
+    const harness = createHarness({ runtime: { release }, releaseDeadlineMs: -1 });
+
+    await harness.shutdown();
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  // A second P1 review concern on #217: bounding the *loop* by attempt count
+  // and wall-clock time is not enough if a single `release()` call itself
+  // never settles (e.g. blocked on an unreachable database) -- the loop
+  // would otherwise await it forever regardless of how little of the
+  // deadline remains. Each attempt must itself be bounded by the remaining
+  // budget, not just checked between attempts.
+  it('gives up on a single release attempt that never settles once the remaining budget elapses', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn(() => new Promise<void>(() => {}));
+    const harness = createHarness({
+      runtime: { release },
+      releaseAttempts: 3,
+      releaseDeadlineMs: 2_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await shutdownPromise;
+
+    // The stuck attempt is abandoned once its remaining budget runs out --
+    // it is never retried (there is no time left to retry into), and the
+    // handler still reaches exit(0) rather than hanging until Fly SIGKILLs it.
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('lease release attempt 1/3 failed during shutdown'),
+      expect.objectContaining({
+        message: expect.stringContaining('did not settle within the remaining'),
+      }),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  // The previous version of this test advanced a fake clock synchronously
+  // inside the mocks themselves, which doesn't exercise a genuinely pending
+  // promise and so couldn't catch a race that only matters when something is
+  // actually still in flight. Rewritten with real fake timers so
+  // `server.stop(true)` is a promise that only settles when its own timer
+  // fires, not before.
+  it('anchors the release deadline at signal receipt, reducing the budget left for release() by however long server.stop() took', async () => {
+    vi.useFakeTimers();
+    // Real (fake-timer-backed) delay, kept under the default 5s
+    // server-stop budget so it resolves for real rather than being cut off
+    // by that reserved cap -- this test is specifically about the deadline
+    // accounting, not the cap itself (see the dedicated cap test below).
+    const serverStop = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 4_000)));
+    const release = vi.fn().mockRejectedValue(new Error('lease already gone'));
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseAttempts: 8,
+      releaseDeadlineMs: 6_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await shutdownPromise;
+
+    // Only ~2s of the 6s deadline remained once the 4s server-stop phase
+    // finished -- at ~1s per rejected attempt, nowhere near all 8 should run.
+    expect(release.mock.calls.length).toBeLessThan(8);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  // A P1 review concern on #217: without a reserved cap, a hung
+  // server.stop() would race against (and could exhaust) the *entire*
+  // release deadline, leaving release() no time to attempt even once --
+  // silently degrading back to the TTL-bound handoff this handler exists to
+  // avoid, while still technically reaching exit(0) on schedule.
+  it('reserves budget for release() even when server.stop() hangs for the whole release deadline', async () => {
+    vi.useFakeTimers();
+    const serverStop = vi.fn(() => new Promise<void>(() => {}));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseDeadlineMs: 15_000,
+      serverStopBudgetMs: 5_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    // The stop phase is capped at 5s regardless of the 15s overall deadline.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shutdownPromise;
+
+    // release() still gets called -- and here succeeds immediately -- using
+    // the ~10s of release-deadline budget the reserved cap preserved.
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  // A P1 review concern on #217: anchoring the deadline correctly discounts
+  // time server.stop() spent, but does nothing if server.stop() itself never
+  // settles -- the release loop would never even start. server.stop() must
+  // be bounded by the same deadline, not just accounted against it.
+  it('reaches exit(0) within the deadline even when server.stop() itself never settles', async () => {
+    vi.useFakeTimers();
+    const serverStop = vi.fn(() => new Promise<void>(() => {}));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseDeadlineMs: 5_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shutdownPromise;
+
+    // The hung server.stop() consumes the entire deadline, leaving nothing
+    // for release() -- but the handler must still reach exit(0) rather than
+    // waiting on server.stop() forever.
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('release deadline elapsed'),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
   });
 
   it('skips clearing the reaper timer when one was never scheduled', async () => {
