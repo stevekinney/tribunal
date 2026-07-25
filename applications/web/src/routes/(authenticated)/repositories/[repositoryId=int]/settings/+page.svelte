@@ -212,14 +212,18 @@
         class="unwatch-form"
       >
         <input type="hidden" name="repositoryId" value={data.repository.id} />
-        {#each data.repository.review.agents as agent (agent.id)}
-          <input type="hidden" name="agentIds" value={agent.id} />
-        {/each}
-        <input
-          type="hidden"
-          name="ignoreGlobs"
-          value={data.repository.review.ignoreGlobs.join('\n')}
-        />
+        <!--
+          Deliberately submits no `agentIds` or `ignoreGlobs`. Hidden fields
+          would carry this page's render-time snapshot, and `?/watch` treats
+          submitted values as authoritative — so unwatching from a tab left
+          open while another tab saved new settings would silently roll that
+          newer configuration back. With both fields absent the action reads
+          the repository's current saved settings instead (see its
+          `!formData.has('ignoreGlobs') && submittedAgentIds.length === 0`
+          branch), which preserves whatever is actually stored for a later
+          re-add — the behavior these fields were added for, without the
+          stale-snapshot hazard.
+        -->
         <!--
           Disabled while the settings form's save is in flight, or once
           unwatching has itself been confirmed: that save always writes

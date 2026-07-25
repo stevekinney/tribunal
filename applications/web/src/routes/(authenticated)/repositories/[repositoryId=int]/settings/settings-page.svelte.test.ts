@@ -545,24 +545,29 @@ describe('/repositories/[repositoryId]/settings page', () => {
     await expect.element(saveButton).toBeDisabled();
   });
 
-  it('posts the repository id, saved agents, and saved ignore globs to the repositories list watch action, preserving them for a later re-add', async () => {
+  it('posts only the repository id, so unwatching cannot roll back settings saved elsewhere', async () => {
     render(SettingsPage, { data: baseData, form: null, params: { repositoryId: '101' } });
 
-    // Regression: unwatching used to be the repositories-list row toggle,
-    // which preserved the current agent assignment and ignore globs so a
-    // later re-add restored them. The danger-zone form must submit the same
-    // fields to the same `?/watch` action rather than a route-local action,
-    // so a stale settings tab open from before this change keeps working —
-    // and `watched` is intentionally never set on this form, since it only
+    // The form targets the repositories list's `?/watch` action rather than a
+    // route-local one, so a settings tab open from before this change keeps
+    // working, and `watched` is intentionally never set since this form only
     // ever turns watching off.
+    //
+    // Regression: it used to also submit `agentIds` and `ignoreGlobs` to
+    // preserve them for a later re-add. But those were this page's
+    // render-time snapshot, and `?/watch` treats submitted values as
+    // authoritative — so unwatching from a tab left open while another tab
+    // saved new settings silently rolled that newer configuration back.
+    // Omitting both makes the action read the repository's current saved
+    // settings instead, which preserves them without the stale snapshot.
     const unwatchForm = document.querySelector<HTMLFormElement>(
       'form[action="/repositories?/watch"]',
     )!;
     const formData = new FormData(unwatchForm);
 
     expect(formData.get('repositoryId')).toBe('101');
-    expect(formData.getAll('agentIds')).toEqual(['agent_1']);
-    expect(formData.get('ignoreGlobs')).toBe('dist/**\ncoverage/**');
+    expect(formData.getAll('agentIds')).toEqual([]);
+    expect(formData.get('ignoreGlobs')).toBeNull();
     expect(formData.get('watched')).toBeNull();
   });
 });
