@@ -67,7 +67,9 @@
         </div>
       </div>
       {#if actions}
-        {@render actions()}
+        <div class="page-header-actions">
+          {@render actions()}
+        </div>
       {/if}
     </div>
   </div>
@@ -103,13 +105,23 @@
   .page-header-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--space-3);
   }
 
   .page-header-leading {
     display: flex;
+    flex: 1 1 auto;
     align-items: center;
     gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .page-header-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--space-2);
+    margin-inline-start: auto;
   }
 
   .page-header-title-group {
