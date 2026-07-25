@@ -168,6 +168,39 @@
   }
 
   /**
+   * Every reason the attention list is inexact, not just the first one.
+   *
+   * These causes are independent — a repository can be over the fetch cap
+   * *and* hold a pull request with a missing decoration — so reporting only
+   * the first would hide the others. That matters most for the cap, which
+   * does not resolve on its own: leading with a self-healing cause would
+   * imply the list becomes complete on its own when it will not.
+   */
+  function incompleteAttentionListReasons(currentSummary: {
+    hasUnavailableRepositories: boolean;
+    hasUnanalyzedPullRequests: boolean;
+    hasPullRequestsAtCap: boolean;
+  }): string {
+    const reasons: string[] = [];
+    if (currentSummary.hasUnavailableRepositories) {
+      reasons.push(
+        "One or more repositories could not be checked this build — see that repository's warning icon in the table for why, clearing any search filter if it isn't visible.",
+      );
+    }
+    if (currentSummary.hasPullRequestsAtCap) {
+      reasons.push(
+        'Some repositories have more open pull requests than Tribunal reads in a single build, so entries beyond that limit are not counted.',
+      );
+    }
+    if (currentSummary.hasUnanalyzedPullRequests) {
+      reasons.push(
+        "Some pull requests don't have complete status information yet, so they aren't counted either way.",
+      );
+    }
+    return reasons.join(' ');
+  }
+
+  /**
    * Build-wide phrasing of the same reasons, used by the top banner when
    * every unavailable repository this build shares one cause — naming it
    * beats a generic "some repositories" notice. When repositories disagree
@@ -318,25 +351,11 @@
               {#snippet empty()}
                 {#snippet attentionIcon()}<CircleAlert size={32} aria-hidden="true" />{/snippet}
                 {#if summary && !summary.attentionPullRequestCountExact}
-                  {#if summary.hasUnavailableRepositories}
-                    <EmptyState
-                      title="This list may be incomplete"
-                      description="One or more repositories could not be checked this build. Check the affected repository's warning icon in the table for why — clear any search filter if it isn't currently visible."
-                      icon={attentionIcon}
-                    />
-                  {:else if summary.hasUnanalyzedPullRequests}
-                    <EmptyState
-                      title="This list may be incomplete"
-                      description="Some pull requests were found too recently to be analyzed yet. The count will fill in shortly."
-                      icon={attentionIcon}
-                    />
-                  {:else}
-                    <EmptyState
-                      title="This list may be incomplete"
-                      description="Some pull requests exceeded the per-repository results limit, so this list may be missing entries."
-                      icon={attentionIcon}
-                    />
-                  {/if}
+                  <EmptyState
+                    title="This list may be incomplete"
+                    description={incompleteAttentionListReasons(summary)}
+                    icon={attentionIcon}
+                  />
                 {:else}
                   <EmptyState
                     title="Nothing needs attention"

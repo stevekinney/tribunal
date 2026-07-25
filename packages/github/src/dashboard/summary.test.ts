@@ -29,6 +29,7 @@ describe('buildDashboardSummary', () => {
       attentionPullRequestCountExact: true,
       hasUnavailableRepositories: false,
       hasUnanalyzedPullRequests: false,
+      hasPullRequestsAtCap: false,
     });
   });
 

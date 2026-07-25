@@ -195,6 +195,7 @@ const okSummaryForOne = {
   attentionPullRequestCountExact: true,
   hasUnavailableRepositories: false,
   hasUnanalyzedPullRequests: false,
+  hasPullRequestsAtCap: false,
 } satisfies Summary;
 
 const baseData: PageData = {
@@ -260,6 +261,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -288,6 +290,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -321,6 +324,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -372,6 +376,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -426,6 +431,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -474,6 +480,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -520,6 +527,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -598,6 +606,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -639,6 +648,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: true,
         }),
       },
       form: null,
@@ -650,9 +660,50 @@ describe('/repositories page', () => {
     // therefore zero warning icons on the page — the copy must not send the
     // reader looking for an icon that isn't there.
     await expect
-      .element(page.getByText(/exceeded the per-repository results limit/))
+      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
       .toBeInTheDocument();
-    await expect.element(page.getByText(/see the warning icon/i)).not.toBeInTheDocument();
+    await expect.element(page.getByText(/warning icon/i)).not.toBeInTheDocument();
+  });
+
+  it('reports the page cap alongside an unanalyzed pull request instead of only the first cause', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({ openPullRequestCount: 100, openPullRequestCountAtCap: true }),
+        ]),
+        attentionPullRequests: Promise.resolve([]),
+        summary: Promise.resolve({
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 100,
+          openPullRequestCountExact: false,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: false,
+          hasUnavailableRepositories: false,
+          hasUnanalyzedPullRequests: true,
+          hasPullRequestsAtCap: true,
+        }),
+      },
+      form: null,
+      params: {},
+    });
+
+    // Regression: these causes are independent and can hold at once. An
+    // if/else chain previously reported only the first, which hid the page
+    // cap behind the unanalyzed message — and the cap does not resolve on
+    // its own, so hiding it implies the list completes itself when it won't.
+    await expect
+      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByText(/don't have complete status information yet/))
+      .toBeInTheDocument();
   });
 
   it('explains a newly discovered, not-yet-analyzed pull request without framing it as a failure', async () => {
@@ -675,6 +726,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: true,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -686,12 +738,12 @@ describe('/repositories page', () => {
     // described as "stale cached status" (no cache exists) or lumped in with
     // the unavailable-repository/page-cap copy.
     await expect
-      .element(page.getByText(/found too recently to be analyzed yet/))
+      .element(page.getByText(/don't have complete status information yet/))
       .toBeInTheDocument();
     await expect
-      .element(page.getByText(/exceeded the per-repository results limit/))
+      .element(page.getByText(/more open pull requests than Tribunal reads in a single build/))
       .not.toBeInTheDocument();
-    await expect.element(page.getByText(/see the warning icon/i)).not.toBeInTheDocument();
+    await expect.element(page.getByText(/warning icon/i)).not.toBeInTheDocument();
   });
 
   it('marks the failing default branch stat as partial when data is unavailable', async () => {
@@ -722,6 +774,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -760,6 +813,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,
@@ -799,6 +853,7 @@ describe('/repositories page', () => {
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
           hasUnanalyzedPullRequests: false,
+          hasPullRequestsAtCap: false,
         }),
       },
       form: null,

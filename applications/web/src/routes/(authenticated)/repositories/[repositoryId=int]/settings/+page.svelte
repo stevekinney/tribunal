@@ -192,8 +192,9 @@
     <Card title="Danger zone" tone="danger" headingLevel={2}>
       <p class="danger-copy">
         Stop watching this repository. Tribunal removes it from the repositories list and stops
-        reviewing its pull requests immediately. Saved ignore globs and agent assignments are kept,
-        so re-adding it later restores this configuration.
+        starting new reviews on its pull requests. A review already running finishes and still posts
+        its result. Saved ignore globs and agent assignments are kept, so re-adding it later
+        restores this configuration.
       </p>
       <!--
         Posts to the repositories list's existing `?/watch` action (not a
@@ -250,7 +251,7 @@
   bind:open={confirmUnwatchOpen}
   triggerRef={unwatchTriggerRef}
   title="Stop watching this repository?"
-  description="Tribunal removes it from the repositories list and stops reviewing its pull requests. Saved ignore globs and agent assignments are kept for next time."
+  description="Tribunal removes it from the repositories list and stops starting new reviews. A review already running finishes and still posts its result. Saved ignore globs and agent assignments are kept for next time."
   destructive
   confirmLabel="Stop watching"
   onconfirm={confirmUnwatch}
