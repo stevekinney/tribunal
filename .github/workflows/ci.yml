@@ -319,7 +319,6 @@ jobs:
             -e IDLE_SUSPEND_SECONDS=900 \
             -e SANDBOX_REAP_INTERVAL=300 \
             -e ENABLE_PROMPT_CACHING_1H=true \
-            -e ANTHROPIC_ADMIN_KEY=sk-ant-admin-ci-placeholder \
             -p 4311:4311 tribunal-engine:test
           docker run -d --rm --name tribunal-proxy-test \
             --add-host=host.docker.internal:host-gateway \

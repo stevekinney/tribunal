@@ -48,7 +48,6 @@ export const engineEnvironmentSchema = z
     REVIEW_INTENT_POLL_INTERVAL_MS: nonNegativeIntegerString.transform(Number).default(1_000),
     ENGINE_IDLE_SHUTDOWN_SECONDS: positiveIntegerString.transform(Number).optional(),
     ENABLE_PROMPT_CACHING_1H: booleanFlag.default(false),
-    ANTHROPIC_ADMIN_KEY: z.string().min(1),
     REVIEWS_ENABLED: booleanFlag.default(true),
     WEFT_INSPECTOR: booleanFlag.default(false),
   })

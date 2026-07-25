@@ -128,6 +128,5 @@ export interface DailyCapDecision {
 export interface CostPort {
   recordLlmEstimate(event: LlmEstimateInput): Promise<void>;
   recordSandbox(event: SandboxCostInput): Promise<void>;
-  reconcile(reviewRunId: string): Promise<void>;
   enforceDailyCap(userId: number): Promise<DailyCapDecision>;
 }

@@ -8,6 +8,11 @@
   import { Segment } from '@lostgradient/cinder/segment';
   import { Sparkbar } from '@lostgradient/cinder/sparkbar';
 
+  // No cost-source toggle: only estimated spend is available. Per-run
+  // reconciliation against the Anthropic Usage & Cost API is not achievable
+  // (the endpoint reports organization-wide daily totals only), so a
+  // "Reconciled" view has nothing real to show. See #215.
+
   let { data }: PageProps = $props();
 
   type DimensionKey = 'byPullRequest' | 'byRepository' | 'byAgent';
@@ -59,24 +64,7 @@
   );
 </script>
 
-<Page title="Costs" subtitle="Estimated and reconciled review spend">
-  {#snippet actions()}
-    <SegmentedControl
-      id="cost-source"
-      label="Cost source"
-      hideLabel
-      density="toolbar"
-      variant="navigation"
-    >
-      <Segment href="/costs?source=estimate" current={data.costs.source === 'estimate'}>
-        Estimate
-      </Segment>
-      <Segment href="/costs?source=reconciled" current={data.costs.source === 'reconciled'}>
-        Reconciled
-      </Segment>
-    </SegmentedControl>
-  {/snippet}
-
+<Page title="Costs" subtitle="Estimated review spend">
   <div class="stats-grid">
     <Card>
       <div class="spend-card">
@@ -168,9 +156,7 @@
     {#snippet footer()}
       <div class="breakdown-footer">
         <span class="footer-note">
-          {data.costs.source === 'estimate'
-            ? 'Estimated from token counts. Reconciled figures arrive ~24 h after billing.'
-            : 'Reconciled figures from billing.'}
+          Estimated from token counts. Reconciled billing figures aren't available yet.
         </span>
         <span class="footer-total">${totalForDimension.toFixed(2)} total</span>
       </div>

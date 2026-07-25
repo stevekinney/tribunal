@@ -6,8 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./ledger": "./src/ledger.ts",
-    "./pricing": "./src/pricing.ts",
-    "./usage-cost-api": "./src/usage-cost-api.ts"
+    "./pricing": "./src/pricing.ts"
   },
   "scripts": {
     "build": "tsc",

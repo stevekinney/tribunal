@@ -20,7 +20,7 @@ Core technologies:
 The implemented MVP topology is designed around three application containers:
 
 - `applications/web`: SvelteKit web UI, authentication, GitHub webhooks, operator pages, and test-only E2E harness.
-- `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, GitHub review posting, and cost reconciliation.
+- `applications/engine`: singleton review workflow consumer, Weft runtime, sandbox orchestration, and GitHub review posting. Cost is recorded as estimates only; per-run reconciliation against the Anthropic Usage & Cost API is not achievable on that endpoint (it has no run/request/API-key dimension) and was removed — see #215.
 - `applications/proxy`: signed egress boundary for reviewer sandboxes.
 
 This file and [`documentation/deployment/containers.md`](./deployment/containers.md) are the source
@@ -75,7 +75,7 @@ database.
 │     └─ static/           static assets served as-is
 ├─ packages/
 │  ├─ agents/              @tribunal/agents — reviewer definitions, tools, and read-only hooks
-│  ├─ cost/                @tribunal/cost — estimate and reconciliation ledger helpers
+│  ├─ cost/                @tribunal/cost — estimate cost ledger and daily cap enforcement
 │  ├─ database/            @tribunal/database — schema, connection factory, operators, queries, validation
 │  ├─ github/              @tribunal/github — GitHub integration domain logic, cache, error taxonomy
 │  ├─ review-core/         @tribunal/review-core — review ports, schemas, and tokens

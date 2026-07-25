@@ -217,7 +217,6 @@ type SupervisorState = PullRequestSupervisorSnapshot & {
 
 export type DurableReviewWorkflowState = {
   postedReviewRunIds?: string[];
-  reconciledReviewRunIds?: string[];
   terminatedSandboxIds?: string[];
 };
 
@@ -296,7 +295,6 @@ export class ReviewWorkflowEngine {
   private readonly agentEvents: AgentEvent[] = [];
   private readonly agentEventWrites: Promise<void>[] = [];
   private readonly postedReviewRunIds: Set<string>;
-  private readonly reconciledReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
 
   constructor(
@@ -306,7 +304,6 @@ export class ReviewWorkflowEngine {
     durableState: DurableReviewWorkflowState = {},
   ) {
     this.postedReviewRunIds = new Set(durableState.postedReviewRunIds ?? []);
-    this.reconciledReviewRunIds = new Set(durableState.reconciledReviewRunIds ?? []);
     this.terminatedSandboxIds = new Set(durableState.terminatedSandboxIds ?? []);
   }
 
@@ -532,7 +529,6 @@ export class ReviewWorkflowEngine {
       agentEvents: [...this.agentEvents].sort((left, right) => left.seq - right.seq),
       durableState: {
         postedReviewRunIds: [...this.postedReviewRunIds].sort(),
-        reconciledReviewRunIds: [...this.reconciledReviewRunIds].sort(),
         terminatedSandboxIds: [...this.terminatedSandboxIds].sort(),
       },
     };
@@ -1078,10 +1074,6 @@ export class ReviewWorkflowEngine {
         input.checkConclusionMode ?? 'advisory',
       ),
     );
-    if (!this.reconciledReviewRunIds.has(reviewRun.id)) {
-      await this.ports.cost.reconcile(reviewRun.id);
-      this.reconciledReviewRunIds.add(reviewRun.id);
-    }
     return reviewRun;
   }
 
