@@ -275,6 +275,11 @@ describe('/webhooks page', () => {
       data: createData({
         events: [],
         totalCount: 0,
+        filterOptions: {
+          eventTypes: ['issues', 'pull_request'],
+          actions: ['opened'],
+          receivedEventTypes: ['pull_request'],
+        },
         filters: {
           eventType: 'issues',
           action: undefined,
