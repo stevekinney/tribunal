@@ -217,6 +217,21 @@ describe('verifyNeonAuthToken', () => {
     ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
   });
 
+  it('treats a malformed remote JWKS document (JWKSInvalid) as transient, not an invalid token', async () => {
+    const token = await createToken();
+    const malformedJwksKey = async () => {
+      // The JWKS endpoint responded 200 with valid JSON, but the document
+      // doesn't structurally hold together as a key set (e.g. a missing or
+      // malformed `keys` array) -- jose throws JWKSInvalid before it ever
+      // gets to checking the token's `kid` against anything.
+      throw new joseErrors.JWKSInvalid('JSON Web Key Set is malformed');
+    };
+
+    await expect(
+      verifyNeonAuthToken(token, { ...tokenVerificationOptions(), key: malformedJwksKey }),
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
+  });
+
   it('treats a bare JOSEError (non-200 or unparseable JWKS response) as transient', async () => {
     const token = await createToken();
     const badJwksResponseKey = async () => {

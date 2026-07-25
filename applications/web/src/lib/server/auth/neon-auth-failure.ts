@@ -31,15 +31,24 @@ export class TransientAuthInfrastructureError extends Error {
  * A bare `JOSEError` (not one of its named subclasses) is what jose throws
  * when the JWKS endpoint responds with a non-200 status or unparseable
  * JSON -- the identity provider having a bad day, not evidence the token is
- * invalid.
+ * invalid. `JWKSInvalid` is the same kind of failure one step later: the
+ * response *was* 200 and valid JSON, but the JWKS document itself doesn't
+ * structurally hold together (e.g. missing/malformed `keys`) -- jose never
+ * even reaches the point of checking the presented token's `kid` against it,
+ * so this can only be Neon Auth's key-set infrastructure having a bad day,
+ * never evidence about the token.
  *
  * Every other error -- `JWTExpired`, `JWTClaimValidationFailed`,
  * `JWSSignatureVerificationFailed`, `JWTInvalid`, `JWSInvalid`,
- * `JWKSNoMatchingKey`, etc. -- is a deliberate, typed statement from jose
- * that the *token* is bad, and is treated as invalid by default.
+ * `JWKSNoMatchingKey`, `JWKSMultipleMatchingKeys`, etc. -- is a deliberate,
+ * typed statement from jose that the *token* is bad (including, deliberately,
+ * "no key in an otherwise-valid JWKS matches this token's `kid`", which could
+ * be a legitimate key rotation race but could equally be a forged `kid`
+ * probing for a bypass) and is treated as invalid by default.
  */
 export function isTransientJwksFailure(candidate: unknown): boolean {
   if (candidate instanceof joseErrors.JWKSTimeout) return true;
+  if (candidate instanceof joseErrors.JWKSInvalid) return true;
   if (candidate instanceof joseErrors.JOSEError) {
     return candidate.constructor === joseErrors.JOSEError;
   }
