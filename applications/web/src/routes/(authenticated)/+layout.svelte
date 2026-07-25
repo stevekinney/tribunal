@@ -22,10 +22,10 @@
 
   // Keeps the bridged Tribunal session cookie alive for as long as this
   // authenticated shell is mounted: periodic getSession() calls trigger
-  // Neon Auth's own JWT refresh, and the client's onSuccess hook (wired in
-  // getNeonAuthClient) bridges the refreshed token back to the cookie. Not
-  // fatal if Neon Auth isn't configured -- this is a background durability
-  // measure, not a page-load precondition.
+  // Neon Auth's own JWT refresh, and startNeonSessionRefresh bridges each
+  // refreshed token back to the cookie itself. Not fatal if Neon Auth isn't
+  // configured -- this is a background durability measure, not a page-load
+  // precondition.
   $effect(() => {
     let stopSessionRefresh: (() => void) | undefined;
     try {

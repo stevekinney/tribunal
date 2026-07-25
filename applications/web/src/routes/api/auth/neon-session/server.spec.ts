@@ -97,7 +97,7 @@ describe('POST /api/auth/neon-session', () => {
     resetNeonAuthJwksCacheForTests();
   });
 
-  async function postToken(token: string) {
+  async function postToken(token: string, options: { refreshOnly?: boolean } = {}) {
     const event = createMockRequestEvent({
       url: 'http://localhost/api/auth/neon-session',
       method: 'POST',
@@ -106,7 +106,7 @@ describe('POST /api/auth/neon-session', () => {
     event.request = new Request('http://localhost/api/auth/neon-session', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, ...options }),
     });
     event.cookies.set = vi.fn();
 
@@ -252,6 +252,56 @@ describe('POST /api/auth/neon-session', () => {
 
     expect(storedUser.neonAuthUserId).toBe('neon-email-bridge');
     expect.assertions(1);
+  });
+
+  it('refreshOnly resets the cookie for an already-mapped user without touching their profile', async () => {
+    const existingUser = await userFactory.create({
+      username: 'bridge-refresh',
+      neonAuthUserId: 'neon-bridge-user',
+      email: 'original@example.com',
+      name: 'Original Name',
+      avatarUrl: 'https://example.com/original.png',
+    });
+
+    const { event, response } = await postToken(
+      await createToken({ email: 'claim-jumping@example.com', name: 'Claim Jumper' }),
+      { refreshOnly: true },
+    );
+    const body = (await response.json()) as { user: { id: number } };
+
+    expect(response.status).toBe(200);
+    expect(body.user.id).toBe(existingUser.id);
+    expect(event.cookies.set).toHaveBeenCalledWith(
+      neonAuthTokenCookieName,
+      expect.any(String),
+      expect.objectContaining({ httpOnly: true }),
+    );
+
+    const [storedUser] = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.id, existingUser.id));
+
+    expect(storedUser.name).toBe('Original Name');
+    expect(storedUser.email).toBe('original@example.com');
+    expect(storedUser.avatarUrl).toBe('https://example.com/original.png');
+    expect.assertions(6);
+  });
+
+  it('refreshOnly never creates a user and rejects a token with no existing mapping', async () => {
+    const { response } = await postToken(await createToken(), { refreshOnly: true });
+    const body = (await response.json()) as { error: { message: string } };
+
+    expect(response.status).toBe(401);
+    expect(body.error.message).toBe('Neon Auth user is not linked to a Tribunal user');
+
+    const [storedUser] = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.neonAuthUserId, 'neon-bridge-user'));
+
+    expect(storedUser).toBeUndefined();
+    expect.assertions(3);
   });
 
   it('masks unexpected session bridge failures', async () => {

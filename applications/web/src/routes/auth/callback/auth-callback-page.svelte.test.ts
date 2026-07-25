@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   },
   goto: vi.fn(),
   getSession: vi.fn(),
+  getNeonAuthClient: vi.fn(),
   postNeonSessionToken: vi.fn(),
 }));
 
@@ -23,9 +24,7 @@ vi.mock('$app/navigation', () => ({
 }));
 
 vi.mock('$lib/auth/neon-client', () => ({
-  getNeonAuthClient: () => ({
-    getSession: mocks.getSession,
-  }),
+  getNeonAuthClient: mocks.getNeonAuthClient,
   postNeonSessionToken: mocks.postNeonSessionToken,
 }));
 
@@ -36,6 +35,7 @@ describe('/auth/callback page', () => {
     );
     mocks.goto.mockReset();
     mocks.getSession.mockReset();
+    mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: mocks.getSession });
     mocks.postNeonSessionToken.mockReset();
   });
 

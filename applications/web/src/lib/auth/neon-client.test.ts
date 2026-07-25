@@ -4,25 +4,6 @@ const mockPublicEnv = vi.hoisted(() => ({ PUBLIC_NEON_AUTH_URL: undefined as str
 
 vi.mock('$env/dynamic/public', () => ({ env: mockPublicEnv }));
 
-type CapturedOnSuccess = ((context: { data?: unknown }) => void) | undefined;
-const capturedAdapterOptions = vi.hoisted(() => ({
-  onSuccess: undefined as CapturedOnSuccess,
-}));
-
-vi.mock('@neondatabase/neon-js/auth/vanilla/adapters', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@neondatabase/neon-js/auth/vanilla/adapters')>();
-  return {
-    ...actual,
-    BetterAuthVanillaAdapter: (options?: {
-      fetchOptions?: { onSuccess?: (context: { data?: unknown }) => void };
-    }) => {
-      capturedAdapterOptions.onSuccess = options?.fetchOptions?.onSuccess;
-      return actual.BetterAuthVanillaAdapter(options);
-    },
-  };
-});
-
 import {
   getNeonAuthClient,
   neonSessionRefreshIntervalMs,
@@ -34,7 +15,6 @@ import {
 describe('getNeonAuthClient', () => {
   beforeEach(() => {
     mockPublicEnv.PUBLIC_NEON_AUTH_URL = undefined;
-    capturedAdapterOptions.onSuccess = undefined;
   });
 
   it('throws when PUBLIC_NEON_AUTH_URL is not configured', () => {
@@ -48,24 +28,6 @@ describe('getNeonAuthClient', () => {
 
     expect(client).toBeDefined();
   });
-
-  it('wires an onSuccess hook that bridges a refreshed session token back to Tribunal', async () => {
-    mockPublicEnv.PUBLIC_NEON_AUTH_URL = 'https://auth.example.com';
-    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    getNeonAuthClient();
-    capturedAdapterOptions.onSuccess?.({ data: { session: { token: 'onsuccess-token' } } });
-
-    await vi.waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/api/auth/neon-session',
-        expect.objectContaining({ body: JSON.stringify({ token: 'onsuccess-token' }) }),
-      );
-    });
-
-    vi.unstubAllGlobals();
-  });
 });
 
 describe('postNeonSessionToken', () => {
@@ -73,7 +35,7 @@ describe('postNeonSessionToken', () => {
     vi.unstubAllGlobals();
   });
 
-  it('posts the token to the session bridge endpoint', async () => {
+  it('posts the token to the session bridge endpoint with refreshOnly false by default', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -82,7 +44,20 @@ describe('postNeonSessionToken', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/neon-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: 'a-fresh-token' }),
+      body: JSON.stringify({ token: 'a-fresh-token', refreshOnly: false }),
+    });
+  });
+
+  it('posts refreshOnly true when requested', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postNeonSessionToken('a-fresh-token', { refreshOnly: true });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/neon-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'a-fresh-token', refreshOnly: true }),
     });
   });
 
@@ -101,7 +76,7 @@ describe('refreshNeonSessionCookie', () => {
     vi.unstubAllGlobals();
   });
 
-  it('posts a newly seen session token extracted from session data', async () => {
+  it('posts a newly seen session token extracted from session data, refresh-only', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -110,9 +85,50 @@ describe('refreshNeonSessionCookie', () => {
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/auth/neon-session',
-        expect.objectContaining({ body: JSON.stringify({ token: 'refresh-token-1' }) }),
+        expect.objectContaining({
+          body: JSON.stringify({ token: 'refresh-token-1', refreshOnly: true }),
+        }),
       );
     });
+  });
+
+  it('forwards a signal option through to the underlying fetch call', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    refreshNeonSessionCookie(
+      { session: { token: 'refresh-token-signal' } },
+      { signal: controller.signal },
+    );
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/auth/neon-session',
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+  });
+
+  it('does not log a failure caused by the caller having already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchMock = vi.fn().mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'));
+    vi.stubGlobal('fetch', fetchMock);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    refreshNeonSessionCookie(
+      { session: { token: 'refresh-token-aborted' } },
+      { signal: controller.signal },
+    );
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Give the rejected postNeonSessionToken promise a turn to settle before
+    // asserting the negative -- there's nothing else to await here.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 
   it('does not re-post the same token twice in a row', async () => {
@@ -188,5 +204,186 @@ describe('startNeonSessionRefresh', () => {
     stop();
     vi.advanceTimersByTime(neonSessionRefreshIntervalMs * 2);
     expect(getSession).toHaveBeenCalledTimes(3);
+  });
+
+  it('passes an AbortSignal to every getSession call and aborts it when stopped', () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const getSession = vi
+      .fn()
+      .mockImplementation((options?: { fetchOptions?: { signal?: AbortSignal } }) => {
+        signals.push(options?.fetchOptions?.signal);
+        return Promise.resolve({ data: null, error: null });
+      });
+
+    const stop = startNeonSessionRefresh({ getSession });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    stop();
+
+    // Guards against a request already in flight when the caller tears down
+    // (e.g. navigating from the authenticated shell to /logout) resolving
+    // afterward and re-posting the token to the session bridge.
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('does not reject when getSession itself rejects (e.g. from an abort)', () => {
+    const getSession = vi.fn().mockRejectedValue(new Error('AbortError'));
+
+    expect(() => startNeonSessionRefresh({ getSession })).not.toThrow();
+  });
+
+  describe('bridging a refreshed session to the session bridge endpoint', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('posts a refreshed token to the bridge endpoint, refresh-only, reusing the getSession AbortSignal', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi.fn().mockResolvedValue({
+        data: { session: { token: 'interval-token' } },
+        error: null,
+      });
+
+      startNeonSessionRefresh({ getSession });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/auth/neon-session',
+        expect.objectContaining({
+          body: JSON.stringify({ token: 'interval-token', refreshOnly: true }),
+        }),
+      );
+
+      // Not just "some" signal -- the *same* one getSession's own call got,
+      // so aborting one aborts both.
+      const [sessionOptions] = getSession.mock.calls[0] as [
+        { fetchOptions?: { signal?: AbortSignal } },
+      ];
+      const [, requestInit] = fetchMock.mock.calls[0] as [string, { signal?: AbortSignal }];
+      expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+      expect(requestInit.signal).toBe(sessionOptions.fetchOptions?.signal);
+    });
+
+    it('aborts an in-flight bridge POST when stopped, so it cannot recreate the cookie after logout', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      const fetchMock = vi
+        .fn()
+        .mockImplementation((_url: string, init: { signal?: AbortSignal }) => {
+          capturedSignal = init.signal;
+          return new Promise(() => {
+            // Never resolves -- simulates a bridge POST still in flight when
+            // the caller tears down (e.g. a logout navigation).
+          });
+        });
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi.fn().mockResolvedValue({
+        data: { session: { token: 'in-flight-token' } },
+        error: null,
+      });
+
+      const stop = startNeonSessionRefresh({ getSession });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(capturedSignal?.aborted).toBe(false);
+
+      stop();
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('does not post to the bridge endpoint when getSession returns no session data', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+
+      startNeonSessionRefresh({ getSession });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('tolerates a non-object getSession result without throwing', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const getSession = vi.fn().mockResolvedValue(null);
+
+      expect(() => startNeonSessionRefresh({ getSession })).not.toThrow();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('visibility gating', () => {
+    let visibilityState: 'visible' | 'hidden';
+    let listeners: Map<string, Set<() => void>>;
+
+    function fireVisibilityChange(): void {
+      for (const listener of listeners.get('visibilitychange') ?? []) listener();
+    }
+
+    beforeEach(() => {
+      visibilityState = 'visible';
+      listeners = new Map();
+      vi.stubGlobal('document', {
+        get visibilityState() {
+          return visibilityState;
+        },
+        addEventListener: (event: string, listener: () => void) => {
+          const existing = listeners.get(event) ?? new Set();
+          existing.add(listener);
+          listeners.set(event, existing);
+        },
+        removeEventListener: (event: string, listener: () => void) => {
+          listeners.get(event)?.delete(listener);
+        },
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('skips the scheduled interval refresh while the tab is hidden', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1); // leading call is unconditional
+
+      visibilityState = 'hidden';
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      visibilityState = 'visible';
+      vi.advanceTimersByTime(neonSessionRefreshIntervalMs);
+      expect(getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('refreshes once immediately when the tab becomes visible again', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      startNeonSessionRefresh({ getSession });
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      visibilityState = 'hidden';
+      fireVisibilityChange();
+      expect(getSession).toHaveBeenCalledTimes(1);
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+      expect(getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops listening for visibility changes once stopped', () => {
+      const getSession = vi.fn().mockResolvedValue({ data: null, error: null });
+      const stop = startNeonSessionRefresh({ getSession });
+      stop();
+
+      visibilityState = 'visible';
+      fireVisibilityChange();
+
+      expect(getSession).toHaveBeenCalledTimes(1); // only the leading call
+    });
   });
 });
