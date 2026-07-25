@@ -26,7 +26,18 @@ const EMPTY_LENGTH_CHECKS = [
   "[expression.type='UnaryExpression'][expression.operator='!'][expression.argument.type='ChainExpression'][expression.argument.expression.type='MemberExpression'][expression.argument.expression.property.name='length']",
 ];
 
-const EMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})`;
+/**
+ * `no-restricted-syntax` selectors have no type information, so a plain
+ * `.length` member access matches a `string` exactly the same as an array
+ * (`searchQuery.length === 0` reads identically to `items.length === 0`).
+ * Requiring an `{#each}` block somewhere in the guard's subtree is a
+ * purely-structural stand-in for "this is actually a collection": a string
+ * length check has no reason to render one, while a real list fallback
+ * pairs with the `{#each}` that renders its populated branch.
+ */
+const HAS_EACH_BLOCK = ':has(SvelteEachBlock)';
+
+const EMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${EMPTY_LENGTH_CHECKS.join(', ')})${HAS_EACH_BLOCK}`;
 
 /**
  * The mirror image of `EMPTY_LENGTH_CHECKS`: AST shapes that mean "this
@@ -45,7 +56,7 @@ const NONEMPTY_LENGTH_CHECKS = [
   "[expression.type='BinaryExpression'][expression.operator='>='][expression.left.type='ChainExpression'][expression.left.expression.type='MemberExpression'][expression.left.expression.property.name='length'][expression.right.value=1]",
 ];
 
-const NONEMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${NONEMPTY_LENGTH_CHECKS.join(', ')})`;
+const NONEMPTY_LENGTH_SELECTOR = `SvelteIfBlock:matches(${NONEMPTY_LENGTH_CHECKS.join(', ')})${HAS_EACH_BLOCK}`;
 
 export default defineConfig(
   {

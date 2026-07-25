@@ -48,10 +48,17 @@ function findSvelteFiles(dir: string): string[] {
 /**
  * Strips content that is never user-facing prose: `<style>` blocks (CSS,
  * not copy), HTML comments, import statements (module specifiers and named
- * imports), and `class`/`class:`/`*Class` attribute values (CSS class names,
+ * imports), `class`/`class:`/`*Class` attribute values (CSS class names,
  * which legitimately abbreviate — `pr-link`, `repo-icon`, `fieldClass=
- * "repo-row-checkbox"`, and so on) and `id`/`for` attribute values (DOM
- * identifiers, never rendered to the user).
+ * "repo-row-checkbox"`, and so on), `id`/`for` attribute values (DOM
+ * identifiers, never rendered to the user), and other attributes whose
+ * value is a URL, protocol identifier, or DOM/data hook rather than
+ * rendered text: `href`/`src`/`action`/`formaction` (URLs — a path segment
+ * like `/orgs/acme` would otherwise false-positive), `rel`/`target`
+ * (link-behavior enums), `name`/`type` (form-field/element enums), and
+ * `data-*` (scripting hooks). Attributes that legitimately carry visible
+ * text (`aria-label`, `alt`, `title`, `placeholder`, `value`, plain text
+ * children) are deliberately left untouched.
  */
 function stripNonProse(source: string): string {
   return source
@@ -60,7 +67,10 @@ function stripNonProse(source: string): string {
     .replace(/^\s*import\b[^;]*;/gm, '')
     .replace(/\b\w*[Cc]lass\s*=\s*(["'`])(?:(?!\1)[\s\S])*\1/g, '')
     .replace(/\bclass:[\w-]+(?:=\{[^}]*\})?/g, '')
-    .replace(/\b(?:id|for)\s*=\s*(["'`])(?:(?!\1)[\s\S])*\1/g, '');
+    .replace(
+      /\b(?:id|for|href|src|action|formaction|rel|target|name|type|data-[\w-]+)\s*=\s*(["'`])(?:(?!\1)[\s\S])*\1/g,
+      '',
+    );
 }
 
 /**
@@ -314,5 +324,17 @@ describe('user-facing copy avoids banned abbreviations: regression cases', () =>
   it('still allows the same nested-template shape when it uses full words', () => {
     const source = "<span>{`${condition ? `Pull request #${number}` : ''}`}</span>";
     expect(findViolations(source)).toEqual([]);
+  });
+
+  it('does not flag banned words appearing inside a URL path segment', () => {
+    const source = '<a href="https://github.com/orgs/acme/repos">Visit</a>';
+    expect(findViolations(source)).toEqual([]);
+  });
+
+  it('still flags banned words in attributes that carry visible text', () => {
+    expect(findViolations('<button aria-label="Repo settings">X</button>').length).toBeGreaterThan(
+      0,
+    );
+    expect(findViolations('<input placeholder="Search repos" />').length).toBeGreaterThan(0);
   });
 });
