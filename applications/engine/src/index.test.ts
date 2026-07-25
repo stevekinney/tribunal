@@ -1348,6 +1348,73 @@ describe('createSignalShutdown', () => {
     expect(harness.exit).toHaveBeenCalledWith(0);
   });
 
+  // A second P1 review concern on #217: bounding the *loop* by attempt count
+  // and wall-clock time is not enough if a single `release()` call itself
+  // never settles (e.g. blocked on an unreachable database) -- the loop
+  // would otherwise await it forever regardless of how little of the
+  // deadline remains. Each attempt must itself be bounded by the remaining
+  // budget, not just checked between attempts.
+  it('gives up on a single release attempt that never settles once the remaining budget elapses', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn(() => new Promise<void>(() => {}));
+    const harness = createHarness({
+      runtime: { release },
+      releaseAttempts: 3,
+      releaseDeadlineMs: 2_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await shutdownPromise;
+
+    // The stuck attempt is abandoned once its remaining budget runs out --
+    // it is never retried (there is no time left to retry into), and the
+    // handler still reaches exit(0) rather than hanging until Fly SIGKILLs it.
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('lease release attempt 1/3 failed during shutdown'),
+      expect.objectContaining({
+        message: expect.stringContaining('did not settle within the remaining'),
+      }),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('anchors the release deadline at signal receipt, not after stopping the server', async () => {
+    let elapsedMs = 0;
+    const now = () => elapsedMs;
+    const serverStop = vi.fn(async () => {
+      // Simulate a slow `server.stop(true)` that itself eats into the
+      // shutdown budget before the release loop ever starts.
+      elapsedMs += 10_000;
+    });
+    const release = vi.fn(async () => {
+      elapsedMs += 1_000;
+      throw new Error('lease already gone');
+    });
+    const sleep = async (milliseconds: number) => {
+      elapsedMs += milliseconds;
+    };
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseAttempts: 8,
+      releaseDeadlineMs: 15_000,
+      now,
+      sleep,
+    });
+
+    await harness.shutdown();
+
+    // Only ~5s of the 15s deadline remains after the 10s server-stop phase,
+    // so far fewer than 8 attempts (each costing ~2s: the 1s release plus the
+    // 1s retry sleep) should run.
+    expect(release.mock.calls.length).toBeLessThan(5);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
   it('skips clearing the reaper timer when one was never scheduled', async () => {
     const harness = createHarness({ sandboxReaperTimer: undefined });
 

@@ -640,6 +640,13 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     if (shuttingDown) return;
     shuttingDown = true;
 
+    // Anchored at signal receipt, not after `server.stop()` -- the 20s
+    // kill_timeout budget is consumed by the *whole* handler, including the
+    // stop-intake phase below. Measuring from later would silently discount
+    // whatever that phase spent, letting the release loop believe it has
+    // more of the window left than it actually does.
+    const releaseDeadlineAt = now() + releaseDeadlineMs;
+
     logger.log('[engine] shutdown signal received; releasing singleton lease');
 
     // Stop accepting new work first, but never let a failure here skip the
@@ -659,19 +666,21 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     // release() is retryable — it clears its in-flight promise on failure — and
     // a prompt lease handoff, not a fall back to the lease TTL, is the whole
     // point of this handler. Bounded by wall-clock time, not just attempt
-    // count: an unbounded per-attempt duration means the attempt count alone
-    // cannot guarantee this loop stays inside the shutdown window.
-    const releaseDeadlineAt = now() + releaseDeadlineMs;
+    // count, and on *each* attempt individually, not just between attempts: a
+    // single stuck `release()` call (e.g. a database outage) would otherwise
+    // be awaited to completion no matter how long it takes, regardless of how
+    // little of the deadline remains.
     let released = false;
     for (let attempt = 1; attempt <= releaseAttempts; attempt += 1) {
-      if (now() >= releaseDeadlineAt) {
+      const remainingMs = releaseDeadlineAt - now();
+      if (remainingMs <= 0) {
         logger.error(
           `[engine] giving up on releasing the singleton lease after ${attempt - 1}/${releaseAttempts} attempts — the ${releaseDeadlineMs}ms release deadline elapsed`,
         );
         break;
       }
       try {
-        await input.runtime.release();
+        await raceAgainstRemainingBudget(input.runtime.release(), remainingMs, sleep);
         released = true;
         break;
       } catch (error) {
@@ -679,7 +688,10 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
           `[engine] lease release attempt ${attempt}/${releaseAttempts} failed during shutdown`,
           error,
         );
-        if (attempt < releaseAttempts) await sleep(RELEASE_RETRY_DELAY_MS);
+        const remainingAfterFailure = releaseDeadlineAt - now();
+        if (attempt < releaseAttempts && remainingAfterFailure > 0) {
+          await sleep(Math.min(RELEASE_RETRY_DELAY_MS, remainingAfterFailure));
+        }
       }
     }
 
@@ -697,6 +709,29 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     }
     exit(0);
   };
+}
+
+/**
+ * Races `work` against the remaining shutdown budget so a single stuck call
+ * (e.g. `release()` blocked on an unreachable database) cannot be awaited
+ * past however much of the deadline is left, regardless of how many retry
+ * attempts remain. `work` itself is not cancelled -- there is no cancellation
+ * signal to give it -- so on a timeout it keeps running in the background;
+ * `release()` is idempotent, so a value it eventually produces after this
+ * race has moved on is simply discarded, and the *next* attempt still goes
+ * through the same in-flight promise via `bootstrap.ts`'s own memoization.
+ */
+function raceAgainstRemainingBudget<T>(
+  work: Promise<T>,
+  remainingMs: number,
+  sleep: (milliseconds: number) => Promise<void>,
+): Promise<T> {
+  const timeout = sleep(remainingMs).then((): never => {
+    throw new Error(
+      `release() did not settle within the remaining ${remainingMs}ms of the shutdown deadline`,
+    );
+  });
+  return Promise.race([work, timeout]);
 }
 
 /**
