@@ -52,7 +52,9 @@ describe('/runs page', () => {
     render(RunsPage, { data, form: null, params: {} });
 
     await expect.element(page.getByText('Recent runs')).toBeInTheDocument();
-    await expect.element(page.getByText('No runs have started yet.')).toBeInTheDocument();
+    const emptyState = page.getByRole('group', { name: 'No runs' });
+    await expect.element(emptyState).toBeInTheDocument();
+    await expect.element(emptyState.getByText('No runs have started yet.')).toBeInTheDocument();
   });
 
   it('shows a source column with the pull request review label and trigger', async () => {

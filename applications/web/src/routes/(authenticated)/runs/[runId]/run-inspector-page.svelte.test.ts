@@ -127,6 +127,7 @@ describe('/runs/[runId] page', () => {
   it('renders blocked tool calls and stop control', async () => {
     render(RunInspectorPage, { data });
 
+    await expect.element(page.getByText('lost-gradient/tribunal · Pull request #12')).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Run summary statistics' })).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Agents 1' })).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Est. cost $1.00' })).toBeVisible();
@@ -149,6 +150,9 @@ describe('/runs/[runId] page', () => {
     await expect
       .element(page.getByRole('link', { name: 'GitHub comment' }))
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12#discussion_r123');
+    await expect
+      .element(page.getByRole('link', { name: 'Open pull request' }))
+      .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12');
   });
 
   it('renders webhook event handler context without pull request controls', async () => {
@@ -185,7 +189,18 @@ describe('/runs/[runId] page', () => {
     await expect.element(page.getByText('Webhook event')).toBeVisible();
     await expect.element(page.getByText('#42')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Open PR' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Open pull request' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('renders a labelled empty state when a run has no agent runs', async () => {
+    render(RunInspectorPage, {
+      data: { ...data, run: { ...data.run, agentRuns: [] } },
+    });
+
+    await expect.element(page.getByRole('group', { name: 'No agent runs' })).toBeInTheDocument();
+    await expect.element(page.getByText('No agent runs recorded.')).toBeInTheDocument();
   });
 
   it('streams run updates through agent_event transport state', async () => {
@@ -417,6 +432,10 @@ describe('/runs/[runId] page', () => {
     await expect.element(page.getByText('1m 5s')).toBeVisible();
     // agent_run_2 and agent_run_3 have no findings recorded.
     await expect.element(page.getByText('No findings recorded.').first()).toBeVisible();
+    // Each empty findings list renders as a labelled EmptyState group, not bare text.
+    await expect
+      .element(page.getByRole('heading', { name: 'No findings', level: 4 }).first())
+      .toBeVisible();
   });
 
   it('quota-blocked runs render a warning status badge', async () => {

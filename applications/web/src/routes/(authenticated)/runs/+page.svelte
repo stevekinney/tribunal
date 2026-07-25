@@ -5,6 +5,7 @@
   import Page from '$lib/components/page.svelte';
   import { Badge } from '@lostgradient/cinder/badge';
   import { Card } from '@lostgradient/cinder/card';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import { Table } from '@lostgradient/cinder/table';
   import { formatDuration } from '$lib/utilities/format-duration';
@@ -41,8 +42,8 @@
 
 <Page title="Runs" subtitle="Recent runs">
   {#if data.runs.length === 0}
-    <Card>
-      <p class="muted">No runs have started yet.</p>
+    <Card padding="none">
+      <EmptyState title="No runs" description="No runs have started yet." headingLevel={2} />
     </Card>
   {:else}
     <Card padding="none">
@@ -109,10 +110,6 @@
 </Page>
 
 <style>
-  .muted {
-    color: var(--text-muted);
-  }
-
   .pr-link {
     display: block;
     color: inherit;

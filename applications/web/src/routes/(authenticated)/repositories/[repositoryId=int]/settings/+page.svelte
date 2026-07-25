@@ -7,6 +7,7 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { Checkbox } from '@lostgradient/cinder/checkbox';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { FormField } from '@lostgradient/cinder/form-field';
   import { Link } from '@lostgradient/cinder/link';
   import { TagInput } from '@lostgradient/cinder/tag-input';
@@ -98,7 +99,10 @@
       headingLevel={2}
     >
       {#if data.agents.length === 0}
-        <p class="field-description">Create an agent before assigning repository reviewers.</p>
+        <EmptyState
+          title="No review agents"
+          description="Create an agent before assigning repository reviewers."
+        />
       {:else}
         <ul class="agent-list">
           {#each data.agents as agent (agent.id)}
@@ -158,12 +162,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-  }
-
-  .field-description {
-    color: var(--text-subtle);
-    font-size: var(--text-sm);
-    margin: 0;
   }
 
   .agent-list {

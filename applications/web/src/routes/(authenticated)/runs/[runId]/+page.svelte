@@ -5,6 +5,7 @@
   import type { BadgeVariant } from '@lostgradient/cinder/badge';
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
+  import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
   import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
   import { Link } from '@lostgradient/cinder/link';
@@ -58,7 +59,7 @@
   );
   const runSubtitle = $derived(
     run.runKind === 'pull_request_review'
-      ? `${run.repositoryOwner}/${run.repositoryName} · PR #${run.prNumber}`
+      ? `${run.repositoryOwner}/${run.repositoryName} · Pull request #${run.prNumber}`
       : `${run.repositoryOwner}/${run.repositoryName} · ${run.eventType}${run.action ? ` / ${run.action}` : ''}`,
   );
   const totalFindings = $derived(
@@ -250,7 +251,7 @@
           target="_blank"
           rel="noopener noreferrer"
         >
-          Open PR
+          Open pull request
           {#snippet trailingIcon()}<ExternalLink size={14} aria-hidden="true" />{/snippet}
         </Button>
       {/if}
@@ -309,8 +310,8 @@
 
   <section class="agent-grid" aria-label="Agent timelines">
     {#if run.agentRuns.length === 0}
-      <Card>
-        <p class="empty-state">No agent runs recorded.</p>
+      <Card padding="none">
+        <EmptyState title="No agent runs" description="No agent runs recorded." headingLevel={2} />
       </Card>
     {/if}
     {#each run.agentRuns as agentRun (agentRun.id)}
@@ -365,7 +366,7 @@
         <div class="findings">
           <h3 class="findings-heading">Findings ({agentRun.findings.length})</h3>
           {#if agentRun.findings.length === 0}
-            <p class="empty-state">No findings recorded.</p>
+            <EmptyState title="No findings" description="No findings recorded." headingLevel={4} />
           {:else}
             <ul class="finding-list">
               {#each agentRun.findings as finding (finding.id)}
@@ -570,11 +571,6 @@
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--text-muted);
-  }
-
-  .empty-state {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
   }
 
   /* ---- Responsive ---- */

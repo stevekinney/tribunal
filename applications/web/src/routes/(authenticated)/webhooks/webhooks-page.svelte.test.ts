@@ -91,7 +91,7 @@ describe('/webhooks page', () => {
       .element(page.getByRole('cell', { name: 'pull_request opened' }))
       .toBeInTheDocument();
     await expect.element(page.getByText('delivery-1', { exact: true })).toBeInTheDocument();
-    await expect.element(page.getByText('PR #7')).toBeInTheDocument();
+    await expect.element(page.getByText('Pull request #7')).toBeInTheDocument();
   });
 
   it('wraps the events table in a named, focusable scroll region', async () => {
@@ -318,7 +318,7 @@ describe('/webhooks page', () => {
     expect(detailText).toContain('Sender');
     expect(detailText).toContain('octocat');
     expect(detailText).toContain('Related object');
-    expect(detailText).toContain('PR #7');
+    expect(detailText).toContain('Pull request #7');
     expect(detailText).toContain('GitHub timestamp');
     expect(detailText).toContain('Received');
     expect(detailText).toContain('Delivery ID');

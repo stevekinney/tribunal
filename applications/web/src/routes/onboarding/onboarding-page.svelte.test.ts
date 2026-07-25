@@ -244,7 +244,7 @@ describe('/onboarding page', () => {
     await page.getByRole('searchbox').fill('no-such-repo');
 
     await expect
-      .element(page.getByText('No repositories matching "no-such-repo".'))
+      .element(page.getByRole('group', { name: 'No repositories matching "no-such-repo".' }))
       .toBeInTheDocument();
   });
 
@@ -257,7 +257,9 @@ describe('/onboarding page', () => {
 
     render(OnboardingPage, { data, form: null, params: {} });
 
-    await expect.element(page.getByText('No repositories found.')).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('group', { name: 'No repositories found.' }))
+      .toBeInTheDocument();
   });
 
   it('falls back to the sign-in step for an unrecognized connect reason', async () => {
