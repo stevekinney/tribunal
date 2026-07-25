@@ -139,14 +139,7 @@ export default defineConfig(
     // + aria-labelledby to its title). See .claude/skills/component-standards.
     //
     files: ['src/**/*.svelte'],
-    ignores: [
-      'test/**/*',
-      // Concurrently restructured by another change; has two genuine
-      // hand-rolled empty states (one at :385). Remove this entry — do not
-      // weaken the rule — once that restructuring lands and fixes them.
-      // Tracked in the pull request description.
-      'src/routes/(authenticated)/repositories/+page.svelte',
-    ],
+    ignores: ['test/**/*'],
     rules: {
       'no-restricted-syntax': [
         'error',
