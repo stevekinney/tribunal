@@ -31,7 +31,6 @@ export * from './repository-review-settings';
 export * from './review-intent';
 export * from './tribunal-run';
 export * from './user';
-export * from './user-api-key';
 export * from './user-review-settings';
 export * from './webhook-event';
 export * from './webhook-event-handler-run';

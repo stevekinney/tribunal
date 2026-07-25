@@ -23,23 +23,23 @@ describe('createMockRequestEvent', () => {
 
   it('builds a request with headers and a plain-object body converted to FormData', async () => {
     const event = createMockRequestEvent({
-      url: 'http://localhost/api-keys',
+      url: 'http://localhost/settings',
       method: 'POST',
       headers: { 'x-test': 'true' },
-      body: { name: 'Test Key' },
+      body: { defaultReviewModel: 'claude-sonnet-4-5' },
       locals: { user: { id: 1 } },
-      routeId: '/(authenticated)/api-keys',
+      routeId: '/(authenticated)/settings',
       params: { id: '1' },
     });
 
     expect(event.request.method).toBe('POST');
     expect(event.request.headers.get('x-test')).toBe('true');
-    expect(event.route.id).toBe('/(authenticated)/api-keys');
+    expect(event.route.id).toBe('/(authenticated)/settings');
     expect(event.params).toEqual({ id: '1' });
     expect(event.locals).toEqual({ user: { id: 1 } });
 
     const submittedFormData = await event.request.clone().formData();
-    expect(submittedFormData.get('name')).toBe('Test Key');
+    expect(submittedFormData.get('defaultReviewModel')).toBe('claude-sonnet-4-5');
   });
 
   it('accepts a FormData instance directly without re-wrapping it', async () => {

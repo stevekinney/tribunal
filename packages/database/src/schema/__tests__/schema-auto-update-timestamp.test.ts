@@ -11,7 +11,6 @@ import {
   repository,
   repositoryEventListener,
   repositoryReviewSettings,
-  userApiKey,
   userReviewSettings,
   workflowRun,
 } from '../index';
@@ -129,29 +128,6 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
       .where(eq(oauthConnection.id, connection.id));
 
     expect(updated.status).toBe('invalid');
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
-  });
-
-  it('bumps userApiKey.updatedAt on update', async () => {
-    const factories = createFactories(testDatabase.db);
-    const user = await factories.user.create();
-    const apiKey = await factories.userApiKey.create({ userId: user.id });
-    await testDatabase.db
-      .update(userApiKey)
-      .set({ updatedAt: distantPast })
-      .where(eq(userApiKey.id, apiKey.id));
-
-    await testDatabase.db
-      .update(userApiKey)
-      .set({ revokedAt: new Date() })
-      .where(eq(userApiKey.id, apiKey.id));
-
-    const [updated] = await testDatabase.db
-      .select()
-      .from(userApiKey)
-      .where(eq(userApiKey.id, apiKey.id));
-
-    expect(updated.revokedAt).not.toBeNull();
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 

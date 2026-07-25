@@ -49,7 +49,7 @@ describe('validate-invariants', () => {
     });
 
     it('contains auxiliary tables across the flat data model', () => {
-      const parityTables = ['user_api_key', 'github_webhook_delivery', 'webhook_event'];
+      const parityTables = ['github_webhook_delivery', 'webhook_event'];
       for (const table of parityTables) {
         expect(EXPECTED_TABLES).toContain(table);
       }

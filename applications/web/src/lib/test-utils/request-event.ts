@@ -48,9 +48,9 @@ export interface MockRequestEventOptions {
  * Usage:
  * ```typescript
  * const event = createMockRequestEvent({
- *   url: 'http://localhost/api-keys',
+ *   url: 'http://localhost/settings',
  *   method: 'POST',
- *   body: { name: 'Test Key' },
+ *   body: { defaultReviewModel: 'claude-sonnet-4-5' },
  *   locals: { user: { id: 1, email: 'test@example.com', name: 'Test User' } }
  * });
  * ```

@@ -26,8 +26,7 @@ These groupings reflect exactly what `schema/index.ts` re-exports today:
 
 - **Identity and authorization**: `user` (Tribunal profile with
   `neon_auth_user_id` mapping), `oauth_connection` (encrypted GitHub API access
-  tokens), `user_api_key` (hashed, customer-facing API keys). Neon Auth owns
-  identity and sessions outside Tribunal's schema.
+  tokens). Neon Auth owns identity and sessions outside Tribunal's schema.
 - **GitHub installation**: `github_installation` (a GitHub App install bound to a
   user), `github_installation_repository` (which repositories an install can
   reach).
@@ -73,7 +72,6 @@ omitted intentionally.)
 ```mermaid
 erDiagram
   USER ||--o{ OAUTH_CONNECTION : "holds tokens for"
-  USER ||--o{ USER_API_KEY : owns
   USER ||--o{ GITHUB_INSTALLATION : connected
   GITHUB_INSTALLATION ||--o{ GITHUB_INSTALLATION_REPOSITORY : grants
   REPOSITORY ||--o{ GITHUB_INSTALLATION_REPOSITORY : "reachable via"
@@ -95,7 +93,6 @@ Notes:
 | -------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `user`                           | Tribunal application profile, integer ID, Neon Auth mapping, platform-admin flag | `oauth_connection`, `github_installation`                               |
 | `oauth_connection`               | Encrypted GitHub API access/refresh tokens                                       | `user` (cascade)                                                        |
-| `user_api_key`                   | Hashed customer-facing API keys with prefix lookup                               | `user` (cascade)                                                        |
 | `github_installation`            | A GitHub App install bound to a user, keyed by GitHub's installation ID          | `user` (cascade), `github_installation_repository`                      |
 | `github_installation_repository` | Join table: which repositories an installation can reach                         | `github_installation` (cascade), `repository` (cascade)                 |
 | `repository`                     | Repository identity (owner, name, default branch); PK is the GitHub repo ID      | `pull_request_state`, `webhook_event`, `github_installation_repository` |

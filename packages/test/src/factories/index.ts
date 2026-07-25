@@ -22,11 +22,6 @@ export { generateId, resetIdCounter, type Database } from './core';
 
 // User
 export { createUserFactory, type UserFactory, type UserFactoryInput } from './user';
-export {
-  createUserApiKeyFactory,
-  type UserApiKeyFactory,
-  type UserApiKeyFactoryInput,
-} from './user-api-key';
 
 // GitHub
 export {
@@ -72,7 +67,6 @@ import {
 import { createWebhookDeliveryFactory, type WebhookDeliveryFactory } from './webhook-delivery';
 import { createRepositoryFactory, type RepositoryFactory } from './repository';
 import { createWorkflowRunFactory, type WorkflowRunFactory } from './workflow-run';
-import { createUserApiKeyFactory, type UserApiKeyFactory } from './user-api-key';
 import { createOAuthConnectionFactory, type OAuthConnectionFactory } from './oauth-connection';
 
 export interface AllFactories {
@@ -81,7 +75,6 @@ export interface AllFactories {
   webhookDelivery: WebhookDeliveryFactory;
   repository: RepositoryFactory;
   workflowRun: WorkflowRunFactory;
-  userApiKey: UserApiKeyFactory;
   oauthConnection: OAuthConnectionFactory;
 }
 
@@ -95,7 +88,6 @@ export function createFactories(db: Database): AllFactories {
     webhookDelivery: createWebhookDeliveryFactory(db),
     repository: createRepositoryFactory(db),
     workflowRun: createWorkflowRunFactory(db),
-    userApiKey: createUserApiKeyFactory(db),
     oauthConnection: createOAuthConnectionFactory(db),
   };
 }

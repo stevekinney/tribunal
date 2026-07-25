@@ -8,7 +8,6 @@ modules. Importing any of it from client code breaks the build.
 
 ```
 server/
-├── api-keys/       # Per-user API key creation, hashing, and auth
 ├── auth/           # Neon Auth token verification and user mapping
 ├── database/       # Drizzle connection (re-exports @tribunal/database)
 ├── github/         # GitHub App, OAuth access checks, webhooks
@@ -58,6 +57,7 @@ import { resolveUserRepositories } from '$lib/server/repositories';
 ## Adding new server code
 
 1. Create `{domain}.ts` (or a `{domain}/` directory) for the service.
-2. Add validation schemas and tables in `@tribunal/database` (schemas in `src/validation/`).
+2. Add validation schemas and tables in `@tribunal/database` when the domain owns
+   persisted data.
 3. Add route handlers in `src/routes/` if HTTP access is needed.
 4. Write tests in `{domain}.test.ts`.

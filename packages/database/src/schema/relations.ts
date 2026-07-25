@@ -16,7 +16,6 @@ import { reviewIntent } from './review-intent';
 import { pullRequestReviewRun } from './pull-request-review-run';
 import { tribunalRun } from './tribunal-run';
 import { user } from './user';
-import { userApiKey } from './user-api-key';
 import { userReviewSettings } from './user-review-settings';
 import { webhookEvent } from './webhook-event';
 import { webhookEventHandlerRun } from './webhook-event-handler-run';
@@ -27,17 +26,12 @@ import { workflowRun } from './workflow-run';
 // ============================================================================
 
 export const userRelations = relations(user, ({ many }) => ({
-  apiKeys: many(userApiKey),
   agents: many(agent),
   costEvents: many(costEvent),
   githubInstallations: many(githubInstallation),
   repositoryAssignments: many(repositoryAgent),
   repositoryReviewSettings: many(repositoryReviewSettings),
   runs: many(tribunalRun),
-}));
-
-export const userApiKeyRelations = relations(userApiKey, ({ one }) => ({
-  user: one(user, { fields: [userApiKey.userId], references: [user.id] }),
 }));
 
 export const repositoryRelations = relations(repository, ({ many }) => ({
