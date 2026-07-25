@@ -1,6 +1,18 @@
 import { page } from 'vitest/browser';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+// Rendering a route component directly (rather than through the root
+// `+layout.svelte`) skips `layout.css`, the only place Cinder's design tokens
+// and `@layer` order get imported. Without it, the computed-style assertions
+// below would see plain inherited typography regardless of whether Cinder's
+// own component CSS landed. Scoped to this file (not `test/vitest.setup.ts`):
+// per `.claude/rules/testing.md`, the shared setup file must not import
+// modules with optional peer dependencies (cinder declares
+// `@modelcontextprotocol/sdk` and `zod` as optional peers) because Vite
+// resolves setup-file imports for every project up front, which would break
+// test collection in a pruned/web-only install regardless of any runtime
+// guard around the import.
+import '@lostgradient/cinder/styles';
 import RepositoriesPage from './+page.svelte';
 import type { PageData } from './$types';
 
