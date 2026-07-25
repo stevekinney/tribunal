@@ -59,7 +59,7 @@
             <Table.HeaderCell>Source</Table.HeaderCell>
             <Table.HeaderCell>Status</Table.HeaderCell>
             <Table.HeaderCell align="right">Findings</Table.HeaderCell>
-            <Table.HeaderCell align="right">Cost</Table.HeaderCell>
+            <Table.HeaderCell align="right">Estimated cost</Table.HeaderCell>
             <Table.HeaderCell align="right">Duration</Table.HeaderCell>
           </Table.Row>
         </Table.Header>
