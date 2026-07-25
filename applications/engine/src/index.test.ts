@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 
 const { createPostgresAdvisoryLockMock } = vi.hoisted(() => ({
   createPostgresAdvisoryLockMock: vi.fn(() => ({ acquire: vi.fn() })),
@@ -23,6 +24,7 @@ import {
   startSandboxReaper,
 } from './index';
 import { HELD_ELSEWHERE_MESSAGE } from './workflows/postgres-advisory-lock';
+import { EngineLeaseUnavailableError } from './workflows/runtime-ports';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -508,10 +510,10 @@ describe('createStartingEngineServerOptions', () => {
 });
 
 describe('createReviewIntentKickScheduler', () => {
-  // Idle shutdown exits non-zero (IDLE_SHUTDOWN_EXIT_CODE in index.ts) so a
-  // deployment with `auto_stop_machines = "off"` (see #211) always gets a
-  // self-healing restart from Fly's crash-restart policy instead of a
-  // silent, permanent stop.
+  // Idle shutdown deliberately exits 0: `auto_start_machines = true` (with
+  // `min_machines_running = 0`) means Fly wakes the machine on the next
+  // request through `tribunal-engine.flycast`, so this is an intentional
+  // scale-to-zero stop, not a crash to recover from.
   it('releases the runtime and exits after the configured idle window', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);
@@ -535,7 +537,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     expect(scheduler.kick()).toEqual({ started: false, reason: 'released' });
     vi.useRealTimers();
   });
@@ -607,7 +609,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
 
@@ -646,7 +648,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(2);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
 
@@ -686,7 +688,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
 
@@ -725,7 +727,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
 
@@ -763,7 +765,7 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    expect(exit).toHaveBeenCalledWith(0);
     vi.useRealTimers();
   });
 });
@@ -858,6 +860,68 @@ describe('startSandboxReaper', () => {
 
     expect(reapClosedPullRequestSandboxes).toHaveBeenCalledTimes(2);
 
+    consoleError.mockRestore();
+  });
+
+  // Regression for #211: a reap tick can already be scheduled when a lease
+  // handoff happens (a deploy SIGTERM, or the idle-shutdown path releasing
+  // the lease) and fire just after -- that produced a full-stack-trace
+  // `console.error` during a routine, successful shutdown and was twice
+  // mistaken for a crash. This specific failure shape must log quietly
+  // instead, while any other reaper failure stays loud.
+  it.each([
+    ['Weft internal', new EngineLeaseNotHeldError()],
+    [
+      'engine-level dispatch guard',
+      new EngineLeaseUnavailableError({
+        mode: 'lease',
+        status: 'contested',
+        holdsLease: false,
+        lossReason: 'deposed',
+      }),
+    ],
+  ])('logs a %s lease-unavailable reap failure quietly, not as an error', async (_label, error) => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtime = { reapClosedPullRequestSandboxes: vi.fn().mockRejectedValue(error) };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await flushPromises();
+
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleLog).toHaveBeenCalledWith(
+      '[engine] sandbox reap skipped: engine does not currently hold its ownership lease',
+      error.message,
+    );
+
+    consoleLog.mockRestore();
+    consoleError.mockRestore();
+  });
+
+  it('still logs a genuine reaper failure as an error, not quietly', async () => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtime = {
+      reapClosedPullRequestSandboxes: vi
+        .fn()
+        .mockRejectedValue(new Error('sandbox API unreachable')),
+    };
+    const setIntervalFunction = vi.fn((callback: () => void) => {
+      callback();
+      return { unref: vi.fn() } as unknown as ReturnType<typeof setInterval>;
+    });
+
+    startSandboxReaper(300, runtime, setIntervalFunction as typeof setInterval);
+    await flushPromises();
+
+    expect(consoleError).toHaveBeenCalledWith('[engine] sandbox reaper failed', expect.any(Error));
+    expect(consoleLog).not.toHaveBeenCalled();
+
+    consoleLog.mockRestore();
     consoleError.mockRestore();
   });
 });
@@ -1235,6 +1299,52 @@ describe('createSignalShutdown', () => {
     await harness.shutdown();
 
     expect(release).toHaveBeenCalledTimes(2);
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  // A P1 review concern on #217: 8 default attempts at an unbounded duration
+  // apiece could add up past the 20s `kill_timeout` in engine.toml well
+  // before the loop's attempt count would ever stop it, risking a SIGKILL
+  // mid-retry. The loop must also be bounded by wall-clock time.
+  it('stops retrying once the overall release deadline elapses, independent of releaseAttempts', async () => {
+    let elapsedMs = 0;
+    const release = vi.fn(async () => {
+      // Simulate each attempt itself taking a couple of seconds -- e.g. a
+      // database outage -- so 8 attempts would otherwise run well past the
+      // kill_timeout before the attempt-count limit alone would stop them.
+      elapsedMs += 2_000;
+      throw new Error('lease already gone');
+    });
+    const sleep = async (milliseconds: number) => {
+      elapsedMs += milliseconds;
+    };
+    const harness = createHarness({
+      runtime: { release },
+      releaseAttempts: 8,
+      releaseDeadlineMs: 15_000,
+      now: () => elapsedMs,
+      sleep,
+    });
+
+    await harness.shutdown();
+
+    // 8 attempts at ~2s each plus ~1s sleeps between them would total ~27s,
+    // comfortably past the 20s kill_timeout -- the deadline must cut this off
+    // well before all 8 attempts run.
+    expect(release.mock.calls.length).toBeLessThan(8);
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('release deadline elapsed'),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+  });
+
+  it('does not apply the release deadline to a misconfigured (non-positive) override', async () => {
+    const release = vi.fn(async () => {});
+    const harness = createHarness({ runtime: { release }, releaseDeadlineMs: -1 });
+
+    await harness.shutdown();
+
+    expect(release).toHaveBeenCalledTimes(1);
     expect(harness.exit).toHaveBeenCalledWith(0);
   });
 

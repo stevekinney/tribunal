@@ -109,7 +109,10 @@ export async function createEngineRuntime(
     return {
       engine,
       healthDependencies() {
-        return createRuntimeHealthDependencies(options.healthDependencies);
+        return createRuntimeHealthDependencies(
+          options.healthDependencies,
+          (engine as { getLeaseHealth(): EngineLeaseHealth }).getLeaseHealth(),
+        );
       },
       drainReviewIntents(limit?: number) {
         return drainReviewIntents(limit);
@@ -175,15 +178,34 @@ export async function createEngineRuntime(
 
 function createRuntimeHealthDependencies(
   dependencies: EngineHealthDependency[] | undefined,
+  leaseHealth: EngineLeaseHealth,
 ): EngineHealthDependency[] {
   const runtimeDependencies = dependencies ?? [{ name: 'weft_database', ok: true }];
-  if (runtimeDependencies.some((dependency) => dependency.name === 'singleton_lock')) {
-    return runtimeDependencies;
+  const hasSingletonLock = runtimeDependencies.some(
+    (dependency) => dependency.name === 'singleton_lock',
+  );
+
+  if (!hasSingletonLock) {
+    return [
+      ...runtimeDependencies,
+      { name: 'singleton_lock', ok: true, detail: 'Weft lease ownership active' },
+    ];
   }
 
+  // Once lease-mode monitoring is configured (a `singleton_lock` dependency
+  // was supplied at boot), reflect the engine's *current* ownership state
+  // instead of that boot-time snapshot -- a lease lost sometime after boot
+  // must be visible to this health check, not masked by a value that was
+  // only ever true at startup.
   return [
-    ...runtimeDependencies,
-    { name: 'singleton_lock', ok: true, detail: 'Weft lease ownership active' },
+    ...runtimeDependencies.filter((dependency) => dependency.name !== 'singleton_lock'),
+    {
+      name: 'singleton_lock',
+      ok: leaseHealth.holdsLease,
+      detail: leaseHealth.holdsLease
+        ? 'Weft lease ownership active'
+        : `Weft lease ownership lost (status: ${leaseHealth.status})`,
+    },
   ];
 }
 

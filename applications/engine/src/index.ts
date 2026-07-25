@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { NeonStorage } from '@lostgradient/weft/storage/neon';
+import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
@@ -13,7 +14,10 @@ import {
   createPostgresAdvisoryLock,
   HELD_ELSEWHERE_MESSAGE,
 } from './workflows/postgres-advisory-lock';
-import { createReviewIntentConsumerFromEnvironment } from './workflows/runtime-ports';
+import {
+  createReviewIntentConsumerFromEnvironment,
+  EngineLeaseUnavailableError,
+} from './workflows/runtime-ports';
 import { parseEngineEnvironment } from './environment';
 
 export function parsePort(value: string | undefined, fallback: number): number {
@@ -21,32 +25,6 @@ export function parsePort(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
 }
-
-/**
- * Exit code used when the idle-shutdown path decides, on its own initiative,
- * that there is nothing left to do and stops the process (see
- * `createReviewIntentKickScheduler`'s `shutdownIfIdle`).
- *
- * `deployment/fly/engine.toml` sets `auto_stop_machines = "off"` specifically
- * because this app's operator never wants Fly to consider a stopped engine
- * machine "normal idling" — every stop is an incident until proven otherwise
- * (see #211). Fly's machine restart policy only restarts a machine whose
- * process exited non-zero; an `exit(0)` reads as an intentional, successful
- * stop and is never auto-restarted. Before this fix the idle-shutdown path
- * called `exit(0)`, so any idle-shutdown decision — regardless of whether it
- * was actually correct — left the machine stopped with no automatic
- * recovery, which is exactly what produced the ~10 hour outage in #211.
- * Exiting non-zero here instead makes every idle-shutdown decision
- * self-healing: Fly restarts the machine, and if there is genuinely still no
- * work, the same decision (and the same non-zero exit) simply repeats. That
- * trade-off — periodic restarts instead of a silent, unbounded stop — is the
- * one this deployment has already chosen by turning `auto_stop_machines`
- * off. This is deliberately distinct from the clean `exit(0)` in
- * `createSignalShutdown`, which responds to a SIGTERM Fly itself sent for a
- * rolling deploy handoff and must stay 0 so Fly does not fight its own
- * deploy by restarting the outgoing machine.
- */
-const IDLE_SHUTDOWN_EXIT_CODE = 1;
 
 const SINGLETON_RETRY_COOLDOWN_MS = 5_000;
 // Each cycle already spends ~8.25 minutes inside the acquire budget
@@ -257,6 +235,20 @@ export function startSandboxReaper(
     void Promise.resolve()
       .then(() => runtime.reapClosedPullRequestSandboxes())
       .catch((error) => {
+        if (isLeaseUnavailableError(error)) {
+          // Expected: a reap tick can be already scheduled when a lease
+          // handoff happens (a deploy SIGTERM or the idle-shutdown path
+          // releasing the lease), and fires just after. Logging this at
+          // `error` with a full stack trace reads as a crash during a
+          // routine, successful shutdown -- see #211, where exactly that
+          // misread it twice. This tick is simply skipped; the next interval
+          // retries once the engine holds its lease again.
+          console.log(
+            '[engine] sandbox reap skipped: engine does not currently hold its ownership lease',
+            error instanceof Error ? error.message : error,
+          );
+          return;
+        }
         console.error('[engine] sandbox reaper failed', error);
       })
       .finally(() => {
@@ -265,6 +257,10 @@ export function startSandboxReaper(
   }, intervalSeconds * 1_000);
   timer.unref?.();
   return timer;
+}
+
+function isLeaseUnavailableError(error: unknown): boolean {
+  return error instanceof EngineLeaseNotHeldError || error instanceof EngineLeaseUnavailableError;
 }
 
 export type SandboxReaperHooks = {
@@ -533,10 +529,11 @@ export function createReviewIntentKickScheduler(
       released = true;
       await runtime.release();
       logger.log('[engine] idle shutdown complete');
-      // Non-zero: see IDLE_SHUTDOWN_EXIT_CODE — this deployment never treats
-      // a stopped engine machine as normal idling, so every voluntary stop
-      // must be able to self-heal via Fly's crash-restart policy.
-      exit(IDLE_SHUTDOWN_EXIT_CODE);
+      // Deliberate, expected stop: `auto_start_machines = true` (with
+      // `min_machines_running = 0`) means Fly wakes the machine again on the
+      // next request through `tribunal-engine.flycast` -- this is a
+      // cost-saving scale-to-zero design, not an incident, so 0 is correct.
+      exit(0);
     } catch (error) {
       released = false;
       logger.error('[engine] idle shutdown check failed', error);
@@ -573,19 +570,27 @@ export type SignalShutdownInput = {
   exit?: (code: number) => void;
   clearIntervalFunction?: (timer: ReturnType<typeof setInterval>) => void;
   releaseAttempts?: number;
+  releaseDeadlineMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
 };
 
-// `deployment/fly/engine.toml` gives the shutdown handler a 20s
-// `kill_timeout` before Fly escalates to SIGKILL. #211 observed all release
-// attempts fail during a real shutdown; the previous budget (3 attempts,
-// 500ms apart — under 2s total) gave a transient failure almost no room to
-// clear before giving up. Widening it to most of the kill_timeout window
-// gives the same kind of transient condition a much better chance to
-// self-heal, without changing what happens if it never does (still logs
-// loudly and still exits 0, per the SIGTERM contract with Fly's deploy).
+// The previous budget (3 attempts, 500ms apart — under 2s total) gave a
+// transient release failure almost no room to clear before giving up.
+// Widening the attempt count alone is not enough, though: each `release()`
+// call has no bound of its own, so 8 attempts at a couple of seconds apiece
+// could still run well past `deployment/fly/engine.toml`'s 20s
+// `kill_timeout` before ever reaching `exit(0)` — at which point Fly SIGKILLs
+// the process mid-retry and the release this loop exists for never
+// completes anyway. RELEASE_DEADLINE_MS bounds the *loop*, not just the
+// attempt count, so the two settings below only ever describe "at most this
+// many attempts, cut short well inside the kill_timeout" rather than a
+// number that can add up past it.
 const DEFAULT_RELEASE_ATTEMPTS = 8;
 const RELEASE_RETRY_DELAY_MS = 1_000;
+// Leaves ~5s of the 20s kill_timeout for the `stop()` calls above and the
+// `exit()` call itself, on top of whatever this loop already spent.
+const DEFAULT_RELEASE_DEADLINE_MS = 15_000;
 
 /**
  * Builds an idempotent handler for process termination signals (SIGTERM/SIGINT).
@@ -620,6 +625,12 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     Number.isFinite(requestedReleaseAttempts) && requestedReleaseAttempts >= 1
       ? Math.floor(requestedReleaseAttempts)
       : DEFAULT_RELEASE_ATTEMPTS;
+  const requestedReleaseDeadlineMs = input.releaseDeadlineMs ?? DEFAULT_RELEASE_DEADLINE_MS;
+  const releaseDeadlineMs =
+    Number.isFinite(requestedReleaseDeadlineMs) && requestedReleaseDeadlineMs > 0
+      ? requestedReleaseDeadlineMs
+      : DEFAULT_RELEASE_DEADLINE_MS;
+  const now = input.now ?? (() => Date.now());
   const sleep =
     input.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -647,9 +658,18 @@ export function createSignalShutdown(input: SignalShutdownInput): () => Promise<
     // Retry the release within the shutdown window (bounded by kill_timeout).
     // release() is retryable — it clears its in-flight promise on failure — and
     // a prompt lease handoff, not a fall back to the lease TTL, is the whole
-    // point of this handler.
+    // point of this handler. Bounded by wall-clock time, not just attempt
+    // count: an unbounded per-attempt duration means the attempt count alone
+    // cannot guarantee this loop stays inside the shutdown window.
+    const releaseDeadlineAt = now() + releaseDeadlineMs;
     let released = false;
     for (let attempt = 1; attempt <= releaseAttempts; attempt += 1) {
+      if (now() >= releaseDeadlineAt) {
+        logger.error(
+          `[engine] giving up on releasing the singleton lease after ${attempt - 1}/${releaseAttempts} attempts — the ${releaseDeadlineMs}ms release deadline elapsed`,
+        );
+        break;
+      }
       try {
         await input.runtime.release();
         released = true;

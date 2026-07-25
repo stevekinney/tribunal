@@ -148,6 +148,37 @@ describe('createEngineRuntime', () => {
     await runtime.release();
   });
 
+  // A P1 review concern on #217: once lease-mode monitoring is configured,
+  // `/health` must reflect the engine's current ownership state, not a
+  // boot-time snapshot that stays "ok: true" forever regardless of what
+  // happens to the lease afterward.
+  it('reflects a lost lease in health dependencies instead of the static boot-time snapshot', async () => {
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      healthDependencies: [
+        { name: 'weft_database', ok: true },
+        { name: 'singleton_lock', ok: true, detail: 'Postgres advisory lock held' },
+      ],
+    });
+    (runtime.engine as { getLeaseHealth: () => unknown }).getLeaseHealth = vi.fn(() => ({
+      mode: 'lease',
+      status: 'contested',
+      holdsLease: false,
+      lossReason: 'deposed',
+    }));
+
+    expect(runtime.healthDependencies()).toEqual([
+      { name: 'weft_database', ok: true },
+      {
+        name: 'singleton_lock',
+        ok: false,
+        detail: 'Weft lease ownership lost (status: contested)',
+      },
+    ]);
+
+    await runtime.release();
+  });
+
   it('async-disposes the Weft engine before releasing the singleton lease', async () => {
     const events: string[] = [];
     const lock = new FakeEngineSingletonLock(events);
