@@ -246,12 +246,21 @@ export class EngineLeaseUnavailableError extends Error {
  * normal retry path (a deferred review-intent retry via
  * `markReviewIntentFailed`, or simply the next `SANDBOX_REAP_INTERVAL` tick)
  * instead of an unhandled Weft internal assertion.
+ *
+ * Deliberately does not log here: the two call sites disagree on the right
+ * severity for the exact same condition. The sandbox reaper treats it as an
+ * expected, quiet race against a lease handoff (see `startSandboxReaper` in
+ * `index.ts`); review-pr dispatch treats it exactly like any other dispatch
+ * failure, silently recorded via `markReviewIntentFailed` with no console
+ * output at all. Logging here at any fixed level would win one of those
+ * cases and defeat the other -- an earlier revision logged unconditionally
+ * and reintroduced the exact misleading error-level noise during a routine
+ * shutdown that #211's quiet-logging fix was meant to eliminate.
  */
 function assertLeaseHeldForDispatch(workflowEngine: ReviewIntentWorkflowEngine): void {
   const health = workflowEngine.getLeaseHealth();
   if (health.holdsLease) return;
 
-  console.error('[engine] refusing to dispatch workflow: ownership lease is not held', health);
   throw new EngineLeaseUnavailableError(health);
 }
 

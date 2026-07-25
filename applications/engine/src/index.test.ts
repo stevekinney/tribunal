@@ -1382,37 +1382,63 @@ describe('createSignalShutdown', () => {
     vi.useRealTimers();
   });
 
-  it('anchors the release deadline at signal receipt, not after stopping the server', async () => {
-    let elapsedMs = 0;
-    const now = () => elapsedMs;
-    const serverStop = vi.fn(async () => {
-      // Simulate a slow `server.stop(true)` that itself eats into the
-      // shutdown budget before the release loop ever starts.
-      elapsedMs += 10_000;
-    });
-    const release = vi.fn(async () => {
-      elapsedMs += 1_000;
-      throw new Error('lease already gone');
-    });
-    const sleep = async (milliseconds: number) => {
-      elapsedMs += milliseconds;
-    };
+  // The previous version of this test advanced a fake clock synchronously
+  // inside the mocks themselves, which doesn't exercise a genuinely pending
+  // promise and so couldn't catch a race that only matters when something is
+  // actually still in flight. Rewritten with real fake timers so
+  // `server.stop(true)` is a promise that only settles when its own timer
+  // fires, not before.
+  it('anchors the release deadline at signal receipt, reducing the budget left for release() by however long server.stop() took', async () => {
+    vi.useFakeTimers();
+    const serverStop = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 10_000)));
+    const release = vi.fn().mockRejectedValue(new Error('lease already gone'));
     const harness = createHarness({
       runtime: { release },
       server: { stop: serverStop },
       releaseAttempts: 8,
       releaseDeadlineMs: 15_000,
-      now,
-      sleep,
+      sleep: undefined,
     });
 
-    await harness.shutdown();
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shutdownPromise;
 
-    // Only ~5s of the 15s deadline remains after the 10s server-stop phase,
-    // so far fewer than 8 attempts (each costing ~2s: the 1s release plus the
-    // 1s retry sleep) should run.
-    expect(release.mock.calls.length).toBeLessThan(5);
+    // Only ~5s of the 15s deadline remained once the 10s server-stop phase
+    // finished -- at ~1s per rejected attempt, nowhere near all 8 should run.
+    expect(release.mock.calls.length).toBeLessThan(8);
     expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  // A P1 review concern on #217: anchoring the deadline correctly discounts
+  // time server.stop() spent, but does nothing if server.stop() itself never
+  // settles -- the release loop would never even start. server.stop() must
+  // be bounded by the same deadline, not just accounted against it.
+  it('reaches exit(0) within the deadline even when server.stop() itself never settles', async () => {
+    vi.useFakeTimers();
+    const serverStop = vi.fn(() => new Promise<void>(() => {}));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const harness = createHarness({
+      runtime: { release },
+      server: { stop: serverStop },
+      releaseDeadlineMs: 5_000,
+      sleep: undefined,
+    });
+
+    const shutdownPromise = harness.shutdown();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shutdownPromise;
+
+    // The hung server.stop() consumes the entire deadline, leaving nothing
+    // for release() -- but the handler must still reach exit(0) rather than
+    // waiting on server.stop() forever.
+    expect(harness.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('release deadline elapsed'),
+    );
+    expect(harness.exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
   });
 
   it('skips clearing the reaper timer when one was never scheduled', async () => {

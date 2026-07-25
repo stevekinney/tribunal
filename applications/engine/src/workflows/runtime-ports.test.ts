@@ -761,10 +761,12 @@ describe('runtime review intent consumer wiring', () => {
     );
 
     expect(start).not.toHaveBeenCalled();
-    expect(consoleError).toHaveBeenCalledWith(
-      '[engine] refusing to dispatch workflow: ownership lease is not held',
-      expect.objectContaining({ holdsLease: false }),
-    );
+    // The dispatch guard itself must not log -- logging severity for this
+    // exact condition differs by caller (quiet for the reaper, silent for
+    // review-pr dispatch), so it belongs at each call site, not the shared
+    // guard. See `startSandboxReaper` in index.ts for the reaper's own quiet
+    // logging of this same error.
+    expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
@@ -818,6 +820,9 @@ describe('runtime review intent consumer wiring', () => {
       failureCount: 1,
       lastError: expect.stringContaining('ownership lease is not held'),
     });
+    // Consistent with every other dispatch failure on this path: recorded
+    // silently via markReviewIntentFailed, no console output.
+    expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
