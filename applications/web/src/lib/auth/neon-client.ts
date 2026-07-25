@@ -268,6 +268,15 @@ export function startNeonSessionRefresh(
     setResumeRefreshStatus('failed');
   }
 
+  function failActiveResumeRefresh(): void {
+    if (resumeRefreshPendingTimeout) {
+      clearTimeout(resumeRefreshPendingTimeout);
+      resumeRefreshPendingTimeout = undefined;
+    }
+    resumeRefreshGeneration += 1;
+    if (resumeRefreshStatus !== 'idle') setResumeRefreshStatus('failed');
+  }
+
   function trackResumeRefresh(refreshPromise: Promise<boolean>): void {
     if (!options.onResumeRefreshStatusChange) return;
 
@@ -293,7 +302,7 @@ export function startNeonSessionRefresh(
     });
   }
 
-  function refresh(): Promise<boolean> {
+  function refresh({ releaseActiveResumeGateOnSuccess = false } = {}): Promise<boolean> {
     return authClient
       .getSession({ fetchOptions: { signal: abortController.signal } })
       .then((result) => {
@@ -302,6 +311,10 @@ export function startNeonSessionRefresh(
             ? (result as { data?: unknown }).data
             : undefined;
         return refreshNeonSessionCookie(data, { signal: abortController.signal });
+      })
+      .then((succeeded) => {
+        if (succeeded && releaseActiveResumeGateOnSuccess) clearResumeRefreshStatus();
+        return succeeded;
       })
       .catch(() => {
         // Ignored: a rejected refresh (including one aborted by tearing this
@@ -313,7 +326,7 @@ export function startNeonSessionRefresh(
 
   function refreshIfVisible(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    void refresh();
+    void refresh({ releaseActiveResumeGateOnSuccess: true });
   }
 
   function handleVisibilityChange(): void {
@@ -321,7 +334,7 @@ export function startNeonSessionRefresh(
     trackResumeRefresh(refresh());
   }
 
-  void refresh();
+  void refresh({ releaseActiveResumeGateOnSuccess: true });
   const intervalId = setInterval(refreshIfVisible, neonSessionRefreshIntervalMs);
 
   if (typeof document !== 'undefined') {
@@ -333,13 +346,17 @@ export function startNeonSessionRefresh(
       ? new BroadcastChannel(neonSessionLogoutBroadcastChannelName)
       : undefined;
 
-  function stop(): void {
+  function stop({ keepResumeGateBlocked = false } = {}): void {
     if (stopped) return;
     stopped = true;
 
     clearInterval(intervalId);
-    resumeRefreshGeneration += 1;
-    clearResumeRefreshStatus();
+    if (keepResumeGateBlocked) {
+      failActiveResumeRefresh();
+    } else {
+      resumeRefreshGeneration += 1;
+      clearResumeRefreshStatus();
+    }
     abortController.abort();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -348,7 +365,7 @@ export function startNeonSessionRefresh(
   }
 
   if (logoutChannel) {
-    logoutChannel.onmessage = () => stop();
+    logoutChannel.onmessage = () => stop({ keepResumeGateBlocked: true });
   }
 
   return stop;
