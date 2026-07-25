@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { Alert } from '@lostgradient/cinder/alert';
-  import { getNeonAuthClient } from '$lib/auth/neon-client';
+  import { getNeonAuthClient, postNeonSessionToken } from '$lib/auth/neon-client';
   import { sanitizeReturnTo } from '$lib/utilities/return-to';
 
   let status = $state<'loading' | 'error'>('loading');
@@ -35,21 +35,11 @@
         throw new Error(message);
       }
 
-      const response = await fetch('/api/auth/neon-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ token }),
-      });
-
-      if (!response.ok) {
+      try {
+        await postNeonSessionToken(token);
+      } catch (bridgeError) {
         failureCode = 'neon_auth_session_failed';
-        const responseBody = await response.text();
-        console.error('Tribunal Neon Auth session bridge failed', {
-          status: response.status,
-          body: responseBody,
-        });
+        console.error('Tribunal Neon Auth session bridge failed', bridgeError);
         throw new Error('Tribunal could not establish a Neon Auth session');
       }
 

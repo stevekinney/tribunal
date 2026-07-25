@@ -49,7 +49,13 @@ describe('encrypt/decrypt', () => {
   it('throws when the auth tag does not match (tampered ciphertext)', () => {
     const ciphertext = encrypt('super secret token');
     const [iv, authTag, encrypted] = ciphertext.split(':');
-    const tampered = `${iv}:${authTag}:${encrypted.slice(0, -2)}ff`;
+    // Flip the last byte via its bitwise complement rather than hardcoding a
+    // replacement — encrypt() uses a random IV, so a hardcoded 'ff' has a
+    // 1/256 chance of matching the real last byte and silently producing
+    // untampered ciphertext (a flaky pass). XOR with 0xff always differs.
+    const lastByte = parseInt(encrypted.slice(-2), 16);
+    const flippedByte = (lastByte ^ 0xff).toString(16).padStart(2, '0');
+    const tampered = `${iv}:${authTag}:${encrypted.slice(0, -2)}${flippedByte}`;
 
     expect(() => decrypt(tampered)).toThrow();
   });

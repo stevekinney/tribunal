@@ -4,6 +4,7 @@ import { env } from '$env/dynamic/private';
 import {
   deleteNeonAuthTokenCookie,
   neonAuthTokenCookieName,
+  TransientAuthInfrastructureError,
   validateNeonSessionFromToken,
 } from '$lib/server/auth/neon-session';
 import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
@@ -75,10 +76,31 @@ export const authHandle: Handle = async ({ event, resolve }) => {
     const { user, neonSession } = await validateNeonSessionFromToken(neonAuthToken);
     event.locals.user = user;
     event.locals.neonSession = neonSession;
-  } catch {
-    deleteNeonAuthTokenCookie(event);
+  } catch (validationError) {
     event.locals.user = null;
     event.locals.neonSession = null;
+
+    if (validationError instanceof TransientAuthInfrastructureError) {
+      // Infrastructure hiccup (JWKS fetch, database), not an invalid token:
+      // leave the cookie intact so the client's next request can retry
+      // instead of forcing a full GitHub OAuth re-prompt.
+      console.error('[hooks.server] Neon Auth session check failed transiently', {
+        correlationId: event.locals.correlationId,
+        requestId: event.locals.requestId,
+        message:
+          validationError.cause instanceof Error
+            ? validationError.cause.message
+            : String(validationError.cause),
+      });
+      return resolve(event);
+    }
+
+    console.error('[hooks.server] Invalidating Neon Auth session cookie', {
+      correlationId: event.locals.correlationId,
+      requestId: event.locals.requestId,
+      message: validationError instanceof Error ? validationError.message : String(validationError),
+    });
+    deleteNeonAuthTokenCookie(event);
   }
 
   return resolve(event);

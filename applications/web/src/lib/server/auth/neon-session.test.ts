@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
+import { createLocalJWKSet, errors as joseErrors, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { eq } from 'drizzle-orm';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
@@ -21,6 +21,7 @@ import {
   neonAuthTokenCookieName,
   resetNeonAuthJwksCacheForTests,
   setNeonAuthTokenCookie,
+  TransientAuthInfrastructureError,
   upsertApplicationUserFromNeonToken,
   validateNeonSessionFromToken,
   verifyNeonAuthToken,
@@ -153,26 +154,32 @@ describe('verifyNeonAuthToken', () => {
     expect.assertions(1);
   });
 
-  it('throws when no baseUrl is supplied and NEON_AUTH_BASE_URL is not configured', async () => {
+  it('treats a missing NEON_AUTH_BASE_URL as transient infrastructure misconfiguration, not an invalid token', async () => {
     const token = await createToken();
 
     // No baseUrl override: falls through to getConfiguredNeonAuthBaseUrl(),
     // which reads env.NEON_AUTH_BASE_URL — unset in this test environment.
-    await expect(verifyNeonAuthToken(token, { key: publicJwks })).rejects.toThrow(
-      'NEON_AUTH_BASE_URL is required to verify Neon Auth tokens',
+    // Resolving configuration happens inside verifyNeonAuthToken's own try
+    // block specifically so a misconfiguration like this is classified the
+    // same way as a JWKS-down failure: preserve the caller's cookie rather
+    // than treating a config problem as evidence the token is bad.
+    await expect(verifyNeonAuthToken(token, { key: publicJwks })).rejects.toBeInstanceOf(
+      TransientAuthInfrastructureError,
     );
   });
 
-  it('resolves a remote JWKS key getter when no key override is supplied (network unreachable, fails closed)', async () => {
+  it('resolves a remote JWKS key getter when no key override is supplied (network unreachable, degrades rather than invalidating)', async () => {
     const token = await createToken();
 
     // No `key` override: exercises getRemoteJwks()/normalizeNeonAuthBaseUrl(),
     // which construct a lazy remote JWKS fetcher. The domain doesn't resolve,
-    // so verification fails closed with 401 rather than validating — this
-    // only proves the construction path runs, not a live fetch.
+    // so the underlying fetch fails before any token material is inspected —
+    // that's an infrastructure failure, not evidence the token is invalid, so
+    // it must surface as TransientAuthInfrastructureError rather than a 401
+    // that would cause the caller to clear the session cookie.
     await expect(
       verifyNeonAuthToken(token, { baseUrl: 'https://neon-auth.invalid.test/base/' }),
-    ).rejects.toMatchObject({ status: 401 });
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
   }, 10_000);
 
   it('reuses the cached remote JWKS fetcher across calls for the same base URL', async () => {
@@ -181,10 +188,62 @@ describe('verifyNeonAuthToken', () => {
 
     // First call constructs and caches the remote JWKS fetcher; the second
     // call (no reset in between) must hit the cache instead of constructing
-    // a new one.
-    await expect(verifyNeonAuthToken(token, options)).rejects.toMatchObject({ status: 401 });
-    await expect(verifyNeonAuthToken(token, options)).rejects.toMatchObject({ status: 401 });
+    // a new one. Both fail transiently (unreachable host), never with a 401.
+    await expect(verifyNeonAuthToken(token, options)).rejects.toBeInstanceOf(
+      TransientAuthInfrastructureError,
+    );
+    await expect(verifyNeonAuthToken(token, options)).rejects.toBeInstanceOf(
+      TransientAuthInfrastructureError,
+    );
   }, 10_000);
+
+  it('rejects a token whose kid is not present in the JWKS (default: invalid, not transient)', async () => {
+    const token = await createToken();
+    const jwksWithoutMatchingKid = createLocalJWKSet({ keys: [] });
+
+    await expect(
+      verifyNeonAuthToken(token, { ...tokenVerificationOptions(), key: jwksWithoutMatchingKid }),
+    ).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('treats a JWKS fetch timeout as transient infrastructure failure, not an invalid token', async () => {
+    const token = await createToken();
+    const timingOutKey = async () => {
+      throw new joseErrors.JWKSTimeout();
+    };
+
+    await expect(
+      verifyNeonAuthToken(token, { ...tokenVerificationOptions(), key: timingOutKey }),
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
+  });
+
+  it('treats a bare JOSEError (non-200 or unparseable JWKS response) as transient', async () => {
+    const token = await createToken();
+    const badJwksResponseKey = async () => {
+      throw new joseErrors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response');
+    };
+
+    await expect(
+      verifyNeonAuthToken(token, { ...tokenVerificationOptions(), key: badJwksResponseKey }),
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
+  });
+
+  it('treats a Bun-shaped connection failure (plain Error with a code, not a TypeError) as transient', async () => {
+    const token = await createToken();
+    const connectionRefusedKey = async () => {
+      // This is the exact shape Bun's fetch() throws for a refused TCP
+      // connection -- a plain Error with a `code`, never a TypeError (that's
+      // Node/undici's contract, not Bun's; verified empirically against
+      // Bun 1.3). The classifier must not rely on `instanceof TypeError`.
+      throw Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), {
+        code: 'ConnectionRefused',
+      });
+    };
+
+    await expect(
+      verifyNeonAuthToken(token, { ...tokenVerificationOptions(), key: connectionRefusedKey }),
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
+  });
 
   it('rejects a token with no subject claim', async () => {
     const token = await new SignJWT({ email: 'test@example.com' })
@@ -516,6 +575,19 @@ describe('Neon Auth profile upsert', () => {
     await expect(
       withTestDatabase(() => validateNeonSessionFromToken(token, tokenVerificationOptions())),
     ).rejects.toMatchObject({ status: 401 });
+    expect.assertions(1);
+  });
+
+  it('treats a database failure during the mapped-user lookup as transient, not an invalid token', async () => {
+    const token = await createToken({ subject: 'neon-user-1' });
+
+    // Deliberately NOT wrapped in withTestDatabase(): the lazy `db` proxy has
+    // no AsyncLocalStorage override and DATABASE_URL is unset in this test's
+    // env mock, so the lookup inside findMappedUser throws -- simulating a
+    // database outage after the token has already verified cleanly.
+    await expect(
+      validateNeonSessionFromToken(token, tokenVerificationOptions()),
+    ).rejects.toBeInstanceOf(TransientAuthInfrastructureError);
     expect.assertions(1);
   });
 

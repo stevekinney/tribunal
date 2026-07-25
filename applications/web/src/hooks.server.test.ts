@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockRequestEvent } from '$lib/test-utils/request-event';
+import { TransientAuthInfrastructureError } from '$lib/server/auth/neon-session';
 
 const mockValidateNeonSessionFromToken = vi.hoisted(() => vi.fn());
 const mockDeleteNeonAuthTokenCookie = vi.hoisted(() => vi.fn());
@@ -46,11 +47,19 @@ vi.mock(import('$lib/server/auth/dev-bypass'), () => ({
   }) => resolve(event as never),
 }));
 
-vi.mock(import('$lib/server/auth/neon-session'), () => ({
-  neonAuthTokenCookieName: 'tribunal-neon-auth-token' as const,
-  validateNeonSessionFromToken: mockValidateNeonSessionFromToken,
-  deleteNeonAuthTokenCookie: mockDeleteNeonAuthTokenCookie,
-}));
+// Preserves the real module's exports (notably TransientAuthInfrastructureError)
+// via importOriginal, only stubbing the two functions these tests drive —
+// so `instanceof TransientAuthInfrastructureError` in hooks.server.ts compares
+// against the real class rather than one the mock never provides.
+vi.mock(import('$lib/server/auth/neon-session'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    neonAuthTokenCookieName: 'tribunal-neon-auth-token' as const,
+    validateNeonSessionFromToken: mockValidateNeonSessionFromToken,
+    deleteNeonAuthTokenCookie: mockDeleteNeonAuthTokenCookie,
+  };
+});
 
 describe('hooks auth handle', () => {
   beforeEach(() => {
@@ -111,6 +120,34 @@ describe('hooks auth handle', () => {
     expect(event.locals.neonSession).toBeNull();
     expect(mockDeleteNeonAuthTokenCookie).toHaveBeenCalledWith(event);
     expect.assertions(3);
+  });
+
+  it('leaves the Neon Auth bridge cookie intact when validation fails transiently', async () => {
+    mockValidateNeonSessionFromToken.mockRejectedValueOnce(
+      new TransientAuthInfrastructureError('Neon Auth JWKS verification unavailable', {
+        cause: new Error('JWKS fetch timed out'),
+      }),
+    );
+
+    const event = createMockRequestEvent();
+    event.cookies.get = vi.fn((name) =>
+      name === 'tribunal-neon-auth-token' ? 'some-token' : undefined,
+    );
+
+    const { authHandle } = await import('./hooks.server');
+    const response = await authHandle({
+      event,
+      resolve: () => new Response('ok'),
+    });
+
+    expect(response.status).toBe(200);
+    expect(event.locals.user).toBeNull();
+    expect(event.locals.neonSession).toBeNull();
+    // The load-bearing assertion: a transient infrastructure failure must
+    // never clear the session cookie, or a JWKS/database hiccup logs the
+    // user out exactly like an actually-expired token would.
+    expect(mockDeleteNeonAuthTokenCookie).not.toHaveBeenCalled();
+    expect.assertions(4);
   });
 
   it('sets locals to null without validating when no bridge cookie is present', async () => {

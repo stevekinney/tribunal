@@ -1,6 +1,6 @@
 import { createRawSnippet } from 'svelte';
 import { page as browserPage } from 'vitest/browser';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from 'vitest-browser-svelte';
 import AuthenticatedLayout from './+layout.svelte';
 import type { LayoutData } from './$types';
@@ -9,10 +9,22 @@ const mocks = vi.hoisted(() => ({
   svelteKitPage: {
     url: new URL('http://localhost/repositories'),
   },
+  getNeonAuthClient: vi.fn(),
+  startNeonSessionRefresh: vi.fn(),
 }));
 
 vi.mock('$app/state', () => ({
   page: mocks.svelteKitPage,
+}));
+
+// This layout is only ever rendered for a signed-in user (the server load
+// redirects otherwise), so it starts a periodic Neon Auth session refresh on
+// mount. These tests aren't exercising that Neon Auth wiring itself (see
+// neon-client.test.ts) -- mock it out so nav/sidebar assertions don't depend
+// on PUBLIC_NEON_AUTH_URL being configured in this browser test environment.
+vi.mock('$lib/auth/neon-client', () => ({
+  getNeonAuthClient: mocks.getNeonAuthClient,
+  startNeonSessionRefresh: mocks.startNeonSessionRefresh,
 }));
 
 const childrenSnippet = createRawSnippet(() => ({
@@ -53,9 +65,52 @@ const expectSidebarReviewStatus = async (label: string) => {
 };
 
 describe('(authenticated) layout', () => {
+  beforeEach(() => {
+    mocks.getNeonAuthClient.mockReset().mockReturnValue({ getSession: vi.fn() });
+    mocks.startNeonSessionRefresh.mockReset().mockReturnValue(vi.fn());
+  });
+
   afterEach(async () => {
     cleanup();
     await browserPage.viewport(375, 667);
+  });
+
+  it('starts periodic Neon Auth session refresh on mount and stops it on unmount', async () => {
+    const stopRefresh = vi.fn();
+    const fakeClient = { getSession: vi.fn() };
+    mocks.getNeonAuthClient.mockReturnValue(fakeClient);
+    mocks.startNeonSessionRefresh.mockReturnValue(stopRefresh);
+
+    render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
+
+    await expect.poll(() => mocks.startNeonSessionRefresh.mock.calls.length).toBeGreaterThan(0);
+    // Exactly once: the effect reads no reactive state, so it must not
+    // re-run (and re-start the interval) for the life of the component.
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledTimes(1);
+    expect(mocks.startNeonSessionRefresh).toHaveBeenCalledWith(fakeClient);
+    expect(stopRefresh).not.toHaveBeenCalled();
+
+    cleanup();
+
+    await expect.poll(() => stopRefresh.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('does not crash the shell when Neon Auth session refresh fails to start', async () => {
+    mocks.getNeonAuthClient.mockImplementation(() => {
+      throw new Error('PUBLIC_NEON_AUTH_URL is required to use Neon Auth');
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
+
+    await expect.element(browserPage.getByText('Routed content')).toBeVisible();
+    await expect.poll(() => consoleErrorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      'Failed to start Neon Auth session refresh',
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('marks the repositories nav item active on the repositories route', async () => {
