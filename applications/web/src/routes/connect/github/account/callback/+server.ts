@@ -8,6 +8,8 @@ import {
 } from '$lib/server/auth/authentication';
 import { getProviderClient } from '$lib/server/auth/providers';
 import { invalidateGitHubAccessCache } from '$lib/server/github/access';
+import { invalidateUserInstallationsCache } from '$lib/server/github/user-installations';
+import { githubContext } from '$lib/server/github-context';
 import { db } from '$lib/server/database';
 import { user as userTable } from '@tribunal/database/schema';
 import type { RequestHandler } from './$types';
@@ -38,6 +40,16 @@ async function saveOAuthConnection(
     await invalidateGitHubAccessCache(userId);
   } catch (error) {
     console.error('Failed to invalidate GitHub access cache:', error);
+  }
+
+  // The user may be reconnecting with a different GitHub account. Without
+  // this, the previous account's installation list stays cached under this
+  // user's ID for up to 30 seconds, which could authorize repositories the
+  // new account cannot actually reach.
+  try {
+    await invalidateUserInstallationsCache(githubContext.cache, userId);
+  } catch (error) {
+    console.error('Failed to invalidate GitHub installations cache:', error);
   }
 }
 

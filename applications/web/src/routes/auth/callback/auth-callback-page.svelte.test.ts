@@ -63,6 +63,45 @@ describe('/auth/callback page', () => {
     });
   });
 
+  it('skips the "/" hop and goes straight to the resolved postLoginPath when returnTo is the default', async () => {
+    mocks.svelteKitPage.url = new URL(
+      'http://localhost/auth/callback?neon_auth_session_verifier=session-verifier',
+    );
+    mocks.getSession.mockResolvedValueOnce({
+      data: { session: { token: 'neon-jwt' } },
+      error: null,
+    });
+    mocks.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ postLoginPath: '/onboarding' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', mocks.fetch);
+
+    render(AuthCallbackPage);
+
+    await vi.waitFor(() => {
+      expect(mocks.goto).toHaveBeenCalledWith('/onboarding');
+    });
+    expect(mocks.goto).not.toHaveBeenCalledWith('/');
+  });
+
+  it('falls back to "/" when returnTo is the default but the session bridge omits postLoginPath', async () => {
+    mocks.svelteKitPage.url = new URL(
+      'http://localhost/auth/callback?neon_auth_session_verifier=session-verifier',
+    );
+    mocks.getSession.mockResolvedValueOnce({
+      data: { session: { token: 'neon-jwt' } },
+      error: null,
+    });
+    mocks.fetch.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', mocks.fetch);
+
+    render(AuthCallbackPage);
+
+    await vi.waitFor(() => {
+      expect(mocks.goto).toHaveBeenCalledWith('/');
+    });
+  });
+
   it('redirects to a sanitized login error when the session bridge fails', async () => {
     mocks.getSession.mockResolvedValueOnce({
       data: { session: { token: 'neon-jwt' } },

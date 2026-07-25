@@ -35,6 +35,7 @@ describe('cache-policy', () => {
 
     it('has policies for repository operations', () => {
       expect(getPolicy('list-installation-repositories')).toBeDefined();
+      expect(getPolicy('list-user-installations')).toBeDefined();
     });
 
     it('has policies for previously uncached operations', () => {
@@ -155,6 +156,12 @@ describe('cache-policy', () => {
       expect(key).toBe('github:response:installation:11:repositories');
     });
 
+    it('list-user-installations generates correct cache key', () => {
+      const policy = getPolicy('list-user-installations')!;
+      const key = policy.keyFactory(42);
+      expect(key).toBe('github:response:user:42:installations');
+    });
+
     it('worker-aggregate-pull-requests generates correct cache key', () => {
       const policy = getPolicy('worker-aggregate-pull-requests')!;
       const key = policy.keyFactory(7, 's:open');
@@ -180,6 +187,7 @@ describe('cache-policy', () => {
       expect(getPolicy('list-pull-requests')?.supportsEtag).toBe(false);
       expect(getPolicy('list-issues')?.supportsEtag).toBe(false);
       expect(getPolicy('list-installation-repositories')?.supportsEtag).toBe(false);
+      expect(getPolicy('list-user-installations')?.supportsEtag).toBe(false);
       expect(getPolicy('worker-aggregate-pull-requests')?.supportsEtag).toBe(false);
     });
 

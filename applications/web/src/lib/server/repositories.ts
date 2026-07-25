@@ -27,6 +27,7 @@ import {
 import { getUserOctokit } from '$lib/server/github/user-oauth';
 import { listUserInstallations } from '$lib/server/github/user-installations';
 import { markGitHubTokenInvalid } from '$lib/server/github/access';
+import { githubContext } from '$lib/server/github-context';
 
 /**
  * Detect an Octokit 401. Octokit's `RequestError` carries a numeric `status`,
@@ -111,7 +112,11 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
   let installationIds: number[];
   let liveInstallations: UserRepositoryInstallation[];
   try {
-    const installations = await listUserInstallations(octokitResult.octokit);
+    const installations = await listUserInstallations(
+      githubContext.cache,
+      userId,
+      octokitResult.octokit,
+    );
     const applicationSlug = env.GITHUB_APP_NAME;
     const applicationInstallations = applicationSlug
       ? installations.filter((installation) => installation.app_slug === applicationSlug)

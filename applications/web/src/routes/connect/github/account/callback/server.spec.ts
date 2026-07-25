@@ -53,6 +53,14 @@ vi.mock('$lib/server/github/access', () => ({
   invalidateGitHubAccessCache: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('$lib/server/github/user-installations', () => ({
+  invalidateUserInstallationsCache: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('$lib/server/github-context', () => ({
+  githubContext: { cache: {} },
+}));
+
 const mockDbWhere = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockDbSet = vi.hoisted(() => vi.fn(() => ({ where: mockDbWhere })));
 const mockDbUpdate = vi.hoisted(() => vi.fn(() => ({ set: mockDbSet })));
@@ -64,6 +72,8 @@ vi.mock('$lib/server/database', () => ({
 import { GET } from './+server';
 import { consumeOAuthStateCookie, upsertOAuthConnection } from '$lib/server/auth/authentication';
 import { invalidateGitHubAccessCache } from '$lib/server/github/access';
+import { invalidateUserInstallationsCache } from '$lib/server/github/user-installations';
+import { githubContext } from '$lib/server/github-context';
 
 describe('GET /connect/github/account/callback', () => {
   beforeEach(() => {
@@ -130,7 +140,8 @@ describe('GET /connect/github/account/callback', () => {
       scope: 'repo,user:email',
     });
     expect(invalidateGitHubAccessCache).toHaveBeenCalledWith(1);
-    expect.assertions(4);
+    expect(invalidateUserInstallationsCache).toHaveBeenCalledWith(githubContext.cache, 1);
+    expect.assertions(5);
   });
 
   it('redirects with github_denied when GitHub reports an OAuth error', async () => {
@@ -216,6 +227,18 @@ describe('GET /connect/github/account/callback', () => {
 
     expect(errorSpy).toHaveBeenCalledWith(
       'Failed to invalidate GitHub access cache:',
+      expect.any(Error),
+    );
+  });
+
+  it('logs but does not fail the request when installations-cache invalidation throws', async () => {
+    vi.mocked(invalidateUserInstallationsCache).mockRejectedValueOnce(new Error('cache down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(GET(createRequest())).rejects.toMatchObject({ status: 302 });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Failed to invalidate GitHub installations cache:',
       expect.any(Error),
     );
   });

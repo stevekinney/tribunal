@@ -67,9 +67,13 @@ vi.mock('$lib/server/github-context', () => ({
   githubContext: {},
 }));
 
-vi.mock('@tribunal/github/dashboard/service', () => ({
-  buildRepositoryDashboard: mockBuildRepositoryDashboard,
-}));
+vi.mock('@tribunal/github/dashboard/service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tribunal/github/dashboard/service')>();
+  return {
+    ...actual,
+    buildRepositoryDashboard: mockBuildRepositoryDashboard,
+  };
+});
 
 vi.mock('$lib/server/review/operator', () => ({
   getRepositoryOperatorDetails: mockGetRepositoryOperatorDetails,
@@ -89,7 +93,7 @@ type RepositoriesLoadResult = {
   needsConnect: boolean;
   loadError: string | null;
   repositories: Array<{ id: number; review: { watched: boolean } }>;
-  summary: {
+  summary: Promise<{
     totalRepositoryCount: number;
     failingDefaultBranchCount: number;
     failingDefaultBranchCountExact: boolean;
@@ -98,7 +102,7 @@ type RepositoriesLoadResult = {
     attentionPullRequestCount: number;
     attentionPullRequestCountExact: boolean;
     hasUnavailableRepositories: boolean;
-  } | null;
+  } | null>;
 };
 
 describe('/repositories server load', () => {
@@ -255,11 +259,11 @@ describe('/repositories server load', () => {
       repositories: Array<{
         id: number;
         review: { watched: boolean };
-        dashboard: { defaultBranchStatus: string } | null;
       }>;
       addableRepositories: Array<{ id: number; owner: string; name: string }>;
-      summary: RepositoriesLoadResult['summary'];
-      attentionPullRequests: Array<{ number: number; repositoryOwner: string }>;
+      summary: Promise<RepositoriesLoadResult['summary']>;
+      attentionPullRequests: Promise<Array<{ number: number; repositoryOwner: string }>>;
+      dashboardRowsById: Promise<Map<number, { defaultBranchStatus: string }>>;
     };
 
     // Only the added repository is dashboard-built; the build receives only its id.
@@ -270,14 +274,15 @@ describe('/repositories server load', () => {
     // is surfaced through the "Add repository" picker instead.
     expect(result.repositories.map((r) => r.id)).toEqual([101]);
     expect(result.repositories.find((r) => r.id === 101)?.review.watched).toBe(true);
-    expect(result.repositories.find((r) => r.id === 101)?.dashboard?.defaultBranchStatus).toBe(
-      'failing',
-    );
+
+    const dashboardRowsById = await result.dashboardRowsById;
+    expect(dashboardRowsById.get(101)?.defaultBranchStatus).toBe('failing');
+
     expect(result.addableRepositories).toEqual([
       { id: 202, owner: 'acme', name: 'gadgets', defaultBranch: 'main' },
     ]);
 
-    expect(result.summary).toEqual({
+    await expect(result.summary).resolves.toEqual({
       totalRepositoryCount: 1,
       failingDefaultBranchCount: 1,
       failingDefaultBranchCountExact: true,
@@ -288,8 +293,9 @@ describe('/repositories server load', () => {
       hasUnavailableRepositories: false,
     });
 
-    expect(result.attentionPullRequests).toHaveLength(1);
-    expect(result.attentionPullRequests[0]).toMatchObject({
+    const attentionPullRequests = await result.attentionPullRequests;
+    expect(attentionPullRequests).toHaveLength(1);
+    expect(attentionPullRequests[0]).toMatchObject({
       number: 7,
       repositoryOwner: 'acme',
     });

@@ -88,7 +88,16 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 
   const userOctokit = new Octokit({ auth: userAccessToken });
   try {
-    const userInstallations = await listUserInstallations(userOctokit);
+    // Write-then-read: the user just completed the install flow on GitHub,
+    // so `bypass: true` is required here — a cached (up to 30s stale) list
+    // from before the install would still be missing this installation and
+    // wrongly 403 a legitimate, freshly granted install.
+    const userInstallations = await listUserInstallations(
+      githubContext.cache,
+      locals.user.id,
+      userOctokit,
+      { bypass: true },
+    );
     if (!userHasInstallationAccess(userInstallations, installationIdNum)) {
       error(403, 'You do not have access to this GitHub installation');
     }

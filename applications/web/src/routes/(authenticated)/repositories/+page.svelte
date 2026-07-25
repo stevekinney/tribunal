@@ -11,6 +11,7 @@
   import { SearchField } from '@lostgradient/cinder/search-field';
   import { Combobox } from '@lostgradient/cinder/combobox';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
+  import { Skeleton } from '@lostgradient/cinder/skeleton';
   import { Table } from '@lostgradient/cinder/table';
   import { Toggle } from '@lostgradient/cinder/toggle';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
@@ -42,9 +43,13 @@
   // Only repositories explicitly added to Tribunal (watched) appear in the
   // table. The full accessible catalog is never rendered here — it lives behind
   // the "Add repository" picker as `data.addableRepositories`.
+  //
+  // `summary`, `attentionPullRequests`, and `dashboardRowsById` are Promises —
+  // every GitHub-dependent field on this page. They're awaited directly in the
+  // markup below (`{#await}`) rather than derived here, so the repository
+  // identity, search, and watch toggles below paint immediately while the
+  // dashboard fan-out is still in flight.
   const repositories = $derived(data.repositories);
-  const summary = $derived(data.summary);
-  const attentionPullRequests = $derived(data.attentionPullRequests ?? []);
   const hasInstallations = $derived(data.installations.length > 0);
   // The Add picker only renders when there is something to add, so empty-state
   // copy must not point at it unless an addable repository actually exists.
@@ -281,12 +286,14 @@
     <Alert variant="danger">{form.error}</Alert>
   {/if}
 
-  {#if repositories.some((repository) => repository.dashboard?.dataStatus === 'unavailable')}
-    <Alert variant="warning">
-      GitHub data for some repositories could not be refreshed this build. Their status shows as
-      Unknown until the next refresh.
-    </Alert>
-  {/if}
+  {#await data.dashboardRowsById then dashboardsById}
+    {#if repositories.some((repository) => dashboardsById.get(repository.id)?.dataStatus === 'unavailable')}
+      <Alert variant="warning">
+        GitHub data for some or all repositories could not be refreshed this build. Their status
+        shows as Unknown until the next refresh.
+      </Alert>
+    {/if}
+  {/await}
 
   {#if repositories.length === 0}
     <Card padding="none">
@@ -301,74 +308,89 @@
       </EmptyState>
     </Card>
   {:else}
-    {#if summary}
-      <StatGroup label="Dashboard summary">
-        <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
-        <StatGroup.Stat
-          label="Failing default branch"
-          value={summary.failingDefaultBranchCountExact
-            ? summary.failingDefaultBranchCount
-            : `${summary.failingDefaultBranchCount}+`}
-        />
-        <StatGroup.Stat
-          label="Open pull requests"
-          value={summary.openPullRequestCountExact
-            ? summary.openPullRequestCount
-            : `${summary.openPullRequestCount}+`}
-        />
-        <StatGroup.Stat
-          label="Needs attention"
-          value={summary.attentionPullRequestCountExact
-            ? summary.attentionPullRequestCount
-            : `${summary.attentionPullRequestCount}+`}
-        />
-      </StatGroup>
-    {/if}
+    {#await data.summary}
+      <div class="stat-group-skeleton" aria-hidden="true">
+        <Skeleton height="3.5rem" width="100%" />
+      </div>
+    {:then summary}
+      {#if summary}
+        <StatGroup label="Dashboard summary">
+          <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
+          <StatGroup.Stat
+            label="Failing default branch"
+            value={summary.failingDefaultBranchCountExact
+              ? summary.failingDefaultBranchCount
+              : `${summary.failingDefaultBranchCount}+`}
+          />
+          <StatGroup.Stat
+            label="Open pull requests"
+            value={summary.openPullRequestCountExact
+              ? summary.openPullRequestCount
+              : `${summary.openPullRequestCount}+`}
+          />
+          <StatGroup.Stat
+            label="Needs attention"
+            value={summary.attentionPullRequestCountExact
+              ? summary.attentionPullRequestCount
+              : `${summary.attentionPullRequestCount}+`}
+          />
+        </StatGroup>
+      {/if}
 
-    <ul class="attention-list-wrapper">
-      <li>
-        <h2 class="section-heading">Needs attention</h2>
-        <DataList items={attentionPullRequests} key={(pr) => `${pr.repositoryId}:${pr.number}`}>
-          {#snippet empty()}
-            <p>
-              {#if summary && !summary.attentionPullRequestCountExact}
-                Attention data is incomplete: some repositories could not be checked this build, so
-                this list may be missing pull requests.
-              {:else}
-                No open pull requests need attention right now.
-              {/if}
-            </p>
-          {/snippet}
-          {#snippet children(pullRequest)}
-            <StackedListItem href={pullRequest.htmlUrl} target="_blank">
-              {#snippet title()}#{pullRequest.number} {pullRequest.title}{/snippet}
-              {#snippet description()}{pullRequest.repositoryOwner}/{pullRequest.repositoryName}{/snippet}
-              {#snippet meta()}
-                <div class="attention-badges">
-                  <Badge size="sm" variant={pullRequest.draft ? 'neutral' : 'success'}>
-                    {pullRequest.draft ? 'Draft' : 'Open'}
-                  </Badge>
-                  <Badge size="sm" variant={ciBadgeVariant(pullRequest.ciStatus)}>
-                    {ciStatusLabel(pullRequest.ciStatus)}
-                  </Badge>
-                  <Badge size="sm" variant={mergeStatusVariant(pullRequest.mergeStatus)}>
-                    {mergeStatusLabel(pullRequest.mergeStatus)}
-                  </Badge>
-                  <Badge
-                    size="sm"
-                    variant={(pullRequest.unresolvedThreadCount ?? 0) > 0 ? 'warning' : 'neutral'}
-                  >
-                    {pullRequest.unresolvedThreadCount === null
-                      ? 'Unresolved threads unknown'
-                      : `${pullRequest.unresolvedThreadCount} unresolved`}
-                  </Badge>
-                </div>
+      <ul class="attention-list-wrapper">
+        <li>
+          <h2 class="section-heading">Needs attention</h2>
+          {#await data.attentionPullRequests}
+            <div class="attention-list-skeleton" aria-hidden="true">
+              <Skeleton height="2.5rem" width="100%" />
+              <Skeleton height="2.5rem" width="100%" />
+            </div>
+          {:then attentionPullRequests}
+            <DataList items={attentionPullRequests} key={(pr) => `${pr.repositoryId}:${pr.number}`}>
+              {#snippet empty()}
+                <p>
+                  {#if summary && !summary.attentionPullRequestCountExact}
+                    Attention data is incomplete: some repositories could not be checked this build,
+                    so this list may be missing pull requests.
+                  {:else}
+                    No open pull requests need attention right now.
+                  {/if}
+                </p>
               {/snippet}
-            </StackedListItem>
-          {/snippet}
-        </DataList>
-      </li>
-    </ul>
+              {#snippet children(pullRequest)}
+                <StackedListItem href={pullRequest.htmlUrl} target="_blank">
+                  {#snippet title()}#{pullRequest.number} {pullRequest.title}{/snippet}
+                  {#snippet description()}{pullRequest.repositoryOwner}/{pullRequest.repositoryName}{/snippet}
+                  {#snippet meta()}
+                    <div class="attention-badges">
+                      <Badge size="sm" variant={pullRequest.draft ? 'neutral' : 'success'}>
+                        {pullRequest.draft ? 'Draft' : 'Open'}
+                      </Badge>
+                      <Badge size="sm" variant={ciBadgeVariant(pullRequest.ciStatus)}>
+                        {ciStatusLabel(pullRequest.ciStatus)}
+                      </Badge>
+                      <Badge size="sm" variant={mergeStatusVariant(pullRequest.mergeStatus)}>
+                        {mergeStatusLabel(pullRequest.mergeStatus)}
+                      </Badge>
+                      <Badge
+                        size="sm"
+                        variant={(pullRequest.unresolvedThreadCount ?? 0) > 0
+                          ? 'warning'
+                          : 'neutral'}
+                      >
+                        {pullRequest.unresolvedThreadCount === null
+                          ? 'Unresolved threads unknown'
+                          : `${pullRequest.unresolvedThreadCount} unresolved`}
+                      </Badge>
+                    </div>
+                  {/snippet}
+                </StackedListItem>
+              {/snippet}
+            </DataList>
+          {/await}
+        </li>
+      </ul>
+    {/await}
 
     <div class="toolbar">
       <div class="search-wrapper">
@@ -403,7 +425,6 @@
           <Table.Body>
             {#each filteredRepositories as repository (repository.id)}
               {@const isWatching = watchedFor(repository.id, repository.review.watched)}
-              {@const dashboard = repository.dashboard}
               <Table.Row>
                 <Table.Cell>
                   <div class="repository-identity">
@@ -425,51 +446,59 @@
                     </Button>
                   </div>
                 </Table.Cell>
-                <Table.Cell>
-                  <StatusDot
-                    status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
-                    label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
-                    showLabel
-                    size="sm"
-                  />
-                </Table.Cell>
-                <Table.Cell align="right">
-                  {#if dashboard && dashboard.openPullRequestCount !== null}
-                    <Link href={`/repositories/${repository.id}/pull-requests`}>
-                      {dashboard.openPullRequestCountAtCap
-                        ? `${dashboard.openPullRequestCount}+`
-                        : dashboard.openPullRequestCount}
-                    </Link>
-                  {:else}
-                    <span class="text-muted">Unknown</span>
-                  {/if}
-                </Table.Cell>
-                <Table.Cell align="right">
-                  {#if dashboard && dashboard.attentionPullRequestCount !== null}
-                    <Badge
+                {#await data.dashboardRowsById}
+                  <Table.Cell><Skeleton height="1rem" width="5rem" /></Table.Cell>
+                  <Table.Cell align="right"><Skeleton height="1rem" width="2rem" /></Table.Cell>
+                  <Table.Cell align="right"><Skeleton height="1rem" width="2rem" /></Table.Cell>
+                  <Table.Cell align="right"><Skeleton height="1rem" width="2rem" /></Table.Cell>
+                {:then dashboardsById}
+                  {@const dashboard = dashboardsById.get(repository.id) ?? null}
+                  <Table.Cell>
+                    <StatusDot
+                      status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
+                      label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
+                      showLabel
                       size="sm"
-                      variant={dashboard.attentionPullRequestCount > 0 ||
-                      dashboard.openPullRequestCountAtCap
-                        ? 'warning'
-                        : 'success'}
-                    >
+                    />
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    {#if dashboard && dashboard.openPullRequestCount !== null}
+                      <Link href={`/repositories/${repository.id}/pull-requests`}>
+                        {dashboard.openPullRequestCountAtCap
+                          ? `${dashboard.openPullRequestCount}+`
+                          : dashboard.openPullRequestCount}
+                      </Link>
+                    {:else}
+                      <span class="text-muted">Unknown</span>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    {#if dashboard && dashboard.attentionPullRequestCount !== null}
+                      <Badge
+                        size="sm"
+                        variant={dashboard.attentionPullRequestCount > 0 ||
+                        dashboard.openPullRequestCountAtCap
+                          ? 'warning'
+                          : 'success'}
+                      >
+                        {dashboard.openPullRequestCountAtCap
+                          ? `${dashboard.attentionPullRequestCount}+`
+                          : dashboard.attentionPullRequestCount}
+                      </Badge>
+                    {:else}
+                      <span class="text-muted">Unknown</span>
+                    {/if}
+                  </Table.Cell>
+                  <Table.Cell align="right">
+                    {#if dashboard && dashboard.unresolvedThreadCount !== null}
                       {dashboard.openPullRequestCountAtCap
-                        ? `${dashboard.attentionPullRequestCount}+`
-                        : dashboard.attentionPullRequestCount}
-                    </Badge>
-                  {:else}
-                    <span class="text-muted">Unknown</span>
-                  {/if}
-                </Table.Cell>
-                <Table.Cell align="right">
-                  {#if dashboard && dashboard.unresolvedThreadCount !== null}
-                    {dashboard.openPullRequestCountAtCap
-                      ? `${dashboard.unresolvedThreadCount}+`
-                      : dashboard.unresolvedThreadCount}
-                  {:else}
-                    <span class="text-muted">Unknown</span>
-                  {/if}
-                </Table.Cell>
+                        ? `${dashboard.unresolvedThreadCount}+`
+                        : dashboard.unresolvedThreadCount}
+                    {:else}
+                      <span class="text-muted">Unknown</span>
+                    {/if}
+                  </Table.Cell>
+                {/await}
                 <Table.Cell align="center">
                   <div class="watching-cell">
                     <form
@@ -569,6 +598,16 @@
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+
+  .stat-group-skeleton {
+    display: flex;
+  }
+
+  .attention-list-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
   }
 
   .attention-badges {

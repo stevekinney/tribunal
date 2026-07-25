@@ -130,7 +130,9 @@ vi.mock('$app/forms', () => ({
 }));
 
 type RepositoryRow = PageData['repositories'][number];
-type DashboardRow = NonNullable<RepositoryRow['dashboard']>;
+type DashboardRow = Awaited<PageData['dashboardRowsById']> extends Map<number, infer V> ? V : never;
+type Summary = Awaited<PageData['summary']>;
+type AttentionPullRequestRow = Awaited<PageData['attentionPullRequests']>[number];
 
 function makeDashboardRow(overrides: Partial<DashboardRow> = {}): DashboardRow {
   return {
@@ -147,11 +149,18 @@ function makeDashboardRow(overrides: Partial<DashboardRow> = {}): DashboardRow {
   };
 }
 
+/** Builds the resolved `dashboardRowsById` map from a list of dashboard rows, keyed by repository id. */
+function makeDashboardRowsById(rows: DashboardRow[]): Promise<Map<number, DashboardRow>> {
+  return Promise.resolve(new Map(rows.map((row) => [row.repository.id, row])));
+}
+
 type AddableRepository = PageData['addableRepositories'][number];
 
 // Repositories shown in the table are always added (watched); the picker below
 // reads from a separate `addableRepositories` list, so table fixtures default
-// to watched.
+// to watched. Dashboard data is no longer carried on the row itself — it's
+// looked up from the page-level `dashboardRowsById` map (see
+// `makeDashboardRowsById`), matching the streamed shape `+page.server.ts` returns.
 function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
   return {
     id: 101,
@@ -168,7 +177,6 @@ function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
       ignoreGlobs: [],
       agents: [],
     },
-    dashboard: makeDashboardRow(),
     ...overrides,
   };
 }
@@ -192,7 +200,7 @@ const okSummaryForOne = {
   attentionPullRequestCount: 0,
   attentionPullRequestCountExact: true,
   hasUnavailableRepositories: false,
-} satisfies PageData['summary'];
+} satisfies Summary;
 
 const baseData: PageData = {
   user: {
@@ -207,8 +215,9 @@ const baseData: PageData = {
   addableRepositories: [],
   agents: [],
   installations: [],
-  summary: null,
-  attentionPullRequests: [],
+  summary: Promise.resolve(null),
+  attentionPullRequests: Promise.resolve([]),
+  dashboardRowsById: Promise.resolve(new Map()),
   needsConnect: false,
   loadError: null,
   surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
@@ -239,7 +248,7 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        summary: {
+        summary: Promise.resolve({
           totalRepositoryCount: 0,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -248,7 +257,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -265,7 +274,8 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: {
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -274,7 +284,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -297,7 +307,7 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: {
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -306,11 +316,21 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
     });
+
+    // The summary strip is behind `{#await data.summary}` (see
+    // `+page.server.ts`) — wait for the StatGroup itself (rendered only in
+    // the `{:then}` branch, via its `label` prop as an accessible group
+    // name) to resolve before asserting on the Stat typography. A text
+    // match on "Repositories" would be satisfied by the page's `<h1>`
+    // immediately, without ever waiting on the resolved summary.
+    await expect
+      .element(page.getByRole('group', { name: 'Dashboard summary' }))
+      .toBeInTheDocument();
 
     const label = document.querySelector('.cinder-stat__label');
     const value = document.querySelector('.cinder-stat__value');
@@ -336,7 +356,8 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: {
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -345,7 +366,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -363,12 +384,11 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({ attentionPullRequestCount: 1, unresolvedThreadCount: 3 }),
-          }),
-        ],
-        attentionPullRequests: [
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({ attentionPullRequestCount: 1, unresolvedThreadCount: 3 }),
+        ]),
+        attentionPullRequests: Promise.resolve([
           {
             repositoryId: 101,
             number: 42,
@@ -389,8 +409,8 @@ describe('/repositories page', () => {
             repositoryOwner: 'test-org',
             repositoryName: 'review-target',
           },
-        ],
-        summary: {
+        ] satisfies AttentionPullRequestRow[]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -399,7 +419,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 1,
           attentionPullRequestCountExact: true,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -421,19 +441,18 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({
-              dataStatus: 'unavailable',
-              unavailableReason: 'rate-limited',
-              defaultBranchStatus: 'unknown',
-              openPullRequestCount: null,
-              attentionPullRequestCount: null,
-              unresolvedThreadCount: null,
-            }),
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            dataStatus: 'unavailable',
+            unavailableReason: 'rate-limited',
+            defaultBranchStatus: 'unknown',
+            openPullRequestCount: null,
+            attentionPullRequestCount: null,
+            unresolvedThreadCount: null,
           }),
-        ],
-        summary: {
+        ]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: false,
@@ -442,7 +461,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -460,20 +479,19 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({
-              dataStatus: 'unavailable',
-              unavailableReason: 'rate-limited',
-              defaultBranchStatus: 'unknown',
-              openPullRequestCount: null,
-              attentionPullRequestCount: null,
-              unresolvedThreadCount: null,
-            }),
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            dataStatus: 'unavailable',
+            unavailableReason: 'rate-limited',
+            defaultBranchStatus: 'unknown',
+            openPullRequestCount: null,
+            attentionPullRequestCount: null,
+            unresolvedThreadCount: null,
           }),
-        ],
-        attentionPullRequests: [],
-        summary: {
+        ]),
+        attentionPullRequests: Promise.resolve([]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: false,
@@ -482,7 +500,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -505,19 +523,18 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({
-              dataStatus: 'unavailable',
-              unavailableReason: 'rate-limited',
-              defaultBranchStatus: 'unknown',
-              openPullRequestCount: null,
-              attentionPullRequestCount: null,
-              unresolvedThreadCount: null,
-            }),
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            dataStatus: 'unavailable',
+            unavailableReason: 'rate-limited',
+            defaultBranchStatus: 'unknown',
+            openPullRequestCount: null,
+            attentionPullRequestCount: null,
+            unresolvedThreadCount: null,
           }),
-        ],
-        summary: {
+        ]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: false,
@@ -526,7 +543,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: true,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -547,15 +564,14 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({
-              openPullRequestCount: 100,
-              openPullRequestCountAtCap: true,
-            }),
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            openPullRequestCount: 100,
+            openPullRequestCountAtCap: true,
           }),
-        ],
-        summary: {
+        ]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -564,7 +580,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -585,16 +601,15 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        repositories: [
-          makeRepository({
-            dashboard: makeDashboardRow({
-              openPullRequestCount: 100,
-              openPullRequestCountAtCap: true,
-              unresolvedThreadCount: 5,
-            }),
+        repositories: [makeRepository()],
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            openPullRequestCount: 100,
+            openPullRequestCountAtCap: true,
+            unresolvedThreadCount: 5,
           }),
-        ],
-        summary: {
+        ]),
+        summary: Promise.resolve({
           totalRepositoryCount: 1,
           failingDefaultBranchCount: 0,
           failingDefaultBranchCountExact: true,
@@ -603,7 +618,7 @@ describe('/repositories page', () => {
           attentionPullRequestCount: 0,
           attentionPullRequestCountExact: false,
           hasUnavailableRepositories: false,
-        },
+        }),
       },
       form: null,
       params: {},
@@ -619,7 +634,7 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
         addableRepositories: [
           makeAddable({ id: 101, owner: 'test-org', name: 'review-target' }),
           makeAddable({ id: 202, owner: 'other-org', name: 'widgets' }),
@@ -661,7 +676,7 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
         addableRepositories: [makeAddable({ id: 202, owner: 'other-org', name: 'widgets' })],
       },
       form: null,
@@ -692,7 +707,7 @@ describe('/repositories page', () => {
         installations: [
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
         addableRepositories: [makeAddable({ id: 101, owner: 'test-org', name: 'review-target' })],
       },
       form: null,
@@ -724,7 +739,7 @@ describe('/repositories page', () => {
             },
           }),
         ],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
       },
       form: null,
       params: {},
@@ -750,7 +765,7 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
       },
       form: null,
       params: {},
@@ -779,7 +794,7 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
       },
       form: null,
       params: {},
@@ -829,16 +844,14 @@ describe('/repositories page', () => {
         ],
         repositories: [
           makeRepository(),
-          makeRepository({
-            id: 202,
-            owner: 'other-org',
-            name: 'widgets',
-            dashboard: makeDashboardRow({
-              repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
-            }),
-          }),
+          makeRepository({ id: 202, owner: 'other-org', name: 'widgets' }),
         ],
-        summary: okSummaryForOne,
+        dashboardRowsById: makeDashboardRowsById([
+          makeDashboardRow({
+            repository: { id: 202, owner: 'other-org', name: 'widgets', defaultBranch: 'main' },
+          }),
+        ]),
+        summary: Promise.resolve(okSummaryForOne),
       },
       form: null,
       params: {},
@@ -858,7 +871,7 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: okSummaryForOne,
+        summary: Promise.resolve(okSummaryForOne),
       },
       form: null,
       params: {},
@@ -893,8 +906,9 @@ describe('/repositories page', () => {
           { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
         ],
         repositories: [makeRepository()],
-        summary: okSummaryForOne,
-        attentionPullRequests: [
+        dashboardRowsById: makeDashboardRowsById([makeDashboardRow()]),
+        summary: Promise.resolve(okSummaryForOne),
+        attentionPullRequests: Promise.resolve([
           {
             ...attentionPullRequestBase,
             number: 1,
@@ -919,7 +933,7 @@ describe('/repositories page', () => {
             ciStatus: 'passing',
             mergeStatus: 'clean',
           },
-        ],
+        ] satisfies AttentionPullRequestRow[]),
       },
       form: null,
       params: {},
@@ -971,7 +985,7 @@ describe('/repositories page', () => {
               },
             }),
           ],
-          summary: okSummaryForOne,
+          summary: Promise.resolve(okSummaryForOne),
         },
         form: null,
         params: {},

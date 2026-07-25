@@ -186,6 +186,18 @@ registerPolicy({
   supportsEtag: false, // Uses octokit.paginate which aggregates multiple pages — no single eTag
 });
 
+registerPolicy({
+  operationId: 'list-user-installations',
+  keyFactory: (userId: number) => CACHE_KEYS.GITHUB_USER_INSTALLATIONS(userId),
+  // Short TTL, matching the get-branch-*/get-aggregate-review-state precedent:
+  // this result backs `userCanAccessRepository`, an authorization check, not
+  // just UI copy. A longer TTL would let a revoked installation or a removed
+  // collaborator keep seeing repositories they can no longer reach on GitHub
+  // for the life of the cache entry.
+  ttlSeconds: 30,
+  supportsEtag: false, // Paginates GET /user/installations — no single eTag across pages
+});
+
 // ============================================================================
 // Registered policies — review state and CI (previously uncached)
 // ============================================================================

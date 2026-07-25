@@ -2,7 +2,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { getRepositoriesForUser } from '$lib/server/repositories';
 import { githubContext } from '$lib/server/github-context';
-import { buildRepositoryDashboard } from '@tribunal/github/dashboard/service';
+import { buildRepositoryDashboard, unavailableRow } from '@tribunal/github/dashboard/service';
 import { buildDashboardSummary, type DashboardSummary } from '@tribunal/github/dashboard/summary';
 import {
   pullRequestNeedsAttention,
@@ -74,7 +74,6 @@ interface RepositoryRow {
   accountLogin: string;
   accountAvatarUrl: string | null;
   review: RepositoryOperatorDetails;
-  dashboard: RepositoryDashboardRow | null;
 }
 
 /**
@@ -92,17 +91,26 @@ interface AddableRepository {
 /**
  * Explicit output shape for the load function. SvelteKit's generated
  * `PageData` type is derived via `ReturnType<typeof load>` against this
- * generic, so pinning it here keeps `summary`/`attentionPullRequests`
- * consistently typed (nullable/empty on the disconnected-GitHub branch)
- * across both `return` statements below.
+ * generic, so pinning it here keeps `summary`/`attentionPullRequests`/
+ * `dashboardRowsById` consistently typed (nullable/empty on the
+ * disconnected-GitHub branch) across both `return` statements below.
+ *
+ * `summary`, `attentionPullRequests`, and `dashboardRowsById` are Promises,
+ * not resolved values: they carry every GitHub-dependent field on this page,
+ * and returning them un-awaited is what lets SvelteKit stream them to the
+ * client instead of blocking the whole `load` (and, transitively, the
+ * post-login `goto()` on the auth callback page) on the repository dashboard
+ * fan-out. `repositories`/`addableRepositories`/`agents`/`installations` stay
+ * synchronous because they only ever depend on the database.
  */
 interface RepositoriesPageData {
   repositories: RepositoryRow[];
   addableRepositories: AddableRepository[];
   agents: Agent[];
   installations: Installation[];
-  summary: DashboardSummary | null;
-  attentionPullRequests: AttentionPullRequestRow[];
+  summary: Promise<DashboardSummary | null>;
+  attentionPullRequests: Promise<AttentionPullRequestRow[]>;
+  dashboardRowsById: Promise<Map<number, RepositoryDashboardRow>>;
   needsConnect: boolean;
   loadError: string | null;
   surfaceStates: typeof operatorSurfaceStates;
@@ -141,8 +149,9 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
       addableRepositories: [],
       agents: [],
       installations: [],
-      summary: null,
-      attentionPullRequests: [],
+      summary: Promise.resolve(null),
+      attentionPullRequests: Promise.resolve([]),
+      dashboardRowsById: Promise.resolve(new Map()),
       needsConnect: result.error === 'no_github_token',
       loadError: routeError ?? (result.error === 'github_unavailable' ? result.message : null),
       surfaceStates: operatorSurfaceStates,
@@ -175,7 +184,27 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
       defaultBranch: entry.repository.defaultBranch,
     }));
 
-  const dashboardRows = await buildRepositoryDashboard(
+  // Kick off the GitHub-backed dashboard fan-out but deliberately do not
+  // `await` it here. `load` returning before this settles is the entire
+  // point: SvelteKit streams promises returned from `load` to the client, so
+  // the page shell (repository identity, search, watch toggles) paints
+  // immediately, and a client-side `goto()` to this route (as happens right
+  // after sign-in) resolves as soon as `load` returns rather than once every
+  // repository's live GitHub calls finish.
+  //
+  // The `.catch()` is load-bearing, not defensive dressing: nothing awaits
+  // this promise inside `load` anymore, so a rejection (e.g. the DB read
+  // inside `listPRStatesForRepositories`) would otherwise surface as an
+  // unhandled server-side promise rejection instead of a rendered fallback.
+  //
+  // Degrading to an empty array here would be misleading: the summary strip
+  // would report zero repositories (not "unknown"), and the per-row
+  // "Unknown" banner only checks for `dataStatus === 'unavailable'` rows, so
+  // a completely empty result would render as if nothing needed a refresh
+  // rather than as a failure. Building an `unavailableRow` per added
+  // repository reuses the exact fallback shape the UI already renders when a
+  // single repository's own dashboard build fails — see `+page.svelte`.
+  const dashboardRowsPromise: Promise<RepositoryDashboardRow[]> = buildRepositoryDashboard(
     githubContext,
     addedRepositories.map((entry) => ({
       id: entry.repository.id,
@@ -186,21 +215,41 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
       installationId: skipLiveGithubReads ? null : entry.installation.installationId,
       htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
     })),
+  ).catch((error) => {
+    console.error('Failed to build repository dashboard', error);
+    const refreshedAt = new Date().toISOString();
+    return addedRepositories.map((entry) =>
+      unavailableRow(
+        {
+          id: entry.repository.id,
+          owner: entry.repository.owner,
+          name: entry.repository.name,
+          defaultBranch: entry.repository.defaultBranch,
+          htmlUrl: `https://github.com/${entry.repository.owner}/${entry.repository.name}`,
+        },
+        refreshedAt,
+        'github-error',
+      ),
+    );
+  });
+
+  const dashboardRowsById = dashboardRowsPromise.then(
+    (rows) => new Map(rows.map((row) => [row.repository.id, row])),
   );
 
-  const dashboardRowsById = new Map<number, RepositoryDashboardRow>(
-    dashboardRows.map((row) => [row.repository.id, row]),
+  const attentionPullRequests = dashboardRowsPromise.then((rows) =>
+    rows
+      .flatMap((row) =>
+        row.pullRequests.filter(pullRequestNeedsAttention).map((pullRequest) => ({
+          ...pullRequest,
+          repositoryOwner: row.repository.owner,
+          repositoryName: row.repository.name,
+        })),
+      )
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)),
   );
 
-  const attentionPullRequests: AttentionPullRequestRow[] = dashboardRows
-    .flatMap((row) =>
-      row.pullRequests.filter(pullRequestNeedsAttention).map((pullRequest) => ({
-        ...pullRequest,
-        repositoryOwner: row.repository.owner,
-        repositoryName: row.repository.name,
-      })),
-    )
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  const summary = dashboardRowsPromise.then((rows) => buildDashboardSummary(rows));
 
   return {
     repositories: addedRepositories.map((entry) => ({
@@ -211,13 +260,13 @@ export const load: PageServerLoad<RepositoriesPageData> = async ({ locals, url }
       accountLogin: entry.installation.accountLogin,
       accountAvatarUrl: entry.installation.accountAvatarUrl,
       review: operatorDetails.get(entry.repository.id) ?? defaultOperatorDetails,
-      dashboard: dashboardRowsById.get(entry.repository.id) ?? null,
     })),
     addableRepositories,
     agents,
     installations: result.installations,
-    summary: buildDashboardSummary(dashboardRows),
+    summary,
     attentionPullRequests,
+    dashboardRowsById,
     needsConnect: false,
     loadError: routeError,
     surfaceStates: operatorSurfaceStates,

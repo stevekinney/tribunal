@@ -440,6 +440,33 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
   });
 
   // --------------------------------------------------------------------------
+  // installation
+  // --------------------------------------------------------------------------
+  describe('installation events', () => {
+    it('invalidates every cached user-installations entry, not just one installation', async () => {
+      const data = makePayload({ action: 'deleted' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'installation', 'deleted', data);
+
+      // Keyed by local user id, which the webhook payload never carries — so
+      // this clears every cached user's list rather than targeting one.
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_USER_INSTALLATIONS_PATTERN,
+      );
+    });
+
+    it('invalidates on every installation action (created, suspend, unsuspend, etc.)', async () => {
+      const data = makePayload({ action: 'suspend' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'installation', 'suspend', data);
+
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_USER_INSTALLATIONS_PATTERN,
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // repository
   // --------------------------------------------------------------------------
   describe('repository events', () => {

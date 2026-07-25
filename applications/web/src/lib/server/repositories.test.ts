@@ -37,6 +37,24 @@ vi.mock('$lib/server/github/access', () => ({
   markGitHubTokenInvalid: mockMarkGitHubTokenInvalid,
 }));
 
+// `listUserInstallations` now reads through `cachedRead`, which needs a real
+// (mocked) cache — without this, it falls through to the real Redis client
+// and fails open on every call, which is harmless but noisy. A plain mocked
+// cache keeps these tests hitting GitHub through `mockGithubRequest` exactly
+// as before, just via the cache-miss path every time.
+vi.mock('$lib/server/github-context', () => ({
+  githubContext: {
+    cache: {
+      getCached: vi.fn().mockResolvedValue(null),
+      setCache: vi.fn().mockResolvedValue(true),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    },
+  },
+}));
+
 import { getRepositoriesForUser, userCanAccessRepository } from './repositories';
 
 describe('getRepositoriesForUser', () => {
