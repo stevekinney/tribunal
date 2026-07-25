@@ -29,6 +29,7 @@ pull_request`).
 ## Technical reference
 
 - [DATABASE.md](DATABASE.md) - Schema guide, migration workflow, and CI validation
+- [data-field-inventory.md](data-field-inventory.md) - Schema and cross-package data field audit
 - [database/migration-workflow.md](database/migration-workflow.md) - Migration generation and apply workflow
 - [API.md](API.md) - HTTP API reference for GitHub webhook routes
 - [api/observability-envelope.md](api/observability-envelope.md) - Correlation and request ID propagation
