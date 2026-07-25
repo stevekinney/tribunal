@@ -548,7 +548,7 @@ export function createReviewIntentKickScheduler(
       if (processed > 0) continue;
 
       if (runtime.consumePendingReviewIntentDrain?.()) {
-        kickRequestedDuringDrain = true;
+        scheduleConfiguredIdleShutdown();
       }
       return;
     }

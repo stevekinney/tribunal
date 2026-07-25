@@ -17,6 +17,7 @@ const {
 }));
 
 vi.mock('@sveltejs/kit', () => ({
+  fail: (status: number, data: unknown) => ({ status, data }),
   redirect: (status: number, location: string) => {
     throw { status, location, type: 'redirect' };
   },
@@ -142,5 +143,20 @@ describe('/agents/[agentId] actions.delete', () => {
     const result = await actions.delete({ locals: { user: { id: 1 } }, request } as never);
 
     expect(result).toEqual({ status: 404, data: { error: 'Agent not found.' } });
+  });
+
+  it('surfaces a deleted-agent wake-up failure without redirecting', async () => {
+    const request = { formData: vi.fn().mockResolvedValue(new FormData()) } as unknown as Request;
+    mockDeleteAgent.mockResolvedValue({ success: true, engineWakeupFailed: true });
+
+    const result = await actions.delete({ locals: { user: { id: 1 } }, request } as never);
+
+    expect(result).toEqual({
+      status: 503,
+      data: {
+        error: 'Agent deleted, but the review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      },
+    });
   });
 });

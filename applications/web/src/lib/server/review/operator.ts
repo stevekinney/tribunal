@@ -435,7 +435,7 @@ export async function saveAgent(userId: number, formData: FormData) {
     if (wakeupFailed) {
       return fail<AgentSaveFailure>(503, {
         error: 'Review engine wake-up failed. Please try again.',
-        values: payload,
+        values: validation.data,
       });
     }
   }
@@ -513,6 +513,7 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
   await db
     .update(reviewIntent)
     .set({
+      claimedAt: null,
       failedAt: null,
       lastError: null,
       nextAttemptAt: null,

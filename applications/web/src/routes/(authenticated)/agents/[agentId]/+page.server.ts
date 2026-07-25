@@ -1,4 +1,4 @@
-import { error, redirect } from '@sveltejs/kit';
+import { error, fail, redirect } from '@sveltejs/kit';
 import {
   deleteAgent,
   getAgent,
@@ -40,6 +40,12 @@ export const actions: Actions = {
 
     const result = await deleteAgent(user.id, await request.formData());
     if ('status' in result) return result;
+    if ('engineWakeupFailed' in result && result.engineWakeupFailed) {
+      return fail(503, {
+        error: 'Agent deleted, but the review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      });
+    }
 
     redirect(303, '/agents');
   },

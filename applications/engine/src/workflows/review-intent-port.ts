@@ -33,6 +33,7 @@ type ClaimedReviewIntentRow = {
   prState: 'merged' | 'closed' | null;
   createdAt: Date;
   claimedAt: Date;
+  lastError: string | null;
   /** Check Run created at webhook-intent time (T-1); null for intents that predate it. */
   checkRunId: number | null;
 };
@@ -87,6 +88,7 @@ export function createDatabaseReviewIntentPort(
             normalizedRow.claimedAt,
             now,
             result.reason,
+            normalizedRow.lastError,
           );
           skippedReviewIntents += 1;
           continue;
@@ -250,6 +252,7 @@ async function claimNextIntentRow(
       ${reviewIntent.prState} AS "prState",
       ${reviewIntent.createdAt} AS "createdAt",
       ${reviewIntent.claimedAt} AS "claimedAt",
+      ${reviewIntent.lastError} AS "lastError",
       ${reviewIntent.checkRunId} AS "checkRunId"
   `);
 
@@ -420,7 +423,12 @@ function deferReviewIntentRetry(
   claimedAt: Date,
   now: Date,
   reason: string,
+  previousLastError: string | null,
 ): Promise<void> {
+  const unchangedErrorCondition =
+    previousLastError === null
+      ? isNull(reviewIntent.lastError)
+      : eq(reviewIntent.lastError, previousLastError);
   return database
     .update(reviewIntent)
     .set({
@@ -433,6 +441,7 @@ function deferReviewIntentRetry(
       and(
         eq(reviewIntent.id, intentId),
         eq(reviewIntent.claimedAt, claimedAt),
+        unchangedErrorCondition,
         isNull(reviewIntent.processedAt),
       ),
     )
