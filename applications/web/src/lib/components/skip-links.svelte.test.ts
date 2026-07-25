@@ -3,6 +3,17 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import SkipLinks from './skip-links.svelte';
 
+// The skip link is `cinder-sr-only-focusable`: visually hidden until it (or a
+// descendant) gains keyboard focus, per the standard skip-link pattern (only
+// `:focus-visible`, not bare `:focus`, reveals it). A plain `.click()` fails
+// Playwright's actionability check because the link is genuinely off-screen
+// until focused, so tests focus it directly first — links are always
+// `:focus-visible` on focus in Chromium, matching how a keyboard user tabbing
+// to it would reveal the same element — before clicking.
+function focusSkipLink() {
+  page.getByRole('link', { name: 'Skip to main content' }).element().focus();
+}
+
 describe('SkipLinks', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -23,6 +34,7 @@ describe('SkipLinks', () => {
     render(SkipLinks);
     const main = document.getElementById('main-content')!;
 
+    focusSkipLink();
     await page.getByRole('link', { name: 'Skip to main content' }).click();
 
     expect(document.activeElement).toBe(main);
@@ -33,6 +45,7 @@ describe('SkipLinks', () => {
     main.removeAttribute('tabindex');
 
     render(SkipLinks);
+    focusSkipLink();
     await page.getByRole('link', { name: 'Skip to main content' }).click();
     main.blur();
 
@@ -44,6 +57,7 @@ describe('SkipLinks', () => {
     main.setAttribute('tabindex', '0');
 
     render(SkipLinks);
+    focusSkipLink();
     await page.getByRole('link', { name: 'Skip to main content' }).click();
     main.blur();
 

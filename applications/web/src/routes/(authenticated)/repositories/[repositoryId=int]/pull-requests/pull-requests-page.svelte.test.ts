@@ -214,6 +214,19 @@ describe('/repositories/[repositoryId]/pull-requests page', () => {
     expect(browserPage.getByPlaceholder('Search').elements().length).toBe(0);
   });
 
+  it('sizes filter bar selects to their line box instead of clipping their text (cinder #906 regression)', async () => {
+    render(PullRequestsPage, { data: baseData });
+
+    const selectLabels = ['State', 'Sort', 'Direction', 'Page size'];
+
+    for (const label of selectLabels) {
+      const element = browserPage.getByLabelText(label).element() as HTMLSelectElement;
+      expect(element.scrollHeight, `${label} select should not vertically clip its text`).toBe(
+        element.clientHeight,
+      );
+    }
+  });
+
   it('navigates with the state filter and resets to page 1 when a facet changes', async () => {
     render(PullRequestsPage, {
       data: { ...baseData, filters: { ...baseData.filters, page: 3 } },

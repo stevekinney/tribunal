@@ -102,6 +102,7 @@
           bind:value={defaultModel}
           options={modelOptions}
           label="Default model"
+          hideLabel
         />
       </div>
     </Card>
