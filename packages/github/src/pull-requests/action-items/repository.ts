@@ -196,11 +196,6 @@ export type PullRequestActionItemWithMetadata = PullRequestActionItem & {
  * 1) Status rank: pending, in_progress, done
  * 2) createdAt ascending
  * 3) stableKey ascending
- *
- * Note: the schema carries a `pull_request_action_item_dependency` table for a
- * future dependency-graph feature, but no producer populates it and no consumer
- * reads it yet, so this query intentionally does not join it. Add the dependency
- * read back when a caller needs it.
  */
 export async function listActionItemsWithMetadata(
   db: Database,

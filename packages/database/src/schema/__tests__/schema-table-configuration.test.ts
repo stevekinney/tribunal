@@ -20,6 +20,12 @@ describe('schema table configuration', () => {
     expect(tables.length).toBeGreaterThan(0);
   });
 
+  it('does not expose the removed pull request action item dependency table', () => {
+    const tableNames = tables.map((table) => getTableName(table));
+
+    expect(tableNames).not.toContain('pull_request_action_item_dependency');
+  });
+
   describe.each(tables.map((table) => [getTableName(table), table] as const))(
     '%s',
     (tableName, table) => {

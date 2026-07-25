@@ -5,8 +5,8 @@
  * One-time cleanup script to remove pull_request_state rows for repositories
  * that are not linked to any Tribunal project (no row in project_repository).
  *
- * Cascading deletes handle pull_request_action_item, sources, and dependencies
- * automatically via ON DELETE CASCADE.
+ * Cascading deletes handle pull_request_action_item and sources automatically
+ * via ON DELETE CASCADE.
  *
  * Usage: bun run scripts/cleanup-unlinked-pull-request-data.ts [--dry-run]
  */
@@ -85,7 +85,7 @@ async function run(): Promise<void> {
   `);
 
   console.log(
-    `Deleted ${deleteResult.rowCount} pull_request_state rows (cascading to action items, sources, and dependencies)`,
+    `Deleted ${deleteResult.rowCount} pull_request_state rows (cascading to action items and sources)`,
   );
 }
 
