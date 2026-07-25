@@ -829,7 +829,7 @@ describe('createDatabaseReviewIntentPort', () => {
     ).resolves.toBeNull();
   });
 
-  it('falls back to all enabled user agents when no repository agents are assigned', async () => {
+  it('falls back to all enabled user agents when no repository assignment rows exist', async () => {
     const { user } = await createReviewIntentFixture();
     await testDatabase.db.insert(agent).values([
       {
@@ -858,6 +858,52 @@ describe('createDatabaseReviewIntentPort', () => {
       pullRequest: {
         agents: [{ id: 'agent_security' }],
       },
+    });
+  });
+
+  it('releases watched intents when all explicitly assigned repository agents are disabled', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_disabled',
+        userId: user.id,
+        slug: 'disabled-review',
+        description: 'Disabled.',
+        body: 'Skip.',
+        model: 'claude-sonnet-4-6',
+        enabled: false,
+      },
+      {
+        id: 'agent_unassigned',
+        userId: user.id,
+        slug: 'unassigned-review',
+        description: 'Unassigned.',
+        body: 'Do not fall back.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      failureCount: 0,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+      deadLetteredAt: null,
     });
   });
 

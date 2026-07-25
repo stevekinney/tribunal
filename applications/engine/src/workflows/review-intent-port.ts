@@ -293,7 +293,7 @@ async function buildPullRequestReviewInput(
 
   if (!target) return { status: 'missing_target' };
 
-  const assignedAgents = await database
+  const repositoryAssignedAgents = await database
     .select({
       id: agent.id,
       userId: agent.userId,
@@ -311,12 +311,12 @@ async function buildPullRequestReviewInput(
         eq(repositoryAgent.repositoryId, intent.repositoryId),
         eq(repositoryAgent.userId, target.userId),
         eq(agent.userId, target.userId),
-        eq(agent.enabled, true),
       ),
     )
     .orderBy(asc(agent.slug));
+  const assignedAgents = repositoryAssignedAgents.filter((agentRow) => agentRow.enabled);
   const agents =
-    assignedAgents.length > 0
+    repositoryAssignedAgents.length > 0
       ? assignedAgents
       : await selectEnabledUserAgents(database, target.userId);
 
