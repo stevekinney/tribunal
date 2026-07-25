@@ -692,6 +692,34 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('starts another drain when a bounded scan leaves ready work visible', async () => {
+    vi.useFakeTimers();
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const consumePendingReviewIntentDrain = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        consumePendingReviewIntentDrain,
+        drainReviewIntents,
+        getReviewIntentQueueStatus: vi
+          .fn()
+          .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 }),
+        release: vi.fn().mockResolvedValue(undefined),
+      },
+      {},
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(2);
+    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it('waits for active claimed review intents before exiting', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);

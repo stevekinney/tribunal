@@ -17,6 +17,7 @@ import type { PullRequestReviewInput, ReviewIntentKind, ReviewIntentPort } from 
 type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 
 const maxReviewIntentFailures = 5;
+const defaultMaxSkippedReviewIntentsPerClaim = 25;
 const backoffMinutesByFailureCount = [1, 2, 4, 8] as const;
 const waitingForEligibleReviewAgentReason =
   'Review intent is waiting for an eligible review agent.';
@@ -43,6 +44,7 @@ type PullRequestReviewInputBuildResult =
 
 export type ReviewIntentPortOptions = {
   reviewsEnabled?: boolean;
+  maxSkippedReviewIntentsPerClaim?: number;
 };
 
 export type ReviewIntentQueueStatus = {
@@ -56,11 +58,19 @@ export function createDatabaseReviewIntentPort(
   database: ReviewIntentDatabase,
   options: ReviewIntentPortOptions = {},
 ): ReviewIntentPort {
+  let skippedReviewIntentLimitReached = false;
   return {
     async claimNextReviewIntent(now: Date) {
       if (options.reviewsEnabled === false) return null;
+      skippedReviewIntentLimitReached = false;
+      const maxSkippedReviewIntentsPerClaim =
+        options.maxSkippedReviewIntentsPerClaim === undefined ||
+        options.maxSkippedReviewIntentsPerClaim <= 0
+          ? defaultMaxSkippedReviewIntentsPerClaim
+          : options.maxSkippedReviewIntentsPerClaim;
+      let skippedReviewIntents = 0;
 
-      while (true) {
+      while (skippedReviewIntents < maxSkippedReviewIntentsPerClaim) {
         const row = await claimNextIntentRow(database, now);
         if (row === null) return null;
 
@@ -78,6 +88,7 @@ export function createDatabaseReviewIntentPort(
             now,
             result.reason,
           );
+          skippedReviewIntents += 1;
           continue;
         }
 
@@ -91,6 +102,14 @@ export function createDatabaseReviewIntentPort(
           claimedAt: normalizedRow.claimedAt,
         };
       }
+
+      skippedReviewIntentLimitReached = true;
+      return null;
+    },
+    consumeSkippedReviewIntentLimitReached() {
+      const limitReached = skippedReviewIntentLimitReached;
+      skippedReviewIntentLimitReached = false;
+      return limitReached;
     },
     markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date) {
       return markReviewIntentProcessed(database, intentId, claimedAt, now);

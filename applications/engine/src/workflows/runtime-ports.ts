@@ -162,6 +162,9 @@ export function createReviewIntentConsumer(
 
       return processed;
     },
+    consumePendingDrain() {
+      return intentPort.consumeSkippedReviewIntentLimitReached?.() ?? false;
+    },
     getQueueStatus(now: Date) {
       return getReviewIntentQueueStatus(database, now, reviewIntentPortOptions);
     },

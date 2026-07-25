@@ -413,7 +413,8 @@ export type ReviewIntentKickSchedulerOptions = {
 };
 
 export function createReviewIntentKickScheduler(
-  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'>,
+  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'> &
+    Partial<Pick<EngineRuntime, 'consumePendingReviewIntentDrain'>>,
   options: ReviewIntentKickSchedulerOptions = {},
 ): ReviewIntentKickScheduler {
   const drainLimit = options.drainLimit ?? 5;
@@ -544,7 +545,12 @@ export function createReviewIntentKickScheduler(
   const drainUntilIdle = async () => {
     while (!released) {
       const processed = await runtime.drainReviewIntents(drainLimit);
-      if (processed === 0) return;
+      if (processed > 0) continue;
+
+      if (runtime.consumePendingReviewIntentDrain?.()) {
+        kickRequestedDuringDrain = true;
+      }
+      return;
     }
   };
 

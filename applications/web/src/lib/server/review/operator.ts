@@ -43,6 +43,22 @@ export const operatorSurfaceStates: SurfaceState[] = [
   'disconnected',
 ];
 
+type AgentFormValues = {
+  id: string;
+  userId: number;
+  slug: string;
+  description: string;
+  body: string;
+  model: string;
+  effort?: string;
+  enabled: boolean;
+};
+
+type AgentSaveFailure = {
+  error: string;
+  values: AgentFormValues;
+};
+
 export function parseIgnoreGlobs(value: string): string[] {
   return value
     .split(/\r?\n|,/)
@@ -321,8 +337,10 @@ export async function saveRepositoryWatchSettings(
   `);
 
   if (input.watched) {
-    await releaseReviewIntentsWaitingForEligibleAgent(userId, input.repositoryId);
-    await postReviewEngineControl('/review-intents/kick');
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId, [input.repositoryId]);
+    if (wakeupFailed) {
+      return fail(503, { error: 'Review engine wake-up failed. Please try again.' });
+    }
   }
 
   return { success: true };
@@ -373,7 +391,7 @@ export async function getAgent(userId: number, agentId: string) {
 export async function saveAgent(userId: number, formData: FormData) {
   const id = String(formData.get('id') ?? '').trim();
   const effortValue = String(formData.get('effort') ?? '').trim();
-  const payload = {
+  const payload: AgentFormValues = {
     id: id || `agent_${crypto.randomUUID()}`,
     userId,
     slug: String(formData.get('slug') ?? '').trim(),
@@ -386,7 +404,7 @@ export async function saveAgent(userId: number, formData: FormData) {
 
   const validation = agentSpecSchema.safeParse(payload);
   if (!validation.success) {
-    return fail(400, {
+    return fail<AgentSaveFailure>(400, {
       error: validation.error.issues[0]?.message ?? 'Agent settings are invalid.',
       values: payload,
     });
@@ -413,8 +431,13 @@ export async function saveAgent(userId: number, formData: FormData) {
     });
 
   if (validation.data.enabled) {
-    await releaseReviewIntentsWaitingForEligibleAgent(userId);
-    await postReviewEngineControl('/review-intents/kick');
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+    if (wakeupFailed) {
+      return fail<AgentSaveFailure>(503, {
+        error: 'Review engine wake-up failed. Please try again.',
+        values: payload,
+      });
+    }
   }
 
   return { success: true, id: validation.data.id };
@@ -432,6 +455,11 @@ export async function deleteAgent(userId: number, formData: FormData) {
 
   if (deletedRows.length === 0) {
     return fail(404, { error: 'Agent not found.' });
+  }
+
+  const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+  if (wakeupFailed) {
+    return { success: true, engineWakeupFailed: true };
   }
 
   return { success: true };
@@ -454,19 +482,34 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
   }
 
   if (enabled) {
-    await releaseReviewIntentsWaitingForEligibleAgent(userId);
-    await postReviewEngineControl('/review-intents/kick');
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+    if (wakeupFailed) {
+      return fail(503, { error: 'Review engine wake-up failed. Please try again.' });
+    }
   }
 
   return { success: true };
 }
 
+async function releaseReviewIntentsAndTryKickEngine(
+  userId: number,
+  repositoryIds?: number[],
+): Promise<boolean> {
+  await releaseReviewIntentsWaitingForEligibleAgent(userId, repositoryIds);
+  const result = await postReviewEngineControl('/review-intents/kick');
+  if (result.status === 'not_configured') return false;
+  if (result.status === 'sent' && result.ok) return false;
+  return true;
+}
+
 async function releaseReviewIntentsWaitingForEligibleAgent(
   userId: number,
-  repositoryId?: number,
+  repositoryIds?: number[],
 ): Promise<void> {
   const repositoryScope =
-    repositoryId === undefined ? undefined : eq(reviewIntent.repositoryId, repositoryId);
+    repositoryIds === undefined || repositoryIds.length === 0
+      ? undefined
+      : inArray(reviewIntent.repositoryId, repositoryIds);
   await db
     .update(reviewIntent)
     .set({

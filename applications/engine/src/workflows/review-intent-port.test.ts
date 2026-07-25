@@ -1022,6 +1022,116 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('bounds deferred-intent scanning per claim while leaving remaining ready work visible', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_disabled',
+      userId: user.id,
+      slug: 'disabled-review',
+      description: 'Disabled.',
+      body: 'Skip.',
+      model: 'claude-sonnet-4-6',
+      enabled: false,
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    await testDatabase.db.insert(pullRequestState).values([
+      {
+        repositoryId: repository.id,
+        prNumber: 8,
+        state: 'open',
+        headSha: 'b'.repeat(40),
+      },
+      {
+        repositoryId: repository.id,
+        prNumber: 9,
+        state: 'open',
+        headSha: 'c'.repeat(40),
+      },
+    ]);
+    await testDatabase.db.insert(reviewIntent).values([
+      {
+        id: 'intent_2',
+        deliveryId: 'delivery_2',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 8,
+      },
+      {
+        id: 'intent_3',
+        deliveryId: 'delivery_3',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 9,
+      },
+    ]);
+    const now = new Date('2026-06-17T12:00:00.000Z');
+    const port = createDatabaseReviewIntentPort(testDatabase.db, {
+      maxSkippedReviewIntentsPerClaim: 2,
+    });
+
+    await expect(port.claimNextReviewIntent(now)).resolves.toBeNull();
+
+    const intents = await testDatabase.db.select().from(reviewIntent).orderBy(reviewIntent.id);
+    expect(intents).toMatchObject([
+      {
+        id: 'intent_1',
+        claimedAt: null,
+        lastError: 'Review intent is waiting for an eligible review agent.',
+        nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+      },
+      {
+        id: 'intent_2',
+        claimedAt: null,
+        lastError: 'Review intent is waiting for an eligible review agent.',
+        nextAttemptAt: new Date('2026-06-17T12:01:00.000Z'),
+      },
+      {
+        id: 'intent_3',
+        claimedAt: null,
+        lastError: null,
+        nextAttemptAt: null,
+      },
+    ]);
+    await expect(getReviewIntentQueueStatus(testDatabase.db, now)).resolves.toMatchObject({
+      readyCount: 1,
+      deferredCount: 0,
+      claimedCount: 0,
+    });
+  });
+
+  it('uses the default deferred scan bound when the configured bound is non-positive', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_disabled',
+      userId: user.id,
+      slug: 'disabled-review',
+      description: 'Disabled.',
+      body: 'Skip.',
+      model: 'claude-sonnet-4-6',
+      enabled: false,
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db, {
+      maxSkippedReviewIntentsPerClaim: 0,
+    });
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toBeNull();
+
+    expect(port.consumeSkippedReviewIntentLimitReached?.()).toBe(false);
+  });
+
   it('releases watched intents without any eligible agents for retry', async () => {
     await createReviewIntentFixture();
     const port = createDatabaseReviewIntentPort(testDatabase.db);
