@@ -431,7 +431,12 @@ describe('/repositories page', () => {
       .toHaveAttribute('href', 'https://github.com/test-org/review-target/pull/42');
     await expect.element(page.getByText('test-org/review-target').first()).toBeInTheDocument();
     await expect.element(page.getByText('Failing', { exact: true })).toBeInTheDocument();
-    await expect.element(page.getByText('Conflicts')).toBeInTheDocument();
+    // Not `exact: true` alone — Cinder's Tooltip always portals its text
+    // node into the DOM (aria-hidden until hovered, not removed), and the
+    // "Needs attention" column header's tooltip explanation now says the
+    // pull request "conflicts with the base branch", a case-insensitive
+    // substring match for the bare "Conflicts" badge text.
+    await expect.element(page.getByText('Conflicts', { exact: true })).toBeInTheDocument();
     await expect.element(page.getByText('3 unresolved')).toBeInTheDocument();
   });
 
@@ -1060,7 +1065,7 @@ describe('/repositories page', () => {
     await expect
       .element(
         page.getByText(
-          'A pull request needs attention when its own CI is failing or erroring, it has a merge conflict with the base branch, or it has unresolved review threads.',
+          'A pull request needs attention when its own CI is failing or errored, it conflicts with the base branch, or it has unresolved review threads. Pending or unknown checks never count, and neither does age.',
         ),
       )
       .toBeInTheDocument();

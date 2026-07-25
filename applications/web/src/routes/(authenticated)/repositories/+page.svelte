@@ -410,7 +410,7 @@
                 <span class="header-with-help">
                   Needs attention
                   <Tooltip
-                    text="A pull request needs attention when its own CI is failing or erroring, it has a merge conflict with the base branch, or it has unresolved review threads."
+                    text="A pull request needs attention when its own CI is failing or errored, it conflicts with the base branch, or it has unresolved review threads. Pending or unknown checks never count, and neither does age."
                   >
                     <Button variant="ghost" size="xs">
                       {#snippet leadingIcon()}<Info size={12} aria-hidden="true" />{/snippet}
