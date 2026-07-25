@@ -104,6 +104,7 @@
 
   .page-header-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-3);
   }
@@ -119,7 +120,10 @@
   .page-header-actions {
     display: inline-flex;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    max-width: 100%;
     align-items: center;
+    justify-content: flex-end;
     gap: var(--space-2);
     margin-inline-start: auto;
   }
