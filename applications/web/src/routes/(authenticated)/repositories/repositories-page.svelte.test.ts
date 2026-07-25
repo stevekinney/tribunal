@@ -1,6 +1,18 @@
 import { page } from 'vitest/browser';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+// Rendering a route component directly (rather than through the root
+// `+layout.svelte`) skips `layout.css`, the only place Cinder's design tokens
+// and `@layer` order get imported. Without it, the computed-style assertions
+// below would see plain inherited typography regardless of whether Cinder's
+// own component CSS landed. Scoped to this file (not `test/vitest.setup.ts`):
+// per `.claude/rules/testing.md`, the shared setup file must not import
+// modules with optional peer dependencies (cinder declares
+// `@modelcontextprotocol/sdk` and `zod` as optional peers) because Vite
+// resolves setup-file imports for every project up front, which would break
+// test collection in a pruned/web-only install regardless of any runtime
+// guard around the import.
+import '@lostgradient/cinder/styles';
 import RepositoriesPage from './+page.svelte';
 import type { PageData } from './$types';
 
@@ -285,6 +297,45 @@ describe('/repositories page', () => {
     await expect
       .element(page.getByText('No open pull requests need attention right now.'))
       .toBeInTheDocument();
+  });
+
+  it('renders StatGroup.Stat with its own typography, not unstyled text (cinder #905 regression)', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        repositories: [makeRepository()],
+        summary: {
+          totalRepositoryCount: 1,
+          failingDefaultBranchCount: 0,
+          failingDefaultBranchCountExact: true,
+          openPullRequestCount: 2,
+          openPullRequestCountExact: true,
+          attentionPullRequestCount: 0,
+          attentionPullRequestCountExact: true,
+          hasUnavailableRepositories: false,
+        },
+      },
+      form: null,
+      params: {},
+    });
+
+    const label = document.querySelector('.cinder-stat__label');
+    const value = document.querySelector('.cinder-stat__value');
+    expect(label).not.toBeNull();
+    expect(value).not.toBeNull();
+    const labelFontSize = getComputedStyle(label as Element).fontSize;
+    const valueFontSize = getComputedStyle(value as Element).fontSize;
+    const valueFontWeight = getComputedStyle(value as Element).fontWeight;
+
+    // Unstyled (bug) text runs would inherit identical, plain body typography.
+    // A landed stat.css gives the label a small muted size and the value a
+    // large, semibold one — so they must differ.
+    expect(valueFontSize).not.toBe(labelFontSize);
+    expect(Number.parseFloat(valueFontSize)).toBeGreaterThan(Number.parseFloat(labelFontSize));
+    expect(Number.parseInt(valueFontWeight, 10)).toBeGreaterThanOrEqual(600);
   });
 
   it('wraps the repository table in a named, focusable scroll region', async () => {
