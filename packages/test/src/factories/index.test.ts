@@ -27,7 +27,6 @@ describe('createFactories', () => {
     expect(factories.webhookDelivery).toBeDefined();
     expect(factories.repository).toBeDefined();
     expect(factories.workflowRun).toBeDefined();
-    expect(factories.userApiKey).toBeDefined();
     expect(factories.oauthConnection).toBeDefined();
   });
 
@@ -171,33 +170,6 @@ describe('createFactories', () => {
       expect(run.workspaceId).toBe(7);
       expect(run.repositoryId).toBe(repository.id);
       expect(run.phase).toBe('completed');
-    });
-  });
-
-  describe('userApiKey factory', () => {
-    it('applies defaults tied to an existing user', async () => {
-      const user = await factories.user.create();
-      const apiKey = await factories.userApiKey.create({ userId: user.id });
-
-      expect(apiKey.userId).toBe(user.id);
-      expect(apiKey.keyPrefix).toMatch(/^uak_[0-9a-f]{12}$/);
-      expect(apiKey.keyHash).toHaveLength(64);
-      expect(apiKey.revokedAt).toBeNull();
-    });
-
-    it('marks the key revoked when revoked is true', async () => {
-      const user = await factories.user.create();
-      const apiKey = await factories.userApiKey.create({ userId: user.id, revoked: true });
-
-      expect(apiKey.revokedAt).toBeInstanceOf(Date);
-    });
-
-    it('creates multiple keys for the same user via createMany', async () => {
-      const user = await factories.user.create();
-      const apiKeys = await factories.userApiKey.createMany(2, { userId: user.id });
-
-      expect(apiKeys).toHaveLength(2);
-      expect(new Set(apiKeys.map((key) => key.keyPrefix)).size).toBe(2);
     });
   });
 

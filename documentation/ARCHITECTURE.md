@@ -64,7 +64,6 @@ database.
 │  └─ proxy/               signed reviewer egress boundary
 │     ├─ src/
 │     │  ├─ lib/           shared modules and server logic
-│     │  │  ├─ api-keys/   user API key helpers
 │     │  │  ├─ components/ app-specific Svelte components
 │     │  │  ├─ constants/  shared constants
 │     │  │  ├─ server/     server-only code (DB, auth, GitHub, rate limit)

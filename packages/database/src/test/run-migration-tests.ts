@@ -171,8 +171,9 @@ async function writeTestResults(result: TestResult): Promise<void> {
 if (import.meta.main) {
   try {
     await runMigrationTests();
-  } catch {
-    // Error already logged in runMigrationTests
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`::error::Migration tests failed before completion: ${message}`);
     process.exit(1);
   }
 }

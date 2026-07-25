@@ -8,8 +8,7 @@
     "./schema": "./src/schema/index.ts",
     "./schema/types": "./src/schema/types.ts",
     "./operators": "./src/operators.ts",
-    "./queries": "./src/queries/index.ts",
-    "./validation/user-api-key": "./src/validation/user-api-key.ts"
+    "./queries": "./src/queries/index.ts"
   },
   "scripts": {
     "check": "tsc --noEmit",

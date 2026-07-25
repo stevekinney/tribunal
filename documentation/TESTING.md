@@ -81,9 +81,8 @@ import { createUserFactory, resetIdCounter } from '@tribunal/test/factories';
 
 `createTestDatabase()` spins up a PGlite client with the current Drizzle schema applied. The factories in
 `@tribunal/test/factories` mirror the flat data model — `user`, `oauthConnection`,
-`githubInstallation`, `repository`, `pullRequest`, `webhookDelivery`, and `userApiKey`. Call
-`resetIdCounter()` per test to keep generated IDs deterministic. See
-`applications/web/src/lib/server/api-keys/user-api-key-service.test.ts` for a worked example.
+`githubInstallation`, `repository`, `pullRequest`, and `webhookDelivery`. Call
+`resetIdCounter()` per test to keep generated IDs deterministic.
 
 ## Fixtures and Test Data
 
@@ -147,79 +146,7 @@ other's intermediate files.
   Playwright workers.
 - This checkout has no `packages/components` Storybook suite. Cover UI behavior with web browser component tests and Playwright end-to-end tests.
 
-## API Key Test Coverage
-
-Customer API key lifecycle tests span multiple layers. The feature lives under
-`applications/web/src/lib/server/api-keys/` and the authenticated route
-`applications/web/src/routes/(authenticated)/api-keys/`.
-
-### Server Authentication
-
-**File:** `applications/web/src/lib/server/api-keys/user-auth.test.ts`
-
-Tests authorization header parsing, validation, and authentication outcomes:
-
-- Authorization header matrix (missing, malformed, invalid, unknown, revoked, expired, valid)
-- Non-leaking error messages (no userId or key existence information)
-- Timing-safe hash verification
-
-### Service Layer
-
-**File:** `applications/web/src/lib/server/api-keys/user-api-key-service.test.ts`
-
-Tests create/list/rotate/revoke contracts against a real database (PGlite):
-
-- Active key cap enforcement (10 keys maximum)
-- Cross-user ownership protection
-- Revoked/expired keys do not count toward the active limit
-- Name and metadata preservation during rotation
-- Hash storage (never stores raw keys)
-
-### API Endpoint
-
-**File:** `applications/web/src/routes/api/api-keys/check/server.test.ts`
-
-Tests the endpoint contract and security boundaries:
-
-- Valid key returns 200 with non-sensitive metadata only
-- All invalid states (unknown, revoked, expired) return 401 with an identical error schema
-- No distinguishing information in error responses (prevents key enumeration)
-
-### Form Actions
-
-**File:** `applications/web/src/lib/server/api-keys/+page.server.test.ts`
-
-Tests the SvelteKit action and load function behavior with a mocked `RequestEvent`:
-
-- Create action returns the one-time `rawKey` in its response
-- List (load) never includes secrets or hashes
-- Rotate invalidates the old key immediately and returns a new `rawKey`
-- Revoke succeeds without returning a `rawKey`
-- Cross-user protection (user A cannot rotate or revoke user B's key)
-
-### End-to-End Workflows
-
-**File:** `applications/web/test/end-to-end/profile/api-keys.test.ts`
-
-Tests complete user workflows in the browser:
-
-- One-time secret disclosure (shown only after create/rotate)
-- Secret not visible after navigation or refresh
-- Clipboard integration
-- Key invalidation (revoked/rotated keys return 401 on an auth check)
-- Multi-user isolation (users cannot see or modify each other's keys)
-- Active key limit enforcement (10 keys)
-
-### Permission Regression
-
-**File:** `applications/web/test/end-to-end/permissions/form-action-auth.test.ts`
-
-Tests cross-user and unauthenticated access controls:
-
-- Unauthenticated requests blocked at the route level (401/403)
-- Cross-user operations fail without leaking key existence or ownership details
-
-### Test Utilities
+## Test Utilities
 
 **File:** `applications/web/src/lib/test-utils/request-event.ts`
 

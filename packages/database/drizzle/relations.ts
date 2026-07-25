@@ -34,7 +34,6 @@ import {
   linearComment,
   linearLabel,
   projectLinearSettings,
-  userApiKey,
   linearWebhookDelivery,
   platformAdminAuditLog,
   workflowConfig,
@@ -210,7 +209,6 @@ export const userRelations = relations(user, ({ many }) => ({
   workspaceIntegrations: many(workspaceIntegration),
   goalVersions: many(goalVersion),
   questions: many(question),
-  userApiKeys: many(userApiKey),
   platformAdminAuditLogs_userId: many(platformAdminAuditLog, {
     relationName: 'platformAdminAuditLog_userId_user_id',
   }),
@@ -660,13 +658,6 @@ export const projectLinearSettingsRelations = relations(projectLinearSettings, (
   project: one(project, {
     fields: [projectLinearSettings.projectId],
     references: [project.id],
-  }),
-}));
-
-export const userApiKeyRelations = relations(userApiKey, ({ one }) => ({
-  user: one(user, {
-    fields: [userApiKey.userId],
-    references: [user.id],
   }),
 }));
 

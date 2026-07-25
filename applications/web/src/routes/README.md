@@ -32,7 +32,6 @@ src/routes/
 │   ├── repositories/               # Installed repositories list
 │   │   └── [repositoryId=int]/
 │   │       └── pull-requests/      # Open pull requests for a repository
-│   ├── api-keys/                   # API key management
 │   └── profile/                    # User profile and account settings
 ├── api/
 │   ├── auth/neon-session/          # Neon JWT verification + bridge cookie
@@ -68,9 +67,8 @@ Match URL params using the shared matchers in `src/params`:
 ## Patterns to Follow
 
 - Stream slow data by returning promises from `load` and resolve them in the client.
-- Call `depends()` in `load` functions for cache invalidation after mutations (for
-  example `depends('user:api-keys')`), then `invalidate()` the same key after a form
-  action mutates that data.
+- Call `depends()` in `load` functions for cache invalidation after mutations,
+  then `invalidate()` the same key after a form action mutates that data.
 - Keep authenticated routes inside `(authenticated)` and public content in `(public)`.
 - Reusable UI primitives come from `@lostgradient/cinder`; route-specific layout and composition styles stay local to the web app.
 

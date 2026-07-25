@@ -1773,53 +1773,6 @@ export const projectLinearSettings = pgTable(
   ],
 );
 
-export const userApiKey = pgTable(
-  'user_api_key',
-  {
-    id: integer().primaryKey().generatedAlwaysAsIdentity({
-      name: 'user_api_key_id_seq',
-      startWith: 1,
-      increment: 1,
-      minValue: 1,
-      maxValue: 2147483647,
-      cache: 1,
-    }),
-    userId: integer('user_id').notNull(),
-    name: varchar({ length: 255 }).notNull(),
-    description: text(),
-    keyHash: varchar('key_hash', { length: 64 }).notNull(),
-    keyPrefix: varchar('key_prefix', { length: 16 }).notNull(),
-    expiresAt: timestamp('expires_at', { mode: 'string' }),
-    revokedAt: timestamp('revoked_at', { mode: 'string' }),
-    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('user_api_key_prefix_active_idx')
-      .using('btree', table.keyPrefix.asc().nullsLast().op('text_ops'))
-      .where(sql`(revoked_at IS NULL)`),
-    index('user_api_key_user_id_id_idx').using(
-      'btree',
-      table.userId.asc().nullsLast().op('int4_ops'),
-      table.id.asc().nullsLast().op('int4_ops'),
-    ),
-    index('user_api_key_user_id_revoked_at_idx').using(
-      'btree',
-      table.userId.asc().nullsLast().op('int4_ops'),
-      table.revokedAt.asc().nullsLast().op('timestamp_ops'),
-    ),
-    index('user_api_key_user_idx').using('btree', table.userId.asc().nullsLast().op('int4_ops')),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'user_api_key_user_id_user_id_fk',
-    }).onDelete('cascade'),
-    unique('user_api_key_key_prefix_unique').on(table.keyPrefix),
-    check('user_api_key_prefix_format', sql`(key_prefix)::text ~ '^uak_[0-9a-f]{12}$'::text`),
-    check('user_api_key_name_not_empty', sql`length(TRIM(BOTH FROM name)) > 0`),
-  ],
-);
-
 export const linearWebhookDelivery = pgTable(
   'linear_webhook_delivery',
   {

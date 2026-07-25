@@ -255,36 +255,16 @@ If you fetch in components:
 ### Dependency tracking and invalidation
 
 Use explicit `depends` keys for anything you plan to invalidate, and use the
-same string with `invalidate` in the component after a mutation. The API keys
-page is the live example: the load declares a dependency, and the create form
-invalidates it after a successful submission so the list re-fetches.
-
-`applications/web/src/routes/(authenticated)/api-keys/+page.server.ts`
-
-```ts
-export const load: PageServerLoad = async ({ locals, depends }) => {
-  depends('user:api-keys');
-
-  const apiKeys = await listUserApiKeys(locals.user!.id);
-  return { apiKeys };
-};
-```
-
-`applications/web/src/routes/(authenticated)/api-keys/components/create-api-key-form.svelte`
-
-```ts
-import { invalidate } from '$app/navigation';
-
-// after a successful create:
-invalidate('user:api-keys');
-```
+same string with `invalidate` in the component after a mutation. Server `load`
+functions do not automatically depend on arbitrary domain state, so the custom
+dependency key is the contract between the loader and the mutating UI.
 
 Notes:
 
 - Server `load` functions do not automatically depend on fetched URLs. If you
   want a server load to rerun when you invalidate a URL, call `depends(url)`.
 - Use stable custom identifiers with a `[a-z]+:` prefix (for example
-  `user:api-keys`).
+  `repositories:list`).
 
 ### URL dependency tracking
 
@@ -314,37 +294,34 @@ Form actions are the production-stable way to mutate server state. Always:
 - Return structured errors with `fail` for re-rendering.
 - Never store per-user action results in module scope.
 
-The API keys page is the canonical example. Each named action re-checks auth,
-validates form data with a schema, and returns `fail(...)` with a structured
-payload on error:
-`applications/web/src/routes/(authenticated)/api-keys/+page.server.ts`
+Each named action re-checks auth, validates form data with a schema, and returns
+`fail(...)` with a structured payload on error:
 
 ```ts
 export const actions = {
-  createApiKey: async ({ request, locals }) => {
+  updateSettings: async ({ request, locals }) => {
     if (!locals.user) {
       error(401, 'Authentication required');
     }
 
     const formData = await request.formData();
-    const result = createUserApiKeySchema.safeParse({ name: formData.get('name') });
+    const result = updateSettingsSchema.safeParse({ watched: formData.get('watched') });
 
     if (!result.success) {
       return fail(400, {
-        action: 'createApiKey',
+        action: 'updateSettings',
         error: 'INVALID_INPUT',
         message: result.error.issues[0].message,
-        field: 'name',
+        field: result.error.issues[0].path[0],
       });
     }
 
-    // ...create the key and return a structured success payload
+    // ...persist the settings and return a structured success payload
   },
-  // rotateApiKey, revokeApiKey ...
 } satisfies Actions;
 ```
 
-Named actions are invoked via `action="?/createApiKey"` and friends.
+Named actions are invoked via `action="?/updateSettings"` and friends.
 
 Use `use:enhance` for progressive enhancement where JS should improve UX but is
 not required. If you disable CSR (`export const csr = false`), scripts are
