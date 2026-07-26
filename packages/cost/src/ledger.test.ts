@@ -335,6 +335,59 @@ describe('cost ledger', () => {
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
+  it('atomically reserves the remaining daily cap for only one concurrent same-user run', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservations = [
+      { idempotencyKey: `llm:${run.id}:first-estimate`, amountUsd: 0.01 },
+      { idempotencyKey: `llm:${run.id}:second-estimate`, amountUsd: 0.01 },
+    ];
+
+    const decisions = await Promise.all(
+      reservations.map(async (reservation) => ({
+        reservation,
+        decision: await port.enforceDailyCap(user.id, reservation),
+      })),
+    );
+
+    const allowedDecisions = decisions.filter(({ decision }) => decision.allowed);
+    expect(allowedDecisions).toHaveLength(1);
+    expect(decisions.filter(({ decision }) => !decision.allowed)).toHaveLength(1);
+    const rows = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.source, 'reservation'));
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.amountUsd)).toBe(0.01);
+
+    const allowedReservation = allowedDecisions[0]!.reservation;
+    await port.recordLlmEstimate({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.01,
+      idempotencyKey: allowedReservation.idempotencyKey,
+    });
+
+    const remainingReservations = await testDatabase.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.source, 'reservation'));
+    expect(remainingReservations).toHaveLength(0);
+    await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({
+      allowed: false,
+      spendUsd: 0.01,
+      remainingUsd: 0,
+    });
+  });
+
   it('uses the configured default daily cap when review settings do not exist', async () => {
     const { user, review, reviewer, run } = await createCostFixture();
     await testDatabase.db.insert(costEvent).values({

@@ -99,8 +99,16 @@ export interface DailyCapDecision {
   allowed: boolean;
 }
 
+export interface DailyCapReservationInput {
+  idempotencyKey: string;
+  amountUsd: number;
+}
+
 export interface CostPort {
   recordLlmEstimate(event: LlmEstimateInput): Promise<void>;
   recordSandbox(event: SandboxCostInput): Promise<void>;
-  enforceDailyCap(userId: number): Promise<DailyCapDecision>;
+  enforceDailyCap(
+    userId: number,
+    reservation?: DailyCapReservationInput,
+  ): Promise<DailyCapDecision>;
 }

@@ -469,6 +469,27 @@ describe('review cost rollups', () => {
     ).resolves.toBe(4);
   });
 
+  it('excludes active reservations from default cost rollups', async () => {
+    const { user, repository, firstAgent } = await createReviewFixture();
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_active_reservation',
+      userId: user.id,
+      kind: 'llm',
+      source: 'reservation',
+      repositoryId: repository.id,
+      reviewRunId: 'run_1',
+      agentRunId: 'arun_1',
+      agentId: firstAgent.id,
+      amountUsd: '9.00',
+      idempotencyKey: 'reservation:llm:arun_1:estimate',
+      occurredAt: new Date('2026-06-17T14:00:00.000Z'),
+    });
+
+    await expect(getCostPerUserPerDay(testDatabase.db, { userId: user.id })).resolves.toEqual([
+      { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 5.1 },
+    ]);
+  });
+
   it('scopes the six required rollups and spendTodayEstimate to one user', async () => {
     const { user, repository, secondaryRepository, firstAgent, secondAgent } =
       await createReviewFixture();

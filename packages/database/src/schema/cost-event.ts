@@ -48,7 +48,10 @@ export const costEvent = pgTable(
     index('cost_event_source_idx').on(table.source),
     index('cost_event_agent_run_idx').on(table.agentRunId),
     check('cost_event_kind_check', sql`${table.kind} IN ('llm','sandbox')`),
-    check('cost_event_source_check', sql`${table.source} IN ('estimate','reconciled')`),
+    check(
+      'cost_event_source_check',
+      sql`${table.source} IN ('estimate','reconciled','reservation')`,
+    ),
     check('cost_event_amount_check', sql`${table.amountUsd} >= 0`),
   ],
 );

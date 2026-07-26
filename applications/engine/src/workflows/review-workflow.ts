@@ -117,6 +117,7 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
+const LLM_COST_RESERVATION_USD = 0.01;
 
 export type ReviewRunStatus =
   | 'queued'
@@ -899,6 +900,24 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
+    const triageCapDecision = await this.ports.cost.enforceDailyCap(input.userId, {
+      idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
+      amountUsd: LLM_COST_RESERVATION_USD,
+    });
+    if (!triageCapDecision.allowed) {
+      reviewRun.status = 'quota_blocked';
+      reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review quota blocked',
+          summary: 'Daily review cost cap reached.',
+        },
+      });
+      return reviewRun;
+    }
     const triageResult = await this.runTriageAgent(
       supervisor,
       reviewRun,
@@ -1145,7 +1164,11 @@ export class ReviewWorkflowEngine {
         return { results, quotaBlocked: false };
       }
 
-      const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId);
+      const agentRunId = createAgentRunId(reviewRun.id, agent);
+      const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
+        idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+        amountUsd: LLM_COST_RESERVATION_USD,
+      });
       if (!dailyCapDecision.allowed) {
         return { results, quotaBlocked: true };
       }

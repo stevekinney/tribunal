@@ -1,12 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from '@tribunal/database';
-import { eq } from '@tribunal/database/operators';
+import { eq, sql } from '@tribunal/database/operators';
 import { costEvent, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
-import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
-import { sandboxCost, type SandboxResources, type SandboxRuntime } from './pricing';
+import type {
+  CostPort,
+  DailyCapDecision,
+  DailyCapReservationInput,
+  LlmEstimateInput,
+} from '@tribunal/review-core/ports';
+import {
+  CURRENT_PRICING_VERSION,
+  sandboxCost,
+  type SandboxResources,
+  type SandboxRuntime,
+} from './pricing';
 
-type CostDatabase = Pick<Database, 'insert' | 'select'>;
+type CostDatabase = Pick<Database, 'execute' | 'insert' | 'select'>;
 
 export type RecordSandboxInput = {
   userId: number;
@@ -41,6 +51,29 @@ async function insertCostEvent(
     .onConflictDoNothing({ target: costEvent.idempotencyKey });
 }
 
+function createDailyCapReservationIdempotencyKey(idempotencyKey: string): string {
+  return `reservation:${idempotencyKey}`;
+}
+
+function getRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === 'object' && 'rows' in result) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
+}
+
+async function releaseDailyCapReservation(
+  database: CostDatabase,
+  idempotencyKey: string,
+): Promise<void> {
+  await database.execute(sql`
+    DELETE FROM ${costEvent}
+    WHERE ${costEvent.idempotencyKey} = ${createDailyCapReservationIdempotencyKey(idempotencyKey)}
+      AND ${costEvent.source} = 'reservation'
+  `);
+}
+
 /**
  * Records one LLM estimate event idempotently.
  */
@@ -60,6 +93,7 @@ export async function recordLlmEstimate(
     amountUsd: numericText(event.amountUsd),
     idempotencyKey: event.idempotencyKey,
   });
+  await releaseDailyCapReservation(database, event.idempotencyKey);
 }
 
 /**
@@ -115,7 +149,12 @@ export async function enforceDailyCap(
   userId: number,
   now = new Date(),
   defaultDailyCostCapUsd = 25,
+  reservation?: DailyCapReservationInput,
 ): Promise<DailyCapDecision> {
+  if (reservation !== undefined) {
+    return reserveDailyCap(database, userId, now, defaultDailyCostCapUsd, reservation);
+  }
+
   const [capUsd, spendUsd] = await Promise.all([
     readDailyCostCap(database, userId, defaultDailyCostCapUsd),
     readSpendTodayEstimate(database as Database, userId, now),
@@ -123,6 +162,112 @@ export async function enforceDailyCap(
 
   return {
     allowed: spendUsd < capUsd,
+  };
+}
+
+async function reserveDailyCap(
+  database: CostDatabase,
+  userId: number,
+  now: Date,
+  defaultDailyCostCapUsd: number,
+  reservation: DailyCapReservationInput,
+): Promise<DailyCapDecision> {
+  if (!Number.isFinite(reservation.amountUsd) || reservation.amountUsd <= 0) {
+    throw new Error('Daily cap reservation amount must be a positive finite number.');
+  }
+
+  const reservationIdempotencyKey = createDailyCapReservationIdempotencyKey(
+    reservation.idempotencyKey,
+  );
+  const reservationMeta = { idempotencyKey: reservation.idempotencyKey };
+  const reservationAmountUsd = numericText(reservation.amountUsd);
+  const [row] = getRows<{
+    allowed: boolean | string | null;
+    capUsd: string | number | null;
+    spendUsd: string | number | null;
+    remainingUsd: string | number | null;
+  }>(
+    await database.execute(sql`
+      WITH user_lock AS (
+        SELECT pg_advisory_xact_lock(${userId}::integer)
+      ),
+      cap AS (
+        SELECT COALESCE(
+          (
+            SELECT ${userReviewSettings.dailyCostCapUsd}
+            FROM ${userReviewSettings}
+            WHERE ${userReviewSettings.userId} = ${userId}
+            LIMIT 1
+          ),
+          ${numericText(defaultDailyCostCapUsd)}::numeric
+        ) AS cap_usd
+        FROM user_lock
+      ),
+      day_window AS (
+        SELECT
+          date_trunc('day', ${now}::timestamptz) AS starts_at,
+          date_trunc('day', ${now}::timestamptz) + interval '1 day' AS ends_at
+      ),
+      spend AS (
+        SELECT COALESCE(SUM(${costEvent.amountUsd}), 0)::numeric AS spend_usd
+        FROM ${costEvent}, day_window
+        WHERE ${costEvent.userId} = ${userId}
+          AND ${costEvent.source} IN ('estimate', 'reservation')
+          AND ${costEvent.occurredAt} >= day_window.starts_at
+          AND ${costEvent.occurredAt} < day_window.ends_at
+      ),
+      existing_reservation AS (
+        SELECT ${costEvent.amountUsd}
+        FROM ${costEvent}
+        WHERE ${costEvent.userId} = ${userId}
+          AND ${costEvent.source} = 'reservation'
+          AND ${costEvent.idempotencyKey} = ${reservationIdempotencyKey}
+        LIMIT 1
+      ),
+      inserted_reservation AS (
+        INSERT INTO ${costEvent} (
+          "id",
+          "user_id",
+          "kind",
+          "source",
+          "amount_usd",
+          "meta",
+          "occurred_at",
+          "idempotency_key"
+        )
+        SELECT
+          ${createCostEventId()},
+          ${userId},
+          'llm',
+          'reservation',
+          ${reservationAmountUsd}::numeric,
+          ${JSON.stringify(reservationMeta)}::jsonb,
+          ${now},
+          ${reservationIdempotencyKey}
+        FROM cap, spend
+        WHERE NOT EXISTS (SELECT 1 FROM existing_reservation)
+          AND spend.spend_usd + ${reservationAmountUsd}::numeric <= cap.cap_usd
+        RETURNING ${costEvent.amountUsd}
+      )
+      SELECT
+        (
+          EXISTS (SELECT 1 FROM existing_reservation)
+          OR EXISTS (SELECT 1 FROM inserted_reservation)
+        ) AS "allowed",
+        cap.cap_usd AS "capUsd",
+        spend.spend_usd AS "spendUsd",
+        GREATEST(cap.cap_usd - spend.spend_usd, 0) AS "remainingUsd"
+      FROM cap, spend
+    `),
+  );
+
+  const capUsd = toNumber(row?.capUsd ?? defaultDailyCostCapUsd);
+  const spendUsd = toNumber(row?.spendUsd ?? 0);
+  return {
+    allowed: row?.allowed === true || row?.allowed === 'true',
+    capUsd,
+    spendUsd,
+    remainingUsd: toNumber(row?.remainingUsd ?? Math.max(0, capUsd - spendUsd)),
   };
 }
 
@@ -136,8 +281,8 @@ export type CreateCostPortOptions = {
  */
 export function createCostPort(database: CostDatabase, options: CreateCostPortOptions): CostPort {
   return {
-    recordLlmEstimate: (event) =>
-      insertCostEvent(database, {
+    recordLlmEstimate: async (event) => {
+      await insertCostEvent(database, {
         id: createCostEventId(),
         userId: event.userId,
         kind: 'llm',
@@ -149,7 +294,9 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         amountUsd: numericText(event.amountUsd),
         occurredAt: options.now?.(),
         idempotencyKey: event.idempotencyKey,
-      }),
+      });
+      await releaseDailyCapReservation(database, event.idempotencyKey);
+    },
     recordSandbox: (event) =>
       insertCostEvent(database, {
         id: createCostEventId(),
@@ -165,12 +312,13 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         occurredAt: parseSandboxWindowStartedAt(event.window) ?? options.now?.(),
         idempotencyKey: event.idempotencyKey,
       }),
-    enforceDailyCap: (userId) =>
+    enforceDailyCap: (userId, reservation) =>
       enforceDailyCap(
         database,
         userId,
         options.now?.() ?? new Date(),
         options.defaultDailyCostCapUsd ?? 25,
+        reservation,
       ),
   };
 }

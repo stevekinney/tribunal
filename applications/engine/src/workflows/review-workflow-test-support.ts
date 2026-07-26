@@ -828,6 +828,7 @@ class FakeCostPort implements CostPort {
   readonly enforceDailyCapCalls: number[] = [];
   readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
+  private readonly dailyCapReservations = new Map<string, number>();
   private spendTodayEstimateValue: number;
 
   constructor(private readonly options: FakePortOptions) {
@@ -852,6 +853,7 @@ class FakeCostPort implements CostPort {
     if (this.options.spendAfterFirstEstimate !== undefined && event.agentId !== null) {
       this.spendTodayEstimateValue = this.options.spendAfterFirstEstimate;
     }
+    this.dailyCapReservations.delete(event.idempotencyKey);
   }
 
   async recordSandbox(event: SandboxCostInput): Promise<void> {
@@ -871,12 +873,33 @@ class FakeCostPort implements CostPort {
     );
   }
 
-  async enforceDailyCap(userId: number): Promise<DailyCapDecision> {
+  async enforceDailyCap(
+    userId: number,
+    reservation?: { idempotencyKey: string; amountUsd: number },
+  ): Promise<DailyCapDecision> {
     this.enforceDailyCapCalls.push(userId);
     const capUsd = 10;
-    const spendUsd = this.spendTodayEstimateValue;
+    const reservedUsd =
+      reservation === undefined
+        ? 0
+        : [...this.dailyCapReservations.entries()]
+            .filter(([idempotencyKey]) => idempotencyKey !== reservation.idempotencyKey)
+            .reduce((total, [, amountUsd]) => total + amountUsd, 0);
+    const spendUsd = this.spendTodayEstimateValue + reservedUsd;
+    const allowed =
+      reservation === undefined ? spendUsd < capUsd : spendUsd + reservation.amountUsd <= capUsd;
+    if (
+      allowed &&
+      reservation !== undefined &&
+      !this.dailyCapReservations.has(reservation.idempotencyKey)
+    ) {
+      this.dailyCapReservations.set(reservation.idempotencyKey, reservation.amountUsd);
+    }
     return {
-      allowed: spendUsd < capUsd,
+      allowed,
+      capUsd,
+      spendUsd,
+      remainingUsd: Math.max(0, capUsd - spendUsd),
     };
   }
 
