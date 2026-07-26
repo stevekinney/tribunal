@@ -52,4 +52,7 @@ packages/database/.drizzle-consistency-check.config.ts
 # Turborepo
 .turbo
 
+# Git worktrees created by parallel agent sessions
+.worktrees/
+
 .env*.local

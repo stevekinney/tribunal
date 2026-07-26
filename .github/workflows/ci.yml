@@ -25,9 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # turbo --affected compares TURBO_SCM_BASE...TURBO_SCM_HEAD and requires
+      # every commit between them to exist locally; a shallow clone silently
+      # falls back to running every package.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: ./.github/actions/setup
       - name: Type check
         run: bunx turbo run check ${{ github.event_name == 'pull_request' && '--affected' || '' }}
@@ -39,9 +42,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # See the type-check job: --affected needs full history.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: ./.github/actions/setup
       - name: Format check
         run: bun run format:check
@@ -205,9 +209,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # See the type-check job: --affected needs full history.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: ./.github/actions/setup
       - name: Build
         run: bunx turbo run build ${{ github.event_name == 'pull_request' && '--affected' || '' }}
@@ -520,7 +525,16 @@ jobs:
     name: CI Status
     if: always()
     needs:
-      [type-check, lint-format, test-unit, coverage, test-browser, build, container-images, migration]
+      [
+        type-check,
+        lint-format,
+        test-unit,
+        coverage,
+        test-browser,
+        build,
+        container-images,
+        migration,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Check results

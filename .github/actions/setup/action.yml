@@ -14,6 +14,18 @@ runs:
         key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
         restore-keys: |
           bun-${{ runner.os }}-
+    # Turborepo's local filesystem cache. Without this, every job re-runs every
+    # task from scratch because the remote cache is not configured (TURBO_TOKEN
+    # is empty). The key is job-scoped because each job caches a different set
+    # of tasks, and includes the SHA so the cache is written on every run —
+    # actions/cache only saves when the exact key missed.
+    - name: Cache Turborepo artifacts
+      uses: actions/cache@v4
+      with:
+        path: .turbo/cache
+        key: turbo-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+        restore-keys: |
+          turbo-${{ runner.os }}-${{ github.job }}-
     - name: Install dependencies
       shell: bash
       run: bun install --frozen-lockfile

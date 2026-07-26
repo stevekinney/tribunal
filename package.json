@@ -20,6 +20,8 @@
     "prepare": "bun run scripts/install-git-hooks.ts",
     "format": "turbo run format",
     "format:check": "turbo run format:check",
+    "format:root": "prettier --write --ignore-path .prettierignore \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml}\" \"documentation/**/*.md\"",
+    "format:check:root": "prettier --check --ignore-path .prettierignore \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml}\" \"documentation/**/*.md\"",
     "precommit:tests": "bun run scripts/precommit-tests.ts",
     "db:generate": "cd packages/database && bunx drizzle-kit generate",
     "db:migrate": "cd packages/database && bunx drizzle-kit migrate",
