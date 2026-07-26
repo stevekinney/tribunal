@@ -26,8 +26,7 @@
  *       past its last abort check (or mid-`octokit` call) can still reach the write;
  *     - the head-SHA generation fence skips the write when GitHub's head advanced,
  *       so it covers supersede-by-NEWER-PUSH — but NOT a same-commit supersede
- *       (a new review comment, a thread resolve, a check completing) that leaves
- *       the head SHA unchanged.
+ *       (for example, a check completing) that leaves the head SHA unchanged.
  *   So a same-commit supersede is an acknowledged pre-production gap (a durable
  *   per-PR generation lease would close it; see WEFT_MIGRATION_PLAN.md §7). The
  *   analysisGeneration counter is for log correlation, not the write predicate.
@@ -94,20 +93,11 @@ const IDLE_DURATION = '7d';
  */
 type PullRequestEventType =
   | 'pr_opened'
-  | 'review_submitted'
-  | 'review_dismissed'
-  | 'review_comment_created'
-  | 'review_comment_edited'
-  | 'review_comment_deleted'
-  | 'review_thread_resolved'
-  | 'review_thread_unresolved'
-  | 'issue_comment_created'
-  | 'issue_comment_edited'
-  | 'issue_comment_deleted'
+  | 'pr_reopened'
+  | 'pr_ready_for_review'
+  | 'pr_synchronized'
   | 'check_completed'
-  | 'base_branch_updated'
-  | 'pr_closed'
-  | 'manual';
+  | 'pr_closed';
 
 /** Payload carried by the pull_request_event signal. */
 type PullRequestEventPayload = {
@@ -339,9 +329,9 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
         // before writing and skips the write if it advanced (generationFenced=true,
         // via the analysisGeneration counter for log correlation). Together: the
         // abort catches most race losses; the head-SHA fence covers supersede-by-
-        // NEWER-PUSH. Neither covers a SAME-COMMIT supersede (new comment, thread
-        // resolve) — that remains a documented pre-production gap (a durable per-PR
-        // generation lease would close it; WEFT_MIGRATION_PLAN.md §7).
+        // NEWER-PUSH. Neither covers every SAME-COMMIT supersede (for example,
+        // a check completion) — that remains a documented pre-production gap (a
+        // durable per-PR generation lease would close it; WEFT_MIGRATION_PLAN.md §7).
         //
         // FIX 1: ctx.raceKeyed preserves branch identity for the activity and
         // both signal branches without inspecting their result values.
