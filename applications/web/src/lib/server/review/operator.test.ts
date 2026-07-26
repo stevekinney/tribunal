@@ -679,7 +679,10 @@ describe('review operator server helpers', () => {
 
     const result = await withTestDatabase(() => saveAgent(owner.id, formData));
 
-    expect(result).toMatchObject({ status: 400 });
+    expect(result).toMatchObject({
+      status: 400,
+      data: { values: { id: '' } },
+    });
   });
 
   it('kicks the review engine when saving an enabled agent can make waiting intents eligible', async () => {
@@ -1035,6 +1038,40 @@ describe('review operator server helpers', () => {
       lastError: null,
       nextAttemptAt: null,
     });
+  });
+
+  it('marks enabled-agent wake-up failures as retryable after the toggle commits', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    await testDb.db.update(agent).set({ enabled: false }).where(eq(agent.id, reviewAgent.id));
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_waiting_for_enabled_agent',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('enabled', 'true');
+
+    const result = await withTestDatabase(() => setAgentEnabled(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: {
+        error: 'Review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      },
+    });
+    const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
+    expect(updated?.enabled).toBe(true);
   });
 
   it('rejects watch settings referencing an agent the user does not own', async () => {

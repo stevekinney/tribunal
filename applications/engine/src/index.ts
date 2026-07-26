@@ -426,10 +426,12 @@ export function createReviewIntentKickScheduler(
   const isBackgroundWorkActive = options.isBackgroundWorkActive ?? (() => false);
   const idleShutdownMs =
     options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
+  const boundedDrainContinuationDelayMs = 1_000;
 
   let activeDrain: Promise<void> | undefined;
   let drainGeneration = 0;
   let idleShutdownTimer: ReturnType<typeof setTimeout> | undefined;
+  let boundedDrainContinuationScheduled = false;
   let kickRequestedDuringDrain = false;
   let released = false;
 
@@ -471,7 +473,12 @@ export function createReviewIntentKickScheduler(
         activeDrain = undefined;
         if (kickRequestedDuringDrain) {
           kickRequestedDuringDrain = false;
+          boundedDrainContinuationScheduled = false;
           startDrain();
+          return;
+        }
+        if (boundedDrainContinuationScheduled) {
+          boundedDrainContinuationScheduled = false;
           return;
         }
         scheduleConfiguredIdleShutdown();
@@ -548,7 +555,8 @@ export function createReviewIntentKickScheduler(
       if (processed > 0) continue;
 
       if (runtime.consumePendingReviewIntentDrain?.()) {
-        scheduleConfiguredIdleShutdown();
+        boundedDrainContinuationScheduled = true;
+        scheduleIdleShutdownCheck(boundedDrainContinuationDelayMs);
       }
       return;
     }

@@ -406,7 +406,7 @@ export async function saveAgent(userId: number, formData: FormData) {
   if (!validation.success) {
     return fail<AgentSaveFailure>(400, {
       error: validation.error.issues[0]?.message ?? 'Agent settings are invalid.',
-      values: payload,
+      values: { ...payload, id },
     });
   }
 
@@ -484,7 +484,10 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
   if (enabled) {
     const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
     if (wakeupFailed) {
-      return fail(503, { error: 'Review engine wake-up failed. Please try again.' });
+      return fail(503, {
+        error: 'Review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      });
     }
   }
 

@@ -150,7 +150,36 @@ describe('agent editor', () => {
     await expect.element(page.getByLabelText('Description')).toHaveValue('Attempted description');
   });
 
-  it('submits the committed id returned from a failed new-agent save', async () => {
+  it('does not submit a generated id returned from a failed new-agent validation', async () => {
+    const { container } = render(AgentEditor, {
+      agent: {
+        slug: '',
+        description: '',
+        body: '',
+        model: 'inherit',
+        effort: null,
+      },
+      defaultModel: 'sonnet',
+      modelOptions,
+      effortOptions,
+      form: {
+        error: 'String must contain at least 1 character(s)',
+        values: {
+          id: '',
+          slug: 'not a valid slug',
+          description: 'x',
+          body: 'x',
+          model: 'sonnet',
+          effort: 'xhigh',
+        },
+      },
+      submitLabel: 'Create agent',
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[name="id"]')).toBeNull();
+  });
+
+  it('submits the committed id returned from a failed new-agent wake-up', async () => {
     const { container } = render(AgentEditor, {
       agent: {
         slug: '',
