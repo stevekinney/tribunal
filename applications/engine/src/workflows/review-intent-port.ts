@@ -554,7 +554,6 @@ function selectEnabledUserAgents(
 ): Promise<
   Array<{
     id: string;
-    userId: number;
     slug: string;
     description: string;
     body: string;
@@ -566,7 +565,6 @@ function selectEnabledUserAgents(
   return database
     .select({
       id: agent.id,
-      userId: agent.userId,
       slug: agent.slug,
       description: agent.description,
       body: agent.body,

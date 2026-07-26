@@ -1095,9 +1095,6 @@ describe('Tensorlake sandbox adapter', () => {
         timeoutSecs: 900,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
-        secretNames: [],
-        env: {},
-        metadata: {},
       }),
     ).resolves.toEqual({ sandboxId: 'sandbox_1' });
     await adapter.runCommand('sandbox_1', 'node', ['runner.mjs'], { A: 'B' });
@@ -1230,9 +1227,6 @@ describe('Tensorlake sandbox adapter', () => {
         timeoutSecs: 900,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
-        secretNames: [],
-        env: {},
-        metadata: {},
       }),
     ).resolves.toEqual({ sandboxId: 'sandbox_existing' });
     expect(sandboxClientCreateMock).not.toHaveBeenCalled();
@@ -1260,9 +1254,6 @@ describe('Tensorlake sandbox adapter', () => {
         timeoutSecs: 900,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
-        secretNames: [],
-        env: {},
-        metadata: {},
       }),
     ).rejects.toThrow('existing sandbox isolation could not be verified');
     expect(MockSandbox.connect).not.toHaveBeenCalled();
@@ -1286,9 +1277,6 @@ describe('Tensorlake sandbox adapter', () => {
       timeoutSecs: 900,
       allowInternetAccess: false as const,
       allowOut: [],
-      secretNames: [] as [],
-      env: {},
-      metadata: {},
     };
     const firstCreate = adapter.create(input);
     const secondCreate = adapter.create(input);
@@ -1319,9 +1307,6 @@ describe('Tensorlake sandbox adapter', () => {
       timeoutSecs: 900,
       allowInternetAccess: false,
       allowOut: [],
-      secretNames: [],
-      env: {},
-      metadata: {},
     });
 
     await expect(

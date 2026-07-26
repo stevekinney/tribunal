@@ -13,9 +13,6 @@ export type SandboxCreateInput = {
   timeoutSecs: number;
   allowInternetAccess: false;
   allowOut: string[];
-  secretNames: [];
-  env: Record<string, string>;
-  metadata: Record<string, string>;
 };
 
 export type SandboxCommandResult = {
@@ -74,7 +71,6 @@ export function createSandboxPort(
         diskMb: 20_480,
         timeoutSecs: options.idleSuspendSeconds,
         ...egress,
-        metadata: { managedBy: 'tribunal', name: prKey },
       });
     },
     async update(sandboxId: string, repository: RepoRef, head: string, runToken: string) {

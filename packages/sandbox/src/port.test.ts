@@ -96,7 +96,6 @@ describe('sandbox port', () => {
         timeoutSecs: 123,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
-        secretNames: [],
       },
     });
   });

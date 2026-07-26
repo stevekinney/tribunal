@@ -45,7 +45,6 @@ export const operatorSurfaceStates: SurfaceState[] = [
 
 type AgentFormValues = {
   id: string;
-  userId: number;
   slug: string;
   description: string;
   body: string;
