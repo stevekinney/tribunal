@@ -27,6 +27,8 @@ export const actions: Actions = {
     const { user } = locals;
     if (!user) redirect(302, '/login');
 
-    return retryReviewIntentEngineWakeup();
+    const result = await retryReviewIntentEngineWakeup();
+    if ('status' in result) return result;
+    redirect(303, '/agents');
   },
 };

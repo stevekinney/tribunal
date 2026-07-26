@@ -498,7 +498,12 @@ async function releaseReviewIntentsAndTryKickEngine(
   userId: number,
   repositoryIds?: number[],
 ): Promise<boolean> {
-  await releaseReviewIntentsWaitingForEligibleAgent(userId, repositoryIds);
+  const releasedIntentCount = await releaseReviewIntentsWaitingForEligibleAgent(
+    userId,
+    repositoryIds,
+  );
+  if (releasedIntentCount === 0) return false;
+
   const result = await postReviewEngineControl('/review-intents/kick');
   if (result.status === 'not_configured') return false;
   if (result.status === 'sent' && result.ok) return false;
@@ -518,12 +523,12 @@ export async function retryReviewIntentEngineWakeup() {
 async function releaseReviewIntentsWaitingForEligibleAgent(
   userId: number,
   repositoryIds?: number[],
-): Promise<void> {
+): Promise<number> {
   const repositoryScope =
     repositoryIds === undefined || repositoryIds.length === 0
       ? undefined
       : inArray(reviewIntent.repositoryId, repositoryIds);
-  await db
+  const releasedIntents = await db
     .update(reviewIntent)
     .set({
       failedAt: null,
@@ -537,7 +542,10 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
         repositoryScope,
         sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
       ),
-    );
+    )
+    .returning({ id: reviewIntent.id });
+
+  return releasedIntents.length;
 }
 
 function reviewIntentStillWaitingForEligibleAgentsCondition() {

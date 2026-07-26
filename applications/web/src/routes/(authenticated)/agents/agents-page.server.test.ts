@@ -100,12 +100,28 @@ describe('/agents actions.retryEngineWakeup', () => {
     });
   });
 
-  it('delegates to retryReviewIntentEngineWakeup', async () => {
+  it('redirects to /agents after a successful retry', async () => {
     mockRetryReviewIntentEngineWakeup.mockResolvedValue({ success: true });
+
+    await expect(
+      actions.retryEngineWakeup({ locals: { user: { id: 1 } } } as never),
+    ).rejects.toMatchObject({
+      status: 303,
+      location: '/agents',
+    });
+    expect(mockRetryReviewIntentEngineWakeup).toHaveBeenCalledWith();
+  });
+
+  it('returns the retry failure data when the engine wake-up still fails', async () => {
+    const failure = {
+      status: 503,
+      data: { error: 'Review engine wake-up failed. Please try again.', engineWakeupFailed: true },
+    };
+    mockRetryReviewIntentEngineWakeup.mockResolvedValue(failure);
 
     const result = await actions.retryEngineWakeup({ locals: { user: { id: 1 } } } as never);
 
     expect(mockRetryReviewIntentEngineWakeup).toHaveBeenCalledWith();
-    expect(result).toEqual({ success: true });
+    expect(result).toEqual(failure);
   });
 });

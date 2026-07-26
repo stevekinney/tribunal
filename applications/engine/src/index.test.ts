@@ -695,7 +695,10 @@ describe('createReviewIntentKickScheduler', () => {
   it('schedules a later bounded drain when a bounded scan leaves ready work visible', async () => {
     vi.useFakeTimers();
     const drainReviewIntents = vi.fn().mockResolvedValue(0);
-    const consumePendingReviewIntentDrain = vi.fn().mockReturnValue(true);
+    const consumePendingReviewIntentDrain = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
     const exit = vi.fn();
     const logger = { error: vi.fn(), log: vi.fn() };
     const scheduler = createReviewIntentKickScheduler(
@@ -723,23 +726,26 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(drainReviewIntents).toHaveBeenCalledTimes(2);
-    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(1);
+    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
 
-  it('continues bounded drain scans when idle shutdown is disabled', async () => {
+  it('continues bounded drain scans without shutting down when idle shutdown is disabled', async () => {
     vi.useFakeTimers();
     const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const getReviewIntentQueueStatus = vi
+      .fn()
+      .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 });
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
     const scheduler = createReviewIntentKickScheduler(
       {
-        consumePendingReviewIntentDrain: vi.fn().mockReturnValue(true),
+        consumePendingReviewIntentDrain: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
         drainReviewIntents,
-        getReviewIntentQueueStatus: vi
-          .fn()
-          .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 }),
-        release: vi.fn().mockResolvedValue(undefined),
+        getReviewIntentQueueStatus,
+        release,
       },
-      { exit: vi.fn(), logger: { error: vi.fn(), log: vi.fn() } },
+      { exit, logger: { error: vi.fn(), log: vi.fn() } },
     );
 
     scheduler.kick();
@@ -747,6 +753,9 @@ describe('createReviewIntentKickScheduler', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(drainReviewIntents).toHaveBeenCalledTimes(2);
+    expect(getReviewIntentQueueStatus).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -755,7 +764,7 @@ describe('createReviewIntentKickScheduler', () => {
     const drainReviewIntents = vi.fn().mockResolvedValue(0);
     const scheduler = createReviewIntentKickScheduler(
       {
-        consumePendingReviewIntentDrain: vi.fn().mockReturnValue(true),
+        consumePendingReviewIntentDrain: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
         drainReviewIntents,
         getReviewIntentQueueStatus: vi
           .fn()

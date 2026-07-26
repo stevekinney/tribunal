@@ -690,6 +690,17 @@ describe('review operator server helpers', () => {
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_waiting_for_saved_agent',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
     const formData = new FormData();
     formData.set('id', reviewAgent.id);
     formData.set('slug', 'security');
@@ -716,6 +727,27 @@ describe('review operator server helpers', () => {
     });
     const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
     expect(updated).toMatchObject({ description: 'Updated description', model: 'opus' });
+  });
+
+  it('saves an enabled agent without waking the engine when no waiting intents are released', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toEqual({ success: true, id: reviewAgent.id });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('kicks the review engine when saving an enabled agent can make waiting intents eligible', async () => {
@@ -832,6 +864,22 @@ describe('review operator server helpers', () => {
     expect(result).toEqual({ success: true });
     const rows = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
     expect(rows).toHaveLength(0);
+  });
+
+  it('deletes an agent without waking the engine when no waiting intents are released', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+
+    const result = await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    expect(result).toEqual({ success: true });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('kicks the review engine when deleting a disabled assigned agent makes waiting intents eligible', async () => {

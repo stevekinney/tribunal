@@ -441,14 +441,25 @@ export function createReviewIntentKickScheduler(
     idleShutdownTimer = undefined;
   };
 
-  const scheduleShutdownCheck = (delayMs: number) => {
+  const scheduleTimer = (delayMs: number, callback: () => Promise<void> | void) => {
     if (released) return;
     clearIdleShutdownTimer();
     idleShutdownTimer = setTimeoutFunction(() => {
       idleShutdownTimer = undefined;
-      void shutdownIfIdle();
+      void callback();
     }, delayMs);
     idleShutdownTimer.unref?.();
+  };
+
+  const scheduleShutdownCheck = (delayMs: number) => {
+    scheduleTimer(delayMs, shutdownIfIdle);
+  };
+
+  const scheduleBoundedDrainContinuation = () => {
+    boundedDrainContinuationScheduled = true;
+    scheduleTimer(boundedDrainContinuationDelayMs, () => {
+      startDrain();
+    });
   };
 
   const scheduleIdleShutdownCheck = (delayMs: number) => {
@@ -560,8 +571,7 @@ export function createReviewIntentKickScheduler(
       if (processed > 0) continue;
 
       if (runtime.consumePendingReviewIntentDrain?.()) {
-        boundedDrainContinuationScheduled = true;
-        scheduleShutdownCheck(boundedDrainContinuationDelayMs);
+        scheduleBoundedDrainContinuation();
       }
       return;
     }
