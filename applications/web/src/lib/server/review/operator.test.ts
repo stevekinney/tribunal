@@ -685,6 +685,39 @@ describe('review operator server helpers', () => {
     });
   });
 
+  it('returns committed agent values when saving an enabled agent cannot wake the engine', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: {
+        error: 'Review engine wake-up failed. Please try again.',
+        values: {
+          id: reviewAgent.id,
+          slug: 'security',
+          description: 'Updated description',
+          body: 'Updated body.',
+          model: 'opus',
+          enabled: true,
+        },
+      },
+    });
+    const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
+    expect(updated).toMatchObject({ description: 'Updated description', model: 'opus' });
+  });
+
   it('kicks the review engine when saving an enabled agent can make waiting intents eligible', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
