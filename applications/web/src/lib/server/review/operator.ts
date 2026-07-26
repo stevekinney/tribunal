@@ -752,12 +752,6 @@ export async function getRunInspector(userId: number, runId: string) {
 
 export type RunAgentEventStreamEvent = {
   id: number;
-  agentRunId: string;
-  seq: number;
-  kind: string;
-  tool: string | null;
-  detail: unknown;
-  at: string;
 };
 
 export async function streamRunAgentEvents(
@@ -798,7 +792,7 @@ export async function streamRunAgentEvents(
 
         for (const event of events) {
           latestEventId = Math.max(latestEventId, event.id);
-          enqueue(`id: ${event.id}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`);
+          enqueue(`id: ${event.id}\nevent: agent_event\ndata:\n\n`);
         }
 
         return true;
@@ -868,15 +862,7 @@ async function listRunAgentEvents(
   afterEventId: number,
 ): Promise<RunAgentEventStreamEvent[]> {
   const rows = await db
-    .select({
-      id: agentEvent.id,
-      agentRunId: agentEvent.agentRunId,
-      seq: agentEvent.seq,
-      kind: agentEvent.kind,
-      tool: agentEvent.tool,
-      detail: agentEvent.detail,
-      at: agentEvent.at,
-    })
+    .select({ id: agentEvent.id })
     .from(agentEvent)
     .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
     .innerJoin(tribunalRun, eq(tribunalRun.id, agentRun.runId))
@@ -890,7 +876,7 @@ async function listRunAgentEvents(
     .orderBy(asc(agentEvent.id))
     .limit(100);
 
-  return rows.map((event) => ({ ...event, at: event.at.toISOString() }));
+  return rows;
 }
 
 async function getReplacementRun(
