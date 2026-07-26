@@ -62,4 +62,11 @@ export interface GithubServiceContext {
    * hosts that have no Weft integration.
    */
   resolveWeftClient?: () => Promise<WeftClient | null>;
+
+  /**
+   * Cancel the engine-owned per-installation sync workflow by installation id.
+   * Web supplies this through the authenticated engine control endpoint because
+   * production Weft ownership lives in tribunal-engine, not the web process.
+   */
+  cancelInstallationSync?: (installationId: number) => Promise<void>;
 }

@@ -3,6 +3,7 @@ import {
   MemoryStorage,
   assertDurableStorageForRecovery,
   workflow,
+  type WorkflowStatus,
 } from '@lostgradient/weft';
 import { LocalClient } from '@lostgradient/weft/client/local';
 import type { EngineLeaseHealth, Storage } from '@lostgradient/weft';
@@ -70,6 +71,8 @@ export type EngineRuntime = {
   consumePendingReviewIntentDrain?(): boolean;
   getReviewIntentQueueStatus(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes(): Promise<unknown>;
+  hasActiveInstallationSyncs?(): Promise<boolean>;
+  cancelInstallationSync?(installationId: number): Promise<void>;
   enqueueInstallationSync?(
     options: EnqueueInstallationSyncOptions,
   ): Promise<EnqueueInstallationSyncResult>;
@@ -142,6 +145,18 @@ export async function createEngineRuntime(
         return (
           options.reviewIntentConsumer?.reapClosedPullRequestSandboxes?.() ?? Promise.resolve([])
         );
+      },
+      async hasActiveInstallationSyncs() {
+        const activeStatuses: WorkflowStatus[] = ['pending', 'running', 'suspended'];
+        const page = await engine.list({
+          type: 'installation-sync',
+          status: activeStatuses,
+          limit: 1,
+        });
+        return page.total > 0;
+      },
+      async cancelInstallationSync(installationId) {
+        await engine.cancel(`github:installations:${installationId}:sync`);
       },
       enqueueInstallationSync(options) {
         return dispatchInstallationSync(client, options);

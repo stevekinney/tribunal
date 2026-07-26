@@ -1,3 +1,4 @@
+import { isWeftFault } from '@lostgradient/weft';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
 import type { EngineRuntime } from './workflows/bootstrap';
 
@@ -67,4 +68,30 @@ function isInstallationSyncInput(value: unknown): value is EnqueueInstallationSy
         candidate.triggeredByUserId > 0)) &&
     (candidate.deliveryId === undefined || typeof candidate.deliveryId === 'string')
   );
+}
+
+export async function handleInstallationSyncCancellationRequest(
+  installationId: number,
+  runtime: Pick<EngineRuntime, 'cancelInstallationSync'>,
+): Promise<Response> {
+  if (runtime.cancelInstallationSync === undefined) {
+    return Response.json(
+      { ok: false, error: 'installation_sync_receiver_unavailable' },
+      { status: 503 },
+    );
+  }
+
+  if (!Number.isInteger(installationId) || installationId <= 0) {
+    return Response.json(
+      { ok: false, error: 'invalid_installation_sync_cancellation' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await runtime.cancelInstallationSync(installationId);
+  } catch (error) {
+    if (!isWeftFault(error, 'WorkflowNotFoundError')) throw error;
+  }
+  return Response.json({ ok: true, cancelled: true }, { status: 202 });
 }

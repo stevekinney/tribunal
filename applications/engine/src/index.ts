@@ -3,7 +3,10 @@ import { NeonStorage } from '@lostgradient/weft/storage/neon';
 import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
-import { handleInstallationSyncRequest } from './installation-syncs';
+import {
+  handleInstallationSyncCancellationRequest,
+  handleInstallationSyncRequest,
+} from './installation-syncs';
 import {
   createEngineRuntime,
   type EngineBootstrapOptions,
@@ -363,6 +366,18 @@ export function createEngineServerOptions(
         }
         return Response.json({ ok: true, started: result.started }, { status: 202 });
       }
+      const installationSyncCancelMatch = /^\/installation-syncs\/(\d+)\/cancel$/.exec(
+        url.pathname,
+      );
+      if (installationSyncCancelMatch !== null && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        return handleInstallationSyncCancellationRequest(
+          Number(installationSyncCancelMatch[1]),
+          runtime,
+        );
+      }
       if (url.pathname === '/installation-syncs' && request.method === 'POST') {
         if (!hasValidControlToken(request, controlToken)) {
           return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
@@ -420,7 +435,10 @@ export type ReviewIntentKickSchedulerOptions = {
 };
 
 export function createReviewIntentKickScheduler(
-  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'> &
+  runtime: Pick<
+    EngineRuntime,
+    'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release' | 'hasActiveInstallationSyncs'
+  > &
     Partial<Pick<EngineRuntime, 'consumePendingReviewIntentDrain'>>,
   options: ReviewIntentKickSchedulerOptions = {},
 ): ReviewIntentKickScheduler {
@@ -552,7 +570,11 @@ export function createReviewIntentKickScheduler(
         scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
         return;
       }
-      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive()) {
+      if (
+        hasClaimedWork(queueStatus) ||
+        isBackgroundWorkActive() ||
+        (await runtime.hasActiveInstallationSyncs?.()) === true
+      ) {
         scheduleConfiguredIdleShutdown();
         return;
       }

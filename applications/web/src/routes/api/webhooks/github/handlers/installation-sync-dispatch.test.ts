@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireAndForgetInstallationSync } from './installation-sync-dispatch';
+import { dispatchInstallationSync } from './installation-sync-dispatch';
 import type { WebhookContext } from './types';
 
 const signalInstallationSyncEngineMock = vi.hoisted(() => vi.fn());
@@ -8,12 +8,12 @@ vi.mock('$lib/server/review/engine-client', () => ({
   signalInstallationSyncEngine: signalInstallationSyncEngineMock,
 }));
 
-describe('fireAndForgetInstallationSync', () => {
+describe('dispatchInstallationSync', () => {
   beforeEach(() => {
     signalInstallationSyncEngineMock.mockReset();
   });
 
-  it('does not log when the enqueue succeeds', async () => {
+  it('does not log when the dispatch succeeds', async () => {
     signalInstallationSyncEngineMock.mockResolvedValue({
       status: 'sent',
       ok: true,
@@ -21,21 +21,21 @@ describe('fireAndForgetInstallationSync', () => {
     });
     const logger = createLogger();
 
-    fireAndForgetInstallationSync({ installationId: 1, reason: 'test' }, logger);
-    await flush();
+    await dispatchInstallationSync({ installationId: 1, reason: 'test' }, logger);
 
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it('logs an error when engine control is not configured', async () => {
+  it('throws and logs when engine control is not configured', async () => {
     signalInstallationSyncEngineMock.mockResolvedValue({
       status: 'not_configured',
       missingSettings: ['TRIBUNAL_ENGINE_URL'],
     });
     const logger = createLogger();
 
-    fireAndForgetInstallationSync({ installationId: 1, reason: 'test' }, logger);
-    await flush();
+    await expect(
+      dispatchInstallationSync({ installationId: 1, reason: 'test' }, logger),
+    ).rejects.toThrow('Installation sync engine control is not configured');
 
     expect(logger.error).toHaveBeenCalledWith(
       {
@@ -46,7 +46,7 @@ describe('fireAndForgetInstallationSync', () => {
     );
   });
 
-  it('logs an error when the engine reports a failed delivery', async () => {
+  it('throws and logs when the engine reports a failed delivery', async () => {
     signalInstallationSyncEngineMock.mockResolvedValue({
       status: 'sent',
       ok: false,
@@ -54,8 +54,9 @@ describe('fireAndForgetInstallationSync', () => {
     });
     const logger = createLogger();
 
-    fireAndForgetInstallationSync({ installationId: 1, reason: 'test' }, logger);
-    await flush();
+    await expect(
+      dispatchInstallationSync({ installationId: 1, reason: 'test' }, logger),
+    ).rejects.toThrow('Installation sync engine dispatch failed with status 503');
 
     expect(logger.error).toHaveBeenCalledWith(
       { responseStatus: 503 },
@@ -63,24 +64,21 @@ describe('fireAndForgetInstallationSync', () => {
     );
   });
 
-  it('logs an error when the dispatch promise rejects', async () => {
+  it('throws and logs when the dispatch promise rejects', async () => {
     const rejection = new Error('network error');
     signalInstallationSyncEngineMock.mockRejectedValue(rejection);
     const logger = createLogger();
 
-    fireAndForgetInstallationSync({ installationId: 1, reason: 'test' }, logger);
-    await flush();
+    await expect(
+      dispatchInstallationSync({ installationId: 1, reason: 'test' }, logger),
+    ).rejects.toThrow('network error');
 
     expect(logger.error).toHaveBeenCalledWith(
       { error: rejection },
-      'Failed to enqueue installation sync',
+      'Installation sync engine dispatch failed',
     );
   });
 });
-
-function flush() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
 
 function createLogger(): WebhookContext['logger'] {
   return {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  cancelInstallationSyncEngine,
   kickReviewEngine,
   postReviewEngineControl,
   signalInstallationSyncEngine,
@@ -94,6 +95,29 @@ describe('review engine client', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify(options),
+      },
+    );
+  });
+
+  it('posts installation sync cancellations to the engine owner', async () => {
+    mocks.env.TRIBUNAL_ENGINE_URL = 'http://tribunal-engine.flycast';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', {
+        status: 202,
+      }),
+    );
+
+    await expect(cancelInstallationSyncEngine(100)).resolves.toEqual({
+      status: 'sent',
+      ok: true,
+      responseStatus: 202,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('http://tribunal-engine.flycast/installation-syncs/100/cancel'),
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
       },
     );
   });

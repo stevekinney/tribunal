@@ -45,3 +45,9 @@ export function signalInstallationSyncEngine(
 ): Promise<ReviewEngineSignalResult> {
   return postReviewEngineControl('/installation-syncs', options);
 }
+
+export function cancelInstallationSyncEngine(
+  installationId: number,
+): Promise<ReviewEngineSignalResult> {
+  return postReviewEngineControl(`/installation-syncs/${installationId}/cancel`);
+}

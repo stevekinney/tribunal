@@ -24,6 +24,7 @@ import {
 } from '$lib/server/github/github-application';
 import { getWeftClient } from '$lib/server/weft/engine';
 import type { GithubServiceContext } from '@tribunal/github/context';
+import { cancelInstallationSyncEngine } from '$lib/server/review/engine-client';
 
 export const githubContext: GithubServiceContext = {
   db,
@@ -41,4 +42,20 @@ export const githubContext: GithubServiceContext = {
   // this context directly. Production installation sync goes through the engine
   // control endpoint; `WEFT_DATABASE_URL` remains owned by tribunal-engine.
   resolveWeftClient: getWeftClient,
+  async cancelInstallationSync(installationId) {
+    const result = await cancelInstallationSyncEngine(installationId);
+    if (result.status === 'not_configured') {
+      throw new Error(
+        `Installation sync engine control is not configured. Missing settings: ${result.missingSettings.join(', ')}.`,
+      );
+    }
+    if (result.status === 'failed') {
+      throw result.error instanceof Error ? result.error : new Error(String(result.error));
+    }
+    if (!result.ok) {
+      throw new Error(
+        `Installation sync engine cancellation failed with status ${result.responseStatus}.`,
+      );
+    }
+  },
 };

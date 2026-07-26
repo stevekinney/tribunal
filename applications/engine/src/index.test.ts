@@ -242,6 +242,70 @@ describe('createEngineServerOptions', () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_released' });
   });
 
+  it('cancels installation syncs through the runtime endpoint', async () => {
+    const cancelInstallationSync = vi.fn().mockResolvedValue(undefined);
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelInstallationSync,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs/100/cancel', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(cancelInstallationSync).toHaveBeenCalledWith(100);
+    await expect(response.json()).resolves.toEqual({ ok: true, cancelled: true });
+  });
+
+  it('rejects unauthenticated installation sync cancellations', async () => {
+    const cancelInstallationSync = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelInstallationSync,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/installation-syncs/100/cancel', { method: 'POST' }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(cancelInstallationSync).not.toHaveBeenCalled();
+  });
+
   it('dispatches installation syncs through the runtime endpoint', async () => {
     const enqueueInstallationSync = vi.fn().mockResolvedValue({
       workflowId: 'github:installations:100:sync',
@@ -1090,6 +1154,40 @@ describe('createReviewIntentKickScheduler', () => {
 
     expect(release).not.toHaveBeenCalled();
 
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
+  it('waits for active installation sync workflows before exiting', async () => {
+    vi.useFakeTimers();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    let installationSyncActive = true;
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        hasActiveInstallationSyncs: vi.fn().mockImplementation(() => installationSyncActive),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).not.toHaveBeenCalled();
+
+    installationSyncActive = false;
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(release).toHaveBeenCalledTimes(1);
