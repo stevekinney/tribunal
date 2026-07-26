@@ -738,6 +738,57 @@ describe('review operator server helpers', () => {
     });
   });
 
+  it('keeps claimed waits when enabling an agent that is not eligible for the assigned repository', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 202 }));
+    await testDb.db.insert(agent).values({
+      id: 'agent_unrelated',
+      userId: owner.id,
+      slug: 'unrelated',
+      description: 'Unrelated reviewer',
+      body: 'Review unrelated repositories.',
+      model: 'sonnet',
+      enabled: false,
+    });
+    await testDb.db.insert(repositoryAgent).values({
+      userId: owner.id,
+      repositoryId: 9001,
+      agentId: reviewAgent.id,
+    });
+    await testDb.db.update(agent).set({ enabled: false }).where(eq(agent.id, reviewAgent.id));
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_claimed_for_assigned_disabled_agent',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      claimedAt: new Date('2026-06-17T12:00:30Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const formData = new FormData();
+    formData.set('id', 'agent_unrelated');
+    formData.set('enabled', 'true');
+
+    const result = await withTestDatabase(() => setAgentEnabled(owner.id, formData));
+
+    expect(result).toEqual({ success: true });
+    const [intent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_claimed_for_assigned_disabled_agent'));
+    expect(intent).toMatchObject({
+      claimedAt: new Date('2026-06-17T12:00:30Z'),
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+  });
+
   it('deletes an owned agent', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     const formData = new FormData();
@@ -834,6 +885,15 @@ describe('review operator server helpers', () => {
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    await testDb.db.insert(agent).values({
+      id: 'agent_fallback',
+      userId: owner.id,
+      slug: 'fallback',
+      description: 'Fallback reviewer',
+      body: 'Review after assignment deletion.',
+      model: 'sonnet',
+      enabled: true,
+    });
     await testDb.db.insert(repositoryAgent).values({
       userId: owner.id,
       repositoryId: 9001,

@@ -535,8 +535,40 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
         eq(reviewIntent.userId, userId),
         eq(reviewIntent.lastError, waitingForEligibleReviewAgentReason),
         repositoryScope,
+        sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
       ),
     );
+}
+
+function reviewIntentStillWaitingForEligibleAgentsCondition() {
+  return sql`
+    NOT (
+      EXISTS (
+        SELECT 1
+        FROM ${repositoryAgent} assigned_repository_agent
+        INNER JOIN ${agent} assigned_agent
+          ON assigned_agent.id = assigned_repository_agent.agent_id
+          AND assigned_agent.user_id = ${reviewIntent.userId}
+          AND assigned_agent.enabled = true
+        WHERE assigned_repository_agent.repository_id = ${reviewIntent.repositoryId}
+          AND assigned_repository_agent.user_id = ${reviewIntent.userId}
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM ${repositoryAgent} any_repository_agent
+          WHERE any_repository_agent.repository_id = ${reviewIntent.repositoryId}
+            AND any_repository_agent.user_id = ${reviewIntent.userId}
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM ${agent} user_agent
+          WHERE user_agent.user_id = ${reviewIntent.userId}
+            AND user_agent.enabled = true
+        )
+      )
+    )
+  `;
 }
 
 export async function getRunsOverview(userId: number) {
