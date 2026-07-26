@@ -341,7 +341,9 @@ describe('review operator server helpers', () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503 }));
     await testDb.db.insert(reviewIntent).values({
       id: 'intent_waiting_for_assignment',
       deliveryId: 'delivery_1',
@@ -367,6 +369,7 @@ describe('review operator server helpers', () => {
       status: 503,
       data: { error: 'Review engine wake-up failed. Please try again.' },
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('authorizes only the owning user for a repository', async () => {
@@ -689,7 +692,9 @@ describe('review operator server helpers', () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 503 }));
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503 }));
     await testDb.db.insert(reviewIntent).values({
       id: 'intent_waiting_for_saved_agent',
       deliveryId: 'delivery_1',
@@ -725,8 +730,162 @@ describe('review operator server helpers', () => {
         },
       },
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     const [updated] = await testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id));
     expect(updated).toMatchObject({ description: 'Updated description', model: 'opus' });
+    const [intent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_waiting_for_saved_agent'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      processedAt: null,
+      deadLetteredAt: null,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: null,
+    });
+    expect(intent?.failedAt).toBeInstanceOf(Date);
+  });
+
+  it('retries the same enabled-agent save after a failed wake-up releases retryable intents', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }));
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_waiting_for_retry_save',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const firstResult = await withTestDatabase(() => saveAgent(owner.id, formData));
+    const secondResult = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(firstResult).toMatchObject({ status: 503 });
+    expect(secondResult).toEqual({ success: true, id: reviewAgent.id });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [intent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_waiting_for_retry_save'));
+    expect(intent).toMatchObject({
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+  });
+
+  it('does not re-mark a released intent that becomes claimed before wake-up retry recording', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const claimedAt = new Date('2026-06-17T12:00:30Z');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await testDb.db
+        .update(reviewIntent)
+        .set({ claimedAt })
+        .where(eq(reviewIntent.id, 'intent_claimed_during_failed_wakeup'));
+      return new Response(null, { status: 503 });
+    });
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_claimed_during_failed_wakeup',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toMatchObject({ status: 503 });
+    const [intent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_claimed_during_failed_wakeup'));
+    expect(intent).toMatchObject({
+      claimedAt,
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+  });
+
+  it('does not overwrite a newer retry failure recorded before wake-up retry recording', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const newerFailedAt = new Date('2026-06-17T12:00:45Z');
+    const newerNextAttemptAt = new Date('2026-06-17T12:04:45Z');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await testDb.db
+        .update(reviewIntent)
+        .set({
+          failedAt: newerFailedAt,
+          lastError: 'Workflow dispatch failed after release.',
+          nextAttemptAt: newerNextAttemptAt,
+        })
+        .where(eq(reviewIntent.id, 'intent_failed_during_failed_wakeup'));
+      return new Response(null, { status: 503 });
+    });
+    await testDb.db.insert(reviewIntent).values({
+      id: 'intent_failed_during_failed_wakeup',
+      deliveryId: 'delivery_1',
+      kind: 'start',
+      repositoryId: 9001,
+      userId: owner.id,
+      prNumber: 7,
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+    formData.set('slug', 'security');
+    formData.set('description', 'Updated description');
+    formData.set('body', 'Updated body.');
+    formData.set('model', 'opus');
+    formData.set('enabled', 'on');
+
+    const result = await withTestDatabase(() => saveAgent(owner.id, formData));
+
+    expect(result).toMatchObject({ status: 503 });
+    const [intent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_failed_during_failed_wakeup'));
+    expect(intent).toMatchObject({
+      claimedAt: null,
+      failedAt: newerFailedAt,
+      lastError: 'Workflow dispatch failed after release.',
+      nextAttemptAt: newerNextAttemptAt,
+    });
   });
 
   it('saves an enabled agent without waking the engine when no waiting intents are released', async () => {
@@ -774,6 +933,32 @@ describe('review operator server helpers', () => {
       failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
+    await testDb.db.insert(reviewIntent).values([
+      {
+        id: 'intent_processed_waiting_for_agent',
+        deliveryId: 'delivery_processed',
+        kind: 'start',
+        repositoryId: 9001,
+        userId: owner.id,
+        prNumber: 8,
+        processedAt: new Date('2026-06-17T12:00:30Z'),
+        lastError: 'Review intent is waiting for an eligible review agent.',
+        failedAt: new Date('2026-06-17T12:00:00Z'),
+        nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+      },
+      {
+        id: 'intent_dead_lettered_waiting_for_agent',
+        deliveryId: 'delivery_dead_lettered',
+        kind: 'start',
+        repositoryId: 9001,
+        userId: owner.id,
+        prNumber: 9,
+        deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
+        lastError: 'Review intent is waiting for an eligible review agent.',
+        failedAt: new Date('2026-06-17T12:00:00Z'),
+        nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+      },
+    ]);
     const formData = new FormData();
     formData.set('id', reviewAgent.id);
     formData.set('slug', reviewAgent.slug);
@@ -800,6 +985,26 @@ describe('review operator server helpers', () => {
       failedAt: null,
       lastError: null,
       nextAttemptAt: null,
+    });
+    const [processedIntent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_processed_waiting_for_agent'));
+    expect(processedIntent).toMatchObject({
+      processedAt: new Date('2026-06-17T12:00:30Z'),
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
+    });
+    const [deadLetteredIntent] = await testDb.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_dead_lettered_waiting_for_agent'));
+    expect(deadLetteredIntent).toMatchObject({
+      deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
   });
 
@@ -955,9 +1160,9 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_after_deleted_assignment'));
     expect(claimedIntent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: null,
-      lastError: null,
-      nextAttemptAt: null,
+      failedAt: new Date('2026-06-17T12:00:00Z'),
+      lastError: 'Review intent is waiting for an eligible review agent.',
+      nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
   });
 
@@ -1005,10 +1210,10 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_deleted_assignment'));
     expect(intent).toMatchObject({
-      failedAt: null,
-      lastError: null,
+      lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: null,
     });
+    expect(intent?.failedAt).toBeInstanceOf(Date);
   });
 
   it('retries a review intent engine wake-up without requiring the deleted agent', async () => {

@@ -692,6 +692,56 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('yields productive drain batches when they also reach the skipped-intent bound', async () => {
+    vi.useFakeTimers();
+    const drainReviewIntents = vi
+      .fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValue(0);
+    const consumePendingReviewIntentDrain = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        consumePendingReviewIntentDrain,
+        drainReviewIntents,
+        getReviewIntentQueueStatus: vi
+          .fn()
+          .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 }),
+        release: vi.fn().mockResolvedValue(undefined),
+      },
+      { idleShutdownSeconds: 600, exit: vi.fn(), logger: { error: vi.fn(), log: vi.fn() } },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(1);
+    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(999);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(2);
+    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(999);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(3);
+    expect(consumePendingReviewIntentDrain).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
   it('schedules a later bounded drain when a bounded scan leaves ready work visible', async () => {
     vi.useFakeTimers();
     const drainReviewIntents = vi.fn().mockResolvedValue(0);

@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -498,15 +498,17 @@ async function releaseReviewIntentsAndTryKickEngine(
   userId: number,
   repositoryIds?: number[],
 ): Promise<boolean> {
-  const releasedIntentCount = await releaseReviewIntentsWaitingForEligibleAgent(
+  const releasedIntentIds = await releaseReviewIntentsWaitingForEligibleAgent(
     userId,
     repositoryIds,
   );
-  if (releasedIntentCount === 0) return false;
+  if (releasedIntentIds.length === 0) return false;
 
   const result = await postReviewEngineControl('/review-intents/kick');
   if (result.status === 'not_configured') return false;
   if (result.status === 'sent' && result.ok) return false;
+
+  await markReleasedReviewIntentsWaitingForWakeupRetry(userId, releasedIntentIds);
   return true;
 }
 
@@ -523,7 +525,7 @@ export async function retryReviewIntentEngineWakeup() {
 async function releaseReviewIntentsWaitingForEligibleAgent(
   userId: number,
   repositoryIds?: number[],
-): Promise<number> {
+): Promise<string[]> {
   const repositoryScope =
     repositoryIds === undefined || repositoryIds.length === 0
       ? undefined
@@ -540,12 +542,42 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
         eq(reviewIntent.userId, userId),
         eq(reviewIntent.lastError, waitingForEligibleReviewAgentReason),
         repositoryScope,
+        isNull(reviewIntent.claimedAt),
+        isNull(reviewIntent.processedAt),
+        isNull(reviewIntent.deadLetteredAt),
         sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
       ),
     )
     .returning({ id: reviewIntent.id });
 
-  return releasedIntents.length;
+  return releasedIntents.map((intent) => intent.id);
+}
+
+async function markReleasedReviewIntentsWaitingForWakeupRetry(
+  userId: number,
+  releasedIntentIds: string[],
+): Promise<void> {
+  if (releasedIntentIds.length === 0) return;
+
+  await db
+    .update(reviewIntent)
+    .set({
+      failedAt: new Date(),
+      lastError: waitingForEligibleReviewAgentReason,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.userId, userId),
+        inArray(reviewIntent.id, releasedIntentIds),
+        isNull(reviewIntent.claimedAt),
+        isNull(reviewIntent.processedAt),
+        isNull(reviewIntent.failedAt),
+        isNull(reviewIntent.lastError),
+        isNull(reviewIntent.nextAttemptAt),
+        isNull(reviewIntent.deadLetteredAt),
+      ),
+    );
 }
 
 function reviewIntentStillWaitingForEligibleAgentsCondition() {

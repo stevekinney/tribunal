@@ -568,11 +568,12 @@ export function createReviewIntentKickScheduler(
   const drainUntilIdle = async () => {
     while (!released) {
       const processed = await runtime.drainReviewIntents(drainLimit);
-      if (processed > 0) continue;
-
       if (runtime.consumePendingReviewIntentDrain?.()) {
         scheduleBoundedDrainContinuation();
+        return;
       }
+      if (processed > 0) continue;
+
       return;
     }
   };
