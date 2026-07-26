@@ -1037,6 +1037,13 @@ describe('ReviewWorkflowEngine', () => {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
+        ),
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
     ]);
     const specialistKey = 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate';
     expect(ports.cost.recordLlmEstimateCalls.filter((key) => key === specialistKey)).toHaveLength(
@@ -1656,6 +1663,37 @@ describe('ReviewWorkflowEngine', () => {
     ]);
     expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual([]);
     expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('blocks verifier agents when the daily cap is reached after specialist review', async () => {
+    const ports = createFakePorts({ spendAfterFirstEstimate: 10 });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'quota_blocked',
+    });
+
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
+        ),
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
   });
 
   it('posts deterministic sorted comments for multiple findings', async () => {

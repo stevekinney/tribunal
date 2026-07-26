@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
-import { eq, isNull } from '@tribunal/database/operators';
+import { eq, isNull, sql } from '@tribunal/database/operators';
 import {
   agent,
   agentRun,
@@ -612,6 +612,145 @@ describe('cost ledger', () => {
 
     const [reservation] = await testDatabase.db.select().from(costReservation);
     expect(Number(reservation?.amountUsd)).toBe(0.01);
+  });
+
+  it('anchors reservation budget days to UTC regardless of the database session time zone', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_utc_day_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.01',
+      idempotencyKey: 'llm:utc-day-estimate',
+      occurredAt: new Date('2026-06-17T02:00:00.000Z'),
+    });
+    await testDatabase.db.execute(sql`SET TIME ZONE 'America/Los_Angeles'`);
+    try {
+      const port = createCostPort(testDatabase.db, {
+        now: () => new Date('2026-06-17T12:00:00.000Z'),
+      });
+
+      await expect(
+        port.enforceDailyCap(user.id, {
+          idempotencyKey: `llm:${run.id}:utc-day-reservation`,
+          amountUsd: 0.01,
+          expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+        }),
+      ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+    } finally {
+      await testDatabase.db.execute(sql`SET TIME ZONE 'UTC'`);
+    }
+
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(budget?.dayStartedAt).toEqual(new Date('2026-06-17T00:00:00.000Z'));
+  });
+
+  it('reconciles cached spend from estimate rows written before the reservation check', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    await testDatabase.db.insert(costBudgetDay).values({
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+      spentUsd: '0.01',
+      reservedUsd: '0',
+    });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_after_cached_budget',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:after-cached-budget',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:stale-cache-reservation`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.02, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.02);
+  });
+
+  it('does not treat an expired prior-day reservation as a current-day idempotent success', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    await testDatabase.db.insert(costBudgetDay).values([
+      {
+        userId: user.id,
+        dayStartedAt: new Date('2026-06-16T00:00:00.000Z'),
+        spentUsd: '0',
+        reservedUsd: '0.01',
+      },
+      {
+        userId: user.id,
+        dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+        spentUsd: '0.01',
+        reservedUsd: '0',
+      },
+    ]);
+    await testDatabase.db.insert(costReservation).values({
+      id: 'cost_prior_day_reservation',
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-16T00:00:00.000Z'),
+      idempotencyKey: `llm:${run.id}:prior-day-reservation`,
+      amountUsd: '0.01',
+      expiresAt: new Date('2026-06-16T13:00:00.000Z'),
+      createdAt: new Date('2026-06-16T12:00:00.000Z'),
+      updatedAt: new Date('2026-06-16T12:00:00.000Z'),
+    });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_today_exhausted',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.01',
+      idempotencyKey: 'llm:today-exhausted',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:prior-day-reservation`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+
+    const activeReservations = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    const budgets = await testDatabase.db.select().from(costBudgetDay);
+    expect(activeReservations).toHaveLength(0);
+    expect(
+      Number(budgets.find((budget) => budget.dayStartedAt.getUTCDate() === 16)?.reservedUsd),
+    ).toBe(0);
   });
 
   it('releases reservations from their own day when estimates arrive after UTC midnight', async () => {

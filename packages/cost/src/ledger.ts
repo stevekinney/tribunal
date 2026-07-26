@@ -55,7 +55,7 @@ function getRows<T>(result: unknown): T[] {
 }
 
 function dayStartedAtSql(now: Date) {
-  return sql<Date>`date_trunc('day', ${now}::timestamptz)`;
+  return sql<Date>`date_trunc('day', ${now}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`;
 }
 
 async function ensureDailyBudgetRow(
@@ -107,10 +107,35 @@ async function recordLlmEstimateEvent(
 ): Promise<void> {
   const eventOccurredAt = occurredAt ?? new Date();
   const amountUsd = numericText(event.amountUsd);
+  await ensureDailyBudgetRow(database, event.userId, eventOccurredAt);
 
   await database.execute(sql`
     WITH event_day AS (
       SELECT ${dayStartedAtSql(eventOccurredAt)} AS day_started_at
+    ),
+    active_reservation_day AS (
+      SELECT
+        ${costReservation.userId} AS user_id,
+        ${costReservation.dayStartedAt} AS day_started_at
+      FROM ${costReservation}
+      WHERE ${costReservation.idempotencyKey} = ${event.idempotencyKey}
+        AND ${costReservation.releasedAt} IS NULL
+      LIMIT 1
+    ),
+    budget_days AS (
+      SELECT ${event.userId}::integer AS user_id, (SELECT day_started_at FROM event_day) AS day_started_at
+      UNION
+      SELECT active_reservation_day.user_id, active_reservation_day.day_started_at
+      FROM active_reservation_day
+    ),
+    locked_budget AS (
+      SELECT ${costBudgetDay.userId}, ${costBudgetDay.dayStartedAt}
+      FROM ${costBudgetDay}
+      INNER JOIN budget_days
+        ON budget_days.user_id = ${costBudgetDay.userId}
+        AND budget_days.day_started_at = ${costBudgetDay.dayStartedAt}
+      ORDER BY ${costBudgetDay.userId}, ${costBudgetDay.dayStartedAt}
+      FOR UPDATE OF ${costBudgetDay}
     ),
     inserted_event AS (
       INSERT INTO ${costEvent} (
@@ -126,7 +151,7 @@ async function recordLlmEstimateEvent(
         "occurred_at",
         "idempotency_key"
       )
-      VALUES (
+      SELECT
         ${createCostEventId()},
         ${event.userId},
         'llm',
@@ -138,7 +163,8 @@ async function recordLlmEstimateEvent(
         ${amountUsd}::numeric,
         ${eventOccurredAt},
         ${event.idempotencyKey}
-      )
+      FROM (SELECT COUNT(*) AS lock_count FROM locked_budget) AS lock_dependency
+      WHERE lock_dependency.lock_count >= 1
       ON CONFLICT ("idempotency_key") DO NOTHING
       RETURNING "user_id", "amount_usd", "occurred_at"
     ),
@@ -149,6 +175,12 @@ async function recordLlmEstimateEvent(
         "updated_at" = ${eventOccurredAt}
       WHERE ${costReservation.idempotencyKey} = ${event.idempotencyKey}
         AND ${costReservation.releasedAt} IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM locked_budget
+          WHERE locked_budget.user_id = ${costReservation.userId}
+            AND locked_budget.day_started_at = ${costReservation.dayStartedAt}
+        )
       RETURNING
         ${costReservation.userId} AS user_id,
         ${costReservation.dayStartedAt} AS day_started_at,
@@ -178,35 +210,53 @@ async function recordLlmEstimateEvent(
       GROUP BY delta.user_id, delta.day_started_at
       HAVING SUM(delta.spent_delta_usd) > 0
           OR SUM(delta.released_delta_usd) > 0
+    ),
+    event_spend AS (
+      SELECT
+        budget_days.user_id,
+        budget_days.day_started_at,
+        COALESCE((
+          SELECT SUM(${costEvent.amountUsd})
+          FROM ${costEvent}
+          WHERE ${costEvent.userId} = budget_days.user_id
+            AND ${costEvent.source} = 'estimate'
+            AND ${costEvent.occurredAt} >= budget_days.day_started_at
+            AND ${costEvent.occurredAt} < budget_days.day_started_at + interval '1 day'
+        ), 0)::numeric AS spent_usd
+      FROM budget_days
     )
-    INSERT INTO ${costBudgetDay} (
-      "user_id",
-      "day_started_at",
-      "spent_usd",
-      "reserved_usd",
-      "created_at",
-      "updated_at"
-    )
-    SELECT
-      budget_delta.user_id,
-      budget_delta.day_started_at,
-      budget_delta.spent_delta_usd,
-      0::numeric,
-      ${eventOccurredAt},
-      ${eventOccurredAt}
-    FROM budget_delta
-    ON CONFLICT ("user_id", "day_started_at") DO UPDATE SET
-      "spent_usd" = ${costBudgetDay.spentUsd} + EXCLUDED."spent_usd",
+    UPDATE ${costBudgetDay}
+    SET
+      "spent_usd" = GREATEST(
+        ${costBudgetDay.spentUsd},
+        COALESCE((
+          SELECT event_spend.spent_usd
+          FROM event_spend
+          WHERE event_spend.user_id = ${costBudgetDay.userId}
+            AND event_spend.day_started_at = ${costBudgetDay.dayStartedAt}
+        ), 0)
+      ) + COALESCE((
+        SELECT budget_delta.spent_delta_usd
+        FROM budget_delta
+        WHERE budget_delta.user_id = ${costBudgetDay.userId}
+          AND budget_delta.day_started_at = ${costBudgetDay.dayStartedAt}
+      ), 0),
       "reserved_usd" = GREATEST(
-        ${costBudgetDay.reservedUsd} - (
+        ${costBudgetDay.reservedUsd} - COALESCE((
           SELECT budget_delta.released_delta_usd
           FROM budget_delta
-          WHERE budget_delta.user_id = EXCLUDED."user_id"
-            AND budget_delta.day_started_at = EXCLUDED."day_started_at"
-        ),
+          WHERE budget_delta.user_id = ${costBudgetDay.userId}
+            AND budget_delta.day_started_at = ${costBudgetDay.dayStartedAt}
+        ), 0),
         0
       ),
       "updated_at" = ${eventOccurredAt}
+    WHERE EXISTS (
+      SELECT 1
+      FROM budget_days
+      WHERE budget_days.user_id = ${costBudgetDay.userId}
+        AND budget_days.day_started_at = ${costBudgetDay.dayStartedAt}
+    )
   `);
 }
 
@@ -401,6 +451,16 @@ async function reserveDailyCap(
       budget_day AS (
         SELECT ${dayStartedAtSql(now)} AS day_started_at
       ),
+      reservation_budget_days AS (
+        SELECT ${userId}::integer AS user_id, (SELECT day_started_at FROM budget_day) AS day_started_at
+        UNION
+        SELECT ${costReservation.userId}, ${costReservation.dayStartedAt}
+        FROM ${costReservation}
+        WHERE ${costReservation.userId} = ${userId}
+          AND ${costReservation.idempotencyKey} = ${reservation.idempotencyKey}
+          AND ${costReservation.releasedAt} IS NULL
+          AND ${costReservation.expiresAt} <= ${now}
+      ),
       locked_budget AS (
         SELECT
           ${costBudgetDay.userId},
@@ -408,17 +468,24 @@ async function reserveDailyCap(
           ${costBudgetDay.spentUsd}::numeric AS spent_usd,
           ${costBudgetDay.reservedUsd}::numeric AS reserved_usd
         FROM ${costBudgetDay}
-        WHERE ${costBudgetDay.userId} = ${userId}
-          AND ${costBudgetDay.dayStartedAt} = (SELECT day_started_at FROM budget_day)
+        INNER JOIN reservation_budget_days
+          ON reservation_budget_days.user_id = ${costBudgetDay.userId}
+          AND reservation_budget_days.day_started_at = ${costBudgetDay.dayStartedAt}
+        ORDER BY ${costBudgetDay.userId}, ${costBudgetDay.dayStartedAt}
         FOR UPDATE OF ${costBudgetDay}
       ),
-      expired_reservation AS (
-        SELECT COALESCE(SUM(${costReservation.amountUsd}), 0)::numeric AS amount_usd
-        FROM ${costReservation}, locked_budget
-        WHERE ${costReservation.userId} = locked_budget.user_id
-          AND ${costReservation.dayStartedAt} = locked_budget.day_started_at
-          AND ${costReservation.releasedAt} IS NULL
-          AND ${costReservation.expiresAt} <= ${now}
+      event_spend AS (
+        SELECT
+          locked_budget.user_id,
+          locked_budget.day_started_at,
+          COALESCE(SUM(${costEvent.amountUsd}), 0)::numeric AS spent_usd
+        FROM locked_budget
+        LEFT JOIN ${costEvent}
+          ON ${costEvent.userId} = locked_budget.user_id
+          AND ${costEvent.source} = 'estimate'
+          AND ${costEvent.occurredAt} >= locked_budget.day_started_at
+          AND ${costEvent.occurredAt} < locked_budget.day_started_at + interval '1 day'
+        GROUP BY locked_budget.user_id, locked_budget.day_started_at
       ),
       released_expired_reservation AS (
         UPDATE ${costReservation}
@@ -427,45 +494,74 @@ async function reserveDailyCap(
           "updated_at" = ${now}
         FROM locked_budget
         WHERE ${costReservation.userId} = locked_budget.user_id
-          AND ${costReservation.dayStartedAt} = locked_budget.day_started_at
           AND ${costReservation.releasedAt} IS NULL
           AND ${costReservation.expiresAt} <= ${now}
-        RETURNING ${costReservation.id}
+          AND (
+            ${costReservation.dayStartedAt} = locked_budget.day_started_at
+            OR ${costReservation.idempotencyKey} = ${reservation.idempotencyKey}
+          )
+        RETURNING
+          ${costReservation.id},
+          ${costReservation.userId} AS user_id,
+          ${costReservation.dayStartedAt} AS day_started_at,
+          ${costReservation.amountUsd} AS amount_usd
       ),
-      existing_active_reservation AS (
-        SELECT 1
-        FROM ${costReservation}, locked_budget
-        WHERE ${costReservation.userId} = locked_budget.user_id
-          AND ${costReservation.idempotencyKey} = ${reservation.idempotencyKey}
-          AND ${costReservation.releasedAt} IS NULL
-          AND ${costReservation.expiresAt} > ${now}
-        LIMIT 1
+      released_expired_total AS (
+        SELECT
+          released_expired_reservation.user_id,
+          released_expired_reservation.day_started_at,
+          COALESCE(SUM(released_expired_reservation.amount_usd), 0)::numeric AS amount_usd
+        FROM released_expired_reservation
+        GROUP BY
+          released_expired_reservation.user_id,
+          released_expired_reservation.day_started_at
+      ),
+      reconciled_budget AS (
+        SELECT
+          locked_budget.user_id,
+          locked_budget.day_started_at,
+          GREATEST(
+            locked_budget.spent_usd,
+            COALESCE((
+              SELECT event_spend.spent_usd
+              FROM event_spend
+              WHERE event_spend.user_id = locked_budget.user_id
+                AND event_spend.day_started_at = locked_budget.day_started_at
+            ), 0)
+          ) AS spent_usd,
+          GREATEST(
+            locked_budget.reserved_usd - COALESCE((
+              SELECT released_expired_total.amount_usd
+              FROM released_expired_total
+              WHERE released_expired_total.user_id = locked_budget.user_id
+                AND released_expired_total.day_started_at = locked_budget.day_started_at
+            ), 0),
+            0
+          ) AS reserved_usd
+        FROM locked_budget
       ),
       claim_decision AS (
         SELECT
           cap.cap_usd,
-          locked_budget.spent_usd,
-          GREATEST(
-            locked_budget.reserved_usd - expired_reservation.amount_usd,
-            0
-          ) AS reserved_usd,
-          EXISTS (SELECT 1 FROM existing_active_reservation) AS existing_active,
+          reconciled_budget.spent_usd,
+          reconciled_budget.reserved_usd,
           GREATEST(
             cap.cap_usd
-              - locked_budget.spent_usd
-              - GREATEST(locked_budget.reserved_usd - expired_reservation.amount_usd, 0),
+              - reconciled_budget.spent_usd
+              - reconciled_budget.reserved_usd,
             0
           ) AS remaining_usd,
           COALESCE(
             ${reservationAmountUsd}::numeric,
             GREATEST(
               cap.cap_usd
-                - locked_budget.spent_usd
-                - GREATEST(locked_budget.reserved_usd - expired_reservation.amount_usd, 0),
+                - reconciled_budget.spent_usd
+                - reconciled_budget.reserved_usd,
               0
             )
           ) AS requested_usd
-        FROM cap, locked_budget, expired_reservation
+        FROM cap, reconciled_budget
+        WHERE reconciled_budget.day_started_at = (SELECT day_started_at FROM budget_day)
       ),
       claimed_reservation AS (
         INSERT INTO ${costReservation} (
@@ -488,31 +584,45 @@ async function reserveDailyCap(
           ${now},
           ${now}
         FROM claim_decision
-        WHERE NOT claim_decision.existing_active
-          AND claim_decision.requested_usd > 0
+        WHERE claim_decision.requested_usd > 0
           AND claim_decision.requested_usd <= claim_decision.remaining_usd
           AND (SELECT COUNT(*) FROM released_expired_reservation) >= 0
-        ON CONFLICT DO NOTHING
-        RETURNING ${costReservation.id}, ${costReservation.amountUsd}
+        ON CONFLICT ("idempotency_key") WHERE "released_at" IS NULL DO UPDATE SET
+          "updated_at" = ${costReservation.updatedAt}
+        WHERE ${costReservation.userId} = ${userId}
+          AND ${costReservation.dayStartedAt} = (SELECT day_started_at FROM budget_day)
+          AND ${costReservation.expiresAt} > ${now}
+        RETURNING
+          ${costReservation.id},
+          ${costReservation.amountUsd},
+          (xmax = 0) AS inserted
       ),
       updated_budget AS (
         UPDATE ${costBudgetDay}
         SET
-          "reserved_usd" = claim_decision.reserved_usd
-            + COALESCE((SELECT SUM(amount_usd) FROM claimed_reservation), 0),
+          "spent_usd" = reconciled_budget.spent_usd,
+          "reserved_usd" = reconciled_budget.reserved_usd
+            + CASE
+              WHEN reconciled_budget.day_started_at = (SELECT day_started_at FROM budget_day)
+                THEN COALESCE((
+                  SELECT SUM(amount_usd)
+                  FROM claimed_reservation
+                  WHERE inserted
+                ), 0)
+              ELSE 0
+            END,
           "updated_at" = ${now}
-        FROM claim_decision
-        WHERE ${costBudgetDay.userId} = ${userId}
-          AND ${costBudgetDay.dayStartedAt} = (SELECT day_started_at FROM budget_day)
+        FROM reconciled_budget
+        CROSS JOIN claim_decision
+        WHERE ${costBudgetDay.userId} = reconciled_budget.user_id
+          AND ${costBudgetDay.dayStartedAt} = reconciled_budget.day_started_at
         RETURNING
-          (
-            claim_decision.existing_active
-            OR EXISTS (SELECT 1 FROM claimed_reservation)
-          ) AS allowed,
+          EXISTS (SELECT 1 FROM claimed_reservation) AS allowed,
           claim_decision.cap_usd AS cap_usd,
           claim_decision.spent_usd AS spent_usd,
           claim_decision.reserved_usd AS reserved_usd,
-          claim_decision.remaining_usd AS remaining_usd
+          claim_decision.remaining_usd AS remaining_usd,
+          (${costBudgetDay.dayStartedAt} = (SELECT day_started_at FROM budget_day)) AS is_current_day
       )
       SELECT
         updated_budget.allowed AS "allowed",
@@ -520,13 +630,41 @@ async function reserveDailyCap(
         updated_budget.spent_usd + updated_budget.reserved_usd AS "spendUsd",
         updated_budget.remaining_usd AS "remainingUsd"
       FROM updated_budget
+      WHERE updated_budget.is_current_day
     `),
   );
 
   const capUsd = toNumber(row?.capUsd ?? defaultDailyCostCapUsd);
   const spendUsd = toNumber(row?.spendUsd ?? 0);
+  const allowed = row?.allowed === true || row?.allowed === 'true';
+  if (!allowed) {
+    const [activeReservation] = getRows<{ id: string }>(
+      await database.execute(sql`
+        WITH budget_day AS (
+          SELECT ${dayStartedAtSql(now)} AS day_started_at
+        )
+        SELECT ${costReservation.id}
+        FROM ${costReservation}, budget_day
+        WHERE ${costReservation.userId} = ${userId}
+          AND ${costReservation.dayStartedAt} = budget_day.day_started_at
+          AND ${costReservation.idempotencyKey} = ${reservation.idempotencyKey}
+          AND ${costReservation.releasedAt} IS NULL
+          AND ${costReservation.expiresAt} > ${now}
+        LIMIT 1
+      `),
+    );
+    if (activeReservation !== undefined) {
+      return {
+        allowed: true,
+        capUsd,
+        spendUsd,
+        remainingUsd: toNumber(row?.remainingUsd ?? Math.max(0, capUsd - spendUsd)),
+      };
+    }
+  }
+
   return {
-    allowed: row?.allowed === true || row?.allowed === 'true',
+    allowed,
     capUsd,
     spendUsd,
     remainingUsd: toNumber(row?.remainingUsd ?? Math.max(0, capUsd - spendUsd)),

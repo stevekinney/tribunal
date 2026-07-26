@@ -117,6 +117,7 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
+const VERIFIER_MAX_BUDGET_USD = 0.01;
 
 export type ReviewRunStatus =
   | 'queued'
@@ -978,15 +979,32 @@ export class ReviewWorkflowEngine {
       if (agentRunId === undefined) return [];
       return result.findings.map((finding) => ({ agentRunId, finding }));
     });
-    const { verifiedFindings, costEstimateUsd: verificationCostEstimateUsd } =
-      await this.runVerificationStage(
-        supervisor,
-        reviewRun,
-        diffContext,
-        runToken,
-        verificationCandidates,
-      );
+    const {
+      verifiedFindings,
+      costEstimateUsd: verificationCostEstimateUsd,
+      quotaBlocked: verificationQuotaBlocked,
+    } = await this.runVerificationStage(
+      supervisor,
+      reviewRun,
+      diffContext,
+      runToken,
+      verificationCandidates,
+    );
     reviewRun.costEstimateUsd += verificationCostEstimateUsd;
+    if (verificationQuotaBlocked) {
+      reviewRun.status = 'quota_blocked';
+      reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review quota blocked',
+          summary: 'Daily review cost cap reached before all verifier agents could run.',
+        },
+      });
+      return reviewRun;
+    }
     // A supersede/abort can arrive while verifiers are still in flight; an
     // in-flight verifier can resolve just after the signal (it isn't wired to
     // the AbortController the way specialist processes are). Re-check here so
@@ -1300,6 +1318,7 @@ export class ReviewWorkflowEngine {
       model: 'haiku',
       effort: 'low',
       enabled: true,
+      maxBudgetUsd: VERIFIER_MAX_BUDGET_USD,
       role: 'verifier',
       findingToVerify: finding,
     };
@@ -1329,19 +1348,31 @@ export class ReviewWorkflowEngine {
     diffContext: DiffContext,
     runToken: string,
     candidates: Array<{ agentRunId: string; finding: Finding }>,
-  ): Promise<{ verifiedFindings: Finding[]; costEstimateUsd: number }> {
+  ): Promise<{ verifiedFindings: Finding[]; costEstimateUsd: number; quotaBlocked: boolean }> {
     const verifiedFindings: Finding[] = [];
     let costEstimateUsd = 0;
+    let quotaBlocked = false;
     let cursor = 0;
     const concurrency = Math.min(4, candidates.length);
 
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (quotaBlocked) return;
         const index = cursor;
         cursor += 1;
         if (index >= candidates.length) return;
         const candidate = candidates[index]!;
         const fingerprint = computeCanonicalFindingFingerprint(candidate.finding);
+        const agentRunId = createVerifierAgentRunId(reviewRun.id, fingerprint);
+        const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
+          idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+          amountUsd: VERIFIER_MAX_BUDGET_USD,
+          expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
+        });
+        if (!dailyCapDecision.allowed) {
+          quotaBlocked = true;
+          return;
+        }
         const verifierResult = await this.runVerifierAgent(
           supervisor,
           reviewRun,
@@ -1356,14 +1387,14 @@ export class ReviewWorkflowEngine {
           ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
           verificationStatus: verified ? 'verified' : 'rejected',
           verificationNote: verifierResult.verification?.note,
-          verifierAgentRunId: createVerifierAgentRunId(reviewRun.id, fingerprint),
+          verifierAgentRunId: agentRunId,
         });
         if (verified) verifiedFindings.push(candidate.finding);
       }
     };
 
     await Promise.all(Array.from({ length: concurrency }, worker));
-    return { verifiedFindings, costEstimateUsd };
+    return { verifiedFindings, costEstimateUsd, quotaBlocked };
   }
 
   /**
