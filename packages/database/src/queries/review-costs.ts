@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lt, ne, sql } from '../operators';
+import { and, asc, eq, gte, lt, sql } from '../operators';
 import type { Database } from '../connection';
 import { costEvent, pullRequestReviewRun } from '../schema';
 
@@ -55,7 +55,7 @@ function toDate(value: Date | string): Date {
 function rollupWhere(options: CostRollupOptions) {
   return and(
     eq(costEvent.userId, options.userId),
-    options.source ? eq(costEvent.source, options.source) : ne(costEvent.source, 'reservation'),
+    options.source ? eq(costEvent.source, options.source) : undefined,
   );
 }
 

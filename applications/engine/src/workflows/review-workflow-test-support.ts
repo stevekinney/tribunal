@@ -6,6 +6,7 @@ import type {
   CheckRunPatch,
   CostPort,
   DailyCapDecision,
+  DailyCapReservationInput,
   DiffContext,
   Finding,
   GitHubPort,
@@ -826,6 +827,7 @@ class FakeCostPort implements CostPort {
   readonly llmEstimates: LlmEstimateInput[] = [];
   readonly reconcileCalls: string[] = [];
   readonly enforceDailyCapCalls: number[] = [];
+  readonly reservationCalls: DailyCapReservationInput[] = [];
   readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private readonly dailyCapReservations = new Map<string, number>();
@@ -875,9 +877,12 @@ class FakeCostPort implements CostPort {
 
   async enforceDailyCap(
     userId: number,
-    reservation?: { idempotencyKey: string; amountUsd: number },
+    reservation?: DailyCapReservationInput,
   ): Promise<DailyCapDecision> {
     this.enforceDailyCapCalls.push(userId);
+    if (reservation !== undefined) {
+      this.reservationCalls.push(reservation);
+    }
     const capUsd = 10;
     const reservedUsd =
       reservation === undefined

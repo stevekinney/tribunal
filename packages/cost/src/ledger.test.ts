@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
-import { eq } from '@tribunal/database/operators';
+import { eq, isNull } from '@tribunal/database/operators';
 import {
   agent,
   agentRun,
+  costBudgetDay,
   costEvent,
+  costReservation,
   pullRequestReviewRun,
   tribunalRun,
   userReviewSettings,
@@ -344,8 +346,16 @@ describe('cost ledger', () => {
       now: () => new Date('2026-06-17T12:00:00.000Z'),
     });
     const reservations = [
-      { idempotencyKey: `llm:${run.id}:first-estimate`, amountUsd: 0.01 },
-      { idempotencyKey: `llm:${run.id}:second-estimate`, amountUsd: 0.01 },
+      {
+        idempotencyKey: `llm:${run.id}:first-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: `llm:${run.id}:second-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
     ];
 
     const decisions = await Promise.all(
@@ -360,8 +370,8 @@ describe('cost ledger', () => {
     expect(decisions.filter(({ decision }) => !decision.allowed)).toHaveLength(1);
     const rows = await testDatabase.db
       .select()
-      .from(costEvent)
-      .where(eq(costEvent.source, 'reservation'));
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
     expect(rows).toHaveLength(1);
     expect(Number(rows[0]?.amountUsd)).toBe(0.01);
 
@@ -378,12 +388,118 @@ describe('cost ledger', () => {
 
     const remainingReservations = await testDatabase.db
       .select()
-      .from(costEvent)
-      .where(eq(costEvent.source, 'reservation'));
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
     expect(remainingReservations).toHaveLength(0);
     await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({
       allowed: false,
       spendUsd: 0.01,
+      remainingUsd: 0,
+    });
+  });
+
+  it('treats duplicate reservation idempotency keys as a single active reservation', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+    };
+
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0,
+      remainingUsd: 0.02,
+    });
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.01,
+      remainingUsd: 0.01,
+    });
+
+    const reservations = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(reservations).toHaveLength(1);
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('expires stale unmatched reservations before checking the next reservation', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    await expect(
+      portAtNoon.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:stale-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    const portAfterExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:06:00.000Z'),
+    });
+    await expect(
+      portAfterExpiry.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:replacement-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true, spendUsd: 0, remainingUsd: 0.01 });
+
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    const activeReservations = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+    expect(activeReservations).toHaveLength(1);
+    expect(activeReservations[0]?.idempotencyKey).toBe(`llm:${run.id}:replacement-estimate`);
+  });
+
+  it('denies new reservations after a cap is lowered below active spend plus reservations', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const firstReservation = {
+      idempotencyKey: `llm:${run.id}:first-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+    };
+    await expect(port.enforceDailyCap(user.id, firstReservation)).resolves.toMatchObject({
+      allowed: true,
+    });
+    await testDatabase.db
+      .update(userReviewSettings)
+      .set({ dailyCostCapUsd: '0.005' })
+      .where(eq(userReviewSettings.userId, user.id));
+
+    await expect(port.enforceDailyCap(user.id, firstReservation)).resolves.toMatchObject({
+      allowed: true,
+      capUsd: 0.005,
+    });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:second-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      capUsd: 0.005,
       remainingUsd: 0,
     });
   });

@@ -12,6 +12,7 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test": "vitest run --config vitest.configuration.ts",
+    "test:postgres": "vitest run --config vitest.postgres.configuration.ts",
     "test:coverage": "vitest run --config vitest.configuration.ts --coverage",
     "lint": "oxlint . && eslint .",
     "format": "prettier --write --ignore-path ../../.prettierignore .",
@@ -24,8 +25,11 @@
   "devDependencies": {
     "@tribunal/test": "workspace:*",
     "@tribunal/typescript": "workspace:*",
+    "@types/pg": "^8.16.0",
     "@types/node": "^25",
     "bun-types": "^1.3.4",
+    "drizzle-orm": "^0.45.1",
+    "pg": "^8.21.0",
     "vitest": "^4.0.16"
   }
 }

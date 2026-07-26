@@ -1028,6 +1028,18 @@ describe('ReviewWorkflowEngine', () => {
 
     await engine.startPullRequestReview(baseInput);
 
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
     const specialistKey = 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate';
     expect(ports.cost.recordLlmEstimateCalls.filter((key) => key === specialistKey)).toHaveLength(
       2,

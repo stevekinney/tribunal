@@ -903,6 +903,7 @@ export class ReviewWorkflowEngine {
     const triageCapDecision = await this.ports.cost.enforceDailyCap(input.userId, {
       idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
       amountUsd: LLM_COST_RESERVATION_USD,
+      expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
     });
     if (!triageCapDecision.allowed) {
       reviewRun.status = 'quota_blocked';
@@ -1168,6 +1169,7 @@ export class ReviewWorkflowEngine {
       const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
         idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
         amountUsd: LLM_COST_RESERVATION_USD,
+        expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       });
       if (!dailyCapDecision.allowed) {
         return { results, quotaBlocked: true };
