@@ -57,6 +57,16 @@ describe('schema table configuration', () => {
     },
   );
 
+  it('preserves agent run rows when the referenced agent is deleted', () => {
+    const config = getTableConfig(schema.agentRun);
+    const foreignKey = config.foreignKeys.find((key) => {
+      const reference = key.reference();
+      return reference.columns.some((column) => column.name === 'agent_id');
+    });
+
+    expect(foreignKey?.onDelete).toBe('set null');
+  });
+
   describe('relations', () => {
     const relationDefinitions = Object.entries(schema).filter(([, value]) => is(value, Relations));
 

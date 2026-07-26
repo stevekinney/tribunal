@@ -25,7 +25,9 @@ export const agentRun = pgTable(
       .references(() => tribunalRun.id, { onDelete: 'cascade' }),
     // Nullable: triage and verifier runs are system roles with no user-configured
     // `agent` row. Specialist runs always reference a real agent.
-    agentId: text('agent_id').references(() => agent.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id').references(() => agent.id, { onDelete: 'set null' }),
+    agentSlug: text('agent_slug'),
+    agentDescription: text('agent_description'),
     // Discriminates the pipeline stage this run belongs to. Verifiers run one
     // per candidate finding (not one per run), so their `id` and this
     // `(runId, agentId)` pair rely on `agentId` being NULL — Postgres

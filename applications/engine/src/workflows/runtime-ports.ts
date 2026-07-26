@@ -648,6 +648,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           userId: run.userId,
           runId: run.reviewRunId,
           agentId: run.agentId,
+          agentSlug: run.agentSlug,
+          agentDescription: run.agentDescription,
           role: run.role,
           modelUsed: run.modelUsed,
           effortUsed: run.effortUsed,
@@ -665,6 +667,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
         .onConflictDoUpdate({
           target: agentRun.id,
           set: {
+            agentSlug: run.agentSlug,
+            agentDescription: run.agentDescription,
             modelUsed: run.modelUsed,
             effortUsed: run.effortUsed,
             status: run.status,
@@ -791,6 +795,8 @@ function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
     reviewRunId: row.runId,
     userId: row.userId,
     agentId: row.agentId,
+    agentSlug: row.agentSlug ?? row.role,
+    agentDescription: row.agentDescription ?? `${row.role} agent`,
     role: row.role as AgentRunRecord['role'],
     status: row.status as AgentRunRecord['status'],
     findingsCount: row.findingsCount,

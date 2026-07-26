@@ -1071,6 +1071,100 @@ describe('review operator server helpers', () => {
     expect(rows).toHaveLength(0);
   });
 
+  it('deletes live agent state while preserving historical run artifacts', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await testDb.db.insert(repositoryAgent).values({
+      userId: owner.id,
+      repositoryId: 9001,
+      agentId: reviewAgent.id,
+    });
+    await insertReviewRun({
+      id: 'run_deleted_agent_history',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_deleted_agent_history',
+      userId: owner.id,
+      runId: 'run_deleted_agent_history',
+      agentId: reviewAgent.id,
+      agentSlug: reviewAgent.slug,
+      agentDescription: reviewAgent.description,
+      role: 'specialist',
+      status: 'succeeded',
+      findingsCount: 1,
+      costEstimateUsd: '1.25',
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_deleted_agent_history',
+      seq: 1,
+      kind: 'message',
+      detail: { retained: true },
+    });
+    await testDb.db.insert(finding).values({
+      id: 'finding_deleted_agent_history',
+      userId: owner.id,
+      agentRunId: 'agent_run_deleted_agent_history',
+      path: 'src/security.ts',
+      startLine: 5,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Retained finding',
+      body: 'History survives agent deletion.',
+      fingerprint: 'fingerprint_deleted_agent_history',
+    });
+    await testDb.db.insert(costEvent).values({
+      id: 'cost_deleted_agent_history',
+      userId: owner.id,
+      kind: 'llm',
+      source: 'estimate',
+      repositoryId: 9001,
+      reviewRunId: 'run_deleted_agent_history',
+      agentRunId: 'agent_run_deleted_agent_history',
+      agentId: reviewAgent.id,
+      amountUsd: '1.25',
+      idempotencyKey: 'cost_deleted_agent_history',
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+
+    const result = await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    expect(result).toEqual({ success: true });
+    await expect(
+      testDb.db.select().from(agent).where(eq(agent.id, reviewAgent.id)),
+    ).resolves.toEqual([]);
+    await expect(testDb.db.select().from(repositoryAgent)).resolves.toEqual([]);
+    const [retainedAgentRun] = await testDb.db
+      .select()
+      .from(agentRun)
+      .where(eq(agentRun.id, 'agent_run_deleted_agent_history'));
+    expect(retainedAgentRun).toMatchObject({
+      agentId: null,
+      agentSlug: reviewAgent.slug,
+      agentDescription: reviewAgent.description,
+      status: 'succeeded',
+    });
+    await expect(testDb.db.select().from(finding)).resolves.toHaveLength(1);
+    await expect(testDb.db.select().from(agentEvent)).resolves.toHaveLength(1);
+    const [retainedCost] = await testDb.db
+      .select()
+      .from(costEvent)
+      .where(eq(costEvent.id, 'cost_deleted_agent_history'));
+    expect(retainedCost).toMatchObject({
+      agentId: null,
+      agentRunId: 'agent_run_deleted_agent_history',
+      reviewRunId: 'run_deleted_agent_history',
+      amountUsd: '1.25',
+    });
+  });
+
   it('deletes an agent without waking the engine when no waiting intents are released', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
@@ -1632,6 +1726,65 @@ describe('review operator server helpers', () => {
       .from(agentRun)
       .where(eq(agentRun.id, 'agent_run_1'));
     expect(stoppedAgentRun.stoppedReason).toBe('timeout');
+  });
+
+  it('inspects historical specialist runs after their agent row was deleted', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_deleted_agent_inspector',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_deleted_agent_inspector',
+      userId: owner.id,
+      runId: 'run_deleted_agent_inspector',
+      agentId: reviewAgent.id,
+      agentSlug: reviewAgent.slug,
+      agentDescription: reviewAgent.description,
+      role: 'specialist',
+      status: 'succeeded',
+      findingsCount: 1,
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_deleted_agent_inspector',
+      seq: 1,
+      kind: 'message',
+      detail: { retained: true },
+    });
+    await testDb.db.insert(finding).values({
+      id: 'finding_deleted_agent_inspector',
+      userId: owner.id,
+      agentRunId: 'agent_run_deleted_agent_inspector',
+      path: 'src/a.ts',
+      startLine: 10,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Historical finding',
+      body: 'The inspector should still show this.',
+      fingerprint: 'fingerprint_deleted_agent_inspector',
+    });
+    await testDb.db.delete(agent).where(eq(agent.id, reviewAgent.id));
+
+    const inspected = await withTestDatabase(() =>
+      getRunInspector(owner.id, 'run_deleted_agent_inspector'),
+    );
+
+    expect(inspected.agentRuns).toHaveLength(1);
+    expect(inspected.agentRuns[0]).toMatchObject({
+      id: 'agent_run_deleted_agent_inspector',
+      agentId: null,
+      slug: reviewAgent.slug,
+      description: reviewAgent.description,
+      events: [expect.objectContaining({ detail: { retained: true } })],
+      findings: [expect.objectContaining({ id: 'finding_deleted_agent_inspector' })],
+    });
   });
 
   it('inspects webhook event handler runs while preserving ownership checks', async () => {
