@@ -727,6 +727,29 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('continues bounded drain scans when idle shutdown is disabled', async () => {
+    vi.useFakeTimers();
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        consumePendingReviewIntentDrain: vi.fn().mockReturnValue(true),
+        drainReviewIntents,
+        getReviewIntentQueueStatus: vi
+          .fn()
+          .mockResolvedValue({ readyCount: 0, deferredCount: 0, claimedCount: 0 }),
+        release: vi.fn().mockResolvedValue(undefined),
+      },
+      { exit: vi.fn(), logger: { error: vi.fn(), log: vi.fn() } },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it('continues bounded drain scans before deferred rows become due again', async () => {
     vi.useFakeTimers();
     const drainReviewIntents = vi.fn().mockResolvedValue(0);

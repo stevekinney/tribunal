@@ -441,14 +441,19 @@ export function createReviewIntentKickScheduler(
     idleShutdownTimer = undefined;
   };
 
-  const scheduleIdleShutdownCheck = (delayMs: number) => {
-    if (idleShutdownMs === undefined || released) return;
+  const scheduleShutdownCheck = (delayMs: number) => {
+    if (released) return;
     clearIdleShutdownTimer();
     idleShutdownTimer = setTimeoutFunction(() => {
       idleShutdownTimer = undefined;
       void shutdownIfIdle();
     }, delayMs);
     idleShutdownTimer.unref?.();
+  };
+
+  const scheduleIdleShutdownCheck = (delayMs: number) => {
+    if (idleShutdownMs === undefined) return;
+    scheduleShutdownCheck(delayMs);
   };
 
   const scheduleConfiguredIdleShutdown = () => {
@@ -556,7 +561,7 @@ export function createReviewIntentKickScheduler(
 
       if (runtime.consumePendingReviewIntentDrain?.()) {
         boundedDrainContinuationScheduled = true;
-        scheduleIdleShutdownCheck(boundedDrainContinuationDelayMs);
+        scheduleShutdownCheck(boundedDrainContinuationDelayMs);
       }
       return;
     }

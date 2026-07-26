@@ -417,7 +417,7 @@ function markReviewIntentProcessed(
   return Promise.resolve(update).then(() => true);
 }
 
-function deferReviewIntentRetry(
+async function deferReviewIntentRetry(
   database: ReviewIntentDatabase,
   intentId: string,
   claimedAt: Date,
@@ -429,7 +429,12 @@ function deferReviewIntentRetry(
     previousLastError === null
       ? isNull(reviewIntent.lastError)
       : eq(reviewIntent.lastError, previousLastError);
-  return database
+  const stillWaitingCondition =
+    reason === waitingForEligibleReviewAgentReason
+      ? reviewIntentStillWaitingForEligibleAgentsCondition()
+      : sql`true`;
+
+  await database
     .update(reviewIntent)
     .set({
       claimedAt: null,
@@ -442,10 +447,68 @@ function deferReviewIntentRetry(
         eq(reviewIntent.id, intentId),
         eq(reviewIntent.claimedAt, claimedAt),
         unchangedErrorCondition,
+        stillWaitingCondition,
         isNull(reviewIntent.processedAt),
       ),
+    );
+
+  if (reason === waitingForEligibleReviewAgentReason) {
+    await releaseReviewIntentIfEligibleAgentsAvailable(database, intentId, claimedAt);
+  }
+}
+
+function reviewIntentStillWaitingForEligibleAgentsCondition() {
+  return sql`
+    NOT (
+      EXISTS (
+        SELECT 1
+        FROM ${repositoryAgent} assigned_repository_agent
+        INNER JOIN ${agent} assigned_agent
+          ON assigned_agent.id = assigned_repository_agent.agent_id
+          AND assigned_agent.user_id = ${reviewIntent.userId}
+          AND assigned_agent.enabled = true
+        WHERE assigned_repository_agent.repository_id = ${reviewIntent.repositoryId}
+          AND assigned_repository_agent.user_id = ${reviewIntent.userId}
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM ${repositoryAgent} any_repository_agent
+          WHERE any_repository_agent.repository_id = ${reviewIntent.repositoryId}
+            AND any_repository_agent.user_id = ${reviewIntent.userId}
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM ${agent} user_agent
+          WHERE user_agent.user_id = ${reviewIntent.userId}
+            AND user_agent.enabled = true
+        )
+      )
     )
-    .then(() => {});
+  `;
+}
+
+async function releaseReviewIntentIfEligibleAgentsAvailable(
+  database: ReviewIntentDatabase,
+  intentId: string,
+  claimedAt: Date,
+): Promise<void> {
+  await database
+    .update(reviewIntent)
+    .set({
+      claimedAt: null,
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
+        isNull(reviewIntent.processedAt),
+      ),
+    );
 }
 
 async function markReviewIntentFailed(

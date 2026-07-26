@@ -967,6 +967,82 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('reclaims a first-attempt eligible-agent wait when agents become eligible during deferral', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values([
+      {
+        id: 'agent_disabled',
+        userId: user.id,
+        slug: 'disabled-review',
+        description: 'Disabled.',
+        body: 'Skip.',
+        model: 'claude-sonnet-4-6',
+        enabled: false,
+      },
+      {
+        id: 'agent_unassigned',
+        userId: user.id,
+        slug: 'unassigned-review',
+        description: 'Unassigned.',
+        body: 'Do not fall back.',
+        model: 'claude-sonnet-4-6',
+      },
+    ]);
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_disabled',
+    });
+    const database = {
+      execute: testDatabase.db.execute.bind(testDatabase.db),
+      select: testDatabase.db.select.bind(testDatabase.db),
+      update: ((table) => {
+        const update = testDatabase.db.update(table);
+        return {
+          set(values: Record<string, unknown>) {
+            const setBuilder = update.set(values);
+            if (
+              table === reviewIntent &&
+              values.lastError === 'Review intent is waiting for an eligible review agent.'
+            ) {
+              return {
+                async where(condition: Parameters<typeof setBuilder.where>[0]) {
+                  await testDatabase.db
+                    .update(agent)
+                    .set({ enabled: true })
+                    .where(eq(agent.id, 'agent_disabled'));
+                  return setBuilder.where(condition);
+                },
+              };
+            }
+            return setBuilder;
+          },
+        };
+      }) as typeof testDatabase.db.update,
+    };
+    const port = createDatabaseReviewIntentPort(database);
+
+    await expect(
+      port.claimNextReviewIntent(new Date('2026-06-17T12:00:00.000Z')),
+    ).resolves.toMatchObject({
+      id: 'intent_1',
+      pullRequest: {
+        agents: [{ id: 'agent_disabled' }],
+      },
+    });
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      claimedAt: new Date('2026-06-17T12:00:00.000Z'),
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+  });
+
   it('continues claiming later eligible intents after releasing an intent with disabled assignments', async () => {
     const { user, installation, repository } = await createReviewIntentFixture();
     const factories = createFactories(testDatabase.db);
