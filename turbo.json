@@ -1,7 +1,8 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalEnv": ["DATABASE_URL", "NODE_ENV"],
-  "globalPassThroughEnv": ["CI", "NODE_OPTIONS"],
+  "globalDependencies": [".prettierrc", ".prettierignore", ".oxlintrc.json"],
+  "globalEnv": ["NODE_ENV"],
+  "globalPassThroughEnv": ["CI", "DATABASE_URL", "NODE_OPTIONS"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -12,13 +13,34 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": ["coverage/**"],
       "env": ["CI"],
       "passThroughEnv": ["VITEST_*"]
     },
     "lint": {},
-    "format": {},
-    "format:check": {},
+    "format": {
+      "cache": false,
+      "dependsOn": ["//#format:root"]
+    },
+    "format:check": {
+      "dependsOn": ["//#format:check:root"]
+    },
+    // Package `format:check` tasks only see files inside their own package,
+    // which left `.github/**`, root Markdown, and `documentation/**`
+    // unchecked by CI. These root tasks close that gap.
+    "//#format:root": {
+      "cache": false
+    },
+    "//#format:check:root": {
+      "inputs": [
+        ".github/**/*.yml",
+        ".github/**/*.yaml",
+        "*.json",
+        "*.md",
+        "*.yml",
+        "*.yaml",
+        "documentation/**/*.md"
+      ]
+    },
     "dev": {
       "persistent": true,
       "cache": false
