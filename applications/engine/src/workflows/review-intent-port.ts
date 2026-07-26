@@ -17,7 +17,10 @@ import type { PullRequestReviewInput, ReviewIntentKind, ReviewIntentPort } from 
 type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 
 const maxReviewIntentFailures = 5;
+const defaultMaxSkippedReviewIntentsPerClaim = 25;
 const backoffMinutesByFailureCount = [1, 2, 4, 8] as const;
+const waitingForEligibleReviewAgentReason =
+  'Review intent is waiting for an eligible review agent.';
 
 type ClaimedReviewIntentRow = {
   id: string;
@@ -30,6 +33,7 @@ type ClaimedReviewIntentRow = {
   prState: 'merged' | 'closed' | null;
   createdAt: Date;
   claimedAt: Date;
+  lastError: string | null;
   /** Check Run created at webhook-intent time (T-1); null for intents that predate it. */
   checkRunId: number | null;
 };
@@ -41,6 +45,7 @@ type PullRequestReviewInputBuildResult =
 
 export type ReviewIntentPortOptions = {
   reviewsEnabled?: boolean;
+  maxSkippedReviewIntentsPerClaim?: number;
 };
 
 export type ReviewIntentQueueStatus = {
@@ -54,38 +59,59 @@ export function createDatabaseReviewIntentPort(
   database: ReviewIntentDatabase,
   options: ReviewIntentPortOptions = {},
 ): ReviewIntentPort {
+  let skippedReviewIntentLimitReached = false;
   return {
     async claimNextReviewIntent(now: Date) {
       if (options.reviewsEnabled === false) return null;
-      const row = await claimNextIntentRow(database, now);
-      if (row === null) return null;
+      skippedReviewIntentLimitReached = false;
+      const maxSkippedReviewIntentsPerClaim =
+        options.maxSkippedReviewIntentsPerClaim === undefined ||
+        options.maxSkippedReviewIntentsPerClaim <= 0
+          ? defaultMaxSkippedReviewIntentsPerClaim
+          : options.maxSkippedReviewIntentsPerClaim;
+      let skippedReviewIntents = 0;
 
-      const normalizedRow = normalizeClaimedReviewIntentRow(row);
-      const result = await buildPullRequestReviewInput(database, normalizedRow);
-      if (result.status === 'missing_target') {
-        await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
-        return null;
-      }
-      if (result.status === 'temporarily_unavailable') {
-        await deferReviewIntentRetry(
-          database,
-          normalizedRow.id,
-          normalizedRow.claimedAt,
-          now,
-          result.reason,
-        );
-        return null;
+      while (skippedReviewIntents < maxSkippedReviewIntentsPerClaim) {
+        const row = await claimNextIntentRow(database, now);
+        if (row === null) return null;
+
+        const normalizedRow = normalizeClaimedReviewIntentRow(row);
+        const result = await buildPullRequestReviewInput(database, normalizedRow);
+        if (result.status === 'missing_target') {
+          await markReviewIntentProcessed(database, normalizedRow.id, normalizedRow.claimedAt, now);
+          return null;
+        }
+        if (result.status === 'temporarily_unavailable') {
+          await deferReviewIntentRetry(
+            database,
+            normalizedRow.id,
+            normalizedRow.claimedAt,
+            now,
+            result.reason,
+            normalizedRow.lastError,
+          );
+          skippedReviewIntents += 1;
+          continue;
+        }
+
+        return {
+          id: normalizedRow.id,
+          deliveryId: normalizedRow.deliveryId,
+          kind: normalizedRow.kind,
+          pullRequest: result.pullRequest,
+          prState: normalizedRow.prState ?? undefined,
+          createdAt: normalizedRow.createdAt,
+          claimedAt: normalizedRow.claimedAt,
+        };
       }
 
-      return {
-        id: normalizedRow.id,
-        deliveryId: normalizedRow.deliveryId,
-        kind: normalizedRow.kind,
-        pullRequest: result.pullRequest,
-        prState: normalizedRow.prState ?? undefined,
-        createdAt: normalizedRow.createdAt,
-        claimedAt: normalizedRow.claimedAt,
-      };
+      skippedReviewIntentLimitReached = true;
+      return null;
+    },
+    consumeSkippedReviewIntentLimitReached() {
+      const limitReached = skippedReviewIntentLimitReached;
+      skippedReviewIntentLimitReached = false;
+      return limitReached;
     },
     markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date) {
       return markReviewIntentProcessed(database, intentId, claimedAt, now);
@@ -146,6 +172,10 @@ export async function getReviewIntentQueueStatus(
         OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
       )
       AND ${reviewIntent.deadLetteredAt} IS NULL
+      AND (
+        ${reviewIntent.lastError} IS NULL
+        OR ${reviewIntent.lastError} IS DISTINCT FROM ${waitingForEligibleReviewAgentReason}
+      )
       AND ${repositoryReviewSettings.watched} = true
       AND ${userReviewSettings.reviewsEnabled} = true
       AND ${githubInstallation.status} = 'active'
@@ -222,6 +252,7 @@ async function claimNextIntentRow(
       ${reviewIntent.prState} AS "prState",
       ${reviewIntent.createdAt} AS "createdAt",
       ${reviewIntent.claimedAt} AS "claimedAt",
+      ${reviewIntent.lastError} AS "lastError",
       ${reviewIntent.checkRunId} AS "checkRunId"
   `);
 
@@ -293,7 +324,7 @@ async function buildPullRequestReviewInput(
 
   if (!target) return { status: 'missing_target' };
 
-  const assignedAgents = await database
+  const repositoryAssignedAgents = await database
     .select({
       id: agent.id,
       userId: agent.userId,
@@ -311,12 +342,12 @@ async function buildPullRequestReviewInput(
         eq(repositoryAgent.repositoryId, intent.repositoryId),
         eq(repositoryAgent.userId, target.userId),
         eq(agent.userId, target.userId),
-        eq(agent.enabled, true),
       ),
     )
     .orderBy(asc(agent.slug));
+  const assignedAgents = repositoryAssignedAgents.filter((agentRow) => agentRow.enabled);
   const agents =
-    assignedAgents.length > 0
+    repositoryAssignedAgents.length > 0
       ? assignedAgents
       : await selectEnabledUserAgents(database, target.userId);
 
@@ -330,7 +361,7 @@ async function buildPullRequestReviewInput(
   if (agents.length === 0 && intent.kind !== 'pr_closed') {
     return {
       status: 'temporarily_unavailable',
-      reason: 'Review intent is waiting for an eligible review agent.',
+      reason: waitingForEligibleReviewAgentReason,
     };
   }
 
@@ -386,14 +417,24 @@ function markReviewIntentProcessed(
   return Promise.resolve(update).then(() => true);
 }
 
-function deferReviewIntentRetry(
+async function deferReviewIntentRetry(
   database: ReviewIntentDatabase,
   intentId: string,
   claimedAt: Date,
   now: Date,
   reason: string,
+  previousLastError: string | null,
 ): Promise<void> {
-  return database
+  const unchangedErrorCondition =
+    previousLastError === null
+      ? isNull(reviewIntent.lastError)
+      : eq(reviewIntent.lastError, previousLastError);
+  const stillWaitingCondition =
+    reason === waitingForEligibleReviewAgentReason
+      ? reviewIntentStillWaitingForEligibleAgentsCondition()
+      : sql`true`;
+
+  await database
     .update(reviewIntent)
     .set({
       claimedAt: null,
@@ -405,10 +446,69 @@ function deferReviewIntentRetry(
       and(
         eq(reviewIntent.id, intentId),
         eq(reviewIntent.claimedAt, claimedAt),
+        unchangedErrorCondition,
+        stillWaitingCondition,
         isNull(reviewIntent.processedAt),
       ),
+    );
+
+  if (reason === waitingForEligibleReviewAgentReason) {
+    await releaseReviewIntentIfEligibleAgentsAvailable(database, intentId, claimedAt);
+  }
+}
+
+function reviewIntentStillWaitingForEligibleAgentsCondition() {
+  return sql`
+    NOT (
+      EXISTS (
+        SELECT 1
+        FROM ${repositoryAgent} assigned_repository_agent
+        INNER JOIN ${agent} assigned_agent
+          ON assigned_agent.id = assigned_repository_agent.agent_id
+          AND assigned_agent.user_id = ${reviewIntent.userId}
+          AND assigned_agent.enabled = true
+        WHERE assigned_repository_agent.repository_id = ${reviewIntent.repositoryId}
+          AND assigned_repository_agent.user_id = ${reviewIntent.userId}
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM ${repositoryAgent} any_repository_agent
+          WHERE any_repository_agent.repository_id = ${reviewIntent.repositoryId}
+            AND any_repository_agent.user_id = ${reviewIntent.userId}
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM ${agent} user_agent
+          WHERE user_agent.user_id = ${reviewIntent.userId}
+            AND user_agent.enabled = true
+        )
+      )
     )
-    .then(() => {});
+  `;
+}
+
+async function releaseReviewIntentIfEligibleAgentsAvailable(
+  database: ReviewIntentDatabase,
+  intentId: string,
+  claimedAt: Date,
+): Promise<void> {
+  await database
+    .update(reviewIntent)
+    .set({
+      claimedAt: null,
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.id, intentId),
+        eq(reviewIntent.claimedAt, claimedAt),
+        sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
+        isNull(reviewIntent.processedAt),
+      ),
+    );
 }
 
 async function markReviewIntentFailed(

@@ -99,6 +99,7 @@ export type ClaimedReviewIntent = ReviewIntent & {
 
 export type ReviewIntentPort = {
   claimNextReviewIntent(now: Date): Promise<ClaimedReviewIntent | null>;
+  consumeSkippedReviewIntentLimitReached?(): boolean;
   markReviewIntentProcessed(intentId: string, claimedAt: Date, now: Date): Promise<boolean>;
   markReviewIntentFailed(
     intentId: string,

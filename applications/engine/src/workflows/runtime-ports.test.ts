@@ -213,6 +213,12 @@ describe('runtime review intent consumer wiring', () => {
     });
   });
 
+  it('reports no pending bounded drain before a claim scan reaches its limit', () => {
+    const consumer = createReviewIntentConsumer(testDatabase.db, runtimeEnvironment());
+
+    expect(consumer.consumePendingDrain()).toBe(false);
+  });
+
   it('runs the registered review-pr workflow through the review workflow activity', async () => {
     const processClaimedReviewIntent = vi.fn().mockResolvedValue(undefined);
     const engine = await Engine.create({

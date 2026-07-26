@@ -68,6 +68,7 @@
     selectedModel === 'inherit' ? defaultModel : selectedModel,
   );
   const fallbackNotice = $derived(getEffortFallbackNotice(effectiveWarningModel, selectedEffort));
+  const currentAgentId = $derived(form?.values?.id ?? agent.id);
 </script>
 
 {#if form?.error}
@@ -75,8 +76,8 @@
 {/if}
 
 <form id={AGENT_EDITOR_FORM_ID} method="POST" action="?/save" class="agent-form" use:enhance>
-  {#if agent.id}
-    <input type="hidden" name="id" value={agent.id} />
+  {#if currentAgentId}
+    <input type="hidden" name="id" value={currentAgentId} />
   {/if}
   <input type="hidden" name="body" value={body} />
 

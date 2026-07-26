@@ -33,6 +33,7 @@ export type ReviewIntentConsumer = {
   workflows?: Record<string, unknown>;
   bindWorkflowEngine?(engine: ReviewIntentWorkflowEngine): void;
   drain(limit?: number): Promise<number>;
+  consumePendingDrain?(): boolean;
   getQueueStatus?(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes?(): Promise<unknown>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
@@ -60,6 +61,7 @@ export type EngineRuntime = {
   engine: unknown;
   healthDependencies(): EngineHealthDependency[];
   drainReviewIntents(limit?: number): Promise<number>;
+  consumePendingReviewIntentDrain?(): boolean;
   getReviewIntentQueueStatus(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes(): Promise<unknown>;
   stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
@@ -116,6 +118,9 @@ export async function createEngineRuntime(
       },
       drainReviewIntents(limit?: number) {
         return drainReviewIntents(limit);
+      },
+      consumePendingReviewIntentDrain() {
+        return options.reviewIntentConsumer?.consumePendingDrain?.() ?? false;
       },
       getReviewIntentQueueStatus(now: Date) {
         return (

@@ -413,7 +413,8 @@ export type ReviewIntentKickSchedulerOptions = {
 };
 
 export function createReviewIntentKickScheduler(
-  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'>,
+  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'> &
+    Partial<Pick<EngineRuntime, 'consumePendingReviewIntentDrain'>>,
   options: ReviewIntentKickSchedulerOptions = {},
 ): ReviewIntentKickScheduler {
   const drainLimit = options.drainLimit ?? 5;
@@ -425,10 +426,12 @@ export function createReviewIntentKickScheduler(
   const isBackgroundWorkActive = options.isBackgroundWorkActive ?? (() => false);
   const idleShutdownMs =
     options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
+  const boundedDrainContinuationDelayMs = 1_000;
 
   let activeDrain: Promise<void> | undefined;
   let drainGeneration = 0;
   let idleShutdownTimer: ReturnType<typeof setTimeout> | undefined;
+  let boundedDrainContinuationScheduled = false;
   let kickRequestedDuringDrain = false;
   let released = false;
 
@@ -438,14 +441,30 @@ export function createReviewIntentKickScheduler(
     idleShutdownTimer = undefined;
   };
 
-  const scheduleIdleShutdownCheck = (delayMs: number) => {
-    if (idleShutdownMs === undefined || released) return;
+  const scheduleTimer = (delayMs: number, callback: () => Promise<void> | void) => {
+    if (released) return;
     clearIdleShutdownTimer();
     idleShutdownTimer = setTimeoutFunction(() => {
       idleShutdownTimer = undefined;
-      void shutdownIfIdle();
+      void callback();
     }, delayMs);
     idleShutdownTimer.unref?.();
+  };
+
+  const scheduleShutdownCheck = (delayMs: number) => {
+    scheduleTimer(delayMs, shutdownIfIdle);
+  };
+
+  const scheduleBoundedDrainContinuation = () => {
+    boundedDrainContinuationScheduled = true;
+    scheduleTimer(boundedDrainContinuationDelayMs, () => {
+      startDrain();
+    });
+  };
+
+  const scheduleIdleShutdownCheck = (delayMs: number) => {
+    if (idleShutdownMs === undefined) return;
+    scheduleShutdownCheck(delayMs);
   };
 
   const scheduleConfiguredIdleShutdown = () => {
@@ -470,7 +489,12 @@ export function createReviewIntentKickScheduler(
         activeDrain = undefined;
         if (kickRequestedDuringDrain) {
           kickRequestedDuringDrain = false;
+          boundedDrainContinuationScheduled = false;
           startDrain();
+          return;
+        }
+        if (boundedDrainContinuationScheduled) {
+          boundedDrainContinuationScheduled = false;
           return;
         }
         scheduleConfiguredIdleShutdown();
@@ -544,7 +568,13 @@ export function createReviewIntentKickScheduler(
   const drainUntilIdle = async () => {
     while (!released) {
       const processed = await runtime.drainReviewIntents(drainLimit);
-      if (processed === 0) return;
+      if (runtime.consumePendingReviewIntentDrain?.()) {
+        scheduleBoundedDrainContinuation();
+        return;
+      }
+      if (processed > 0) continue;
+
+      return;
     }
   };
 

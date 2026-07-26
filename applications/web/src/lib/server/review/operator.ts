@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -12,6 +12,7 @@ import {
   repository,
   repositoryAgent,
   repositoryReviewSettings,
+  reviewIntent,
   tribunalRun,
   userReviewSettings,
   webhookEventHandlerRun,
@@ -28,6 +29,8 @@ export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 const defaultModelOptions = defaultReviewModelSchema.options;
 const reviewModelOptions = ['inherit', ...defaultModelOptions] as const;
 const reviewEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const waitingForEligibleReviewAgentReason =
+  'Review intent is waiting for an eligible review agent.';
 
 export type SurfaceState = 'empty' | 'loading' | 'streaming' | 'success' | 'error' | 'disconnected';
 
@@ -39,6 +42,22 @@ export const operatorSurfaceStates: SurfaceState[] = [
   'error',
   'disconnected',
 ];
+
+type AgentFormValues = {
+  id: string;
+  userId: number;
+  slug: string;
+  description: string;
+  body: string;
+  model: string;
+  effort?: string;
+  enabled: boolean;
+};
+
+type AgentSaveFailure = {
+  error: string;
+  values: AgentFormValues;
+};
 
 export function parseIgnoreGlobs(value: string): string[] {
   return value
@@ -317,6 +336,13 @@ export async function saveRepositoryWatchSettings(
     ON CONFLICT DO NOTHING
   `);
 
+  if (input.watched) {
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId, [input.repositoryId]);
+    if (wakeupFailed) {
+      return fail(503, { error: 'Review engine wake-up failed. Please try again.' });
+    }
+  }
+
   return { success: true };
 }
 
@@ -365,7 +391,7 @@ export async function getAgent(userId: number, agentId: string) {
 export async function saveAgent(userId: number, formData: FormData) {
   const id = String(formData.get('id') ?? '').trim();
   const effortValue = String(formData.get('effort') ?? '').trim();
-  const payload = {
+  const payload: AgentFormValues = {
     id: id || `agent_${crypto.randomUUID()}`,
     userId,
     slug: String(formData.get('slug') ?? '').trim(),
@@ -378,9 +404,9 @@ export async function saveAgent(userId: number, formData: FormData) {
 
   const validation = agentSpecSchema.safeParse(payload);
   if (!validation.success) {
-    return fail(400, {
+    return fail<AgentSaveFailure>(400, {
       error: validation.error.issues[0]?.message ?? 'Agent settings are invalid.',
-      values: payload,
+      values: { ...payload, id },
     });
   }
 
@@ -404,6 +430,16 @@ export async function saveAgent(userId: number, formData: FormData) {
       },
     });
 
+  if (validation.data.enabled) {
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+    if (wakeupFailed) {
+      return fail<AgentSaveFailure>(503, {
+        error: 'Review engine wake-up failed. Please try again.',
+        values: validation.data,
+      });
+    }
+  }
+
   return { success: true, id: validation.data.id };
 }
 
@@ -419,6 +455,11 @@ export async function deleteAgent(userId: number, formData: FormData) {
 
   if (deletedRows.length === 0) {
     return fail(404, { error: 'Agent not found.' });
+  }
+
+  const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+  if (wakeupFailed) {
+    return { success: true, engineWakeupFailed: true };
   }
 
   return { success: true };
@@ -440,7 +481,134 @@ export async function setAgentEnabled(userId: number, formData: FormData) {
     return fail(404, { error: 'Agent not found.' });
   }
 
+  if (enabled) {
+    const wakeupFailed = await releaseReviewIntentsAndTryKickEngine(userId);
+    if (wakeupFailed) {
+      return fail(503, {
+        error: 'Review engine wake-up failed. Please try again.',
+        engineWakeupFailed: true,
+      });
+    }
+  }
+
   return { success: true };
+}
+
+async function releaseReviewIntentsAndTryKickEngine(
+  userId: number,
+  repositoryIds?: number[],
+): Promise<boolean> {
+  const releasedIntentIds = await releaseReviewIntentsWaitingForEligibleAgent(
+    userId,
+    repositoryIds,
+  );
+  if (releasedIntentIds.length === 0) return false;
+
+  const result = await postReviewEngineControl('/review-intents/kick');
+  if (result.status === 'not_configured') return false;
+  if (result.status === 'sent' && result.ok) return false;
+
+  await markReleasedReviewIntentsWaitingForWakeupRetry(userId, releasedIntentIds);
+  return true;
+}
+
+export async function retryReviewIntentEngineWakeup() {
+  const result = await postReviewEngineControl('/review-intents/kick');
+  if (result.status === 'not_configured') return { success: true };
+  if (result.status === 'sent' && result.ok) return { success: true };
+  return fail(503, {
+    error: 'Review engine wake-up failed. Please try again.',
+    engineWakeupFailed: true,
+  });
+}
+
+async function releaseReviewIntentsWaitingForEligibleAgent(
+  userId: number,
+  repositoryIds?: number[],
+): Promise<string[]> {
+  const repositoryScope =
+    repositoryIds === undefined || repositoryIds.length === 0
+      ? undefined
+      : inArray(reviewIntent.repositoryId, repositoryIds);
+  const releasedIntents = await db
+    .update(reviewIntent)
+    .set({
+      failedAt: null,
+      lastError: null,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.userId, userId),
+        eq(reviewIntent.lastError, waitingForEligibleReviewAgentReason),
+        repositoryScope,
+        isNull(reviewIntent.claimedAt),
+        isNull(reviewIntent.processedAt),
+        isNull(reviewIntent.deadLetteredAt),
+        sql`NOT (${reviewIntentStillWaitingForEligibleAgentsCondition()})`,
+      ),
+    )
+    .returning({ id: reviewIntent.id });
+
+  return releasedIntents.map((intent) => intent.id);
+}
+
+async function markReleasedReviewIntentsWaitingForWakeupRetry(
+  userId: number,
+  releasedIntentIds: string[],
+): Promise<void> {
+  if (releasedIntentIds.length === 0) return;
+
+  await db
+    .update(reviewIntent)
+    .set({
+      failedAt: new Date(),
+      lastError: waitingForEligibleReviewAgentReason,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(reviewIntent.userId, userId),
+        inArray(reviewIntent.id, releasedIntentIds),
+        isNull(reviewIntent.claimedAt),
+        isNull(reviewIntent.processedAt),
+        isNull(reviewIntent.failedAt),
+        isNull(reviewIntent.lastError),
+        isNull(reviewIntent.nextAttemptAt),
+        isNull(reviewIntent.deadLetteredAt),
+      ),
+    );
+}
+
+function reviewIntentStillWaitingForEligibleAgentsCondition() {
+  return sql`
+    NOT (
+      EXISTS (
+        SELECT 1
+        FROM ${repositoryAgent} assigned_repository_agent
+        INNER JOIN ${agent} assigned_agent
+          ON assigned_agent.id = assigned_repository_agent.agent_id
+          AND assigned_agent.user_id = ${reviewIntent.userId}
+          AND assigned_agent.enabled = true
+        WHERE assigned_repository_agent.repository_id = ${reviewIntent.repositoryId}
+          AND assigned_repository_agent.user_id = ${reviewIntent.userId}
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM ${repositoryAgent} any_repository_agent
+          WHERE any_repository_agent.repository_id = ${reviewIntent.repositoryId}
+            AND any_repository_agent.user_id = ${reviewIntent.userId}
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM ${agent} user_agent
+          WHERE user_agent.user_id = ${reviewIntent.userId}
+            AND user_agent.enabled = true
+        )
+      )
+    )
+  `;
 }
 
 export async function getRunsOverview(userId: number) {

@@ -40,6 +40,8 @@ export const actions: Actions = {
 
     const result = await deleteAgent(user.id, await request.formData());
     if ('status' in result) return result;
+    if ('engineWakeupFailed' in result && result.engineWakeupFailed)
+      redirect(303, '/agents?engineWakeupFailed=true');
 
     redirect(303, '/agents');
   },
