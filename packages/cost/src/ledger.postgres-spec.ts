@@ -83,7 +83,6 @@ describe('cost ledger PostgreSQL reservation concurrency', () => {
         user.id,
         {
           idempotencyKey: 'llm:postgres:first:estimate',
-          amountUsd: 0.01,
           expiresAt: new Date('2026-06-17T13:00:00.000Z'),
         },
       );
@@ -91,7 +90,6 @@ describe('cost ledger PostgreSQL reservation concurrency', () => {
         user.id,
         {
           idempotencyKey: 'llm:postgres:second:estimate',
-          amountUsd: 0.01,
           expiresAt: new Date('2026-06-17T13:00:00.000Z'),
         },
       );

@@ -101,7 +101,7 @@ export interface DailyCapDecision {
 
 export interface DailyCapReservationInput {
   idempotencyKey: string;
-  amountUsd: number;
+  amountUsd?: number;
   expiresAt: Date;
 }
 

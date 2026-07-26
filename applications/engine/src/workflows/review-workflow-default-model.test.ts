@@ -97,7 +97,7 @@ describe('ReviewWorkflowEngine default model resolution', () => {
   // The second caller must resolve its own run against its own input, not
   // silently inherit whatever the first caller passed in.
   it("resolves each concurrent caller's own default model even when their supervisor creation races", async () => {
-    const ports = createFakePorts();
+    const ports = createFakePorts({ unboundedReservationAmountUsd: 0.01 });
     const engine = createEngine(ports);
     const inheritingAgent = { ...baseInput.agents[0]!, model: 'inherit' };
 

@@ -117,7 +117,6 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
-const LLM_COST_RESERVATION_USD = 0.01;
 
 export type ReviewRunStatus =
   | 'queued'
@@ -902,7 +901,6 @@ export class ReviewWorkflowEngine {
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
     const triageCapDecision = await this.ports.cost.enforceDailyCap(input.userId, {
       idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
-      amountUsd: LLM_COST_RESERVATION_USD,
       expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
     });
     if (!triageCapDecision.allowed) {
@@ -1168,7 +1166,7 @@ export class ReviewWorkflowEngine {
       const agentRunId = createAgentRunId(reviewRun.id, agent);
       const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
         idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
-        amountUsd: LLM_COST_RESERVATION_USD,
+        ...(agent.maxBudgetUsd === undefined ? {} : { amountUsd: agent.maxBudgetUsd }),
         expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       });
       if (!dailyCapDecision.allowed) {

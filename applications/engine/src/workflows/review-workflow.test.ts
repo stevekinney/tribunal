@@ -1031,12 +1031,10 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.reservationCalls).toEqual([
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
-        amountUsd: 0.01,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
-        amountUsd: 0.01,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
     ]);
@@ -1632,6 +1630,32 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
+  });
+
+  it('blocks a specialist when remaining budget is below its configured maximum', async () => {
+    const ports = createFakePorts({ spendTodayEstimate: 9.95 });
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        agents: [{ ...reviewAgent, maxBudgetUsd: 0.1 }],
+      }),
+    ).resolves.toMatchObject({ status: 'quota_blocked' });
+
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        amountUsd: 0.1,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual([]);
+    expect(ports.github.reviews).toHaveLength(0);
   });
 
   it('posts deterministic sorted comments for multiple findings', async () => {

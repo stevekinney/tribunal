@@ -89,6 +89,10 @@ async function countLlmEvents() {
     .then((rows) => rows.length);
 }
 
+function numericTextForTest(value: number): string {
+  return value.toFixed(8);
+}
+
 describe('sandbox pricing', () => {
   it('computes sandbox cost from runtime and resources using versioned pricing', () => {
     const actual = sandboxCost(
@@ -337,6 +341,72 @@ describe('cost ledger', () => {
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
+  it('counts the first LLM estimate of the day against later reservations', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await port.recordLlmEstimate({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.01,
+      idempotencyKey: `llm:${run.id}:estimate`,
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:next-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.01);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+  });
+
+  it('counts the first sandbox estimate of the day against later reservations', async () => {
+    const { user, repository, review, run } = await createCostFixture();
+    const runtime = { runtimeSeconds: 60 };
+    const resources = { cpus: 2, memoryMb: 2048, storageMb: 10_240 };
+    const amountUsd = sandboxCost(runtime, resources);
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: numericTextForTest(amountUsd) });
+
+    await recordSandbox(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      sandboxId: 'sandbox_first_spend',
+      window: '2026-06-17T12',
+      runtime,
+      resources,
+      occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:30:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:after-sandbox-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: amountUsd, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(amountUsd);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+  });
+
   it('atomically reserves the remaining daily cap for only one concurrent same-user run', async () => {
     const { user, repository, review, reviewer, run } = await createCostFixture();
     await testDatabase.db
@@ -376,7 +446,7 @@ describe('cost ledger', () => {
     expect(Number(rows[0]?.amountUsd)).toBe(0.01);
 
     const allowedReservation = allowedDecisions[0]!.reservation;
-    await port.recordLlmEstimate({
+    const estimate = {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
@@ -384,13 +454,18 @@ describe('cost ledger', () => {
       agentId: reviewer.id,
       amountUsd: 0.01,
       idempotencyKey: allowedReservation.idempotencyKey,
-    });
+    };
+    await port.recordLlmEstimate(estimate);
+    await port.recordLlmEstimate(estimate);
 
     const remainingReservations = await testDatabase.db
       .select()
       .from(costReservation)
       .where(isNull(costReservation.releasedAt));
     expect(remainingReservations).toHaveLength(0);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.01);
+    expect(Number(budget?.reservedUsd)).toBe(0);
     await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({
       allowed: false,
       spendUsd: 0.01,
@@ -502,6 +577,82 @@ describe('cost ledger', () => {
       capUsd: 0.005,
       remainingUsd: 0,
     });
+  });
+
+  it('reserves the full remaining budget when reservation amount is omitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.03' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_existing_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:existing-estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:remaining-estimate`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true, spendUsd: 0.02, remainingUsd: 0.01 });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:over-remaining-estimate`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.03, remainingUsd: 0 });
+
+    const [reservation] = await testDatabase.db.select().from(costReservation);
+    expect(Number(reservation?.amountUsd)).toBe(0.01);
+  });
+
+  it('releases reservations from their own day when estimates arrive after UTC midnight', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '1.00' });
+    const idempotencyKey = `llm:${run.id}:cross-midnight-estimate`;
+    const beforeMidnightPort = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T23:59:00.000Z'),
+    });
+    await beforeMidnightPort.enforceDailyCap(user.id, {
+      idempotencyKey,
+      amountUsd: 0.25,
+      expiresAt: new Date('2026-06-18T01:00:00.000Z'),
+    });
+    const afterMidnightPort = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-18T00:01:00.000Z'),
+    });
+
+    await afterMidnightPort.recordLlmEstimate({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.05,
+      idempotencyKey,
+    });
+
+    const budgets = await testDatabase.db.select().from(costBudgetDay);
+    const reservationDay = budgets.find(
+      (budget) => budget.dayStartedAt.getTime() === new Date('2026-06-17T00:00:00.000Z').getTime(),
+    );
+    const estimateDay = budgets.find(
+      (budget) => budget.dayStartedAt.getTime() === new Date('2026-06-18T00:00:00.000Z').getTime(),
+    );
+    expect(Number(reservationDay?.reservedUsd)).toBe(0);
+    expect(Number(reservationDay?.spentUsd)).toBe(0);
+    expect(Number(estimateDay?.reservedUsd)).toBe(0);
+    expect(Number(estimateDay?.spentUsd)).toBe(0.05);
   });
 
   it('uses the configured default daily cap when review settings do not exist', async () => {

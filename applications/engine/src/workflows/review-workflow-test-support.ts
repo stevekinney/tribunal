@@ -152,6 +152,7 @@ export type FakePortOptions = {
   sensitiveAgentEvent?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
+  unboundedReservationAmountUsd?: number;
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
@@ -891,14 +892,22 @@ class FakeCostPort implements CostPort {
             .filter(([idempotencyKey]) => idempotencyKey !== reservation.idempotencyKey)
             .reduce((total, [, amountUsd]) => total + amountUsd, 0);
     const spendUsd = this.spendTodayEstimateValue + reservedUsd;
+    const reservationAmountUsd =
+      reservation === undefined
+        ? 0
+        : (reservation.amountUsd ??
+          this.options.unboundedReservationAmountUsd ??
+          Math.max(0, capUsd - spendUsd));
     const allowed =
-      reservation === undefined ? spendUsd < capUsd : spendUsd + reservation.amountUsd <= capUsd;
+      reservation === undefined
+        ? spendUsd < capUsd
+        : reservationAmountUsd > 0 && spendUsd + reservationAmountUsd <= capUsd;
     if (
       allowed &&
       reservation !== undefined &&
       !this.dailyCapReservations.has(reservation.idempotencyKey)
     ) {
-      this.dailyCapReservations.set(reservation.idempotencyKey, reservation.amountUsd);
+      this.dailyCapReservations.set(reservation.idempotencyKey, reservationAmountUsd);
     }
     return {
       allowed,
