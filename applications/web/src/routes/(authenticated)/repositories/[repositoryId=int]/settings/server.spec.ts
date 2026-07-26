@@ -101,7 +101,6 @@ describe('/repositories/[repositoryId]/settings server load', () => {
             ignoreGlobs: ['dist/**'],
             agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
             lastRunStatus: null,
-            estimatedCostLast30DaysUsd: 0,
           },
         ],
       ]),

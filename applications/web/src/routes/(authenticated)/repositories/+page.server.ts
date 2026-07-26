@@ -52,7 +52,6 @@ const defaultOperatorDetails: RepositoryOperatorDetails = {
   ignoreGlobs: [],
   agents: [],
   lastRunStatus: null,
-  estimatedCostLast30DaysUsd: 0,
 };
 
 /** A pull request needing attention, with its repository identity attached for cross-repository display. */

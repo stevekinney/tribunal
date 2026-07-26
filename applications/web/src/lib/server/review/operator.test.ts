@@ -560,11 +560,10 @@ describe('review operator server helpers', () => {
       watched: true,
       ignoreGlobs: ['docs/**'],
       agents: [{ id: firstAgent.id, slug: firstAgent.slug, enabled: true }],
-      // Only the newest run's status survives the dedup, and only the
-      // "estimate"-sourced cost event (not the "actual" one) is rolled up.
+      // Only the newest run's status survives the dedup.
       lastRunStatus: 'posted',
-      estimatedCostLast30DaysUsd: 3,
     });
+    expect(firstDetails.get(9101)).not.toHaveProperty('estimatedCostLast30DaysUsd');
     expect(secondDetails.get(9101)).toMatchObject({
       watched: false,
       ignoreGlobs: ['src/generated/**'],

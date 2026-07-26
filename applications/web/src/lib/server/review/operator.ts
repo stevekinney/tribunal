@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -165,9 +165,8 @@ async function requireAgentMutationAccess(userId: number, agentId: string) {
 
 export async function getRepositoryOperatorDetails(userId: number, repositoryIds: number[]) {
   if (repositoryIds.length === 0) return new Map<number, RepositoryOperatorDetails>();
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-  const [settingsRows, assignmentRows, runRows, costRows] = await Promise.all([
+  const [settingsRows, assignmentRows, runRows] = await Promise.all([
     db
       .select()
       .from(repositoryReviewSettings)
@@ -204,16 +203,6 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
         ),
       )
       .orderBy(desc(tribunalRun.startedAt)),
-    db
-      .select()
-      .from(costEvent)
-      .where(
-        and(
-          eq(costEvent.userId, userId),
-          inArray(costEvent.repositoryId, repositoryIds),
-          gte(costEvent.occurredAt, thirtyDaysAgo),
-        ),
-      ),
   ]);
 
   const details = new Map<number, RepositoryOperatorDetails>();
@@ -224,7 +213,6 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
       ignoreGlobs: [],
       agents: [],
       lastRunStatus: null,
-      estimatedCostLast30DaysUsd: 0,
     });
   }
 
@@ -252,12 +240,6 @@ export async function getRepositoryOperatorDetails(userId: number, repositoryIds
     if (detail) detail.lastRunStatus = run.status;
   }
 
-  for (const event of costRows) {
-    if (event.source !== 'estimate' || event.repositoryId === null) continue;
-    const detail = details.get(event.repositoryId);
-    if (detail) detail.estimatedCostLast30DaysUsd += Number(event.amountUsd);
-  }
-
   return details;
 }
 
@@ -267,7 +249,6 @@ export type RepositoryOperatorDetails = {
   ignoreGlobs: string[];
   agents: { id: string; slug: string; enabled: boolean }[];
   lastRunStatus: string | null;
-  estimatedCostLast30DaysUsd: number;
 };
 
 export async function saveRepositoryWatchSettings(

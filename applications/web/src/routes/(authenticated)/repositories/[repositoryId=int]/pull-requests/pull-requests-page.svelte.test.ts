@@ -39,7 +39,6 @@ const baseData = {
       ignoreGlobs: [],
       agents: [],
       lastRunStatus: null,
-      estimatedCostLast30DaysUsd: 0,
     },
   },
   agents: [],
