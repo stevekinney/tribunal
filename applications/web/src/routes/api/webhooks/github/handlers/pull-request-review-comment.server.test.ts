@@ -4,8 +4,6 @@ import { handlePullRequestReviewComment } from './pull-request-review-comment.se
 import type { WebhookContext } from './types';
 
 const signalPullRequestEventMock = vi.hoisted(() => vi.fn());
-const hasDurableReviewIntentForDrainMock = vi.hoisted(() => vi.fn());
-const kickReviewEngineAfterDurableIntentMock = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
@@ -13,33 +11,15 @@ vi.mock('@tribunal/github/pull-requests/state/workflow-signals', () => ({
   signalPullRequestEvent: signalPullRequestEventMock,
 }));
 
-vi.mock('./review-engine-kick.server', () => ({
-  hasDurableReviewIntentForDrain: hasDurableReviewIntentForDrainMock,
-  kickReviewEngineAfterDurableIntent: kickReviewEngineAfterDurableIntentMock,
-}));
-
-const okResult = {
-  ok: true,
-  workflowId: 'review:pr:42:7',
-  enqueued: true,
-  enqueueStatus: 'enqueued',
-};
-
 describe('handlePullRequestReviewComment', () => {
   beforeEach(() => {
-    signalPullRequestEventMock.mockReset().mockResolvedValue(okResult);
-    hasDurableReviewIntentForDrainMock.mockReset().mockReturnValue(true);
-    kickReviewEngineAfterDurableIntentMock.mockReset().mockResolvedValue(undefined);
+    signalPullRequestEventMock.mockReset();
   });
 
-  it('signals review_comment_created for a human-authored created comment', async () => {
+  it('accepts human-authored created comments without enqueuing review-engine work', async () => {
     await handlePullRequestReviewComment(createPayload('created'), createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'review_comment_created' }),
-    );
-    expect(kickReviewEngineAfterDurableIntentMock).toHaveBeenCalledTimes(1);
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
   it('ignores a bot-authored created comment', async () => {
@@ -58,25 +38,19 @@ describe('handlePullRequestReviewComment', () => {
     expect(context.logger.debug).toHaveBeenCalledWith('Ignoring bot review comment edited event');
   });
 
-  it('signals review_comment_edited for a human-authored edit', async () => {
+  it('accepts human-authored edits without enqueuing review-engine work', async () => {
     await handlePullRequestReviewComment(createPayload('edited'), createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'review_comment_edited' }),
-    );
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
-  it('allows a bot-authored deletion (deletions keep state current)', async () => {
+  it('accepts bot-authored deletions without enqueuing review-engine work', async () => {
     await handlePullRequestReviewComment(
       createPayload('deleted', { botSender: true }),
       createContext(),
     );
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'review_comment_deleted' }),
-    );
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
   it('no-ops for an unhandled action', async () => {
@@ -87,30 +61,6 @@ describe('handlePullRequestReviewComment', () => {
     expect(context.logger.debug).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'unknown-action' }),
       expect.stringContaining('Unhandled'),
-    );
-  });
-
-  it('throws when the signal is not ok', async () => {
-    signalPullRequestEventMock.mockResolvedValue({
-      ok: false,
-      workflowId: 'review:pr:42:7',
-      error: 'boom',
-    });
-
-    await expect(
-      handlePullRequestReviewComment(createPayload('created'), createContext()),
-    ).rejects.toThrow(/Failed to signal PR review comment created/);
-  });
-
-  it('logs and skips the kick when the result is not a durable intent', async () => {
-    hasDurableReviewIntentForDrainMock.mockReturnValue(false);
-    const context = createContext();
-
-    await handlePullRequestReviewComment(createPayload('created'), context);
-
-    expect(kickReviewEngineAfterDurableIntentMock).not.toHaveBeenCalled();
-    expect(context.logger.debug).toHaveBeenCalledWith(
-      expect.stringContaining('did not map to a durable review intent'),
     );
   });
 });

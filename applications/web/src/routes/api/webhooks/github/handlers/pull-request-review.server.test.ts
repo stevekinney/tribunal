@@ -4,8 +4,6 @@ import { handlePullRequestReview } from './pull-request-review.server';
 import type { WebhookContext } from './types';
 
 const signalPullRequestEventMock = vi.hoisted(() => vi.fn());
-const hasDurableReviewIntentForDrainMock = vi.hoisted(() => vi.fn());
-const kickReviewEngineAfterDurableIntentMock = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
@@ -13,42 +11,21 @@ vi.mock('@tribunal/github/pull-requests/state/workflow-signals', () => ({
   signalPullRequestEvent: signalPullRequestEventMock,
 }));
 
-vi.mock('./review-engine-kick.server', () => ({
-  hasDurableReviewIntentForDrain: hasDurableReviewIntentForDrainMock,
-  kickReviewEngineAfterDurableIntent: kickReviewEngineAfterDurableIntentMock,
-}));
-
-const okResult = {
-  ok: true,
-  workflowId: 'review:pr:42:7',
-  enqueued: true,
-  enqueueStatus: 'enqueued',
-};
-
 describe('handlePullRequestReview', () => {
   beforeEach(() => {
-    signalPullRequestEventMock.mockReset().mockResolvedValue(okResult);
-    hasDurableReviewIntentForDrainMock.mockReset().mockReturnValue(true);
-    kickReviewEngineAfterDurableIntentMock.mockReset().mockResolvedValue(undefined);
+    signalPullRequestEventMock.mockReset();
   });
 
-  it('signals review_submitted and kicks the review engine on submitted', async () => {
+  it('accepts submitted reviews without enqueuing review-engine work', async () => {
     await handlePullRequestReview(createPayload('submitted'), createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'review_submitted' }),
-    );
-    expect(kickReviewEngineAfterDurableIntentMock).toHaveBeenCalledTimes(1);
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
-  it('signals review_dismissed on dismissed', async () => {
+  it('accepts dismissed reviews without enqueuing review-engine work', async () => {
     await handlePullRequestReview(createPayload('dismissed'), createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'review_dismissed' }),
-    );
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
   it('no-ops for an unhandled action', async () => {
@@ -59,30 +36,6 @@ describe('handlePullRequestReview', () => {
     expect(context.logger.debug).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'edited' }),
       expect.stringContaining('Unhandled'),
-    );
-  });
-
-  it('throws when the signal is not ok', async () => {
-    signalPullRequestEventMock.mockResolvedValue({
-      ok: false,
-      workflowId: 'review:pr:42:7',
-      error: 'boom',
-    });
-
-    await expect(
-      handlePullRequestReview(createPayload('submitted'), createContext()),
-    ).rejects.toThrow(/Failed to signal PR review submitted/);
-  });
-
-  it('logs and skips the kick when the result is not a durable intent', async () => {
-    hasDurableReviewIntentForDrainMock.mockReturnValue(false);
-    const context = createContext();
-
-    await handlePullRequestReview(createPayload('submitted'), context);
-
-    expect(kickReviewEngineAfterDurableIntentMock).not.toHaveBeenCalled();
-    expect(context.logger.debug).toHaveBeenCalledWith(
-      expect.stringContaining('did not map to a durable review intent'),
     );
   });
 });
