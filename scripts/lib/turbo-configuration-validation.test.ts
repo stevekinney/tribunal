@@ -118,6 +118,27 @@ describe('outputsCoverDirectory', () => {
     expect(outputsCoverDirectory(['.svelte-kit/**', '.vercel/**'], 'build')).toBe(false);
   });
 
+  it('rejects a single-level glob, which drops nested artifacts', () => {
+    // SvelteKit's build/ contains client/, server/, and prerendered/.
+    expect(outputsCoverDirectory(['build/*'], 'build')).toBe(false);
+  });
+
+  it('rejects a prefix glob over sibling names', () => {
+    expect(outputsCoverDirectory(['build*'], 'build')).toBe(false);
+  });
+
+  it('accepts an explicitly recursive glob', () => {
+    expect(outputsCoverDirectory(['build/**/*'], 'build')).toBe(true);
+  });
+
+  it('accepts a trailing-slash directory', () => {
+    expect(outputsCoverDirectory(['build/'], 'build')).toBe(true);
+  });
+
+  it('rejects a bare wildcard', () => {
+    expect(outputsCoverDirectory(['**'], 'build')).toBe(false);
+  });
+
   it('rejects a merely-prefixed sibling directory', () => {
     expect(outputsCoverDirectory(['build-output/**'], 'build')).toBe(false);
   });

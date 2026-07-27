@@ -99,11 +99,32 @@ function normalizeDirectory(value: string): string {
   return value.replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
-/** Does any declared output glob capture files written under `directory`? */
+/**
+ * The directory an output glob is rooted at, ignoring its wildcard suffix.
+ * `dist/**` and `dist/*` both root at `dist`.
+ */
+function outputGlobBaseDirectory(output: string): string {
+  return normalizeDirectory(normalizeDirectory(output).replace(/\/?\*+(\/\*+)*$/, ''));
+}
+
+/**
+ * Does any declared output glob capture every file written under `directory`?
+ *
+ * Only an exact directory or a recursive `directory/**` glob qualifies. A
+ * single-level `directory/*` matches immediate children but silently drops
+ * nested artifacts — SvelteKit's `build/` has `client/`, `server/`, and
+ * `prerendered/` beneath it — so it is not coverage. `directory*` is a prefix
+ * glob over sibling names, not that directory at all.
+ */
 export function outputsCoverDirectory(outputs: string[], directory: string): boolean {
   return outputs.some((output) => {
-    const normalized = normalizeDirectory(output.replace(/\/?\*+$/, ''));
-    return normalized === directory || directory.startsWith(`${normalized}/`);
+    const normalized = normalizeDirectory(output);
+    if (normalized === directory) return true;
+
+    const recursiveBase = normalized.match(/^(.+?)\/\*\*(?:\/\*+)?$/)?.[1];
+    if (!recursiveBase) return false;
+
+    return recursiveBase === directory || directory.startsWith(`${recursiveBase}/`);
   });
 }
 
@@ -164,7 +185,7 @@ function findUnreachableAdapterOutputs(
   const adapterDirectories = new Set(Object.values(SVELTEKIT_ADAPTER_OUTPUT_DIRECTORIES));
 
   return outputs
-    .map((output) => normalizeDirectory(output.replace(/\/?\*+$/, '')))
+    .map(outputGlobBaseDirectory)
     .filter(
       (directory) => adapterDirectories.has(directory) && !expectedDirectories.includes(directory),
     )
