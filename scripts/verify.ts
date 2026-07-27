@@ -22,6 +22,8 @@ interface CheckResult {
 
 const checks: { name: string; command: string[]; continueOnError?: boolean }[] = [
   { name: 'Lockfile sync', command: ['bun', 'install', '--frozen-lockfile'] },
+  { name: 'Turborepo configuration', command: ['bun', 'run', 'validate:turbo'] },
+  { name: 'Skill wiring', command: ['bun', 'run', '--cwd', 'scripts', 'validate:skills'] },
   { name: 'Type check', command: ['bun', 'run', 'check'] },
   { name: 'Format check', command: ['bun', 'run', 'format:check'] },
   { name: 'Lint', command: ['bun', 'run', 'lint'] },
