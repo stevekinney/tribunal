@@ -5,13 +5,14 @@ import {
   outputsCoverDirectory,
   resolveTaskOutputs,
   validateBuildOutputs,
+  validateGlobalDependencies,
   validateGlobalEnvironmentVariables,
   validateRootFilesAreGated,
   validateTurboConfiguration,
   validateWriteTasksAreUncached,
   type TurboConfiguration,
   type WorkspacePackage,
-} from './turbo-configuration-validation.js';
+} from './turbo-configuration-validation';
 
 function makePackage(overrides: Partial<WorkspacePackage> = {}): WorkspacePackage {
   return {
@@ -74,6 +75,26 @@ describe('deriveBuildOutputDirectories', () => {
     });
 
     expect(deriveBuildOutputDirectories(workspacePackage)).toEqual(['build']);
+  });
+
+  it('honors an explicit adapter out directory over the adapter default', () => {
+    const workspacePackage = makePackage({
+      scripts: { build: 'vite build' },
+      svelteKitAdapter: '@sveltejs/adapter-node',
+      svelteKitAdapterOutputDirectory: 'server',
+    });
+
+    expect(deriveBuildOutputDirectories(workspacePackage)).toEqual(['server']);
+  });
+
+  it('normalizes an explicit adapter out directory', () => {
+    const workspacePackage = makePackage({
+      scripts: { build: 'vite build' },
+      svelteKitAdapter: '@sveltejs/adapter-node',
+      svelteKitAdapterOutputDirectory: './server/',
+    });
+
+    expect(deriveBuildOutputDirectories(workspacePackage)).toEqual(['server']);
   });
 
   it('ignores an unrecognized adapter rather than guessing', () => {
@@ -309,10 +330,55 @@ describe('validateWriteTasksAreUncached', () => {
   it('accepts a configuration with no tasks', () => {
     expect(validateWriteTasksAreUncached({})).toEqual([]);
   });
+
+  it('names the source file so package-level overrides are identifiable', () => {
+    const errors = validateWriteTasksAreUncached(
+      { tasks: { format: { cache: true } } },
+      'applications/web/turbo.json',
+    );
+
+    expect(errors[0]).toContain('applications/web/turbo.json');
+  });
+});
+
+describe('validateGlobalDependencies', () => {
+  it('accepts a configuration declaring every required root config file', () => {
+    const configuration: TurboConfiguration = {
+      globalDependencies: ['.prettierrc', '.prettierignore', '.oxlintrc.json'],
+    };
+
+    expect(validateGlobalDependencies(configuration)).toEqual([]);
+  });
+
+  it('reports each missing root config file', () => {
+    const errors = validateGlobalDependencies({ globalDependencies: ['.prettierrc'] });
+
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain('.prettierignore');
+    expect(errors[1]).toContain('.oxlintrc.json');
+  });
+
+  it('reports all of them when globalDependencies is absent entirely', () => {
+    expect(validateGlobalDependencies({})).toHaveLength(3);
+  });
+
+  it('normalizes a leading ./ in a declared entry', () => {
+    const configuration: TurboConfiguration = {
+      globalDependencies: ['./.prettierrc', '.prettierignore', '.oxlintrc.json'],
+    };
+
+    expect(validateGlobalDependencies(configuration)).toEqual([]);
+  });
 });
 
 describe('validateRootFilesAreGated', () => {
-  const gatedInputs = ['.github/**/*.yml', 'documentation/**/*.md', '*.md', '*.json'];
+  const gatedInputs = [
+    '.github/**/*.yml',
+    '.github/**/*.md',
+    'documentation/**/*.md',
+    '*.md',
+    '*.json',
+  ];
 
   it('accepts a root task covering every required path', () => {
     const configuration: TurboConfiguration = {
@@ -329,28 +395,43 @@ describe('validateRootFilesAreGated', () => {
     expect(errors[0]).toContain('no `//#` root task is defined');
   });
 
+  it('does not let an extension-scoped input claim a whole directory', () => {
+    // `.github/**/*.yml` leaves every Markdown file under .github/ ungated.
+    const configuration: TurboConfiguration = {
+      tasks: {
+        '//#format:check:root': {
+          inputs: ['.github/**/*.yml', 'documentation/**/*.md', '*.md', '*.json'],
+        },
+      },
+    };
+
+    const errors = validateRootFilesAreGated(configuration);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('.github/**/*.md');
+    expect(errors[0]).toContain('Extension-scoped inputs do not cover a whole directory');
+  });
+
   it('reports each uncovered root path', () => {
     const configuration: TurboConfiguration = {
       tasks: { '//#format:check:root': { inputs: ['*.md', '*.json'] } },
     };
 
-    const errors = validateRootFilesAreGated(configuration);
-
-    expect(errors).toHaveLength(2);
-    expect(errors[0]).toContain('.github/');
-    expect(errors[1]).toContain('documentation/');
+    expect(validateRootFilesAreGated(configuration)).toHaveLength(3);
   });
 
   it('treats a root task with no inputs as covering nothing', () => {
     const errors = validateRootFilesAreGated({ tasks: { '//#format:check:root': {} } });
 
-    expect(errors).toHaveLength(4);
+    expect(errors).toHaveLength(5);
   });
 
   it('combines inputs across multiple root tasks', () => {
     const configuration: TurboConfiguration = {
       tasks: {
-        '//#format:check:root': { inputs: ['.github/**/*.yml', 'documentation/**/*.md'] },
+        '//#format:check:root': {
+          inputs: ['.github/**/*.yml', '.github/**/*.md', 'documentation/**/*.md'],
+        },
         '//#lint:root': { inputs: ['*.md', '*.json'] },
       },
     };
@@ -368,11 +449,18 @@ describe('validateTurboConfiguration', () => {
     const configuration: TurboConfiguration = {
       globalEnv: ['NODE_ENV'],
       globalPassThroughEnv: ['CI', 'DATABASE_URL'],
+      globalDependencies: ['.prettierrc', '.prettierignore', '.oxlintrc.json'],
       tasks: {
         build: { outputs: ['dist/**'] },
         format: { cache: false },
         '//#format:check:root': {
-          inputs: ['.github/**/*.yml', 'documentation/**/*.md', '*.md', '*.json'],
+          inputs: [
+            '.github/**/*.yml',
+            '.github/**/*.md',
+            'documentation/**/*.md',
+            '*.md',
+            '*.json',
+          ],
         },
       },
     };
@@ -382,6 +470,37 @@ describe('validateTurboConfiguration', () => {
     ];
 
     expect(validateTurboConfiguration(configuration, workspacePackages)).toEqual([]);
+  });
+
+  it('catches a package-level turbo.json re-enabling cache on a write task', () => {
+    const configuration: TurboConfiguration = {
+      globalDependencies: ['.prettierrc', '.prettierignore', '.oxlintrc.json'],
+      tasks: {
+        format: { cache: false },
+        '//#format:check:root': {
+          inputs: [
+            '.github/**/*.yml',
+            '.github/**/*.md',
+            'documentation/**/*.md',
+            '*.md',
+            '*.json',
+          ],
+        },
+      },
+    };
+
+    const workspacePackages = [
+      makePackage({
+        directory: 'applications/web',
+        turboConfiguration: { tasks: { format: { cache: true } } },
+      }),
+    ];
+
+    const errors = validateTurboConfiguration(configuration, workspacePackages);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('applications/web/turbo.json');
+    expect(errors[0]).toContain('cacheable');
   });
 
   it('aggregates findings from every rule', () => {

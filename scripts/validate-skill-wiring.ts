@@ -105,11 +105,17 @@ function verifyAgentSkillReferences(errors: string[]): void {
   }
 }
 
+// Claude reads `.claude/skills`, Codex reads `.agents/skills`. A skill present
+// in only one is invisible to the other tool while looking correctly wired.
+const SKILL_DIRECTORIES = ['.claude/skills', '.agents/skills'] as const;
+
 function verifyRequiredSkills(errors: string[]): void {
   for (const skill of REQUIRED_SKILLS) {
-    const skillPath = resolve(repositoryRoot, '.claude/skills', skill, 'SKILL.md');
-    if (!existsSync(skillPath)) {
-      errors.push(`Missing required skill: .claude/skills/${skill}/SKILL.md`);
+    for (const skillDirectory of SKILL_DIRECTORIES) {
+      const skillPath = resolve(repositoryRoot, skillDirectory, skill, 'SKILL.md');
+      if (!existsSync(skillPath)) {
+        errors.push(`Missing required skill: ${skillDirectory}/${skill}/SKILL.md`);
+      }
     }
   }
 }

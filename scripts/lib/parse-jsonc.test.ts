@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseJsonC, stripJsonComments } from './parse-jsonc.js';
+import { parseJsonC, stripJsonComments } from './parse-jsonc';
 
 describe('stripJsonComments', () => {
   it('removes a line comment, leaving the preceding indentation', () => {
@@ -72,5 +72,35 @@ describe('parseJsonC', () => {
 
   it('parses ordinary JSON', () => {
     expect(parseJsonC<{ a: number }>('{"a": 1}')).toEqual({ a: 1 });
+  });
+
+  it('accepts trailing commas, which tsconfig.json permits', () => {
+    expect(parseJsonC('{"compilerOptions":{"outDir":"dist",},}')).toEqual({
+      compilerOptions: { outDir: 'dist' },
+    });
+  });
+
+  it('accepts a trailing comma in an array', () => {
+    expect(parseJsonC('{"include": ["src", "test",]}')).toEqual({ include: ['src', 'test'] });
+  });
+
+  it('accepts a trailing comma followed by whitespace and a newline', () => {
+    expect(parseJsonC('{\n  "a": 1,\n}')).toEqual({ a: 1 });
+  });
+
+  it('preserves a comma inside a string literal', () => {
+    expect(parseJsonC('{"a": "x, y"}')).toEqual({ a: 'x, y' });
+  });
+
+  it('preserves a comma inside a string containing an escaped quote', () => {
+    expect(parseJsonC('{"a": "say \\"hi\\", ok"}')).toEqual({ a: 'say "hi", ok' });
+  });
+
+  it('keeps separating commas between members', () => {
+    expect(parseJsonC('{"a": 1, "b": 2}')).toEqual({ a: 1, b: 2 });
+  });
+
+  it('handles comments and trailing commas together', () => {
+    expect(parseJsonC('{\n  // note\n  "a": 1,\n}')).toEqual({ a: 1 });
   });
 });

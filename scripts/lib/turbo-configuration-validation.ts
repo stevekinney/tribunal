@@ -39,6 +39,11 @@ export type WorkspacePackage = {
   typescriptOutputDirectory?: string;
   /** SvelteKit adapter import specifier from `svelte.config.js`. */
   svelteKitAdapter?: string;
+  /**
+   * Explicit output directory passed to the adapter, e.g. `adapter({ out:
+   * 'server' })`. Overrides the adapter's default.
+   */
+  svelteKitAdapterOutputDirectory?: string;
 };
 
 /**
@@ -55,7 +60,20 @@ const WRITE_TASK_PATTERN = /(^|#)format(:root)?$/;
  * Root-level paths that belong to no workspace package, and so are invisible
  * to package-scoped tasks unless a `//#` root task covers them.
  */
-const REQUIRED_ROOT_GATE_PATTERNS = ['.github/', 'documentation/', '*.md', '*.json'] as const;
+const REQUIRED_ROOT_GATE_PATTERNS = [
+  '.github/**/*.yml',
+  '.github/**/*.md',
+  'documentation/**/*.md',
+  '*.md',
+  '*.json',
+] as const;
+
+/**
+ * Root config files that govern every package's lint and format tasks but
+ * live in no package. Absent from `globalDependencies`, editing them busts no
+ * hash and every task returns a stale cache hit.
+ */
+const REQUIRED_GLOBAL_DEPENDENCIES = ['.prettierrc', '.prettierignore', '.oxlintrc.json'] as const;
 
 /** SvelteKit adapters mapped to the directory their build writes. */
 const SVELTEKIT_ADAPTER_OUTPUT_DIRECTORIES: Record<string, string> = {
@@ -85,10 +103,12 @@ export function deriveBuildOutputDirectories(workspacePackage: WorkspacePackage)
   }
 
   if (/vite build/.test(buildScript) && workspacePackage.svelteKitAdapter) {
+    // An explicit `adapter({ out: '…' })` wins over the adapter's default.
     const adapterDirectory =
+      workspacePackage.svelteKitAdapterOutputDirectory ??
       SVELTEKIT_ADAPTER_OUTPUT_DIRECTORIES[workspacePackage.svelteKitAdapter];
     if (adapterDirectory) {
-      directories.add(adapterDirectory);
+      directories.add(normalizeDirectory(adapterDirectory));
     }
   }
 
@@ -208,14 +228,37 @@ export function validateGlobalEnvironmentVariables(configuration: TurboConfigura
     );
 }
 
-/** A cached write-task is skipped on a hit, so the files are never rewritten. */
-export function validateWriteTasksAreUncached(configuration: TurboConfiguration): string[] {
+/**
+ * A cached write-task is skipped on a hit, so the files are never rewritten.
+ *
+ * `source` names the file, because a package-level `turbo.json` can re-enable
+ * caching for a task the root correctly marks uncached.
+ */
+export function validateWriteTasksAreUncached(
+  configuration: TurboConfiguration,
+  source = 'turbo.json',
+): string[] {
   return Object.entries(configuration.tasks ?? {})
     .filter(([taskName, task]) => WRITE_TASK_PATTERN.test(taskName) && task.cache !== false)
     .map(
       ([taskName]) =>
-        `turbo.json: task \`${taskName}\` rewrites files in place but is cacheable. A cache hit skips the rewrite. Set \`"cache": false\`.`,
+        `${source}: task \`${taskName}\` rewrites files in place but is cacheable. A cache hit skips the rewrite. Set \`"cache": false\`.`,
     );
+}
+
+/**
+ * Root config files govern every package's lint and format tasks, so they must
+ * be hashed globally or edits to them return stale cache hits everywhere.
+ */
+export function validateGlobalDependencies(configuration: TurboConfiguration): string[] {
+  const declared = configuration.globalDependencies ?? [];
+
+  return REQUIRED_GLOBAL_DEPENDENCIES.filter(
+    (required) => !declared.some((entry) => normalizeDirectory(entry) === required),
+  ).map(
+    (required) =>
+      `turbo.json: \`${required}\` governs every package's lint/format task but is not in globalDependencies, so editing it busts no hash and every task returns a stale cache hit.`,
+  );
 }
 
 /**
@@ -233,13 +276,14 @@ export function validateRootFilesAreGated(configuration: TurboConfiguration): st
     ];
   }
 
-  const coveredInputs = rootGateTasks.flatMap(([, task]) => task.inputs ?? []);
+  const coveredInputs = new Set(rootGateTasks.flatMap(([, task]) => task.inputs ?? []));
 
-  return REQUIRED_ROOT_GATE_PATTERNS.filter(
-    (pattern) => !coveredInputs.some((input) => input.startsWith(pattern)),
-  ).map(
+  // Exact match, not prefix. A prefix test lets `.github/**/*.yml` claim all of
+  // `.github/`, leaving every Markdown file there ungated while the check
+  // reports success — the blind-gate failure this validator exists to catch.
+  return REQUIRED_ROOT_GATE_PATTERNS.filter((pattern) => !coveredInputs.has(pattern)).map(
     (pattern) =>
-      `turbo.json: no root task declares inputs covering \`${pattern}\`, so changes there are invisible to every gate.`,
+      `turbo.json: no root task declares the input \`${pattern}\`, so files matching it are invisible to every gate. Extension-scoped inputs do not cover a whole directory.`,
   );
 }
 
@@ -258,6 +302,15 @@ export function validateTurboConfiguration(
     ...validateBuildOutputs(rootConfiguration, workspacePackages),
     ...validateGlobalEnvironmentVariables(rootConfiguration),
     ...validateWriteTasksAreUncached(rootConfiguration),
+    ...workspacePackages.flatMap((workspacePackage) =>
+      workspacePackage.turboConfiguration
+        ? validateWriteTasksAreUncached(
+            workspacePackage.turboConfiguration,
+            `${workspacePackage.directory}/turbo.json`,
+          )
+        : [],
+    ),
+    ...validateGlobalDependencies(rootConfiguration),
     ...validateRootFilesAreGated(rootConfiguration),
   ];
 }
