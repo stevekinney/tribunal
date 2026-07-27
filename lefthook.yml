@@ -17,6 +17,9 @@ pre-commit:
     migration-consistency:
       glob: 'packages/database/src/schema/*'
       run: bun run packages/database/scripts/check-migration-consistency.ts
+    turbo-configuration:
+      glob: '{turbo.json,*/*/turbo.json,package.json,*/*/package.json}'
+      run: bun run scripts/validate-turbo-configuration.ts
 
 pre-push:
   parallel: false

@@ -16,6 +16,7 @@ const REQUIRED_SKILLS = [
   'lint',
   'markdown-security',
   'sync-branch',
+  'turborepo-configuration',
 ] as const;
 
 const REMOVED_SKILLS = [
