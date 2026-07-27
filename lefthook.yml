@@ -18,6 +18,11 @@ pre-commit:
       glob: 'packages/database/src/schema/*'
       run: bun run packages/database/scripts/check-migration-consistency.ts
     turbo-configuration:
+      # Deliberately not behind HOOKS_STRICT, unlike the CI-duplicated checks
+      # in pre-push: this is a repository-wide invariant that runs in ~0.03s
+      # with no network or build, and the failures it catches are invisible in
+      # local output (a wrong outputs glob still prints a green cache hit).
+      #
       # Workspaces live at applications/*, packages/*, and also runner/ and
       # scripts/ at depth one — cover both depths.
       glob: '{turbo.json,*/turbo.json,*/*/turbo.json,package.json,*/package.json,*/*/package.json}'

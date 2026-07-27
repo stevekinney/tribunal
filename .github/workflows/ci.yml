@@ -47,15 +47,17 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
-      # Invoked directly rather than as a turbo task: --affected can narrow to
-      # a subset of packages, and a repository-wide gate must never be skippable
+      # Format is the cheapest and most frequent failure in this job, and a job
+      # stops at its first failing step — so it runs before the gates below.
+      - name: Format check
+        run: bun run format:check
+      # Invoked directly rather than as turbo tasks: --affected can narrow to a
+      # subset of packages, and a repository-wide gate must never be skippable
       # by which package a pull request happened to touch.
       - name: Validate Turborepo configuration
         run: bun run validate:turbo
       - name: Validate skill wiring
         run: bun run --cwd scripts validate:skills
-      - name: Format check
-        run: bun run format:check
       - name: Lint
         run: bunx turbo run lint ${{ github.event_name == 'pull_request' && '--affected' || '' }}
         env:
