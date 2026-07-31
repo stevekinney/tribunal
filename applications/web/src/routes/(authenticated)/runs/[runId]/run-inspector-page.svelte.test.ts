@@ -52,6 +52,8 @@ const data = {
         userId: 1,
         runId: 'run_1',
         agentId: 'agent_security',
+        agentSlug: 'security',
+        agentDescription: 'Finds security issues',
         role: 'specialist',
         modelUsed: 'sonnet',
         effortUsed: 'xhigh',
@@ -153,6 +155,23 @@ describe('/runs/[runId] page', () => {
     await expect
       .element(page.getByRole('link', { name: 'Open pull request' }))
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12');
+  });
+
+  it('omits per-agent stop control for active historical runs after agent deletion', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [{ ...data.run.agentRuns[0], agentId: null }],
+        },
+      },
+    });
+
+    await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Stop security' }))
+      .not.toBeInTheDocument();
   });
 
   it('renders webhook event handler context without pull request controls', async () => {

@@ -730,22 +730,33 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
   // --------------------------------------------------------------------------
   describe('error resilience', () => {
     it('does not throw when deleteCache fails', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.mocked(context.cache.deleteCache).mockRejectedValueOnce(new Error('Redis down'));
       const data = makePayload({ action: 'opened', issue: { number: 1 } });
 
-      // Should not throw
       await expect(
         invalidateGitHubResourceCacheForEvent(context, 'issues', 'opened', data),
       ).resolves.toBeUndefined();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[resource-invalidation] Failed to invalidate cache:',
+        expect.any(Error),
+      );
+      consoleErrorSpy.mockRestore();
     });
 
     it('does not throw when repository lookup fails', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockGetRepositoryByOwnerAndName.mockRejectedValueOnce(new Error('DB down'));
       const data = makePayload({ action: 'opened', issue: { number: 1 } });
 
       await expect(
         invalidateGitHubResourceCacheForEvent(context, 'issues', 'opened', data),
       ).resolves.toBeUndefined();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[resource-invalidation] Failed to invalidate list caches for acme/widgets:',
+        expect.any(Error),
+      );
+      consoleErrorSpy.mockRestore();
     });
 
     it('handles missing repository in payload', async () => {

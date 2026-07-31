@@ -36,10 +36,9 @@ configured the endpoint returns 500.
 1. Validate the request and extract the payload, signature, event type, and
    delivery ID.
 2. Verify the HMAC signature.
-3. Claim the delivery to deduplicate. Most events claim early; pull-request
-   orchestrator trigger events defer claiming until after successful processing
-   so GitHub will retry on transient failures. A duplicate delivery returns
-   `200 { ok: true, message: "Already processed" }`.
+3. Claim the delivery to deduplicate. Review-engine dispatch failures release
+   the claim before returning 500 so GitHub can retry durable review-intent
+   enqueue. A duplicate delivery returns `200 { ok: true, message: "Already processed" }`.
 4. Persist the event via `storeWebhookEvent` when it carries a repository.
 5. Route the payload through the typed router
    (`createGithubWebhookRouter` from `github-webhook-schemas`), which validates

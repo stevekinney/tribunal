@@ -2277,6 +2277,67 @@ describe('review operator server helpers', () => {
     ]);
   });
 
+  it('inspects historical specialist runs after the agent is deleted', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_deleted_agent',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_deleted_agent',
+      userId: owner.id,
+      runId: 'run_deleted_agent',
+      agentId: reviewAgent.id,
+      agentSlug: reviewAgent.slug,
+      agentDescription: reviewAgent.description,
+      status: 'succeeded',
+    });
+    await testDb.db.insert(finding).values({
+      id: 'finding_deleted_agent',
+      userId: owner.id,
+      agentRunId: 'agent_run_deleted_agent',
+      path: 'src/a.ts',
+      startLine: 10,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Historical finding',
+      body: 'This finding should remain inspectable.',
+      anchored: true,
+      fingerprint: 'fingerprint_deleted_agent',
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_deleted_agent',
+      seq: 1,
+      kind: 'message',
+      detail: { text: 'historical event' },
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+
+    await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_deleted_agent'));
+
+    expect(inspected.agentRuns).toHaveLength(1);
+    expect(inspected.agentRuns[0]).toMatchObject({
+      id: 'agent_run_deleted_agent',
+      agentId: null,
+      slug: reviewAgent.slug,
+      description: reviewAgent.description,
+    });
+    expect(inspected.agentRuns[0]?.events.map((event) => event.kind)).toEqual(['message']);
+    expect(inspected.agentRuns[0]?.findings.map((row) => row.id)).toEqual([
+      'finding_deleted_agent',
+    ]);
+  });
+
   it('links a superseded run to the replacement run derived from the previous head', async () => {
     const { owner } = await seedRepositoryOwnership();
     await insertReviewRun({

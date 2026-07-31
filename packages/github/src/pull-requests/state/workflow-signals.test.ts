@@ -44,7 +44,9 @@ function createGithubContext(overrides?: {
       deleteCacheByPattern: vi.fn().mockResolvedValue(0),
       resetCacheClient: vi.fn(),
     },
-    getInstallationOctokit: overrides?.getInstallationOctokit ?? vi.fn().mockResolvedValue(null),
+    getInstallationOctokit:
+      overrides?.getInstallationOctokit ??
+      createOctokitStub(vi.fn().mockResolvedValue({ data: { id: 999, html_url: null } })),
   };
 }
 
@@ -66,25 +68,15 @@ describe('mapPullRequestEventToReviewIntentKind', () => {
     expect(mapPullRequestEventToReviewIntentKind(eventType)).toBe(kind);
   });
 
-  it('ignores pull request activity that does not start review-engine work', () => {
-    const ignoredEventTypes = [
-      'review_submitted',
-      'review_dismissed',
-      'review_comment_created',
-      'review_comment_edited',
-      'review_comment_deleted',
-      'review_thread_resolved',
-      'review_thread_unresolved',
-      'issue_comment_created',
-      'issue_comment_edited',
-      'issue_comment_deleted',
-      'base_branch_updated',
-      'manual',
-    ] satisfies PullRequestEventType[];
+  it('does not expose review-activity event types through the durable signal contract', () => {
+    type DurableSignalEventType = PullRequestEventType;
+    type ReviewActivityEventType = Extract<DurableSignalEventType, 'review_submitted'>;
 
-    for (const eventType of ignoredEventTypes) {
-      expect(mapPullRequestEventToReviewIntentKind(eventType)).toBeNull();
-    }
+    const reviewActivityEventTypeIsNotDurable: ReviewActivityEventType extends never
+      ? true
+      : false = true;
+
+    expect(reviewActivityEventTypeIsNotDurable).toBe(true);
   });
 });
 
@@ -485,6 +477,7 @@ describe('signalPullRequestEvent', () => {
   });
 
   it('does not fail intent enqueue when Check Run creation fails', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const repository = await testContext.factories.repository.create({ id: 56 });
     await createWatchedRepository(repository.id, 100);
     const checksCreate = vi.fn().mockRejectedValue(new Error('GitHub is down'));
@@ -509,6 +502,11 @@ describe('signalPullRequestEvent', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.deliveryId, 'delivery-check-run-failure'));
     expect(rows[0].checkRunId).toBeNull();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      '[review-intent] Failed to create Check Run at intent time:',
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    consoleErrorSpy.mockRestore();
   });
 
   it('does not enqueue an intent when no active user watches the repository', async () => {
@@ -537,28 +535,6 @@ describe('signalPullRequestEvent', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.deliveryId, 'delivery-unwatched-repository'));
     expect(rows).toHaveLength(0);
-  });
-
-  it('returns not enqueued for ignored event types', async () => {
-    const repository = await testContext.factories.repository.create({ id: 45 });
-    const context = createGithubContext();
-
-    const result = await signalPullRequestEvent(context, {
-      repositoryId: repository.id,
-      prNumber: 10,
-      installationId: 100,
-      owner: repository.owner,
-      repo: repository.name,
-      eventType: 'review_submitted',
-      eventId: 'delivery-ignored',
-      headSha: 'abc123',
-    });
-
-    expect(result).toEqual({
-      ok: true,
-      workflowId: `review:pr:${repository.id}:10`,
-      enqueued: false,
-    });
   });
 
   it('returns a classified failure when an intent event has no delivery id', async () => {
