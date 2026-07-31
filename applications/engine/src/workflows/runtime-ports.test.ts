@@ -423,7 +423,6 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent).toMatchObject({
       claimedAt: expect.any(Date),
       processedAt: null,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,
@@ -503,7 +502,6 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent).toMatchObject({
       claimedAt: secondClaimedAt,
       processedAt: null,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
     });
