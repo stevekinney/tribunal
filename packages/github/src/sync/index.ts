@@ -89,8 +89,8 @@ export async function enqueueInstallationSync(
     // coalesced onto a live one.
     return { workflowId, status: 'started', outcome: handle.outcome };
   } catch (error) {
-    // Storage may be configured before the installation-sync workflow is ported.
-    // Until it is, report the no-op as 'started' rather than 'error'.
+    // A configured client can still point at a deployment where installation-sync
+    // is not registered. Keep webhook acceptance fail-open in that case.
     if (isWeftFault(error, 'WorkflowNotRegisteredError')) {
       console.log('[sync] installation-sync not registered yet; skipping dispatch', { workflowId });
       return { workflowId, status: 'started' };
