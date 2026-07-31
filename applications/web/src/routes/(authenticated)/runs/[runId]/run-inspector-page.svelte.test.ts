@@ -52,6 +52,8 @@ const data = {
         userId: 1,
         runId: 'run_1',
         agentId: 'agent_security',
+        agentSlug: 'security',
+        agentDescription: 'Finds security issues',
         role: 'specialist',
         modelUsed: 'sonnet',
         effortUsed: 'xhigh',
