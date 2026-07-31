@@ -1445,6 +1445,45 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('keeps a stale idle release from winning after background work is accepted during installation sync lookup', async () => {
+    vi.useFakeTimers();
+    const activeInstallationSyncs = createDeferred<boolean>();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const exit = vi.fn();
+    const logger = { error: vi.fn(), log: vi.fn() };
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents: vi.fn().mockResolvedValue(0),
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        hasActiveInstallationSyncs: vi.fn().mockReturnValue(activeInstallationSyncs.promise),
+        release,
+      },
+      { idleShutdownSeconds: 1, exit, logger },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(scheduler.noteBackgroundWorkAccepted()).toEqual({ accepted: true });
+
+    activeInstallationSyncs.resolve(false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(release).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
+  });
+
   it('waits for active background work before exiting', async () => {
     vi.useFakeTimers();
     const release = vi.fn().mockResolvedValue(undefined);

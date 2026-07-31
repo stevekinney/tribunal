@@ -579,11 +579,9 @@ export function createReviewIntentKickScheduler(
         scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
         return;
       }
-      if (
-        hasClaimedWork(queueStatus) ||
-        isBackgroundWorkActive() ||
-        (await runtime.hasActiveInstallationSyncs?.()) === true
-      ) {
+      const hasActiveInstallationSyncs = (await runtime.hasActiveInstallationSyncs?.()) === true;
+      if (hasNewDrainActivity()) return;
+      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive() || hasActiveInstallationSyncs) {
         scheduleConfiguredIdleShutdown();
         return;
       }
