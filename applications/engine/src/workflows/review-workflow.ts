@@ -166,6 +166,8 @@ export type AgentRunRecord = {
   userId: number;
   /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
   agentId: string | null;
+  agentSlug: string;
+  agentDescription: string;
   role: AgentRunRole;
   status: AgentRunStatus;
   findingsCount: number;
@@ -1406,6 +1408,8 @@ export class ReviewWorkflowEngine {
       reviewRunId: reviewRun.id,
       userId: reviewRun.userId,
       agentId: agentIdForPersistence,
+      agentSlug: agentSpec.slug,
+      agentDescription: agentSpec.description,
       role,
       status: 'running',
       findingsCount: 0,

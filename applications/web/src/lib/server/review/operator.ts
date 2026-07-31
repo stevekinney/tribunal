@@ -664,13 +664,22 @@ export async function getRunInspector(userId: number, runId: string) {
     db
       .select({
         agentRun,
-        slug: agent.slug,
-        description: agent.description,
+        slug: sql<string>`coalesce(nullif(${agentRun.agentSlug}, ''), ${agent.slug}, 'deleted-agent')`,
+        description: sql<string>`coalesce(nullif(${agentRun.agentDescription}, ''), ${agent.description}, 'Deleted agent')`,
       })
       .from(agentRun)
-      .innerJoin(agent, eq(agent.id, agentRun.agentId))
-      .where(and(eq(agentRun.userId, userId), eq(agentRun.runId, runId)))
-      .orderBy(agent.slug),
+      .leftJoin(agent, eq(agent.id, agentRun.agentId))
+      .where(
+        and(
+          eq(agentRun.userId, userId),
+          eq(agentRun.runId, runId),
+          eq(agentRun.role, 'specialist'),
+        ),
+      )
+      .orderBy(
+        sql`coalesce(nullif(${agentRun.agentSlug}, ''), ${agent.slug}, 'deleted-agent')`,
+        agentRun.id,
+      ),
     db
       .select({ finding })
       .from(finding)
