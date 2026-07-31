@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import { eq } from '../../operators';
 import {
   agent,
   agentEvent,
