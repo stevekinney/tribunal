@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   isTransientDockerRegistryResolutionTimeout,
+  readDockerBuildRetryEnvironmentConfiguration,
   runDockerBuildWithRetry,
   type DockerBuildRetryOptions,
 } from './docker-build-retry';
@@ -44,10 +45,12 @@ describe('isTransientDockerRegistryResolutionTimeout', () => {
 describe('runDockerBuildWithRetry', () => {
   it('uses default retry settings when optional limits are omitted', async () => {
     const spawnCommand = vi.fn().mockResolvedValue({ exitCode: 0, output: '', timedOut: false });
+    const now = vi.fn().mockReturnValue(0);
 
     await runDockerBuildWithRetry({
       command: ['docker', 'build', '.'],
       spawnCommand,
+      now,
       sleep: vi.fn().mockResolvedValue(undefined),
       log: {
         error: vi.fn(),
@@ -170,5 +173,28 @@ describe('runDockerBuildWithRetry', () => {
     ).rejects.toThrow('wallClockTimeoutMs must be a positive integer');
 
     expect(spawnCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('readDockerBuildRetryEnvironmentConfiguration', () => {
+  it('allows zero retry delay from the environment', () => {
+    expect(
+      readDockerBuildRetryEnvironmentConfiguration({
+        DOCKER_BUILD_RETRY_DELAY_MS: '0',
+      }).retryDelayMs,
+    ).toBe(0);
+  });
+
+  it('rejects invalid environment values with matching bounds', () => {
+    expect(() =>
+      readDockerBuildRetryEnvironmentConfiguration({
+        DOCKER_BUILD_MAXIMUM_ATTEMPTS: '0',
+      }),
+    ).toThrow('DOCKER_BUILD_MAXIMUM_ATTEMPTS must be a positive integer');
+    expect(() =>
+      readDockerBuildRetryEnvironmentConfiguration({
+        DOCKER_BUILD_RETRY_DELAY_MS: '-1',
+      }),
+    ).toThrow('DOCKER_BUILD_RETRY_DELAY_MS must be a non-negative integer');
   });
 });

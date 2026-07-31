@@ -9,6 +9,12 @@ export interface DockerBuildRetryOptions {
   log?: Pick<Console, 'error' | 'log' | 'warn'>;
 }
 
+export interface DockerBuildRetryConfiguration {
+  maximumAttempts: number;
+  retryDelayMs: number;
+  wallClockTimeoutMs: number;
+}
+
 export interface CommandResult {
   exitCode: number | null;
   output: string;
@@ -23,6 +29,31 @@ export type SpawnCommand = (
 const DEFAULT_MAXIMUM_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 10_000;
 const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 900_000;
+
+export function readDockerBuildRetryEnvironmentConfiguration(
+  environment: Record<string, string | undefined>,
+): DockerBuildRetryConfiguration {
+  return {
+    maximumAttempts: readIntegerEnvironmentValue(
+      environment,
+      'DOCKER_BUILD_MAXIMUM_ATTEMPTS',
+      DEFAULT_MAXIMUM_ATTEMPTS,
+      1,
+    ),
+    retryDelayMs: readIntegerEnvironmentValue(
+      environment,
+      'DOCKER_BUILD_RETRY_DELAY_MS',
+      DEFAULT_RETRY_DELAY_MS,
+      0,
+    ),
+    wallClockTimeoutMs: readIntegerEnvironmentValue(
+      environment,
+      'DOCKER_BUILD_WALL_CLOCK_TIMEOUT_MS',
+      DEFAULT_WALL_CLOCK_TIMEOUT_MS,
+      1,
+    ),
+  };
+}
 
 export function isTransientDockerRegistryResolutionTimeout(output: string): boolean {
   const normalizedOutput = output.toLowerCase();
@@ -43,6 +74,24 @@ export function isTransientDockerRegistryResolutionTimeout(output: string): bool
     normalizedOutput.includes('context deadline exceeded');
 
   return referencesDockerHub && referencesMetadataResolution && referencesTimeout;
+}
+
+function readIntegerEnvironmentValue(
+  environment: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+  minimum: number,
+): number {
+  const rawValue = environment[name];
+  if (!rawValue) return fallback;
+  if (!/^\d+$/.test(rawValue)) {
+    throw new Error(`${name} must be ${minimum === 0 ? 'a non-negative' : 'a positive'} integer`);
+  }
+  const value = Number(rawValue);
+  if (value < minimum) {
+    throw new Error(`${name} must be ${minimum === 0 ? 'a non-negative' : 'a positive'} integer`);
+  }
+  return value;
 }
 
 export async function runDockerBuildWithRetry(options: DockerBuildRetryOptions): Promise<void> {
