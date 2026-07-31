@@ -178,6 +178,18 @@ describe('runDockerBuildWithRetry', () => {
     expect(spawnCommand).toHaveBeenCalledOnce();
   });
 
+  it('treats a timed-out attempt as failed even when the subprocess exits zero', async () => {
+    const spawnCommand = vi
+      .fn()
+      .mockResolvedValue({ exitCode: 0, output: 'handled terminate', timedOut: true });
+
+    await expect(runDockerBuildWithRetry(createOptions({ spawnCommand }))).rejects.toThrow(
+      'exceeded 1000ms wall-clock retry budget',
+    );
+
+    expect(spawnCommand).toHaveBeenCalledOnce();
+  });
+
   it('validates retry options before spawning docker', async () => {
     const spawnCommand = vi.fn();
 

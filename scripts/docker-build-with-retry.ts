@@ -6,25 +6,32 @@ import {
   type CommandResult,
 } from './lib/docker-build-retry';
 
-const command = process.argv.slice(2);
+const STREAM_COLLECTION_TIMEOUT_MS = 1_000;
 
-try {
-  const retryConfiguration = readDockerBuildRetryEnvironmentConfiguration(process.env);
-  await runDockerBuildWithRetry({
-    command,
-    spawnCommand,
-    ...retryConfiguration,
-  });
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+if (import.meta.main) {
+  await main(process.argv.slice(2));
 }
 
-async function spawnCommand(
+async function main(command: string[]): Promise<void> {
+  try {
+    const retryConfiguration = readDockerBuildRetryEnvironmentConfiguration(process.env);
+    await runDockerBuildWithRetry({
+      command,
+      spawnCommand,
+      ...retryConfiguration,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+export async function spawnCommand(
   command: string[],
   options: { timeoutMs: number },
 ): Promise<CommandResult> {
   const subprocess = Bun.spawn(command, {
+    detached: true,
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -37,10 +44,10 @@ async function spawnCommand(
   timeout.cancel();
 
   if (outcome === 'timeout') {
-    subprocess.kill('SIGTERM');
+    killSubprocessGroup(subprocess, 'SIGTERM');
     const exitedAfterTerminate = await waitForSubprocessExit(subprocess, 1_000);
     if (!exitedAfterTerminate) {
-      subprocess.kill('SIGKILL');
+      killSubprocessGroup(subprocess, 'SIGKILL');
       const exitedAfterKill = await waitForSubprocessExit(subprocess, 5_000);
       if (!exitedAfterKill) {
         const [stdoutText, stderrText] = await Promise.all([stdout.cancel(), stderr.cancel()]);
@@ -54,14 +61,13 @@ async function spawnCommand(
         return { exitCode: subprocess.exitCode, output, timedOut: true };
       }
     }
+    const [stdoutText, stderrText] = await collectTimedOutOutput(stdout, stderr);
+    const output = [stdoutText, stderrText].filter(Boolean).join('\n');
+    return { exitCode: subprocess.exitCode, output, timedOut: true };
   }
 
   const [stdoutText, stderrText] = await Promise.all([stdout.promise, stderr.promise]);
   const output = [stdoutText, stderrText].filter(Boolean).join('\n');
-
-  if (outcome === 'timeout') {
-    return { exitCode: subprocess.exitCode, output, timedOut: true };
-  }
 
   return { exitCode: outcome.exitCode, output, timedOut: false };
 }
@@ -90,10 +96,43 @@ async function waitForSubprocessExit(
   return Promise.race([subprocess.exited.then(() => true), Bun.sleep(timeoutMs).then(() => false)]);
 }
 
-function collectStream(stream: ReadableStream<Uint8Array>): {
+function killSubprocessGroup(
+  subprocess: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  signal: NodeJS.Signals,
+): void {
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-subprocess.pid, signal);
+      return;
+    } catch (error) {
+      if (isNoSuchProcessError(error)) return;
+    }
+  }
+  subprocess.kill(signal);
+}
+
+function isNoSuchProcessError(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: string }).code === 'ESRCH';
+}
+
+async function collectTimedOutOutput(
+  stdout: CollectedStream,
+  stderr: CollectedStream,
+): Promise<[string, string]> {
+  return Promise.race([
+    Promise.all([stdout.promise, stderr.promise]),
+    Bun.sleep(STREAM_COLLECTION_TIMEOUT_MS).then(() =>
+      Promise.all([stdout.cancel(), stderr.cancel()]),
+    ),
+  ]);
+}
+
+interface CollectedStream {
   promise: Promise<string>;
   cancel: () => Promise<string>;
-} {
+}
+
+function collectStream(stream: ReadableStream<Uint8Array>): CollectedStream {
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   const chunks: string[] = [];

@@ -132,6 +132,13 @@ export async function runDockerBuildWithRetry(options: DockerBuildRetryOptions):
     if (result.output.length > 0) {
       log.log(result.output.trimEnd());
     }
+
+    if (result.timedOut) {
+      throw new Error(
+        `Docker build exceeded ${wallClockTimeoutMs}ms wall-clock retry budget after ${attempt} attempt(s)`,
+      );
+    }
+
     if (result.exitCode === 0) {
       return;
     }
@@ -139,12 +146,6 @@ export async function runDockerBuildWithRetry(options: DockerBuildRetryOptions):
     const retryable = isTransientDockerRegistryResolutionTimeout(result.output);
     const finalAttempt = attempt === maximumAttempts;
     const elapsedMs = now() - startedAt;
-
-    if (result.timedOut) {
-      throw new Error(
-        `Docker build exceeded ${wallClockTimeoutMs}ms wall-clock retry budget after ${attempt} attempt(s)`,
-      );
-    }
 
     if (!retryable) {
       throw new Error(`Docker build failed with exit code ${result.exitCode ?? 'unknown'}`);
