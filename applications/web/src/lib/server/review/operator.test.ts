@@ -2019,6 +2019,14 @@ describe('review operator server helpers', () => {
     await reader.cancel().catch(() => undefined);
 
     expect(streamedText).toContain('event: agent_event');
+    expect(streamedText).toContain('id: 1');
+    expect(streamedText).toContain('data:');
+    expect(streamedText).not.toContain('agent_run_1');
+    expect(streamedText).not.toContain('agentRunId');
+    expect(streamedText).not.toContain('seq');
+    expect(streamedText).not.toContain('tool_pre');
+    expect(streamedText).not.toContain('tool');
+    expect(streamedText).not.toContain('detail');
   });
 
   it('resolves the latest event id from the database when no cursor is supplied', async () => {
