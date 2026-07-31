@@ -52,8 +52,9 @@ describe('githubContext', () => {
       ok: true,
       responseStatus: 202,
     });
+    const cancelInstallationSync = getCancelInstallationSync();
 
-    await expect(githubContext.cancelInstallationSync(123)).resolves.toBeUndefined();
+    await expect(cancelInstallationSync(123)).resolves.toBeUndefined();
 
     expect(mocks.cancelInstallationSyncEngine).toHaveBeenCalledWith(123);
   });
@@ -63,8 +64,9 @@ describe('githubContext', () => {
       status: 'not_configured',
       missingSettings: ['TRIBUNAL_ENGINE_URL'],
     });
+    const cancelInstallationSync = getCancelInstallationSync();
 
-    await expect(githubContext.cancelInstallationSync(123)).rejects.toThrow(
+    await expect(cancelInstallationSync(123)).rejects.toThrow(
       'Installation sync engine control is not configured',
     );
   });
@@ -75,8 +77,9 @@ describe('githubContext', () => {
       status: 'failed',
       error,
     });
+    const cancelInstallationSync = getCancelInstallationSync();
 
-    await expect(githubContext.cancelInstallationSync(123)).rejects.toThrow('engine unavailable');
+    await expect(cancelInstallationSync(123)).rejects.toThrow('engine unavailable');
   });
 
   it('rejects cancellation when the engine returns a non-success response', async () => {
@@ -85,9 +88,18 @@ describe('githubContext', () => {
       ok: false,
       responseStatus: 503,
     });
+    const cancelInstallationSync = getCancelInstallationSync();
 
-    await expect(githubContext.cancelInstallationSync(123)).rejects.toThrow(
+    await expect(cancelInstallationSync(123)).rejects.toThrow(
       'Installation sync engine cancellation failed with status 503',
     );
   });
 });
+
+function getCancelInstallationSync() {
+  const { cancelInstallationSync } = githubContext;
+  if (!cancelInstallationSync) {
+    throw new Error('Expected githubContext.cancelInstallationSync to be configured.');
+  }
+  return cancelInstallationSync;
+}
