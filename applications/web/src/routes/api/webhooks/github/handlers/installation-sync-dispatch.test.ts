@@ -64,6 +64,24 @@ describe('dispatchInstallationSync', () => {
     );
   });
 
+  it('throws and logs when the engine client returns a structured failure', async () => {
+    const error = new Error('engine unavailable');
+    signalInstallationSyncEngineMock.mockResolvedValue({
+      status: 'failed',
+      error,
+    });
+    const logger = createLogger();
+
+    await expect(
+      dispatchInstallationSync({ installationId: 1, reason: 'test' }, logger),
+    ).rejects.toThrow('engine unavailable');
+
+    expect(logger.error).toHaveBeenCalledWith(
+      { error },
+      'Installation sync engine dispatch failed',
+    );
+  });
+
   it('throws and logs when the dispatch promise rejects', async () => {
     const rejection = new Error('network error');
     signalInstallationSyncEngineMock.mockRejectedValue(rejection);
