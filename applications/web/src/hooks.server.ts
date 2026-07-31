@@ -10,7 +10,7 @@ import {
 import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
-import { warnOnHandledWebhookEventDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
+import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
 
 /**
  * Runs once before the server responds to its first request.
@@ -23,8 +23,8 @@ import { warnOnHandledWebhookEventDriftAtStartup } from '$lib/server/github/webh
  * it is a warning rather than a startup guard that throws.
  */
 export const init: ServerInit = () => {
-  void warnOnHandledWebhookEventDriftAtStartup().catch((error) => {
-    console.error('[webhook-subscription] Unexpected error during startup drift check:', error);
+  void warnOnGitHubAppConfigurationDriftAtStartup().catch((error) => {
+    console.error('[github-app-configuration] Unexpected error during startup drift check:', error);
   });
 };
 
