@@ -186,7 +186,7 @@ Required permissions:
 1. In the GitHub App settings, check every event type listed above under "Subscribe to events" (the three non-configurable ones cannot be unchecked and do not appear in that list).
 2. Save. GitHub applies the new subscription immediately; no redeploy is required.
 3. Confirm the fix: `GET /api/webhooks/github` (authenticated) returns `{ registered, unregistered }` — `registered` should now include the event types you just added, immediately (this endpoint bypasses the cache). `/webhooks` should stop showing the drift banner, and new event types should start appearing in the "Event type" filter and in the `webhook_event` table as GitHub sends real traffic.
-4. Check the web startup logs for the combined GitHub App configuration drift warning. If it reports an insufficient requested App permission, update the App's "Permissions" tab and have an installation owner accept the new permission request.
+4. After changing requested App permissions, restart or redeploy the web service so its startup-only drift check runs again, then check the web startup logs for the combined GitHub App configuration drift warning. Have an installation owner accept the new permission request.
 
 ## Data model produced by these integrations
 
