@@ -382,6 +382,10 @@ export function createEngineServerOptions(
         if (!hasValidControlToken(request, controlToken)) {
           return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
         }
+        const acceptance = reviewIntentKickScheduler.noteBackgroundWorkAccepted();
+        if (!acceptance.accepted && acceptance.reason === 'released') {
+          return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
+        }
         return handleInstallationSyncRequest(request, runtime);
       }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
@@ -416,12 +420,17 @@ export function createEngineServerOptions(
 
 export type ReviewIntentKickScheduler = {
   kick(): ReviewIntentKickResult;
+  noteBackgroundWorkAccepted(): BackgroundWorkAcceptanceResult;
   stop(): void;
 };
 
 export type ReviewIntentKickResult =
   | { started: true }
   | { started: false; reason: 'already_running' | 'released' };
+
+export type BackgroundWorkAcceptanceResult =
+  | { accepted: true }
+  | { accepted: false; reason: 'released' };
 
 export type ReviewIntentKickSchedulerOptions = {
   idleShutdownSeconds?: number;
@@ -609,6 +618,12 @@ export function createReviewIntentKickScheduler(
 
   return {
     kick: startDrain,
+    noteBackgroundWorkAccepted() {
+      if (released) return { accepted: false, reason: 'released' };
+      drainGeneration += 1;
+      scheduleConfiguredIdleShutdown();
+      return { accepted: true };
+    },
     stop() {
       // Quiesce the drain so no new review intents are claimed during shutdown:
       // setting `released` makes `drainUntilIdle` exit after its current batch
