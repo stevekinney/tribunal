@@ -75,6 +75,28 @@ describe('runDockerBuildWithRetry', () => {
     expect(sleep).toHaveBeenCalledOnce();
   });
 
+  it('retries immediately when the retry delay is zero', async () => {
+    const spawnCommand = vi
+      .fn()
+      .mockResolvedValueOnce({ exitCode: 1, output: transientTimeoutOutput, timedOut: false })
+      .mockResolvedValueOnce({ exitCode: 0, output: 'built image', timedOut: false });
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(1);
+
+    await runDockerBuildWithRetry(
+      createOptions({ maximumAttempts: 2, retryDelayMs: 0, spawnCommand, sleep, now }),
+    );
+
+    expect(spawnCommand).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(0);
+  });
+
   it('fails after capped transient timeout attempts', async () => {
     const spawnCommand = vi
       .fn()

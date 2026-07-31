@@ -156,12 +156,13 @@ export async function runDockerBuildWithRetry(options: DockerBuildRetryOptions):
       );
     }
 
-    const delayMs = Math.min(retryDelayMs, Math.max(0, deadline - now()));
-    if (delayMs === 0) {
+    const remainingDelayBudgetMs = deadline - now();
+    if (remainingDelayBudgetMs <= 0) {
       throw new Error(
         `Docker build retry budget expired after transient registry timeout on attempt ${attempt}`,
       );
     }
+    const delayMs = Math.min(retryDelayMs, remainingDelayBudgetMs);
 
     log.warn(
       `Docker Hub base-image metadata timed out on attempt ${attempt}/${maximumAttempts}; retrying in ${delayMs}ms`,
