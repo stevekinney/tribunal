@@ -58,8 +58,11 @@ A delivery is processed in order:
 Eligible pull request lifecycle, check completion, and Tribunal-owned re-run events call
 `@tribunal/github/pull-requests/state/workflow-signals` helpers such as
 `signalPullRequestEvent`, `signalPullRequestClosed`, and `signalManualReview`. Those
-helpers write idempotent `review_intent` rows for enabled watchers and kick the review
-engine only when durable work exists. Review, review-comment, review-thread, and
+helpers write idempotent `review_intent` rows for enabled watchers and, for newly
+enqueued pull request lifecycle work, may create the queued `Tribunal Review` Check Run.
+The webhook handlers make the separate `kickReviewEngineAfterDurableIntent` call only
+after a signal result represents durable work the engine can drain. Review,
+review-comment, review-thread, and
 issue-comment webhooks are cache/state-only today: their handlers accept the events, while
 the outer route still stores the delivery, invalidates the relevant caches, and runs any
 fire-and-forget state tracking or event-listener matching that applies.
