@@ -160,21 +160,22 @@ never blocks on `Engine.create` + `recoverAll()`. `getWeftClient` builds the
 client once and memoizes it **only on success** — a rejected build (transient
 Neon outage on first dispatch) is not cached, so a later dispatch retries instead
 of the process being poisoned until restart. It returns `null` when no
-`WEFT_DATABASE_URL` is set. Workflow definitions register on the engine via
-`engine.registerWorkflows(...)` once they are ported.
+`WEFT_DATABASE_URL` is set. The ported workflow definitions are registered on the
+in-process engine through `Engine.create({ workflows })`.
 
 **Webhook delivery acceptance is never blocked on the engine**, guaranteed two
 ways:
 
 1. When no durable store is configured (`WEFT_DATABASE_URL` unset), the resolver
    returns `null` and producers run log-only.
-2. When a client _is_ resolved but the workflow definitions are not ported yet
-   (empty registry), `startOrSignal` throws `WorkflowNotRegisteredError` — and
-   the producers treat that as a **no-op success**, not a webhook-failing error.
+2. When a client _is_ resolved but points at a deployment where the expected
+   workflow name is not registered, `startOrSignal` throws
+   `WorkflowNotRegisteredError` — and the producers treat that as a **no-op
+   success**, not a webhook-failing error.
 
-So readiness is gated on workflows being _registered and dispatchable_, not
-merely on storage being configured. Enabling `WEFT_DATABASE_URL` before porting
-workflows does not regress the webhook path.
+So readiness is gated on the deployment resolving a client whose engine has the
+ported workflows _registered and dispatchable_, not merely on storage being
+configured.
 
 ### Storage isolation (critical)
 
@@ -189,20 +190,29 @@ table.
 
 ## 4. The seams
 
-### 4.1 Pull request orchestrator (wired)
+### 4.1 Review intent queue (wired)
 
 `packages/github/src/pull-requests/state/workflow-signals.ts` —
-`signalPullRequestEvent` now `startOrSignal`s `pull-request-orchestrator` with id
-`pull-request-orchestrator:{repo}:{pr}` and a per-event `signalId` derived from
-the GitHub delivery GUID. All six PR webhook handlers thread `context.deliveryId`
-as `eventId`, so a 500-and-retry of a delivery dedups to one signal (orchestrator
-deliveries are claimed only after a successful handler, so the retry path
-matters). `signalPullRequestClosed` `signal`s the running run and treats
-`WorkflowNotFoundError` as success.
+`signalPullRequestEvent`, `signalPullRequestClosed`, and `signalManualReview`
+write idempotent `review_intent` rows for enabled watchers when the current
+review engine consumes the event. Eligible pull request lifecycle events, check
+completion, and Tribunal-owned rerun events pass `context.deliveryId` as
+`eventId`, so GitHub redelivery dedups through the `review_intent` uniqueness
+constraint. The webhook ingress claims deliveries before typed handling and
+explicitly releases review-engine dispatch claims before returning 500, so a
+failed durable enqueue can still be retried by GitHub.
 
-**Still to port:** the orchestrator _workflow definition_ (sliding debounce,
-supersede-on-new-event, idle timeout). Blocked on `ctx.race(sleep|waitForSignal)`
-(weft#456) — see §6.
+Review, review-comment, review-thread, and issue-comment webhook handlers are
+cache/state-only today. They accept the events, store the delivery through the
+outer route, invalidate the relevant caches, and run any applicable state
+tracking or event-listener matching, but they do not call the review-engine
+signaling API and do not create durable review-engine work.
+
+The `pull-request-orchestrator` workflow definition itself is already ported,
+registered on the in-process engine, and tested. The current review-activity
+webhook path is disconnected from that Weft producer path by design: it writes
+durable `review_intent` rows for the separate review engine instead of
+`startOrSignal`ing the Weft workflow.
 
 ### 4.2 Installation sync (wired)
 
@@ -210,22 +220,22 @@ supersede-on-new-event, idle timeout). Blocked on `ctx.race(sleep|waitForSignal)
 `startOrSignal`s `installation-sync` with id `github:installations:{id}:sync`. Its
 `signalId` is the caller's stable `deliveryId` (the GitHub delivery GUID) when
 present so retries/redeliveries dedup, falling back to a fresh UUID only for
-distinct manual intents. (Webhook handlers don't thread the GUID down yet — noted
-as a `TODO(weft)` at the call sites; GitHub redeliveries are already deduped
-upstream by `claimWebhookDelivery`.) The `installation-sync` workflow definition
-is still to port.
+distinct manual intents. Webhook handlers thread the GitHub delivery GUID through
+as `deliveryId`, while upstream `claimWebhookDelivery` still provides the
+webhook-level dedup boundary. The `installation-sync` workflow definition is
+already ported, registered on the in-process engine, and e2e-tested; dispatch is
+active only in deployments where `resolveWeftClient` returns a configured client.
 
 > [!WARNING]
-> **Fire-and-forget durability gap — must close before porting the sync
-> workflow.** The installation webhook delivery is claimed (`claimWebhookDelivery`)
-> _before_ the handler runs, and the handler enqueues the sync fire-and-forget
-> (it must return inside GitHub's ~10s timeout; awaiting a repo-provisioning sync
-> would regress latency). So a failed enqueue after the delivery is claimed is
-> lost — a GitHub redelivery gets deduped away. This is **inert today** (the
-> workflow isn't ported, so the producer is a no-op `started`), and the handler
-> now logs an `error` status rather than dropping it silently. Before the
-> `installation-sync` workflow ports, the enqueue must become recoverable: an
-> outbox row + reconciler, or claim-after-enqueue.
+> **Fire-and-forget durability gap — must close before enabling installation-sync
+> dispatch in production.** The installation webhook delivery is claimed
+> (`claimWebhookDelivery`) _before_ the handler runs, and the handler enqueues the
+> sync fire-and-forget (it must return inside GitHub's ~10s timeout; awaiting a
+> repo-provisioning sync would regress latency). So a failed enqueue after the
+> delivery is claimed is lost — a GitHub redelivery gets deduped away. This is
+> **operationally inert while the web deployment has no configured Weft client**;
+> once dispatch is activated, the enqueue must become recoverable: an outbox row +
+> reconciler, or claim-after-enqueue.
 
 ### 4.3 Repository refresh + installation cancellation (pending)
 
@@ -257,22 +267,27 @@ The nine depict task queues, the Temporal primitives each used, and whether
 Tribunal has a corresponding seam. (Derived from a parallel analysis of each
 queue against Weft's real type definitions.)
 
-| depict queue                   | Temporal primitives                                                                            | Tribunal seam?                                                                      |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| **pull-request-action-items**  | `setHandler`×2, `condition`, `CancellationScope.cancel`, sliding debounce                      | **Yes** — `workflow-signals.ts` (the PR orchestrator). Wired §4.1.                  |
-| **github-sync**                | `setHandler`, `defineSignal`, `sleep`, `condition`, `continueAsNew`                            | **Yes** — `sync/index.ts` (+ lifecycle/refresh). Wired §4.2.                        |
-| **pull-request-review**        | `CancellationScope`, `setHandler`, sandbox lifecycle, `heartbeat`                              | Partial — same `workflow-signals.ts` seam; review-agent is a future feature.        |
-| **address-pr**                 | `continueAsNew`, `CancellationScope.nonCancellable`, `workflowInfo`, `heartbeat`, CI-poll loop | Schema seams (`workflow_run`, `pull_request_trigger`); feature not yet in Tribunal. |
-| **account-deletion**           | `proxyActivities` + `heartbeat`, batch checkpoint deletion                                     | Indirect — operates on the `workflow_run` data §4.5 reshapes.                       |
-| **planning**                   | `setHandler`, `defineSignal`/`defineQuery`, `condition`, `CancellationScope`                   | No direct seam — depict goal-planning feature.                                      |
-| **repository-question-answer** | `condition`, `continueAsNew`, `CancellationScope.nonCancellable`, sandbox Q&A                  | No seam — depict-only sandbox feature.                                              |
-| **pull-request-dependencies**  | one-shot `proxyActivities`, retry policies, LLM calls                                          | No seam — depict dependency-inference feature.                                      |
-| **sandbox-reconciler**         | periodic `sleep`+`continueAsNew` loop, `patched`, `getHandle`                                  | No seam — maps to Weft `client.schedule()` if Tribunal grows sandboxes.             |
+| depict queue                   | Temporal primitives                                                                            | Tribunal seam?                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **pull-request-action-items**  | `setHandler`×2, `condition`, `CancellationScope.cancel`, sliding debounce                      | Partial — the Weft orchestrator definition is ported and registered, but current review work is produced through the durable `review_intent` queue in §4.1. |
+| **github-sync**                | `setHandler`, `defineSignal`, `sleep`, `condition`, `continueAsNew`                            | **Yes** — `sync/index.ts` (+ lifecycle/refresh). Wired §4.2.                                                                                                |
+| **pull-request-review**        | `CancellationScope`, `setHandler`, sandbox lifecycle, `heartbeat`                              | Partial — current durable handoff is the `review_intent` queue; review-agent workflow orchestration is a future feature.                                    |
+| **address-pr**                 | `continueAsNew`, `CancellationScope.nonCancellable`, `workflowInfo`, `heartbeat`, CI-poll loop | Schema seams (`workflow_run`, `pull_request_trigger`); feature not yet in Tribunal.                                                                         |
+| **account-deletion**           | `proxyActivities` + `heartbeat`, batch checkpoint deletion                                     | Indirect — operates on the `workflow_run` data §4.5 reshapes.                                                                                               |
+| **planning**                   | `setHandler`, `defineSignal`/`defineQuery`, `condition`, `CancellationScope`                   | No direct seam — depict goal-planning feature.                                                                                                              |
+| **repository-question-answer** | `condition`, `continueAsNew`, `CancellationScope.nonCancellable`, sandbox Q&A                  | No seam — depict-only sandbox feature.                                                                                                                      |
+| **pull-request-dependencies**  | one-shot `proxyActivities`, retry policies, LLM calls                                          | No seam — depict dependency-inference feature.                                                                                                              |
+| **sandbox-reconciler**         | periodic `sleep`+`continueAsNew` loop, `patched`, `getHandle`                                  | No seam — maps to Weft `client.schedule()` if Tribunal grows sandboxes.                                                                                     |
 
-**Takeaway:** Tribunal's live seams are exactly the two GitHub-automation queues
-(**pull-request-action-items** and **github-sync**) — both now wired. The rest
-are depict features Tribunal does not (yet) have; they map cleanly to Weft when
-the corresponding feature lands, with the gaps in §6 applied.
+**Takeaway:** Tribunal's live seams are the current durable review-intent queue
+for pull request review work and the GitHub installation sync seam. The
+`pull-request-orchestrator` and `installation-sync` Weft definitions are already
+ported and registered; the remaining distinction is producer topology and
+deployment activation. Pull request review webhooks currently produce
+`review_intent` rows for the separate review engine, while installation sync uses
+Weft only when a deployment resolves a configured client. The rest are depict
+features Tribunal does not (yet) have; they map cleanly to Weft when the
+corresponding feature lands, with the gaps in §6 applied.
 
 ## 6. Capability gaps & bugs filed on `stevekinney/weft`
 
