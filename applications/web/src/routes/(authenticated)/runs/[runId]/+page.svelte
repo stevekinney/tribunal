@@ -117,6 +117,10 @@
     return status === 'running' || status === 'queued';
   }
 
+  function canStopConfiguredAgent(agentRun: AgentRun): boolean {
+    return agentRun.agentId !== null && canStopAgent(agentRun.status);
+  }
+
   function githubCommentHref(commentId: number): string {
     if (run.runKind !== 'pull_request_review') return '';
     return `https://github.com/${run.repositoryOwner}/${run.repositoryName}/pull/${run.prNumber}#discussion_r${commentId}`;
@@ -334,7 +338,7 @@
               {#if agentMetaSummary(agentRun)}
                 <span class="agent-meta">{agentMetaSummary(agentRun)}</span>
               {/if}
-              {#if canStopAgent(agentRun.status)}
+              {#if canStopConfiguredAgent(agentRun)}
                 <form
                   method="POST"
                   action={`/api/review/runs/${run.id}/agents/${agentRun.agentId}/stop`}

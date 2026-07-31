@@ -28,7 +28,7 @@ describe('agent deletion history preservation', () => {
     await testDatabase.reset();
   });
 
-  it('preserves run history while removing future repository assignments', async () => {
+  it('preserves run history after backfilling empty agent snapshots', async () => {
     const [owner] = await testDatabase.db
       .insert(user)
       .values({ username: 'owner-user' })
@@ -66,8 +66,6 @@ describe('agent deletion history preservation', () => {
       userId: owner.id,
       runId: 'run_1',
       agentId: 'agent_security',
-      agentSlug: 'security',
-      agentDescription: 'Finds security issues',
       status: 'succeeded',
       findingsCount: 1,
     });

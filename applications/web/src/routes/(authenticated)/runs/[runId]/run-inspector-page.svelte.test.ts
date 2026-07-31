@@ -157,6 +157,23 @@ describe('/runs/[runId] page', () => {
       .toHaveAttribute('href', 'https://github.com/lost-gradient/tribunal/pull/12');
   });
 
+  it('omits per-agent stop control for active historical runs after agent deletion', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [{ ...data.run.agentRuns[0], agentId: null }],
+        },
+      },
+    });
+
+    await expect.element(page.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Stop security' }))
+      .not.toBeInTheDocument();
+  });
+
   it('renders webhook event handler context without pull request controls', async () => {
     render(RunInspectorPage, {
       data: {
