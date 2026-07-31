@@ -3,7 +3,7 @@ import { ValidationError } from '../error-taxonomy.js';
 import type { App } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import type { CachedReadFetchFunction } from '../core/github-read-client.js';
-import type { RegisteredWebhooks } from './registered-webhooks.js';
+import type { GitHubAppConfiguration } from './registered-webhooks.js';
 
 // ============================================================================
 // Mocks
@@ -13,7 +13,7 @@ import type { RegisteredWebhooks } from './registered-webhooks.js';
  * Mock `cachedRead` to capture the fetch function passed to it.
  * This lets us test the fetch logic in isolation without needing Redis.
  */
-let capturedFetchFunction: CachedReadFetchFunction<RegisteredWebhooks> | undefined;
+let capturedFetchFunction: CachedReadFetchFunction<GitHubAppConfiguration> | undefined;
 
 vi.mock('../core/github-read-client.js', () => ({
   cachedRead: vi.fn(async (_cache, _policy, fetchFn) => {
@@ -37,6 +37,7 @@ vi.mock('../core/cache-policy.js', () => ({
 
 // Import after mocking
 const {
+  getGitHubAppConfiguration,
   getRegisteredWebhooks,
   SUPPORTED_GITHUB_WEBHOOK_EVENT_CATALOG,
   NON_CONFIGURABLE_GITHUB_WEBHOOK_EVENTS,
@@ -64,13 +65,16 @@ function createMockContext(overrides?: Partial<GithubServiceContext>): GithubSer
   };
 }
 
-function createMockApp(events: string[] = []) {
+function createMockApp(
+  events: string[] = [],
+  permissions: Record<string, string> | null = { metadata: 'read' },
+) {
   return {
     octokit: {
       rest: {
         apps: {
           getAuthenticated: vi.fn().mockResolvedValue({
-            data: { events },
+            data: { events, permissions },
             headers: { etag: '"abc123"' },
           }),
         },
@@ -133,6 +137,55 @@ describe('CONFIGURABLE_GITHUB_WEBHOOK_EVENT_CATALOG', () => {
       'installation',
       'installation_repositories',
     ]);
+  });
+});
+
+describe('getGitHubAppConfiguration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedFetchFunction = undefined;
+  });
+
+  it('returns subscribed events and sorted requested permissions from one App configuration read', async () => {
+    const app = createMockApp(['push'], {
+      pull_requests: 'write',
+      contents: 'read',
+      metadata: 'read',
+    });
+    const context = createMockContext({
+      getGithubApplication: vi.fn().mockReturnValue(app),
+    });
+
+    const result = await getGitHubAppConfiguration(context);
+
+    expect(result.registered).toEqual(['push']);
+    expect(result.permissions).toEqual({
+      contents: 'read',
+      metadata: 'read',
+      pull_requests: 'write',
+    });
+  });
+
+  it('rejects malformed permission payloads from the GitHub App API', async () => {
+    const app = createMockApp(['push'], null);
+    const context = createMockContext({
+      getGithubApplication: vi.fn().mockReturnValue(app),
+    });
+
+    await expect(getGitHubAppConfiguration(context)).rejects.toThrow(
+      'GitHub App permissions response is malformed',
+    );
+  });
+
+  it('rejects unsupported permission levels from the GitHub App API', async () => {
+    const app = createMockApp(['push'], { metadata: 'banana' });
+    const context = createMockContext({
+      getGithubApplication: vi.fn().mockReturnValue(app),
+    });
+
+    await expect(getGitHubAppConfiguration(context)).rejects.toThrow(
+      'GitHub App permission "metadata" has unsupported level "banana"',
+    );
   });
 });
 
@@ -218,7 +271,7 @@ describe('getRegisteredWebhooks', () => {
 
   it('passes etag header for conditional requests', async () => {
     const mockGetAuthenticated = vi.fn().mockResolvedValue({
-      data: { events: ['push'] },
+      data: { events: ['push'], permissions: { metadata: 'read' } },
       headers: { etag: '"new-etag"' },
     });
     const app = {
@@ -258,7 +311,7 @@ describe('getRegisteredWebhooks', () => {
     // because getAuthenticated rejects. So we need a two-call setup.
     mockGetAuthenticated
       .mockResolvedValueOnce({
-        data: { events: ['push'] },
+        data: { events: ['push'], permissions: { metadata: 'read' } },
         headers: { etag: '"first"' },
       })
       .mockRejectedValueOnce(notModifiedError);
@@ -291,7 +344,7 @@ describe('getRegisteredWebhooks', () => {
         rest: {
           apps: {
             getAuthenticated: vi.fn().mockResolvedValue({
-              data: { events: null },
+              data: { events: null, permissions: { metadata: 'read' } },
               headers: {},
             }),
           },
