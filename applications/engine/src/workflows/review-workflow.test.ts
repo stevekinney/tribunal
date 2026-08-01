@@ -1073,6 +1073,24 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toHaveLength(0);
   });
 
+  it('does not overwrite cancellation with a denied triage reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 1 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservation();
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
   it('records one LLM estimate per agent run even when a retry reaches the cost boundary twice', async () => {
     const ports = createFakePorts({ duplicateCostRecordCalls: true });
     const engine = createEngine(ports);
@@ -1713,6 +1731,24 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toHaveLength(0);
   });
 
+  it('does not overwrite cancellation with a denied specialist reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 2 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(2);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
   it('blocks a specialist when remaining budget is below its configured maximum', async () => {
     const ports = createFakePorts({ spendTodayEstimate: 9.95 });
     const engine = createEngine(ports);
@@ -1793,6 +1829,24 @@ describe('ReviewWorkflowEngine', () => {
         amountUsd: 0,
       }),
     );
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('does not overwrite cancellation with a denied verifier reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 3 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(3);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual(['agent_security']);
     expect(ports.github.reviews).toHaveLength(0);
   });
 
