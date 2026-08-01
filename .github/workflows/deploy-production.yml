@@ -136,7 +136,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker build \
+          bun run scripts/docker-build-with-retry.ts \
+            docker build \
             -f "$REVIEWER_IMAGE_CONTEXT/Dockerfile" \
             -t "tribunal-reviewer:${DEPLOY_SHA}" \
             "$REVIEWER_IMAGE_CONTEXT"
