@@ -1,0 +1,1 @@
+-- No-op migration: retain review_intent.failed_at physically for N-1 deployments.
