@@ -398,7 +398,6 @@ function markReviewIntentProcessed(
     .update(reviewIntent)
     .set({
       processedAt: now,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,
@@ -438,7 +437,6 @@ async function deferReviewIntentRetry(
     .update(reviewIntent)
     .set({
       claimedAt: null,
-      failedAt: now,
       lastError: reason,
       nextAttemptAt: new Date(now.getTime() + backoffMinutesForFailure(1) * 60 * 1000),
     })
@@ -497,7 +495,6 @@ async function releaseReviewIntentIfEligibleAgentsAvailable(
     .update(reviewIntent)
     .set({
       claimedAt: null,
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     })
@@ -537,7 +534,6 @@ async function markReviewIntentFailed(
     .update(reviewIntent)
     .set({
       claimedAt: null,
-      failedAt: now,
       failureCount,
       lastError: serializeReviewIntentError(error),
       nextAttemptAt,

@@ -30,8 +30,8 @@ export interface EnqueueInstallationSyncResult {
   /**
    * Which atomic path the `startOrSignal` dispatch took (weft#466): `'started'`
    * for a fresh sync run, `'signalled'` for a lifecycle webhook coalesced onto a
-   * live run. Absent for no-op fallbacks (no engine / unregistered workflow) and
-   * error results. (Previously `startOrSignal` could not distinguish the two.)
+   * live run. Absent for receiver configuration errors and other failed
+   * dispatches. (Previously `startOrSignal` could not distinguish the two.)
    */
   outcome?: StartOrSignalOutcome;
   error?: string;

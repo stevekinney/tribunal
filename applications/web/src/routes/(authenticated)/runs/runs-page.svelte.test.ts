@@ -72,6 +72,23 @@ describe('/runs page', () => {
     await expect.element(page.getByText('opened')).toBeInTheDocument();
   });
 
+  it('labels the estimated cost column without implying final cost', async () => {
+    const data = {
+      user: baseUser,
+      reviewsEnabled: true,
+      runs: [baseRun],
+      surfaceStates: ['empty', 'loading', 'streaming', 'success', 'error', 'disconnected'],
+    } satisfies PageProps['data'];
+
+    render(RunsPage, { data, form: null, params: {} });
+
+    await expect.element(page.getByRole('columnheader', { name: 'Estimated cost' })).toBeVisible();
+    await expect
+      .element(page.getByRole('columnheader', { name: 'Cost', exact: true }))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByText('$1.00')).toBeVisible();
+  });
+
   it('wraps the table in a named, focusable scroll region', async () => {
     const data = {
       user: baseUser,

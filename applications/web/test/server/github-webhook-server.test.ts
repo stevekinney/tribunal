@@ -325,7 +325,7 @@ describe('GitHub webhook route', () => {
     await expect(POST(createEvent() as Parameters<typeof POST>[0])).rejects.toMatchObject({
       status: 500,
       body: {
-        message: 'Review intent dispatch failed and delivery claim could not be released',
+        message: 'Durable dispatch failed and delivery claim could not be released',
       },
     });
 

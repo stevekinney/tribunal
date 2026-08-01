@@ -159,6 +159,8 @@ export type FakePortOptions = {
   failedAgentPartialDurationMs?: number;
   /** Triage decides to skip the review entirely (T-9). */
   triageSkip?: string | false;
+  triageCostEstimateUsd?: number;
+  verificationCostEstimateUsd?: number;
   /** Verifier rejects every candidate finding (T-10). */
   rejectAllFindings?: boolean;
   /** Holds the first verifier's completion so a supersede/abort can race it (T-10/T-12). */
@@ -620,6 +622,7 @@ class FakeSandboxPort implements SandboxPort {
           reason: typeof this.options.triageSkip === 'string' ? this.options.triageSkip : '',
           riskFlags: [],
         },
+        costEstimateUsd: this.options.triageCostEstimateUsd ?? 0,
       });
     }
     if (agent.role === 'verifier') {
@@ -639,6 +642,7 @@ class FakeSandboxPort implements SandboxPort {
       this.concurrentVerifiers -= 1;
       return createSystemRoleAgentResult(agent, {
         verification: { verified: this.options.rejectAllFindings !== true, note: 'ok' },
+        costEstimateUsd: this.options.verificationCostEstimateUsd ?? 0,
       });
     }
 
@@ -848,7 +852,8 @@ class FakeCostPort implements CostPort {
 
 function createSystemRoleAgentResult(
   agent: AgentSpec,
-  extra: Pick<AgentResult, 'triage' | 'verification'>,
+  extra: Pick<AgentResult, 'triage' | 'verification'> &
+    Partial<Pick<AgentResult, 'costEstimateUsd'>>,
 ): AgentResult {
   return {
     agentSlug: agent.slug,

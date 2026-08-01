@@ -256,6 +256,42 @@ describe('POST /api/webhooks/github', () => {
     );
   });
 
+  it('throws, releases the claim, and returns 500 when an installation trigger fails schema validation', async () => {
+    await expect(
+      POST(
+        createPostEvent(
+          { action: 'created', installation: { id: 1 } },
+          { 'x-github-event': 'installation' },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'installation',
+    );
+  });
+
+  it('throws, releases the claim, and returns 500 when installation sync dispatch fails', async () => {
+    handlers.handleInstallation.mockRejectedValueOnce(new Error('engine unavailable'));
+
+    await expect(
+      POST(
+        createPostEvent(
+          { __route: 'installation', action: 'created', installation: { id: 1 } },
+          { 'x-github-event': 'installation' },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'installation',
+    );
+  });
+
   it('returns 500 with a distinct message when releasing the claim also fails', async () => {
     webhookUtils.isPullRequestWebhookEvent.mockReturnValue(true);
     mockReleaseWebhookDeliveryClaim.mockResolvedValue(false);

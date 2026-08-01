@@ -69,7 +69,9 @@ set `TRIBUNAL_PROXY_CIDR` to that address with a `/32` suffix.
 
 `WEFT_DATABASE_URL` belongs only on `tribunal-engine`. Never set it on
 `tribunal-web`. The web service writes review intents to the application
-database; the engine claims those intents and owns durable Weft execution state.
+database and sends installation-sync control requests to the engine; the engine
+claims review intents, receives installation-sync dispatches, and owns durable
+Weft execution state.
 
 Use pooled Neon runtime URLs for long-running Fly services unless a specific
 driver path requires direct Postgres. Use a direct, unpooled Neon URL for
@@ -297,6 +299,18 @@ engine Machines so a first automatic deploy can create one. The post-deploy
 live-state check uses `bun run deploy:status -- --live-status-only` without
 those allowances, so the refreshed engine secret and singleton engine Machine
 are required before the workflow can finish.
+
+The reviewer-image `docker build` is wrapped with a bounded retry for transient
+Docker Hub base-image metadata timeouts while resolving `oven/bun`. The wrapper
+retries only that timeout class, stops after three attempts or fifteen minutes of
+wall-clock time, and preserves all other Docker build failures as immediate
+failures. The reviewer image self-test (`docker run --rm tribunal-reviewer:*`)
+still runs after the build succeeds and remains required before Tensorlake
+publication or deploy continuation.
+
+The CI `container-images` job uses the same wrapper with a ten-minute wall-clock
+budget so setup, the other image builds, and the required reviewer image
+self-test still fit inside the job timeout.
 
 ### When the reviewer image cannot be published
 

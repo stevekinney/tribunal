@@ -134,6 +134,34 @@ describe('createEngineRuntime', () => {
     await runtime.release();
   });
 
+  it('reports active installation sync workflows and can cancel them', async () => {
+    const installationSyncWorkflow = workflow({ name: 'installation-sync' }).execute(
+      async function* (context) {
+        yield* context.sleep('1m');
+        return { ok: true };
+      },
+    );
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: { 'installation-sync': installationSyncWorkflow },
+        drain: vi.fn().mockResolvedValue(0),
+      },
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await expect(runtime.hasActiveInstallationSyncs()).resolves.toBe(false);
+    await runtime.enqueueInstallationSync?.({ installationId: 100, reason: 'test' });
+    await expect(runtime.hasActiveInstallationSyncs()).resolves.toBe(true);
+
+    await runtime.cancelInstallationSync?.(100);
+    await vi.waitFor(async () => {
+      await expect(runtime.hasActiveInstallationSyncs()).resolves.toBe(false);
+    });
+
+    await runtime.release();
+  });
+
   it('reports singleton ownership only after the runtime is created', async () => {
     const runtime = await createEngineRuntime({
       allowEphemeralStorageForTests: true,
