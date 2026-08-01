@@ -545,6 +545,55 @@ describe('cost ledger', () => {
     expect(Number(budget?.reservedUsd)).toBe(0.01);
   });
 
+  it('extends an omitted-amount full-remaining reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.03' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_existing_full_remaining_retry_spend',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:existing-full-remaining-retry-spend',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:full-remaining-retry-estimate`,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(portAtNoon.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.02,
+      remainingUsd: 0.01,
+    });
+
+    const portBeforeExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:04:00.000Z'),
+    });
+    await expect(
+      portBeforeExpiry.enforceDailyCap(user.id, {
+        ...reservation,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.03,
+      remainingUsd: 0,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.01);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
   it('resizes an active idempotent reservation when a retry is admitted', async () => {
     const { user, run } = await createCostFixture();
     await testDatabase.db

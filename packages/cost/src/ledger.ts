@@ -597,6 +597,10 @@ async function reserveDailyCap(
           ) AS remaining_usd,
           COALESCE(
             ${reservationAmountUsd}::numeric,
+            (
+              SELECT active_idempotent_reservation.amount_usd
+              FROM active_idempotent_reservation
+            ),
             GREATEST(
               cap.cap_usd
                 - reconciled_budget.spent_usd
