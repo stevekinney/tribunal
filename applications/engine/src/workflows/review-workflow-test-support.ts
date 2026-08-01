@@ -153,6 +153,8 @@ export type FakePortOptions = {
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
   unboundedReservationAmountUsd?: number;
+  holdDailyCapReservations?: boolean;
+  holdDailyCapReservationCall?: number;
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
@@ -832,6 +834,8 @@ class FakeCostPort implements CostPort {
   readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private readonly dailyCapReservations = new Map<string, number>();
+  private readonly heldReservationResolvers: Array<() => void> = [];
+  private readonly reservationWaiters: Array<{ count: number; resolve: () => void }> = [];
   private spendTodayEstimateValue: number;
 
   constructor(private readonly options: FakePortOptions) {
@@ -883,6 +887,13 @@ class FakeCostPort implements CostPort {
     this.enforceDailyCapCalls.push(userId);
     if (reservation !== undefined) {
       this.reservationCalls.push(reservation);
+      this.resolveReservationWaiters();
+      if (
+        this.options.holdDailyCapReservations ||
+        this.options.holdDailyCapReservationCall === this.reservationCalls.length
+      ) {
+        await new Promise<void>((resolve) => this.heldReservationResolvers.push(resolve));
+      }
     }
     const capUsd = 10;
     const reservedUsd =
@@ -912,8 +923,35 @@ class FakeCostPort implements CostPort {
     return { allowed };
   }
 
+  async waitForDailyCapReservation(): Promise<void> {
+    await this.waitForDailyCapReservations(1);
+  }
+
+  async waitForDailyCapReservations(count: number): Promise<void> {
+    if (this.reservationCalls.length >= count) return;
+    await new Promise<void>((resolve) => this.reservationWaiters.push({ count, resolve }));
+  }
+
+  resolveHeldDailyCapReservations(): void {
+    for (const resolve of this.heldReservationResolvers.splice(0)) {
+      resolve();
+    }
+  }
+
   setSpendTodayEstimate(value: number): void {
     this.spendTodayEstimateValue = value;
+  }
+
+  private resolveReservationWaiters(): void {
+    const readyWaiters = this.reservationWaiters.filter(
+      (waiter) => this.reservationCalls.length >= waiter.count,
+    );
+    for (const waiter of readyWaiters) {
+      waiter.resolve();
+    }
+    for (const waiter of readyWaiters) {
+      this.reservationWaiters.splice(this.reservationWaiters.indexOf(waiter), 1);
+    }
   }
 }
 

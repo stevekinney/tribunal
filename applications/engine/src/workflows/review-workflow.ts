@@ -904,6 +904,7 @@ export class ReviewWorkflowEngine {
       idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
       expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
     });
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     if (!triageCapDecision.allowed) {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
@@ -1191,6 +1192,9 @@ export class ReviewWorkflowEngine {
         ...(agent.maxBudgetUsd === undefined ? {} : { amountUsd: agent.maxBudgetUsd }),
         expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       });
+      if (isStoppedReviewRun(reviewRun)) {
+        return { results, quotaBlocked: false };
+      }
       if (!dailyCapDecision.allowed) {
         return { results, quotaBlocked: true };
       }
@@ -1373,6 +1377,7 @@ export class ReviewWorkflowEngine {
           amountUsd: VERIFIER_MAX_BUDGET_USD,
           expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
         });
+        if (isStoppedReviewRun(reviewRun)) return;
         if (!dailyCapDecision.allowed) {
           quotaBlocked = true;
           return;

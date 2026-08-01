@@ -567,8 +567,22 @@ async function reserveDailyCap(
                 AND released_expired_total.day_started_at = locked_budget.day_started_at
             ), 0),
             0
-          ) AS reserved_usd
+        ) AS reserved_usd
         FROM locked_budget
+      ),
+      active_idempotent_reservation AS (
+        SELECT
+          ${costReservation.id},
+          ${costReservation.userId} AS user_id,
+          ${costReservation.dayStartedAt} AS day_started_at,
+          ${costReservation.amountUsd}::numeric AS amount_usd
+        FROM ${costReservation}
+        WHERE ${costReservation.userId} = ${userId}
+          AND ${costReservation.dayStartedAt} = (SELECT day_started_at FROM budget_day)
+          AND ${costReservation.idempotencyKey} = ${reservation.idempotencyKey}
+          AND ${costReservation.releasedAt} IS NULL
+          AND ${costReservation.expiresAt} > ${now}
+        LIMIT 1
       ),
       claim_decision AS (
         SELECT
@@ -589,7 +603,11 @@ async function reserveDailyCap(
                 - reconciled_budget.reserved_usd,
               0
             )
-          ) AS requested_usd
+          ) AS requested_usd,
+          COALESCE((
+            SELECT active_idempotent_reservation.amount_usd
+            FROM active_idempotent_reservation
+          ), 0)::numeric AS existing_reservation_usd
         FROM cap, reconciled_budget
         WHERE reconciled_budget.day_started_at = (SELECT day_started_at FROM budget_day)
       ),
@@ -615,9 +633,11 @@ async function reserveDailyCap(
           ${now}
         FROM claim_decision
         WHERE claim_decision.requested_usd > 0
-          AND claim_decision.requested_usd <= claim_decision.remaining_usd
+          AND claim_decision.requested_usd
+            <= claim_decision.remaining_usd + claim_decision.existing_reservation_usd
           AND (SELECT COUNT(*) FROM released_expired_reservation) >= 0
         ON CONFLICT ("idempotency_key") WHERE "released_at" IS NULL DO UPDATE SET
+          "amount_usd" = EXCLUDED."amount_usd",
           "expires_at" = EXCLUDED."expires_at",
           "updated_at" = ${now}
         WHERE ${costReservation.userId} = ${userId}
@@ -634,14 +654,19 @@ async function reserveDailyCap(
           "spent_usd" = reconciled_budget.spent_usd,
           "reserved_usd" = reconciled_budget.reserved_usd
             + CASE
-              WHEN reconciled_budget.day_started_at = (SELECT day_started_at FROM budget_day)
-                THEN COALESCE((
-                  SELECT SUM(amount_usd)
-                  FROM claimed_reservation
-                  WHERE inserted
-                ), 0)
-              ELSE 0
-            END,
+                WHEN reconciled_budget.day_started_at = (SELECT day_started_at FROM budget_day)
+                  THEN COALESCE((
+                    SELECT SUM(amount_usd)
+                    FROM claimed_reservation
+                    WHERE inserted
+                  ), 0)
+                    + COALESCE((
+                      SELECT SUM(amount_usd - claim_decision.existing_reservation_usd)
+                      FROM claimed_reservation
+                      WHERE NOT inserted
+                    ), 0)
+                ELSE 0
+              END,
           "updated_at" = ${now}
         FROM reconciled_budget
         CROSS JOIN claim_decision
@@ -669,12 +694,14 @@ async function reserveDailyCap(
   const spendUsd = toNumber(row?.spendUsd ?? 0);
   const allowed = row?.allowed === true || row?.allowed === 'true';
   if (!allowed) {
-    const [activeReservation] = getRows<{ id: string }>(
+    const [activeReservation] = getRows<{ id: string; amountUsd: string | number }>(
       await database.execute(sql`
         WITH budget_day AS (
           SELECT ${dayStartedAtSql(now)} AS day_started_at
         )
-        SELECT ${costReservation.id}
+        SELECT
+          ${costReservation.id} AS "id",
+          ${costReservation.amountUsd} AS "amountUsd"
         FROM ${costReservation}, budget_day
         WHERE ${costReservation.userId} = ${userId}
           AND ${costReservation.dayStartedAt} = budget_day.day_started_at
@@ -684,7 +711,11 @@ async function reserveDailyCap(
         LIMIT 1
       `),
     );
-    if (activeReservation !== undefined) {
+    const requestedAmountUsd = reservation.amountUsd ?? toNumber(activeReservation?.amountUsd);
+    if (
+      activeReservation !== undefined &&
+      requestedAmountUsd <= toNumber(activeReservation.amountUsd)
+    ) {
       return {
         allowed: true,
         capUsd,

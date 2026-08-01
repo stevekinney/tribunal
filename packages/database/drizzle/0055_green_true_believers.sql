@@ -30,6 +30,7 @@ BEGIN
 		SELECT 1
 		FROM pg_constraint
 		WHERE conname = 'cost_budget_day_user_id_user_id_fk'
+			AND connamespace = 'public'::regnamespace
 	) THEN
 		ALTER TABLE "cost_budget_day" ADD CONSTRAINT "cost_budget_day_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
 	END IF;
@@ -40,6 +41,7 @@ BEGIN
 		SELECT 1
 		FROM pg_constraint
 		WHERE conname = 'cost_reservation_user_id_user_id_fk'
+			AND connamespace = 'public'::regnamespace
 	) THEN
 		ALTER TABLE "cost_reservation" ADD CONSTRAINT "cost_reservation_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
 	END IF;

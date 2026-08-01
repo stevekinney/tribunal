@@ -545,6 +545,87 @@ describe('cost ledger', () => {
     expect(Number(budget?.reservedUsd)).toBe(0.01);
   });
 
+  it('resizes an active idempotent reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.05' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:resized-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0,
+      remainingUsd: 0.05,
+    });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        ...reservation,
+        amountUsd: 0.05,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.01,
+      remainingUsd: 0.04,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.05);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.05);
+  });
+
+  it('denies an idempotent reservation resize when the extra amount no longer fits', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.05' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:oversized-retry-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+    await port.enforceDailyCap(user.id, reservation);
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_retry_resize_spend',
+      userId: user.id,
+      kind: 'sandbox',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'sandbox:retry-resize-spend',
+      occurredAt: new Date('2026-06-17T12:01:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        ...reservation,
+        amountUsd: 0.05,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      spendUsd: 0.03,
+      remainingUsd: 0.02,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.01);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T12:05:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
   it('expires stale unmatched reservations before checking the next reservation', async () => {
     const { user, run } = await createCostFixture();
     await testDatabase.db
@@ -890,5 +971,32 @@ describe('cost ledger', () => {
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       }),
     ).resolves.toEqual({ allowed: false, capUsd: 25, spendUsd: 0, remainingUsd: 25 });
+  });
+
+  it('treats an active same-key reservation as idempotent success when the claim result is empty', async () => {
+    let executeCalls = 0;
+    const database = {
+      execute: async () => {
+        executeCalls += 1;
+        if (executeCalls === 2) {
+          return {
+            rows: [{ allowed: false, capUsd: '0.05', spendUsd: '0.01', remainingUsd: '0.04' }],
+          };
+        }
+        if (executeCalls === 3) {
+          return { rows: [{ id: 'cost_active_retry', amountUsd: '0.01' }] };
+        }
+        return undefined;
+      },
+      select: testDatabase.db.select,
+    } as unknown as Parameters<typeof enforceDailyCap>[0];
+
+    await expect(
+      enforceDailyCap(database, 1, new Date('2026-06-17T12:00:00.000Z'), 25, {
+        idempotencyKey: 'llm:active-driver-retry:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toEqual({ allowed: true, capUsd: 0.05, spendUsd: 0.01, remainingUsd: 0.04 });
   });
 });
