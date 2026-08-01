@@ -33,6 +33,7 @@ export const reviewIntent = pgTable(
     checkRunId: bigint('check_run_id', { mode: 'number' }),
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
     processedAt: timestamp('processed_at', { withTimezone: true }),
+    failedAt: timestamp('failed_at', { withTimezone: true }),
     nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
     deadLetteredAt: timestamp('dead_lettered_at', { withTimezone: true }),
     failureCount: integer('failure_count').notNull().default(0),
