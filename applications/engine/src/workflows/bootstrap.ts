@@ -3,6 +3,7 @@ import {
   MemoryStorage,
   assertDurableStorageForRecovery,
   workflow,
+  isWeftFault,
   type WorkflowStatus,
 } from '@lostgradient/weft';
 import { LocalClient } from '@lostgradient/weft/client/local';
@@ -12,6 +13,7 @@ import type {
   EnqueueInstallationSyncOptions,
   EnqueueInstallationSyncResult,
 } from '@tribunal/github/sync/types';
+import type { WorkflowCancellationResult } from '@tribunal/github/context';
 import type { EngineHealthDependency } from '../health';
 import type { StopReviewRunResult } from './review-workflow';
 
@@ -43,6 +45,7 @@ export type ReviewIntentConsumer = {
   consumePendingDrain?(): boolean;
   getQueueStatus?(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes?(): Promise<unknown>;
+  stopReviewWorkflow?(workflowId: string): Promise<StopReviewRunResult>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
   stopReviewAgent?(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
 };
@@ -73,6 +76,7 @@ export type EngineRuntime = {
   reapClosedPullRequestSandboxes(): Promise<unknown>;
   hasActiveInstallationSyncs?(): Promise<boolean>;
   cancelInstallationSync?(installationId: number): Promise<void>;
+  cancelWorkflowIds?(workflowIds: string[]): Promise<WorkflowCancellationResult>;
   enqueueInstallationSync?(
     options: EnqueueInstallationSyncOptions,
   ): Promise<EnqueueInstallationSyncResult>;
@@ -157,6 +161,23 @@ export async function createEngineRuntime(
       },
       async cancelInstallationSync(installationId) {
         await engine.cancel(`github:installations:${installationId}:sync`);
+      },
+      async cancelWorkflowIds(workflowIds) {
+        let cancelled = 0;
+        let failed = 0;
+        const errors: string[] = [];
+        for (const workflowId of workflowIds) {
+          try {
+            await options.reviewIntentConsumer?.stopReviewWorkflow?.(workflowId);
+            await engine.cancel(workflowId);
+            cancelled++;
+          } catch (error) {
+            if (isWeftFault(error, 'WorkflowNotFoundError')) continue;
+            failed++;
+            errors.push(`${workflowId}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return { cancelled, failed, errors };
       },
       enqueueInstallationSync(options) {
         return dispatchInstallationSync(client, options);

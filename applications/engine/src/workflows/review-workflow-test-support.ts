@@ -143,6 +143,7 @@ export type FakePortOptions = {
   failNextSandboxUpdate?: boolean;
   failReviewPostsRemaining?: number;
   failPostedReviewLookupsRemaining?: number;
+  holdDiffContext?: boolean;
   publishFailedReviewBeforeThrowing?: boolean;
   multipleFindings?: boolean;
   multiLineFinding?: boolean;
@@ -157,6 +158,7 @@ export type FakePortOptions = {
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
+  holdSandboxEnsure?: boolean;
   /** Triage decides to skip the review entirely (T-9). */
   triageSkip?: string | false;
   triageCostEstimateUsd?: number;
@@ -415,6 +417,11 @@ class FakeGitHubPort implements GitHubPort {
     this.reviewPostResolver = resolve;
   });
   private readonly heldReviewPostResolvers: Array<() => void> = [];
+  private diffContextResolver: (() => void) | undefined;
+  private readonly diffContextPromise = new Promise<void>((resolve) => {
+    this.diffContextResolver = resolve;
+  });
+  private readonly heldDiffContextResolvers: Array<() => void> = [];
 
   constructor(private readonly options: FakePortOptions = {}) {
     this.checkRunCreationFailuresRemaining =
@@ -435,6 +442,12 @@ class FakeGitHubPort implements GitHubPort {
     head: string,
     previousHead?: string,
   ): Promise<DiffContext> {
+    this.diffContextResolver?.();
+    if (this.options.holdDiffContext) {
+      await new Promise<void>((resolve) => {
+        this.heldDiffContextResolvers.push(resolve);
+      });
+    }
     return {
       headSha: head,
       baseSha: 'base000',
@@ -533,6 +546,20 @@ class FakeGitHubPort implements GitHubPort {
     }
   }
 
+  async waitForDiffContext(): Promise<void> {
+    await this.diffContextPromise;
+  }
+
+  resolveHeldDiffContexts(): void {
+    for (const resolve of this.heldDiffContextResolvers.splice(0)) {
+      resolve();
+    }
+  }
+
+  stopHoldingDiffContexts(): void {
+    this.options.holdDiffContext = false;
+  }
+
   async findPostedReview(
     _repository: RepoRef,
     _pullRequestNumber: number,
@@ -580,13 +607,34 @@ class FakeSandboxPort implements SandboxPort {
   private verifierCalls = 0;
   private readonly heldVerifierResolvers: Array<() => void> = [];
   private concurrentVerifiers = 0;
+  private ensureResolver: (() => void) | undefined;
+  private readonly ensurePromise = new Promise<void>((resolve) => {
+    this.ensureResolver = resolve;
+  });
+  private readonly heldEnsureResolvers: Array<() => void> = [];
   maxConcurrentVerifiers = 0;
 
   constructor(private readonly options: FakePortOptions) {}
 
   async ensure(prKey: string, options: SandboxOptions): Promise<{ sandboxId: string }> {
     this.ensureCalls.push({ prKey, options });
+    this.ensureResolver?.();
+    if (this.options.holdSandboxEnsure) {
+      await new Promise<void>((resolve) => {
+        this.heldEnsureResolvers.push(resolve);
+      });
+    }
     return { sandboxId: `sandbox-${prKey}` };
+  }
+
+  async waitForEnsure(): Promise<void> {
+    await this.ensurePromise;
+  }
+
+  resolveHeldEnsures(): void {
+    for (const resolve of this.heldEnsureResolvers.splice(0)) {
+      resolve();
+    }
   }
 
   async update(
@@ -715,6 +763,9 @@ class FakeSandboxPort implements SandboxPort {
 
   async stop(_sandboxId: string, agentRunId: string): Promise<void> {
     this.stopCalls.push(agentRunId);
+    for (const resolve of this.heldAgentResolvers.splice(0)) {
+      resolve();
+    }
   }
 
   async suspend(): Promise<void> {}

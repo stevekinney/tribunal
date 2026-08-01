@@ -299,6 +299,7 @@ export class ReviewWorkflowEngine {
   private readonly agentEventWrites: Promise<void>[] = [];
   private readonly postedReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
+  private readonly stoppingWorkflowIds = new Set<string>();
 
   constructor(
     private readonly ports: ReviewWorkflowPorts,
@@ -500,6 +501,51 @@ export class ReviewWorkflowEngine {
     return { stopped: false };
   }
 
+  async stopWorkflow(workflowId: string): Promise<StopReviewRunResult> {
+    this.stoppingWorkflowIds.add(workflowId);
+    const supervisor =
+      this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
+    if (supervisor === undefined) {
+      this.stoppingWorkflowIds.delete(workflowId);
+      return { stopped: false };
+    }
+
+    await this.stopActiveAgents(supervisor, 'pr_closed');
+    const activeRun = supervisor.activeRunId
+      ? this.reviewRuns.get(supervisor.activeRunId)
+      : undefined;
+    if (activeRun?.status === 'running') {
+      activeRun.status = 'cancelled';
+      activeRun.finishedAt = this.now();
+      await this.persistReviewRun(activeRun);
+      activeRun.sandboxId = '';
+      await this.ports.state?.upsertReviewRun(activeRun);
+    }
+
+    try {
+      await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Repository removed; stopped in-flight review work.',
+        },
+      });
+    } catch (error) {
+      console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
+        workflowId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await this.terminateSandboxOnce(supervisor.sandboxId);
+    await Promise.allSettled([...supervisor.runPromises.values()]);
+    supervisor.status = 'closed';
+    supervisor.activeRunId = undefined;
+    this.supervisors.delete(workflowId);
+    this.stoppingWorkflowIds.delete(workflowId);
+    return { stopped: true };
+  }
+
   async reapClosedPullRequestSandboxes(
     openPullRequests: Array<{ repositoryId: number; pullRequestNumber: number }>,
   ): Promise<string[]> {
@@ -590,6 +636,7 @@ export class ReviewWorkflowEngine {
     if (existingPromise !== undefined) {
       const supervisor = await existingPromise;
       supervisor.input = input;
+      if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
       return supervisor;
     }
 
@@ -597,7 +644,9 @@ export class ReviewWorkflowEngine {
       this.supervisorPromises.delete(workflowId);
     });
     this.supervisorPromises.set(workflowId, supervisorPromise);
-    return supervisorPromise;
+    const supervisor = await supervisorPromise;
+    if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
+    return supervisor;
   }
 
   private async createSupervisor(
@@ -784,6 +833,7 @@ export class ReviewWorkflowEngine {
     await this.persistReviewRun(reviewRun);
 
     const dailyCapDecision = await this.ports.cost.enforceDailyCap(input.userId);
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     if (!dailyCapDecision.allowed) {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
@@ -809,12 +859,14 @@ export class ReviewWorkflowEngine {
       signingKey: this.configuration.proxySigningKey,
     });
     await this.ports.sandbox.update(supervisor.sandboxId, input.repository, headSha, runToken);
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     const diffContext = await this.ports.github.getDiffContext(
       repositoryExecutionContext(input),
       input.pullRequestNumber,
       headSha,
       previousHeadSha,
     );
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     const patchId = computePatchId(diffContext);
     reviewRun.patchId = patchId;
     if (
@@ -858,6 +910,7 @@ export class ReviewWorkflowEngine {
       runToken,
       diffContext,
     );
+    if (isStoppedReviewRun(reviewRun)) return reviewRun;
     reviewRun.costEstimateUsd += triageResult.costEstimateUsd;
     if (triageResult.triage?.skip === true) {
       reviewRun.status = 'posted';

@@ -2013,6 +2013,130 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('cancels a running review through the workflow stop signal', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(engine.snapshot().agentRuns[0]).toMatchObject({ stoppedReason: 'pr_closed' });
+    expect(engine.snapshot().supervisors).toEqual([]);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Repository removed; stopped in-flight review work.',
+        },
+      },
+    });
+  });
+
+  it('terminates workflow resources even when the stop check update fails', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true, failCheckRunUpdatesRemaining: 1 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(engine.snapshot().supervisors).toEqual([]);
+  });
+
+  it('cancels a workflow whose supervisor is still being created', async () => {
+    const ports = createFakePorts({ holdSandboxEnsure: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForEnsure();
+
+    const stopResult = engine.stopWorkflow('review:pr:42:7');
+    ports.sandbox.resolveHeldEnsures();
+
+    await expect(stopResult).resolves.toEqual({ stopped: true });
+    await expect(runningReview).rejects.toThrow(
+      'Cannot start a review for a closed pull request supervisor.',
+    );
+    expect(ports.sandbox.runAgentCalls).toEqual([]);
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(engine.snapshot().supervisors).toEqual([]);
+  });
+
+  it('waits for setup-stage review work to observe workflow cancellation', async () => {
+    const ports = createFakePorts({ holdDiffContext: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.github.waitForDiffContext();
+
+    let stopResolved = false;
+    const stopResult = engine.stopWorkflow('review:pr:42:7').then((result) => {
+      stopResolved = true;
+      return result;
+    });
+    await Promise.resolve();
+
+    expect(stopResolved).toBe(false);
+    expect(ports.sandbox.runAgentCalls).toEqual([]);
+
+    ports.github.resolveHeldDiffContexts();
+
+    await expect(stopResult).resolves.toEqual({ stopped: true });
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toEqual([]);
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(engine.snapshot().supervisors).toEqual([]);
+  });
+
+  it('clears stopped workflow sandbox state before persistence can hydrate it again', async () => {
+    const ports = createFakePorts({ holdDiffContext: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.github.waitForDiffContext();
+
+    const stopResult = engine.stopWorkflow('review:pr:42:7');
+    ports.github.resolveHeldDiffContexts();
+
+    await expect(stopResult).resolves.toEqual({ stopped: true });
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled', sandboxId: '' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'cancelled',
+      sandboxId: '',
+    });
+
+    ports.github.stopHoldingDiffContexts();
+    const restartedEngine = createEngine(ports);
+    await expect(restartedEngine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+    expect(ports.sandbox.ensureCalls).toHaveLength(2);
+    expect(ports.sandbox.ensureCalls[1]?.prKey).toBe('tribunal-pr-42-7');
+  });
+
+  it('ignores workflow stop signals when no active workflow matches', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({ stopped: false });
+
+    expect(ports.sandbox.stopCalls).toEqual([]);
+    expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
   it('does not overwrite a cancelled run as posted when cancellation races with review posting', async () => {
     const ports = createFakePorts({ holdReviewPosts: true });
     const engine = createEngine(ports);

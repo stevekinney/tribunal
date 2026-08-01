@@ -162,6 +162,79 @@ describe('createEngineRuntime', () => {
     await runtime.release();
   });
 
+  it('cancels arbitrary workflow ids through the runtime control port', async () => {
+    const longRunningWorkflow = workflow({ name: 'long-running' }).execute(
+      async function* (context) {
+        yield* context.sleep('1m');
+        return { ok: true };
+      },
+    );
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: { 'long-running': longRunningWorkflow },
+        drain: vi.fn().mockResolvedValue(0),
+      },
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await (
+      runtime.engine as {
+        start(
+          workflowName: 'long-running',
+          input: Record<string, never>,
+          options: { id: string; defer: false },
+        ): Promise<unknown>;
+      }
+    ).start('long-running', {}, { id: 'workflow:cancel-me', defer: false });
+
+    await expect(runtime.cancelWorkflowIds?.(['workflow:cancel-me'])).resolves.toEqual({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+
+    await runtime.release();
+  });
+
+  it('stops active review runtime work before cancelling workflow ids', async () => {
+    const longRunningWorkflow = workflow({ name: 'long-running' }).execute(
+      async function* (context) {
+        yield* context.sleep('1m');
+        return { ok: true };
+      },
+    );
+    const stopReviewWorkflow = vi.fn().mockResolvedValue({ stopped: true });
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: { 'long-running': longRunningWorkflow },
+        drain: vi.fn().mockResolvedValue(0),
+        stopReviewWorkflow,
+      },
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await (
+      runtime.engine as {
+        start(
+          workflowName: 'long-running',
+          input: Record<string, never>,
+          options: { id: string; defer: false },
+        ): Promise<unknown>;
+      }
+    ).start('long-running', {}, { id: 'review:pr:42:7', defer: false });
+
+    await expect(runtime.cancelWorkflowIds?.(['review:pr:42:7'])).resolves.toEqual({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+    expect(stopReviewWorkflow).toHaveBeenCalledWith('review:pr:42:7');
+
+    await runtime.release();
+  });
+
   it('reports singleton ownership only after the runtime is created', async () => {
     const runtime = await createEngineRuntime({
       allowEphemeralStorageForTests: true,

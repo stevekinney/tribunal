@@ -444,6 +444,343 @@ describe('createEngineServerOptions', () => {
     ).rejects.toBe(failure);
   });
 
+  it('cancels workflows through the runtime endpoint', async () => {
+    const cancelWorkflowIds = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(cancelWorkflowIds).toHaveBeenCalledWith(['review:pr:42:7']);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+  });
+
+  it('keeps the idle scheduler alive while cancelling workflows', async () => {
+    const cancelWorkflowIds = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+    const scheduler = {
+      kick: vi.fn(),
+      noteBackgroundWorkAccepted: vi.fn().mockReturnValue({ accepted: true }),
+      stop: vi.fn(),
+    };
+    const onWorkflowCancellationRequestStart = vi.fn();
+    const onWorkflowCancellationRequestComplete = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+      undefined,
+      scheduler,
+      { onWorkflowCancellationRequestStart, onWorkflowCancellationRequestComplete },
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(scheduler.noteBackgroundWorkAccepted).toHaveBeenCalledTimes(1);
+    expect(onWorkflowCancellationRequestStart).toHaveBeenCalledTimes(1);
+    expect(onWorkflowCancellationRequestComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects workflow cancellation after idle release begins', async () => {
+    const cancelWorkflowIds = vi.fn();
+    const scheduler = {
+      kick: vi.fn(),
+      noteBackgroundWorkAccepted: vi.fn().mockReturnValue({
+        accepted: false,
+        reason: 'released',
+      }),
+      stop: vi.fn(),
+    };
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+      undefined,
+      scheduler,
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(cancelWorkflowIds).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'engine_released' });
+  });
+
+  it('returns a retryable workflow cancellation failure when runtime cancellation fails', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds: vi.fn().mockResolvedValue({
+          cancelled: 0,
+          failed: 1,
+          errors: ['review:pr:42:7: storage unavailable'],
+        }),
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer control-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      cancelled: 0,
+      failed: 1,
+      errors: ['review:pr:42:7: storage unavailable'],
+    });
+  });
+
+  it('rejects unauthenticated workflow cancellations', async () => {
+    const cancelWorkflowIds = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(cancelWorkflowIds).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed workflow cancellation requests', async () => {
+    const cancelWorkflowIds = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+        body: JSON.stringify({ workflowIds: [] }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(cancelWorkflowIds).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'invalid_workflow_cancellation_request',
+    });
+  });
+
+  it('reports workflow cancellation receiver unavailability', async () => {
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+        body: JSON.stringify({ workflowIds: ['review:pr:42:7'] }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'workflow_cancellation_receiver_unavailable',
+    });
+  });
+
+  it('rejects invalid workflow cancellation JSON', async () => {
+    const cancelWorkflowIds = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus: async () => ({
+          readyCount: 0,
+          deferredCount: 0,
+          claimedCount: 0,
+        }),
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+        cancelWorkflowIds,
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/workflows/cancel', {
+        method: 'POST',
+        headers: { authorization: 'Bearer control-token' },
+        body: '{',
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(cancelWorkflowIds).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'invalid_workflow_cancellation_request',
+    });
+  });
+
   it('dispatches installation syncs through the runtime endpoint', async () => {
     const enqueueInstallationSync = vi.fn().mockResolvedValue({
       workflowId: 'github:installations:100:sync',

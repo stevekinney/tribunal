@@ -158,6 +158,9 @@ describe('runtime review intent consumer wiring', () => {
     ]);
     await expect(consumer.drain()).resolves.toBe(0);
     await expect(consumer.stopReviewRun('missing-run')).resolves.toEqual({ stopped: false });
+    await expect(consumer.stopReviewWorkflow('missing-workflow')).resolves.toEqual({
+      stopped: false,
+    });
     await expect(consumer.stopReviewAgent('missing-run', 'missing-agent')).resolves.toEqual({
       stopped: false,
     });
