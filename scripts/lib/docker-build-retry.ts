@@ -56,24 +56,40 @@ export function readDockerBuildRetryEnvironmentConfiguration(
 }
 
 export function isTransientDockerRegistryResolutionTimeout(output: string): boolean {
-  const normalizedOutput = output.toLowerCase();
-  const referencesDockerHub =
-    normalizedOutput.includes('registry-1.docker.io') ||
-    normalizedOutput.includes('auth.docker.io') ||
-    normalizedOutput.includes('docker.io/oven/bun') ||
-    normalizedOutput.includes('oven/bun');
-  const referencesMetadataResolution =
-    normalizedOutput.includes('resolve source metadata') ||
-    normalizedOutput.includes('/manifests/') ||
-    normalizedOutput.includes('failed to fetch anonymous token') ||
-    normalizedOutput.includes('failed to resolve');
-  const referencesTimeout =
-    normalizedOutput.includes('i/o timeout') ||
-    normalizedOutput.includes('tls handshake timeout') ||
-    normalizedOutput.includes('client.timeout exceeded') ||
-    normalizedOutput.includes('context deadline exceeded');
+  return output
+    .toLowerCase()
+    .split(/\r?\n/)
+    .some(
+      (line) =>
+        referencesDockerHub(line) && referencesMetadataResolution(line) && referencesTimeout(line),
+    );
+}
 
-  return referencesDockerHub && referencesMetadataResolution && referencesTimeout;
+function referencesDockerHub(output: string): boolean {
+  return (
+    output.includes('registry-1.docker.io') ||
+    output.includes('auth.docker.io') ||
+    output.includes('docker.io/oven/bun') ||
+    output.includes('oven/bun')
+  );
+}
+
+function referencesMetadataResolution(output: string): boolean {
+  return (
+    output.includes('resolve source metadata') ||
+    output.includes('/manifests/') ||
+    output.includes('failed to fetch anonymous token') ||
+    output.includes('failed to resolve')
+  );
+}
+
+function referencesTimeout(output: string): boolean {
+  return (
+    output.includes('i/o timeout') ||
+    output.includes('tls handshake timeout') ||
+    output.includes('client.timeout exceeded') ||
+    output.includes('context deadline exceeded')
+  );
 }
 
 function readIntegerEnvironmentValue(

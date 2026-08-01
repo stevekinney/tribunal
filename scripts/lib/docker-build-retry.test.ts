@@ -40,6 +40,18 @@ describe('isTransientDockerRegistryResolutionTimeout', () => {
       ),
     ).toBe(false);
   });
+
+  it('does not match timeout markers from a different error line than the base-image metadata failure', () => {
+    expect(
+      isTransientDockerRegistryResolutionTimeout(
+        [
+          '#1 FROM docker.io/oven/bun:1.3.13',
+          'failed to solve: process "/bin/sh -c bun install" did not complete successfully',
+          'failed to resolve github.com/example/package: context deadline exceeded',
+        ].join('\n'),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('runDockerBuildWithRetry', () => {

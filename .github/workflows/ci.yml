@@ -239,6 +239,8 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Build container images
         shell: bash
+        env:
+          DOCKER_BUILD_WALL_CLOCK_TIMEOUT_MS: '600000'
         run: |
           set -euo pipefail
           reviewer_context="$RUNNER_TEMP/tensorlake-reviewer-context"

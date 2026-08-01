@@ -30,6 +30,7 @@ export async function spawnCommand(
   command: string[],
   options: { timeoutMs: number },
 ): Promise<CommandResult> {
+  const startedAt = performance.now();
   const subprocess = Bun.spawn(command, {
     detached: true,
     stdout: 'pipe',
@@ -41,33 +42,25 @@ export async function spawnCommand(
   const timeout = createCancellableTimeout(options.timeoutMs);
   const exited = subprocess.exited.then((exitCode) => ({ exitCode }));
   const outcome = await Promise.race([exited, timeout.promise]);
-  timeout.cancel();
 
   if (outcome === 'timeout') {
-    killSubprocessGroup(subprocess, 'SIGTERM');
-    const exitedAfterTerminate = await waitForSubprocessExit(subprocess, 1_000);
-    if (!exitedAfterTerminate) {
-      killSubprocessGroup(subprocess, 'SIGKILL');
-      const exitedAfterKill = await waitForSubprocessExit(subprocess, 5_000);
-      if (!exitedAfterKill) {
-        const [stdoutText, stderrText] = await Promise.all([stdout.cancel(), stderr.cancel()]);
-        const output = [
-          stdoutText,
-          stderrText,
-          'Docker build subprocess did not exit after SIGKILL',
-        ]
-          .filter(Boolean)
-          .join('\n');
-        return { exitCode: subprocess.exitCode, output, timedOut: true };
-      }
-    }
-    const [stdoutText, stderrText] = await collectTimedOutOutput(stdout, stderr);
-    const output = [stdoutText, stderrText].filter(Boolean).join('\n');
-    return { exitCode: subprocess.exitCode, output, timedOut: true };
+    return terminateTimedOutSubprocess(subprocess, stdout, stderr);
   }
 
-  const [stdoutText, stderrText] = await Promise.all([stdout.promise, stderr.promise]);
-  const output = [stdoutText, stderrText].filter(Boolean).join('\n');
+  const elapsedMs = performance.now() - startedAt;
+  const remainingStreamCollectionMs = Math.max(0, options.timeoutMs - elapsedMs);
+  const streamOutcome = await collectOutputWithinTimeout(
+    stdout,
+    stderr,
+    remainingStreamCollectionMs,
+  );
+  timeout.cancel();
+
+  if (streamOutcome === 'timeout') {
+    return terminateTimedOutSubprocess(subprocess, stdout, stderr);
+  }
+
+  const output = streamOutcome.filter(Boolean).join('\n');
 
   return { exitCode: outcome.exitCode, output, timedOut: false };
 }
@@ -96,6 +89,29 @@ async function waitForSubprocessExit(
   return Promise.race([subprocess.exited.then(() => true), Bun.sleep(timeoutMs).then(() => false)]);
 }
 
+async function terminateTimedOutSubprocess(
+  subprocess: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  stdout: CollectedStream,
+  stderr: CollectedStream,
+): Promise<CommandResult> {
+  killSubprocessGroup(subprocess, 'SIGTERM');
+  const exitedAfterTerminate = await waitForSubprocessExit(subprocess, 1_000);
+  if (!exitedAfterTerminate) {
+    killSubprocessGroup(subprocess, 'SIGKILL');
+    const exitedAfterKill = await waitForSubprocessExit(subprocess, 5_000);
+    if (!exitedAfterKill) {
+      const [stdoutText, stderrText] = await Promise.all([stdout.cancel(), stderr.cancel()]);
+      const output = [stdoutText, stderrText, 'Docker build subprocess did not exit after SIGKILL']
+        .filter(Boolean)
+        .join('\n');
+      return { exitCode: subprocess.exitCode, output, timedOut: true };
+    }
+  }
+  const [stdoutText, stderrText] = await collectTimedOutOutput(stdout, stderr);
+  const output = [stdoutText, stderrText].filter(Boolean).join('\n');
+  return { exitCode: subprocess.exitCode, output, timedOut: true };
+}
+
 function killSubprocessGroup(
   subprocess: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
   signal: NodeJS.Signals,
@@ -119,12 +135,28 @@ async function collectTimedOutOutput(
   stdout: CollectedStream,
   stderr: CollectedStream,
 ): Promise<[string, string]> {
-  return Promise.race([
+  const timeout = createCancellableTimeout(STREAM_COLLECTION_TIMEOUT_MS);
+  const output = await Promise.race([
     Promise.all([stdout.promise, stderr.promise]),
-    Bun.sleep(STREAM_COLLECTION_TIMEOUT_MS).then(() =>
-      Promise.all([stdout.cancel(), stderr.cancel()]),
-    ),
+    timeout.promise.then(() => Promise.all([stdout.cancel(), stderr.cancel()])),
   ]);
+  timeout.cancel();
+  return output;
+}
+
+async function collectOutputWithinTimeout(
+  stdout: CollectedStream,
+  stderr: CollectedStream,
+  timeoutMs: number,
+): Promise<[string, string] | 'timeout'> {
+  if (timeoutMs <= 0) return 'timeout';
+  const timeout = createCancellableTimeout(timeoutMs);
+  const output = await Promise.race([
+    Promise.all([stdout.promise, stderr.promise]),
+    timeout.promise,
+  ]);
+  timeout.cancel();
+  return output;
 }
 
 interface CollectedStream {

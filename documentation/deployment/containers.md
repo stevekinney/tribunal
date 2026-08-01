@@ -306,6 +306,10 @@ failures. The reviewer image self-test (`docker run --rm tribunal-reviewer:*`)
 still runs after the build succeeds and remains required before Tensorlake
 publication or deploy continuation.
 
+The CI `container-images` job uses the same wrapper with a ten-minute wall-clock
+budget so setup, the other image builds, and the required reviewer image
+self-test still fit inside the job timeout.
+
 ### When the reviewer image cannot be published
 
 Publishing the reviewer image to Tensorlake is allowed to fail without stranding
