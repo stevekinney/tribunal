@@ -747,10 +747,6 @@ export type RepositoryInstallationResult =
   | { ok: true; octokit: OctokitType; installationId: number; owner: string; repo: string }
   | { ok: false; error: string; code: 'not_found' | 'no_installation' | 'suspended' | 'error' };
 
-export type InstallationIdResult =
-  | { ok: true; installationId: number }
-  | { ok: false; error: string; code: 'not_found' | 'no_installation' };
-
 /** Internal result type that includes status-check codes (suspended, error). */
 type ValidatedInstallationResult =
   | { ok: true; installationId: number }
@@ -812,66 +808,6 @@ export async function getInstallationForRepository(
     owner: repo.owner,
     repo: repo.name,
   };
-}
-
-/**
- * Lightweight resolver that returns only the installation ID without constructing
- * an Octokit client. Use this when callers only need the installation ID and will
- * pass it to service functions that create their own Octokit internally.
- *
- * Unlike `getInstallationForRepository`, this does NOT check installation status
- * (suspended, inactive). This preserves the original behavior where issue routes
- * could still attempt API calls for suspended installations -- read-only GitHub
- * API calls typically succeed even when our local status is "suspended".
- *
- * When callers already have a `Repository` object (e.g., from `getRepositoryById`),
- * pass `knownInstallationId` to skip the redundant repository query.
- */
-export async function getInstallationIdForRepository(
-  context: GithubServiceContext,
-  repositoryId: number,
-  knownInstallationId?: number | null,
-): Promise<InstallationIdResult> {
-  let fallbackInstallationId: number | null;
-
-  if (knownInstallationId !== undefined) {
-    fallbackInstallationId = knownInstallationId;
-  } else {
-    const [repo] = await context.db
-      .select({
-        installationId: repository.installationId,
-      })
-      .from(repository)
-      .where(eq(repository.id, repositoryId));
-
-    if (!repo) {
-      return { ok: false, error: 'Repository not found', code: 'not_found' };
-    }
-    fallbackInstallationId = repo.installationId ?? null;
-  }
-
-  // Resolve installation ID from link table (preferred) or fallback to repository column.
-  // We intentionally skip status validation here -- callers using this function
-  // perform read-only operations that should proceed regardless of installation status.
-  let installationId = await getInstallationIdFromLinkTable(context, repositoryId);
-  if (!installationId) {
-    installationId = fallbackInstallationId;
-  }
-
-  if (!installationId) {
-    return {
-      ok: false,
-      error: 'Repository has no associated GitHub installation',
-      code: 'no_installation',
-    };
-  }
-
-  const installation = await getInstallationById(context, installationId);
-  if (!installation) {
-    return { ok: false, error: 'GitHub installation not found', code: 'no_installation' };
-  }
-
-  return { ok: true, installationId };
 }
 
 /**

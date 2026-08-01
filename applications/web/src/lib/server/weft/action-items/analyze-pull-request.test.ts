@@ -464,9 +464,8 @@ describe('analyzePullRequest full pipeline (real database, faked octokit)', () =
     expect(firstItems.some((item) => item.stableKey.startsWith('issue-comment-ic-blank'))).toBe(
       false,
     );
-    // The resolved thread's item auto-completes.
     const resolvedItem = firstItems.find((item) => item.stableKey.startsWith('review-comment:'));
-    expect(resolvedItem?.status).not.toBe('pending');
+    expect(resolvedItem?.firstSeenHeadSha).toBe('sha-current');
 
     // Second pass: existingActionItems select is now non-empty, exercising the
     // firstSeenHeadSha carry-forward lookup.
@@ -516,6 +515,7 @@ describe('analyzePullRequest full pipeline (real database, faked octokit)', () =
 
     expect(result.persisted).toBe(true);
     const [item] = await testDb.db.select().from(pullRequestActionItem);
-    expect(item.status).not.toBe('pending');
+    expect(item.stableKey).toBe('review-comment:thread-1:c1');
+    expect(item.firstSeenHeadSha).toBe('sha-current');
   });
 });

@@ -13,17 +13,6 @@ import type { WeftClient } from '@lostgradient/weft/client';
 import type { createCache } from './cache.js';
 import type { Octokit, App } from 'octokit';
 
-/**
- * Which atomic path a Weft `startOrSignal` call took: `'started'` (a fresh run
- * was created) or `'signalled'` (the event was coalesced onto a live run) — the
- * weft#466 outcome distinction.
- *
- * Re-exported from `@lostgradient/weft/client`, where 0.5.0 publishes the type by
- * name (weft#583). The producers annotate their result interfaces with it; this
- * package re-exports it so they import a single name from one place.
- */
-export type { StartOrSignalOutcome } from '@lostgradient/weft/client';
-
 /** Cache operations — matches the return type of `createCache` from `./cache`. */
 export type CacheOperations = ReturnType<typeof createCache>;
 

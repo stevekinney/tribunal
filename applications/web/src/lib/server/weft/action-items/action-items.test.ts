@@ -5,7 +5,6 @@
  * - deterministicSummary
  * - sanitizeActionItemCandidate
  * - extractSourceType
- * - computeActionItemStatus
  */
 
 import { describe, expect, it } from 'vitest';
@@ -20,7 +19,6 @@ import {
   type DerivedActionItem,
   type ParsedActionItem,
 } from './action-items.js';
-import { computeActionItemStatus } from './compute-action-item-status.js';
 import { extractSourceType } from './extract-source-type.js';
 import { sanitizeActionItemCandidate } from './sanitization.js';
 import { deterministicSummary } from './summarize.js';
@@ -651,62 +649,6 @@ describe('extractSourceType', () => {
     expect(extractSourceType('unknown-key-abc')).toBe('composite');
     expect(extractSourceType('')).toBe('composite');
     expect(extractSourceType('some-random-id')).toBe('composite');
-  });
-});
-
-// ============================================================================
-// computeActionItemStatus
-// ============================================================================
-
-describe('computeActionItemStatus', () => {
-  it('returns done when completed is true', () => {
-    expect(
-      computeActionItemStatus({
-        completed: true,
-        currentHeadSha: 'sha-abc',
-        existingFirstSeenHeadSha: 'sha-abc',
-      }),
-    ).toBe('done');
-  });
-
-  it('returns pending when there is no current head SHA', () => {
-    expect(
-      computeActionItemStatus({
-        completed: false,
-        currentHeadSha: null,
-        existingFirstSeenHeadSha: 'sha-old',
-      }),
-    ).toBe('pending');
-  });
-
-  it('returns pending for a brand-new item (no existingFirstSeenHeadSha)', () => {
-    expect(
-      computeActionItemStatus({
-        completed: false,
-        currentHeadSha: 'sha-new',
-        existingFirstSeenHeadSha: null,
-      }),
-    ).toBe('pending');
-  });
-
-  it('returns in_progress when head SHA has changed since first seen', () => {
-    expect(
-      computeActionItemStatus({
-        completed: false,
-        currentHeadSha: 'sha-new',
-        existingFirstSeenHeadSha: 'sha-old',
-      }),
-    ).toBe('in_progress');
-  });
-
-  it('returns pending when current SHA matches first-seen SHA (no progress yet)', () => {
-    expect(
-      computeActionItemStatus({
-        completed: false,
-        currentHeadSha: 'sha-same',
-        existingFirstSeenHeadSha: 'sha-same',
-      }),
-    ).toBe('pending');
   });
 });
 

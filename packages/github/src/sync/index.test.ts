@@ -42,8 +42,7 @@ describe('enqueueInstallationSync', () => {
 
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-123' });
 
-    // weft#466: the producer propagates the handle's outcome.
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
     expect(startOrSignal).toHaveBeenCalledWith(
       'installation-sync',
       { ...options, deliveryId: 'guid-123' },
@@ -56,14 +55,14 @@ describe('enqueueInstallationSync', () => {
     );
   });
 
-  it('propagates a "signalled" outcome when the dispatch coalesced onto a live run', async () => {
+  it('returns the public started result when the dispatch coalesced onto a live run', async () => {
     // weft#466: a lifecycle webhook coalesced onto an already-running sync.
     const startOrSignal = vi.fn().mockResolvedValue({ id: EXPECTED_ID, outcome: 'signalled' });
     const context = createContext({ startOrSignal });
 
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-456' });
 
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'signalled' });
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
   });
 
   it('mints a fresh, distinct signalId per enqueue when no deliveryId is given', async () => {
@@ -161,8 +160,7 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
     const context = createContext(client);
 
     const result = await enqueueInstallationSync(context, { ...options, deliveryId: 'guid-xyz' });
-    // weft#466: the real engine reports this dispatch started a fresh run.
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
 
     // weft#467: re-attach to the run by id and await its result directly, rather
     // than hand-rolling a status poll loop. `getHandle(id)` returns a handle
@@ -192,7 +190,7 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
       ...options,
       deliveryId: 'guid-first',
     });
-    expect(firstResult).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    expect(firstResult).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
     // Drive the first run to its terminal (completed) state.
     const firstHandle = await client.getHandle(EXPECTED_ID);
     await firstHandle!.result();
@@ -204,11 +202,7 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
       reason: 'manual',
       deliveryId: 'guid-second',
     });
-    expect(secondResult).toEqual({
-      workflowId: EXPECTED_ID,
-      status: 'started',
-      outcome: 'started',
-    });
+    expect(secondResult).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
 
     // Confirm the replacement run is live and delivers the signal.
     const secondHandle = await client.getHandle(EXPECTED_ID);
@@ -247,7 +241,7 @@ describe('enqueueInstallationSync (e2e, real engine)', () => {
       reason: 'manual',
       deliveryId: 'guid-cancel-second',
     });
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started', outcome: 'started' });
+    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
 
     // Drive the replacement run to completion by sending the awaited signal.
     await client.signal(EXPECTED_ID, 'finish_sync', { reason: 'manual' });

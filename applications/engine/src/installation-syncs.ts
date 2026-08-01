@@ -26,10 +26,7 @@ export async function handleInstallationSyncRequest(
     );
   }
 
-  return Response.json(
-    { ok: true, workflowId: result.workflowId, outcome: result.outcome },
-    { status: 202 },
-  );
+  return Response.json({ ok: true, workflowId: result.workflowId }, { status: 202 });
 }
 
 async function readInstallationSyncInput(

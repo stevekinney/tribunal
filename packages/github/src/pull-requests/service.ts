@@ -7,17 +7,7 @@
 import type { Endpoints } from '@octokit/types';
 import type { Octokit as OctokitType } from 'octokit';
 import { transformAuthor, encodeFilterValue, resolveHasNextPage } from '@tribunal/github/shared';
-import {
-  isNotFoundError,
-  isNotModifiedError,
-  isValidationError,
-  isForbiddenError,
-  isRateLimitError,
-  isUnauthorizedError,
-  getErrorMessage,
-  parseValidationErrorReason,
-  type ValidationErrorReason,
-} from '@tribunal/github/errors';
+import { isNotFoundError, isNotModifiedError } from '@tribunal/github/errors';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
 import { requirePolicy } from '../core/cache-policy.js';
@@ -50,7 +40,6 @@ export type {
   PullRequestSort,
   PullRequestFilterOptions,
   PullRequestAuthor,
-  PullRequestLabel,
   PullRequestListItem,
   PullRequestDetail,
   PullRequestListResult,
@@ -61,7 +50,6 @@ import type {
   PullRequestFilterState,
   PullRequestSort,
   PullRequestFilterOptions,
-  PullRequestLabel,
   PullRequestListItem,
   PullRequestDetail,
   PullRequestListResult,
@@ -119,40 +107,15 @@ export function getSelectedPullRequestNumber(url: URL): number | null {
 // Response transformation
 // ============================================================================
 
-// Label type that covers both list and detail endpoints
-type GitHubLabel =
-  | string
-  | {
-      name?: string;
-      color?: string;
-      description?: string | null;
-    };
-
-function transformLabel(label: GitHubLabel): PullRequestLabel {
-  // Labels can be strings or objects depending on GitHub API response
-  if (typeof label === 'string') {
-    return { name: label, color: '', description: null };
-  }
-  return {
-    name: label.name ?? '',
-    color: label.color ?? '',
-    description: label.description ?? null,
-  };
-}
-
 function transformPullRequestListItem(pr: GitHubPullRequestListItem): PullRequestListItem {
   return {
     number: pr.number,
     title: pr.title,
     state: pr.state as 'open' | 'closed',
     draft: pr.draft ?? false,
-    locked: pr.locked,
     author: transformAuthor(pr.user),
-    createdAt: pr.created_at,
     updatedAt: pr.updated_at,
-    closedAt: pr.closed_at,
     mergedAt: pr.merged_at,
-    labels: pr.labels.map(transformLabel),
     headRef: pr.head.ref,
     headSha: pr.head.sha,
     baseRef: pr.base.ref,
@@ -161,19 +124,14 @@ function transformPullRequestListItem(pr: GitHubPullRequestListItem): PullReques
 }
 
 function transformPullRequestDetail(pr: GitHubPullRequestDetail): PullRequestDetail {
-  // Transform detail PR separately to handle different label types
   return {
     number: pr.number,
     title: pr.title,
     state: pr.state as 'open' | 'closed',
     draft: pr.draft ?? false,
-    locked: pr.locked,
     author: transformAuthor(pr.user),
-    createdAt: pr.created_at,
     updatedAt: pr.updated_at,
-    closedAt: pr.closed_at,
     mergedAt: pr.merged_at,
-    labels: pr.labels.map(transformLabel),
     headRef: pr.head.ref,
     baseRef: pr.base.ref,
     htmlUrl: pr.html_url,
@@ -451,214 +409,4 @@ async function getPullRequestReviewThreadCounts(
     [owner, repo, pullNumber],
   );
   return value;
-}
-
-// ============================================================================
-// Request Reviewers Types
-// ============================================================================
-
-/** Input for requesting reviewers on a pull request. */
-export interface RequestReviewersInput {
-  /** GitHub usernames to request as reviewers. */
-  reviewers?: string[];
-  /** Team slugs to request as reviewers (organization repos only). */
-  teamReviewers?: string[];
-}
-
-/** A reviewer that was successfully requested. */
-export interface RequestedReviewer {
-  login: string;
-  avatarUrl: string | null;
-  htmlUrl: string;
-}
-
-/** A team that was successfully requested. */
-export interface RequestedTeam {
-  id: number;
-  slug: string;
-  name: string;
-  description: string | null;
-}
-
-/** Result of a successful request reviewers operation. */
-export interface RequestReviewersResult {
-  success: true;
-  /** Users that were successfully requested. */
-  requestedReviewers: RequestedReviewer[];
-  /** Teams that were successfully requested. */
-  requestedTeams: RequestedTeam[];
-}
-
-/** Error result for request reviewers operation. */
-export interface RequestReviewersError {
-  success: false;
-  error: RequestReviewersErrorCode;
-  reason?: ValidationErrorReason;
-  message: string;
-}
-
-export type RequestReviewersErrorCode =
-  | 'not_found' // PR not found
-  | 'forbidden' // No permission
-  | 'unauthorized' // Invalid token
-  | 'validation_failed' // Invalid input (422) - user/team not found, self-review, etc.
-  | 'rate_limited'
-  | 'unknown';
-
-export type RequestReviewersResponse = RequestReviewersResult | RequestReviewersError;
-
-// ============================================================================
-// Request Reviewers Operation
-// ============================================================================
-
-// Response type from Octokit
-type GitHubRequestReviewersResponse =
-  Endpoints['POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers']['response']['data'];
-
-/**
- * Request reviewers for a pull request.
- *
- * Uses GitHub REST API: POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
- * @see https://docs.github.com/en/rest/pulls/review-requests#request-reviewers-for-a-pull-request
- *
- * This operation is idempotent - requesting an already-requested reviewer succeeds.
- *
- * @param octokit - Authenticated Octokit client
- * @param owner - Repository owner
- * @param repo - Repository name
- * @param pullNumber - Pull request number
- * @param input - Reviewers to request
- * @returns Requested reviewers or error
- */
-export async function requestReviewers(
-  octokit: OctokitType,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  input: RequestReviewersInput,
-): Promise<RequestReviewersResponse> {
-  // Validate input
-  const hasReviewers = input.reviewers && input.reviewers.length > 0;
-  const hasTeams = input.teamReviewers && input.teamReviewers.length > 0;
-
-  if (!hasReviewers && !hasTeams) {
-    return {
-      success: false,
-      error: 'validation_failed',
-      message: 'At least one reviewer or team must be specified',
-    };
-  }
-
-  try {
-    const response = await octokit.rest.pulls.requestReviewers({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      reviewers: input.reviewers,
-      team_reviewers: input.teamReviewers,
-    });
-
-    return {
-      success: true,
-      requestedReviewers: transformRequestedReviewers(response.data),
-      requestedTeams: transformRequestedTeams(response.data),
-    };
-  } catch (error) {
-    return handleRequestReviewersError(error);
-  }
-}
-
-// ============================================================================
-// Transformation helpers
-// ============================================================================
-
-function transformRequestedReviewers(data: GitHubRequestReviewersResponse): RequestedReviewer[] {
-  const reviewers = data.requested_reviewers ?? [];
-  return reviewers.map((r) => ({
-    login: r.login,
-    avatarUrl: r.avatar_url ?? null,
-    htmlUrl: r.html_url,
-  }));
-}
-
-function transformRequestedTeams(data: GitHubRequestReviewersResponse): RequestedTeam[] {
-  const teams = data.requested_teams ?? [];
-  return teams.map((t) => ({
-    id: t.id,
-    slug: t.slug,
-    name: t.name,
-    description: t.description ?? null,
-  }));
-}
-
-// ============================================================================
-// Error handling for request reviewers
-// ============================================================================
-
-function handleRequestReviewersError(error: unknown): RequestReviewersError {
-  if (isNotFoundError(error)) {
-    return {
-      success: false,
-      error: 'not_found',
-      message: 'Pull request not found',
-    };
-  }
-
-  if (isUnauthorizedError(error)) {
-    return {
-      success: false,
-      error: 'unauthorized',
-      message: 'Your GitHub session has expired. Please sign in again.',
-    };
-  }
-
-  if (isRateLimitError(error)) {
-    return {
-      success: false,
-      error: 'rate_limited',
-      message: 'GitHub API rate limit exceeded. Please try again later.',
-    };
-  }
-
-  if (isForbiddenError(error)) {
-    return {
-      success: false,
-      error: 'forbidden',
-      message: "You don't have permission to request reviewers on this pull request",
-    };
-  }
-
-  if (isValidationError(error)) {
-    const reason = parseValidationErrorReason(error);
-    const message = getReviewerValidationMessage(reason, error);
-    return {
-      success: false,
-      error: 'validation_failed',
-      reason,
-      message,
-    };
-  }
-
-  return {
-    success: false,
-    error: 'unknown',
-    message: getErrorMessage(error),
-  };
-}
-
-function getReviewerValidationMessage(reason: ValidationErrorReason, error: unknown): string {
-  switch (reason) {
-    case 'self_review':
-      return 'Pull request authors cannot be requested as reviewers';
-    case 'user_not_found':
-      return 'One or more requested reviewers were not found';
-    case 'team_not_found':
-      return 'One or more requested teams were not found';
-    case 'no_access':
-      return 'One or more requested reviewers do not have access to this repository';
-    case 'pr_closed':
-      return 'Cannot request reviewers on a closed or merged pull request';
-    default:
-      return getErrorMessage(error);
-  }
 }
