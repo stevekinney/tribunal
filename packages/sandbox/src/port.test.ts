@@ -67,9 +67,6 @@ function createFakeAdapter() {
     async killProcess(sandboxId, processId) {
       calls.push({ method: 'killProcess', input: { sandboxId, processId } });
     },
-    async suspend(sandboxId) {
-      calls.push({ method: 'suspend', input: { sandboxId } });
-    },
     async terminate(sandboxId) {
       calls.push({ method: 'terminate', input: { sandboxId } });
     },
@@ -88,8 +85,6 @@ describe('sandbox port', () => {
     });
 
     await port.ensure('tribunal-pr-42-7', {
-      image: 'ignored',
-      proxyUrl: 'ignored',
       idleSuspendSeconds: 123,
     });
 
@@ -101,7 +96,6 @@ describe('sandbox port', () => {
         timeoutSecs: 123,
         allowInternetAccess: false,
         allowOut: ['10.0.0.8/32'],
-        secretNames: [],
       },
     });
   });
@@ -116,15 +110,11 @@ describe('sandbox port', () => {
 
     await expect(
       port.ensure('tribunal-pr-42-7', {
-        image: 'ignored',
-        proxyUrl: 'ignored',
         idleSuspendSeconds: 0,
       }),
     ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
     await expect(
       port.ensure('tribunal-pr-42-7', {
-        image: 'ignored',
-        proxyUrl: 'ignored',
         idleSuspendSeconds: 1.5,
       }),
     ).rejects.toThrow('idleSuspendSeconds must be a positive integer.');
@@ -233,7 +223,7 @@ describe('sandbox port', () => {
     ).rejects.toThrow('Sandbox repository update failed with exit code 128.');
   });
 
-  it('validates runAgent output and delegates suspend and terminate calls', async () => {
+  it('validates runAgent output and delegates terminate calls', async () => {
     const { adapter, calls } = createFakeAdapter();
     const port = createSandboxPort(adapter, {
       image: 'tribunal-reviewer:latest',
@@ -248,7 +238,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -262,10 +251,9 @@ describe('sandbox port', () => {
         abortController.signal,
       ),
     ).resolves.toMatchObject({ agentSlug: 'security-reviewer' });
-    await port.suspend('sandbox_1');
     await port.terminate('sandbox_1');
 
-    expect(calls.map((call) => call.method)).toEqual(['runTrackedCommand', 'suspend', 'terminate']);
+    expect(calls.map((call) => call.method)).toEqual(['runTrackedCommand', 'terminate']);
     expect(calls[0]).toMatchObject({
       input: {
         command: 'bun',
@@ -298,7 +286,6 @@ describe('sandbox port', () => {
       {
         id: 'agent_1',
         agentRunId: 'agent_run_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review.',
@@ -340,7 +327,6 @@ describe('sandbox port', () => {
       {
         id: 'agent_1',
         agentRunId: 'agent_run_1',
-        userId: 1,
         slug: 'verifier',
         description: 'Verify findings',
         body: 'Refute this finding.',
@@ -396,7 +382,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -443,7 +428,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -503,7 +487,6 @@ describe('sandbox port', () => {
         'sandbox_1',
         {
           id: 'agent_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -554,7 +537,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -593,7 +575,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -633,7 +614,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -682,7 +662,6 @@ describe('sandbox port', () => {
       {
         id: 'agent_1',
         agentRunId: 'agent_run_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review.',
@@ -723,7 +702,6 @@ describe('sandbox port', () => {
         {
           id: 'agent_1',
           agentRunId: 'agent_run_1',
-          userId: 1,
           slug: 'security-reviewer',
           description: 'Find security issues',
           body: 'Review.',
@@ -764,7 +742,6 @@ describe('sandbox port', () => {
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });
       },
-      async suspend() {},
       async terminate() {},
     };
     const port = createSandboxPort(adapter, {
@@ -778,7 +755,6 @@ describe('sandbox port', () => {
       {
         id: 'agent_1',
         agentRunId: 'agent_run_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review.',
@@ -824,7 +800,6 @@ describe('sandbox port', () => {
       async killProcess(sandboxId, processId) {
         calls.push({ method: 'killProcess', input: { sandboxId, processId } });
       },
-      async suspend() {},
       async terminate() {},
     };
     const port = createSandboxPort(adapter, {
@@ -838,7 +813,6 @@ describe('sandbox port', () => {
       {
         id: 'agent_1',
         agentRunId: 'agent_run_1',
-        userId: 1,
         slug: 'security-reviewer',
         description: 'Find security issues',
         body: 'Review.',

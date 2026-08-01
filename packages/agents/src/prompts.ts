@@ -56,8 +56,7 @@ export type TriagePromptInput = {
 
 /**
  * Builds the triage agent's prompt: classify the pull request, decide whether
- * it is worth reviewing at all, and flag risk surfaces (auth/crypto/concurrency)
- * that warrant escalating a specialist's model.
+ * it is worth reviewing at all.
  */
 export function buildTriagePrompt(input: TriagePromptInput): string {
   return [
@@ -67,8 +66,6 @@ export function buildTriagePrompt(input: TriagePromptInput): string {
     [
       '- Decide `skip: true` only when there is nothing reviewable: pure renames,',
       '  formatting-only changes, or generated/vendored churn that survived path filters.',
-      '- List `riskFlags` for surfaces that deserve deeper scrutiny (for example',
-      '  "auth", "crypto", "concurrency") based on the changed files and diff content.',
       '- Do not report individual findings; that is the specialists’ job.',
       `- Available specialists for this run: ${input.availableAgentSlugs.join(', ') || '(none configured)'}.`,
     ].join('\n'),

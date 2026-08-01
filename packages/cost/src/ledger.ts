@@ -4,12 +4,7 @@ import { eq } from '@tribunal/database/operators';
 import { costEvent, userReviewSettings } from '@tribunal/database/schema';
 import { spendTodayEstimate as readSpendTodayEstimate } from '@tribunal/database/queries';
 import type { CostPort, DailyCapDecision, LlmEstimateInput } from '@tribunal/review-core/ports';
-import {
-  CURRENT_PRICING_VERSION,
-  sandboxCost,
-  type SandboxResources,
-  type SandboxRuntime,
-} from './pricing';
+import { sandboxCost, type SandboxResources, type SandboxRuntime } from './pricing';
 
 type CostDatabase = Pick<Database, 'insert' | 'select'>;
 
@@ -84,10 +79,6 @@ export async function recordSandbox(
     reviewRunId: input.reviewRunId,
     amountUsd: numericText(amountUsd),
     meta: {
-      pricingVersion: CURRENT_PRICING_VERSION,
-      runtime: input.runtime,
-      resources: input.resources,
-      sandboxId: input.sandboxId,
       window: input.window,
     },
     occurredAt: input.occurredAt,
@@ -132,9 +123,6 @@ export async function enforceDailyCap(
 
   return {
     allowed: spendUsd < capUsd,
-    capUsd,
-    spendUsd,
-    remainingUsd: Math.max(0, capUsd - spendUsd),
   };
 }
 
@@ -172,10 +160,6 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         reviewRunId: event.reviewRunId,
         amountUsd: numericText(event.amountUsd),
         meta: {
-          pricingVersion: event.pricingVersion ?? CURRENT_PRICING_VERSION,
-          runtime: event.runtime,
-          resources: event.resources,
-          sandboxId: event.sandboxId,
           window: event.window,
         },
         occurredAt: parseSandboxWindowStartedAt(event.window) ?? options.now?.(),

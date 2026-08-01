@@ -13,9 +13,6 @@ export type SandboxCreateInput = {
   timeoutSecs: number;
   allowInternetAccess: false;
   allowOut: string[];
-  secretNames: [];
-  env: Record<string, string>;
-  metadata: Record<string, string>;
 };
 
 export type SandboxCommandResult = {
@@ -42,7 +39,6 @@ export type SandboxAdapter = {
     signal?: AbortSignal,
   ): Promise<SandboxCommandResult>;
   killProcess(sandboxId: string, processId: string): Promise<void>;
-  suspend(sandboxId: string): Promise<void>;
   terminate(sandboxId: string): Promise<void>;
 };
 
@@ -75,7 +71,6 @@ export function createSandboxPort(
         diskMb: 20_480,
         timeoutSecs: options.idleSuspendSeconds,
         ...egress,
-        metadata: { managedBy: 'tribunal', name: prKey },
       });
     },
     async update(sandboxId: string, repository: RepoRef, head: string, runToken: string) {
@@ -191,9 +186,6 @@ export function createSandboxPort(
       if (execution.processId !== undefined) {
         await adapter.killProcess(sandboxId, execution.processId);
       }
-    },
-    async suspend(sandboxId: string) {
-      await adapter.suspend(sandboxId);
     },
     async terminate(sandboxId: string) {
       await adapter.terminate(sandboxId);

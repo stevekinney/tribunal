@@ -4,7 +4,6 @@ import { READ_ONLY_AGENT_TOOLS, TRIBUNAL_READ_ONLY_TOOLS, toAgentDefinition } fr
 
 const agentSpec: AgentSpec = {
   id: 'agent_1',
-  userId: 1,
   slug: 'security-reviewer',
   description: 'Find security issues',
   body: 'Review the diff for security issues.',

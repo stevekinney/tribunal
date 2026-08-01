@@ -325,11 +325,10 @@ function outputSchemaForRole(role) {
     return {
       type: 'object',
       additionalProperties: false,
-      required: ['skip', 'reason', 'riskFlags'],
+      required: ['skip', 'reason'],
       properties: {
         skip: { type: 'boolean' },
         reason: { type: 'string' },
-        riskFlags: { type: 'array', items: { type: 'string' } },
       },
     };
   }
@@ -376,9 +375,6 @@ function normalizeTriageDecision(sdkResult) {
   return {
     skip: structured?.skip === true,
     reason: typeof structured?.reason === 'string' ? structured.reason : '',
-    riskFlags: Array.isArray(structured?.riskFlags)
-      ? structured.riskFlags.filter((flag) => typeof flag === 'string')
-      : [],
   };
 }
 

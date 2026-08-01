@@ -6,11 +6,6 @@ export interface RepoRef {
   repositoryId?: number;
 }
 
-export interface ScopedToken {
-  token: string;
-  expiresAt: Date;
-}
-
 export interface CheckRunPatch {
   status?: 'queued' | 'in_progress' | 'completed';
   conclusion?: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' | 'action_required';
@@ -45,12 +40,7 @@ export interface ReviewPayload {
   }>;
 }
 
-export interface PostedReviewRecord {
-  comments: number;
-}
-
 export interface GitHubPort {
-  mintReadToken(repositoryId: number, installationId: number): Promise<ScopedToken>;
   getDiffContext(
     repository: RepoRef,
     pullRequestNumber: number,
@@ -67,8 +57,6 @@ export interface GitHubPort {
 }
 
 export interface SandboxOptions {
-  image: string;
-  proxyUrl: string;
   idleSuspendSeconds: number;
 }
 
@@ -84,7 +72,6 @@ export interface SandboxPort {
     signal: AbortSignal,
   ): Promise<AgentResult>;
   stop(sandboxId: string, agentRunId: string): Promise<void>;
-  suspend(sandboxId: string): Promise<void>;
   terminate(sandboxId: string): Promise<void>;
 }
 
@@ -103,26 +90,13 @@ export interface SandboxCostInput {
   userId: number;
   repositoryId: number;
   reviewRunId: string;
-  sandboxId: string;
   window: string;
   amountUsd: number;
   idempotencyKey: string;
-  pricingVersion?: string;
-  runtime: {
-    runtimeSeconds: number;
-  };
-  resources: {
-    cpus: number;
-    memoryMb: number;
-    storageMb: number;
-  };
 }
 
 export interface DailyCapDecision {
   allowed: boolean;
-  capUsd: number;
-  spendUsd: number;
-  remainingUsd: number;
 }
 
 export interface CostPort {

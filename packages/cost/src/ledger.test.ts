@@ -11,7 +11,7 @@ import {
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { createCostPort, enforceDailyCap, recordLlmEstimate, recordSandbox } from './ledger';
-import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
+import { PRICING, sandboxCost } from './pricing';
 
 let testDatabase: TestDatabase;
 
@@ -140,7 +140,7 @@ describe('cost ledger', () => {
       reviewRunId: review.id,
       repositoryId: repository.id,
     });
-    expect(rows[0].meta).toMatchObject({ pricingVersion: '2026-06-17' });
+    expect(rows[0].meta).toEqual({ window: '2026-06-17T10' });
   });
 
   // Per-run cost reconciliation was removed (see #215): the Anthropic cost
@@ -182,12 +182,8 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      sandboxId: 'sandbox_reconcile_check',
       window: '2026-06-17T12:00:00.000Z',
       amountUsd: 0.2,
-      pricingVersion: CURRENT_PRICING_VERSION,
-      runtime: { runtimeSeconds: 60 },
-      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_reconcile_check:manual',
     });
 
@@ -251,7 +247,7 @@ describe('cost ledger', () => {
       });
     }
 
-    expect(decision).toEqual({ allowed: false, capUsd: 2, spendUsd: 2, remainingUsd: 0 });
+    expect(decision).toEqual({ allowed: false });
     expect(await countLlmEvents()).toBe(before);
   });
 
@@ -274,21 +270,12 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      sandboxId: 'sandbox_1',
       window: '2026-06-17T12:00:00.000Z',
       amountUsd: 0.2,
-      pricingVersion: CURRENT_PRICING_VERSION,
-      runtime: { runtimeSeconds: 60 },
-      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_1:manual',
     });
 
-    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
-      allowed: true,
-      capUsd: 25,
-      spendUsd: 1,
-      remainingUsd: 24,
-    });
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: true });
     const rows = await testDatabase.db
       .select()
       .from(costEvent)
@@ -299,13 +286,7 @@ describe('cost ledger', () => {
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
     expect(sandboxRows[0]?.occurredAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
-    expect(sandboxRows[0]?.meta).toMatchObject({
-      pricingVersion: CURRENT_PRICING_VERSION,
-      runtime: { runtimeSeconds: 60 },
-      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
-      sandboxId: 'sandbox_1',
-      window: '2026-06-17T12:00:00.000Z',
-    });
+    expect(sandboxRows[0]?.meta).toEqual({ window: '2026-06-17T12:00:00.000Z' });
   });
 
   it('records sandbox cost port events at shorthand billing window starts', async () => {
@@ -318,12 +299,8 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      sandboxId: 'sandbox_2',
       window: '2026-06-17T08',
       amountUsd: 0.2,
-      pricingVersion: CURRENT_PRICING_VERSION,
-      runtime: { runtimeSeconds: 60 },
-      resources: { cpus: 2, memoryMb: 4096, storageMb: 20_480 },
       idempotencyKey: 'sandbox:sandbox_2:manual',
     });
 
@@ -355,12 +332,7 @@ describe('cost ledger', () => {
       now: () => new Date('2026-06-17T12:00:00.000Z'),
     });
 
-    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
-      allowed: false,
-      capUsd: 1,
-      spendUsd: 1,
-      remainingUsd: 0,
-    });
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
   it('uses the configured default daily cap when review settings do not exist', async () => {
@@ -382,11 +354,6 @@ describe('cost ledger', () => {
       defaultDailyCostCapUsd: 3,
     });
 
-    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({
-      allowed: false,
-      capUsd: 3,
-      spendUsd: 3,
-      remainingUsd: 0,
-    });
+    await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 });

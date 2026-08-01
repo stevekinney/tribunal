@@ -110,8 +110,6 @@ export type ReviewIntentPort = {
 };
 
 export type ReviewWorkflowConfiguration = {
-  sandboxImage: string;
-  proxyUrl: string;
   proxySigningKey: string;
   runTokenTtlSeconds: number;
   idleSuspendSeconds: number;
@@ -661,8 +659,6 @@ export class ReviewWorkflowEngine {
       pullRequestNumber: input.pullRequestNumber,
     });
     const { sandboxId } = await this.ports.sandbox.ensure(sandboxKey, {
-      image: this.configuration.sandboxImage,
-      proxyUrl: this.configuration.proxyUrl,
       idleSuspendSeconds: this.configuration.idleSuspendSeconds,
     });
     const checkRunId = await this.ensureInProgressCheckRun(input);
@@ -1222,10 +1218,9 @@ export class ReviewWorkflowEngine {
   }
 
   /**
-   * Haiku triage stage: classifies the pull request, decides whether it is
-   * worth reviewing at all, and flags risk surfaces. Persisted as an
-   * `agent_run` with `role: 'triage'` and no `agentId` — triage has no
-   * user-configured `agent` row.
+   * Haiku triage stage: classifies the pull request and decides whether it is
+   * worth reviewing at all. Persisted as an `agent_run` with `role: 'triage'`
+   * and no `agentId` — triage has no user-configured `agent` row.
    */
   private async runTriageAgent(
     supervisor: SupervisorState,
@@ -1237,7 +1232,6 @@ export class ReviewWorkflowEngine {
     const agentRunId = createTriageAgentRunId(reviewRun.id);
     const agentSpec: AgentSpec = {
       id: 'triage',
-      userId: reviewRun.userId,
       slug: 'triage',
       description: 'Tribunal triage agent',
       body: 'Classify the pull request and decide whether it needs specialist review.',
@@ -1277,7 +1271,6 @@ export class ReviewWorkflowEngine {
     const agentRunId = createVerifierAgentRunId(reviewRun.id, fingerprint);
     const agentSpec: AgentSpec = {
       id: `verify:${fingerprint}`,
-      userId: reviewRun.userId,
       slug: 'verifier',
       description: 'Tribunal verification agent',
       body: 'Try to refute this candidate finding. It survives only with a concrete file:line citation in actual source.',
@@ -1699,11 +1692,8 @@ export class ReviewWorkflowEngine {
         userId: run.userId,
         repositoryId: run.repositoryId,
         reviewRunId: run.id,
-        sandboxId: run.sandboxId,
         window: window.window,
         amountUsd,
-        runtime: { runtimeSeconds: window.runtimeSeconds },
-        resources: SANDBOX_RESOURCES,
         idempotencyKey: `sandbox:${run.sandboxId}:${window.window}`,
       });
     }

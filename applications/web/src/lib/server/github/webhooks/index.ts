@@ -3,11 +3,7 @@
  */
 
 // Types and constants — moved to package
-export {
-  type WebhookPayload,
-  type HandlerResult,
-  MAX_PAYLOAD_SIZE,
-} from '@tribunal/github/webhooks/types';
+export { type WebhookPayload, MAX_PAYLOAD_SIZE } from '@tribunal/github/webhooks/types';
 
 // Request validation — stays local (uses @sveltejs/kit error)
 export { validateRequest, verifySignature, type ValidatedRequest } from './request';
