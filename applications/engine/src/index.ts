@@ -6,6 +6,7 @@ import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
   handleInstallationSyncCancellationRequest,
   handleInstallationSyncRequest,
+  handleWorkflowCancellationRequest,
 } from './installation-syncs';
 import {
   createEngineRuntime,
@@ -153,9 +154,11 @@ if (import.meta.main) {
     storageConfiguration.lockFactory,
   );
   let activeSandboxReaperRuns = 0;
+  let activeWorkflowCancellationRequests = 0;
   const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
     idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
-    isBackgroundWorkActive: () => activeSandboxReaperRuns > 0,
+    isBackgroundWorkActive: () =>
+      activeSandboxReaperRuns > 0 || activeWorkflowCancellationRequests > 0,
   });
 
   const sandboxReaperTimer = startSandboxReaper(
@@ -178,6 +181,14 @@ if (import.meta.main) {
       environment.TRIBUNAL_ENGINE_CONTROL_TOKEN,
       environment.TRIBUNAL_ENGINE_BIND_HOST,
       reviewIntentKickScheduler,
+      {
+        onWorkflowCancellationRequestStart: () => {
+          activeWorkflowCancellationRequests += 1;
+        },
+        onWorkflowCancellationRequestComplete: () => {
+          activeWorkflowCancellationRequests = Math.max(0, activeWorkflowCancellationRequests - 1);
+        },
+      },
     ),
   );
   reviewIntentKickScheduler.kick();
@@ -340,6 +351,7 @@ export function createEngineServerOptions(
   controlToken: string,
   hostname?: string,
   reviewIntentKickScheduler: ReviewIntentKickScheduler = createReviewIntentKickScheduler(runtime),
+  hooks: EngineServerHooks = {},
 ) {
   return {
     port,
@@ -388,6 +400,21 @@ export function createEngineServerOptions(
         }
         return handleInstallationSyncRequest(request, runtime);
       }
+      if (url.pathname === '/workflows/cancel' && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const acceptance = reviewIntentKickScheduler.noteBackgroundWorkAccepted();
+        if (!acceptance.accepted && acceptance.reason === 'released') {
+          return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
+        }
+        hooks.onWorkflowCancellationRequestStart?.();
+        try {
+          return await handleWorkflowCancellationRequest(request, runtime);
+        } finally {
+          hooks.onWorkflowCancellationRequestComplete?.();
+        }
+      }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
       if (stopMatch !== null && request.method === 'POST') {
         if (!hasValidControlToken(request, controlToken)) {
@@ -417,6 +444,11 @@ export function createEngineServerOptions(
     },
   };
 }
+
+export type EngineServerHooks = {
+  onWorkflowCancellationRequestStart?: () => void;
+  onWorkflowCancellationRequestComplete?: () => void;
+};
 
 export type ReviewIntentKickScheduler = {
   kick(): ReviewIntentKickResult;

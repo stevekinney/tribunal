@@ -24,7 +24,13 @@ import {
 } from '$lib/server/github/github-application';
 import { getWeftClient } from '$lib/server/weft/engine';
 import type { GithubServiceContext } from '@tribunal/github/context';
-import { cancelInstallationSyncEngine } from '$lib/server/review/engine-client';
+import {
+  cancelInstallationSyncEngine,
+  cancelReviewWorkflowsEngine,
+  createFailedWorkflowCancellationResult,
+  parseWorkflowCancellationResult,
+} from '$lib/server/review/engine-client';
+import { isWeftFault } from '@lostgradient/weft';
 
 export const githubContext: GithubServiceContext = {
   db,
@@ -59,5 +65,51 @@ export const githubContext: GithubServiceContext = {
         `Installation sync engine cancellation failed with status ${result.responseStatus}.`,
       );
     }
+  },
+  async cancelWorkflowsById(workflowIds) {
+    const result = await cancelReviewWorkflowsEngine(workflowIds);
+    if (result.status === 'not_configured') {
+      console.warn(
+        '[github-context] Review workflow engine control is not configured; falling back to local cancellation.',
+        { workflowCount: workflowIds.length, missingSettings: result.missingSettings },
+      );
+      const client = await getWeftClient().catch(() => null);
+      if (!client) {
+        return createFailedWorkflowCancellationResult(
+          workflowIds,
+          new Error('Review workflow engine control and local cancellation are unavailable.'),
+        );
+      }
+      let cancelled = 0;
+      let failed = 0;
+      const errors: string[] = [];
+      for (const workflowId of workflowIds) {
+        try {
+          await client.cancel(workflowId);
+          cancelled++;
+        } catch (error) {
+          if (isWeftFault(error, 'WorkflowNotFoundError')) {
+            continue;
+          }
+          failed++;
+          errors.push(`${workflowId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      return { cancelled, failed, errors };
+    }
+    if (result.status === 'failed') {
+      return createFailedWorkflowCancellationResult(workflowIds, result.error);
+    }
+    if (!result.ok) {
+      const cancellation = parseWorkflowCancellationResult(result.body);
+      if (cancellation !== null) return cancellation;
+      return createFailedWorkflowCancellationResult(
+        workflowIds,
+        new Error(
+          `Review workflow engine cancellation failed with status ${result.responseStatus}.`,
+        ),
+      );
+    }
+    return { cancelled: workflowIds.length, failed: 0, errors: [] };
   },
 };

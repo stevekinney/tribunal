@@ -193,6 +193,36 @@ describe('handleRepositoriesRemoved', () => {
       .where(eq(workflowRun.repositoryId, repository.id));
     expect(run.phase).toBe('cancelled');
   });
+
+  it('throws when production remote cancellation cannot be delivered', async () => {
+    const installation = await factories.githubInstallation.create({ installationId: 7010 });
+    const repository = await factories.repository.create({ installationId: 7010 });
+    await testDatabase.db.insert(githubInstallationRepository).values({
+      installationId: installation.installationId,
+      repositoryId: repository.id,
+    });
+    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
+    const context = createContext({
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 0,
+        failed: 1,
+        errors: ['workflow:1:test:1: engine unavailable'],
+      }),
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(
+      handleRepositoriesRemoved(context, installation.installationId, [repository.id]),
+    ).rejects.toThrow('Failed to cancel 1 workflow');
+
+    const [run] = await testDatabase.db
+      .select()
+      .from(workflowRun)
+      .where(eq(workflowRun.repositoryId, repository.id));
+    expect(run.phase).toBe('executing');
+
+    errorSpy.mockRestore();
+  });
 });
 
 describe('cancelWorkflowsForRepositories', () => {
@@ -240,6 +270,100 @@ describe('cancelWorkflowsForRepositories', () => {
     expect(result.cancelled).toBe(2);
     expect(result.failed).toBe(0);
     expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the remote engine cancellation port when production web owns no local Weft client', async () => {
+    const repository = await factories.repository.create();
+    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'cloning' });
+    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: repository.id,
+      prNumber: 42,
+      state: 'open',
+    });
+    const cancelWorkflowsById = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+    const context = createContext({
+      cancelWorkflowsById,
+    });
+
+    const result = await cancelWorkflowsForRepositories(
+      context,
+      [repository.id],
+      'repository_removed',
+    );
+
+    expect(result.cancelled).toBe(3);
+    expect(result.failed).toBe(0);
+    expect(cancelWorkflowsById).toHaveBeenCalledWith([
+      expect.stringMatching(/^workflow:/),
+      expect.stringMatching(/^workflow:/),
+    ]);
+    expect(cancelWorkflowsById).toHaveBeenCalledWith(['review:pr:' + repository.id + ':42']);
+  });
+
+  it('does not report success when remote workflow cancellation delivery fails', async () => {
+    const repository = await factories.repository.create();
+    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
+    const context = createContext({
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 0,
+        failed: 1,
+        errors: ['workflow_1: engine unavailable'],
+      }),
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+
+    expect(result.cancelled).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.errors[0]).toContain('engine unavailable');
+    const [run] = await testDatabase.db
+      .select()
+      .from(workflowRun)
+      .where(eq(workflowRun.repositoryId, repository.id));
+    expect(run.phase).toBe('executing');
+
+    errorSpy.mockRestore();
+  });
+
+  it('reconciles remote workflow cancellations that succeeded before a sibling failed', async () => {
+    const repository = await factories.repository.create();
+    const successfulRun = await factories.workflowRun.createForRepository(1, repository.id, {
+      phase: 'cloning',
+    });
+    const failedRun = await factories.workflowRun.createForRepository(1, repository.id, {
+      phase: 'executing',
+    });
+    const context = createContext({
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 1,
+        failed: 1,
+        errors: [`${failedRun.workflowId}: storage unavailable`],
+      }),
+    });
+
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+
+    expect(result).toEqual({
+      cancelled: 1,
+      failed: 1,
+      errors: [`${failedRun.workflowId}: storage unavailable`],
+    });
+    const rows = await testDatabase.db
+      .select()
+      .from(workflowRun)
+      .where(eq(workflowRun.repositoryId, repository.id));
+    const runsById = new Map(rows.map((run) => [run.id, run]));
+    expect(runsById.get(successfulRun.id)).toMatchObject({
+      phase: 'cancelled',
+      cancellationReason: 'test',
+    });
+    expect(runsById.get(failedRun.id)).toMatchObject({ phase: 'executing' });
   });
 
   it('treats a missing workflow as already cancelled and reconciles the row', async () => {

@@ -7,7 +7,7 @@
 
 import { isWeftFault } from '@lostgradient/weft';
 import { and, eq, inArray } from 'drizzle-orm';
-import type { GithubServiceContext } from '../context.js';
+import type { GithubServiceContext, WorkflowCancellationResult } from '../context.js';
 import { repository, pullRequestState } from '@tribunal/database/schema';
 import { workflowRun, type WorkflowPhase } from '@tribunal/database/schema';
 import { deleteInstallation, updateInstallationStatus } from './records.js';
@@ -30,9 +30,12 @@ function isWorkflowNotFound(error: unknown): boolean {
 async function cancelWeftWorkflowsById(
   context: GithubServiceContext,
   workflowIds: string[],
-): Promise<{ cancelled: number; failed: number; errors: string[] }> {
+): Promise<WorkflowCancellationResult> {
   if (workflowIds.length === 0) {
     return { cancelled: 0, failed: 0, errors: [] };
+  }
+  if (context.cancelWorkflowsById !== undefined) {
+    return context.cancelWorkflowsById(workflowIds);
   }
   const client = await context.resolveWeftClient?.().catch(() => null);
   if (!client) {
@@ -241,6 +244,11 @@ export async function handleRepositoriesRemoved(
 
   // Cancel active workflows for these repositories
   const result = await cancelWorkflowsForRepositories(context, repositoryIds, 'repository_removed');
+  if (result.failed > 0) {
+    throw new Error(
+      `Failed to cancel ${result.failed} workflow(s) for removed repositories: ${result.errors.join('; ')}`,
+    );
+  }
 
   console.log('[lifecycle] Repositories removed', {
     installationId,
@@ -337,16 +345,48 @@ async function cancelWorkflows(
     return { cancelled: 0, failed: 0, errors: [] };
   }
 
+  let remotelyFailedWorkflowIds = new Set<string>();
+  let remoteFailure: Pick<CancellationResult, 'failed' | 'errors'> | undefined;
+  if (context.cancelWorkflowsById !== undefined) {
+    const requestedWorkflowIds = new Set(workflows.map((workflow) => workflow.workflowId));
+    const cancellation = await context.cancelWorkflowsById(
+      workflows.map((workflow) => workflow.workflowId),
+    );
+    if (cancellation.failed > 0) {
+      remotelyFailedWorkflowIds = workflowIdsFromCancellationErrors(cancellation.errors);
+      remoteFailure = { failed: cancellation.failed, errors: cancellation.errors };
+      const hasOnlyKnownFailedWorkflowIds = [...remotelyFailedWorkflowIds].every((workflowId) =>
+        requestedWorkflowIds.has(workflowId),
+      );
+      if (remotelyFailedWorkflowIds.size === 0 || !hasOnlyKnownFailedWorkflowIds) {
+        return {
+          cancelled: 0,
+          failed: cancellation.failed,
+          errors: cancellation.errors,
+        };
+      }
+    }
+  }
+
   let cancelled = 0;
   let failed = 0;
   const errors: string[] = [];
 
-  // Resolve the durable client once for the whole batch. Null when no engine is
-  // configured (WEFT_DATABASE_URL unset) — the local rows are still reconciled.
-  const client = await context.resolveWeftClient?.().catch(() => null);
+  // Resolve the durable client once for local/default batches. Null when no
+  // local engine is configured (WEFT_DATABASE_URL unset) — the local rows are
+  // still reconciled. Production web supplies `cancelWorkflowsById` instead,
+  // which must report delivery failures instead of silently succeeding.
+  const client =
+    context.cancelWorkflowsById === undefined
+      ? await context.resolveWeftClient?.().catch(() => null)
+      : null;
 
   for (const workflow of workflows) {
     try {
+      if (remotelyFailedWorkflowIds.has(workflow.workflowId)) {
+        continue;
+      }
+
       // Cancel the running Weft workflow before marking the row cancelled. A
       // missing run (WorkflowNotFoundError) means there is nothing to cancel —
       // not an error — so we proceed to reconcile the local row regardless.
@@ -400,5 +440,18 @@ async function cancelWorkflows(
     }
   }
 
-  return { cancelled, failed, errors };
+  return {
+    cancelled,
+    failed: failed + (remoteFailure?.failed ?? 0),
+    errors: [...errors, ...(remoteFailure?.errors ?? [])],
+  };
+}
+
+function workflowIdsFromCancellationErrors(errors: string[]): Set<string> {
+  const workflowIds = new Set<string>();
+  for (const error of errors) {
+    const separatorIndex = error.indexOf(': ');
+    if (separatorIndex > 0) workflowIds.add(error.slice(0, separatorIndex));
+  }
+  return workflowIds;
 }

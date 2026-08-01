@@ -95,3 +95,55 @@ export async function handleInstallationSyncCancellationRequest(
   }
   return Response.json({ ok: true, cancelled: true }, { status: 202 });
 }
+
+export async function handleWorkflowCancellationRequest(
+  request: Request,
+  runtime: Pick<EngineRuntime, 'cancelWorkflowIds'>,
+): Promise<Response> {
+  if (runtime.cancelWorkflowIds === undefined) {
+    return Response.json(
+      { ok: false, error: 'workflow_cancellation_receiver_unavailable' },
+      { status: 503 },
+    );
+  }
+
+  const input = await readWorkflowCancellationInput(request);
+  if (!input.ok) {
+    return Response.json({ ok: false, error: input.error }, { status: 400 });
+  }
+
+  const result = await runtime.cancelWorkflowIds(input.workflowIds);
+  return Response.json(
+    { ok: result.failed === 0, ...result },
+    { status: result.failed === 0 ? 202 : 502 },
+  );
+}
+
+async function readWorkflowCancellationInput(
+  request: Request,
+): Promise<
+  | { ok: true; workflowIds: string[] }
+  | { ok: false; error: 'invalid_workflow_cancellation_request' }
+> {
+  try {
+    const body = await request.json();
+    if (!isWorkflowCancellationInput(body)) {
+      return { ok: false, error: 'invalid_workflow_cancellation_request' };
+    }
+    return { ok: true, workflowIds: body.workflowIds };
+  } catch {
+    return { ok: false, error: 'invalid_workflow_cancellation_request' };
+  }
+}
+
+function isWorkflowCancellationInput(value: unknown): value is { workflowIds: string[] } {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as { workflowIds?: unknown };
+  return (
+    Array.isArray(candidate.workflowIds) &&
+    candidate.workflowIds.length > 0 &&
+    candidate.workflowIds.every(
+      (workflowId) => typeof workflowId === 'string' && workflowId.length > 0,
+    )
+  );
+}

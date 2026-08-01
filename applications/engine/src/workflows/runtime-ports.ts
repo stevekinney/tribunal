@@ -175,6 +175,9 @@ export function createReviewIntentConsumer(
     stopReviewRun(reviewRunId: string) {
       return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
     },
+    stopReviewWorkflow(workflowId: string) {
+      return reviewWorkflowEngine.stopWorkflow(workflowId);
+    },
     stopReviewAgent(reviewRunId: string, agentId: string) {
       return reviewWorkflowEngine.stopAgent(reviewRunId, agentId, 'timeout');
     },

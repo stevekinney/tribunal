@@ -33,6 +33,12 @@ export type GetInstallationOctokit = (installationId: number) => Promise<Octokit
 /** Function that returns the GitHub App instance (needed for token minting). */
 export type GetGithubApplication = () => App | null;
 
+export interface WorkflowCancellationResult {
+  cancelled: number;
+  failed: number;
+  errors: string[];
+}
+
 export interface GithubServiceContext {
   /** Database query builder (Drizzle ORM). */
   db: Database;
@@ -69,4 +75,11 @@ export interface GithubServiceContext {
    * production Weft ownership lives in tribunal-engine, not the web process.
    */
   cancelInstallationSync?: (installationId: number) => Promise<void>;
+
+  /**
+   * Cancel engine-owned workflow runs by stable Weft id.
+   * Production web supplies this through the authenticated engine control
+   * endpoint because `WEFT_DATABASE_URL` belongs to tribunal-engine.
+   */
+  cancelWorkflowsById?: (workflowIds: string[]) => Promise<WorkflowCancellationResult>;
 }
