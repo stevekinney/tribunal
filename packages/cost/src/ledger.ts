@@ -647,6 +647,7 @@ async function reserveDailyCap(
         WHERE ${costReservation.userId} = ${userId}
           AND ${costReservation.dayStartedAt} = (SELECT day_started_at FROM budget_day)
           AND ${costReservation.expiresAt} > ${now}
+          AND EXISTS (SELECT 1 FROM active_idempotent_reservation)
         RETURNING
           ${costReservation.id},
           ${costReservation.amountUsd},

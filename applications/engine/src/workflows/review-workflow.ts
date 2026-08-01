@@ -904,7 +904,15 @@ export class ReviewWorkflowEngine {
       idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
       expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
     });
-    if (isStoppedReviewRun(reviewRun)) return reviewRun;
+    if (isStoppedReviewRun(reviewRun)) {
+      if (triageCapDecision.allowed) {
+        await this.releaseDailyCapReservation(
+          reviewRun,
+          createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
+        );
+      }
+      return reviewRun;
+    }
     if (!triageCapDecision.allowed) {
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
@@ -1193,6 +1201,12 @@ export class ReviewWorkflowEngine {
         expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       });
       if (isStoppedReviewRun(reviewRun)) {
+        if (dailyCapDecision.allowed) {
+          await this.releaseDailyCapReservation(
+            reviewRun,
+            createLlmEstimateIdempotencyKey(agentRunId),
+          );
+        }
         return { results, quotaBlocked: false };
       }
       if (!dailyCapDecision.allowed) {
@@ -1377,7 +1391,15 @@ export class ReviewWorkflowEngine {
           amountUsd: VERIFIER_MAX_BUDGET_USD,
           expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
         });
-        if (isStoppedReviewRun(reviewRun)) return;
+        if (isStoppedReviewRun(reviewRun)) {
+          if (dailyCapDecision.allowed) {
+            await this.releaseDailyCapReservation(
+              reviewRun,
+              createLlmEstimateIdempotencyKey(agentRunId),
+            );
+          }
+          return;
+        }
         if (!dailyCapDecision.allowed) {
           quotaBlocked = true;
           return;
@@ -1608,6 +1630,21 @@ export class ReviewWorkflowEngine {
       agentId: agentIdForPersistence,
       amountUsd: result.costEstimateUsd,
       idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+    });
+  }
+
+  private async releaseDailyCapReservation(
+    reviewRun: ReviewRunRecord,
+    idempotencyKey: string,
+  ): Promise<void> {
+    await this.ports.cost.recordLlmEstimate({
+      userId: reviewRun.userId,
+      repositoryId: reviewRun.repositoryId,
+      reviewRunId: reviewRun.id,
+      agentRunId: null,
+      agentId: null,
+      amountUsd: 0,
+      idempotencyKey,
     });
   }
 
