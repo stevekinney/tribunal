@@ -13,7 +13,7 @@ import {
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { createCostPort, enforceDailyCap, recordLlmEstimate, recordSandbox } from './ledger';
-import { PRICING, sandboxCost } from './pricing';
+import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
 
 let testDatabase: TestDatabase;
 
@@ -146,7 +146,13 @@ describe('cost ledger', () => {
       reviewRunId: review.id,
       repositoryId: repository.id,
     });
-    expect(rows[0].meta).toEqual({ window: '2026-06-17T10' });
+    expect(rows[0].meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 2048, storageMb: 10_240 },
+      sandboxId: 'sandbox_1',
+      window: '2026-06-17T10',
+    });
   });
 
   // Per-run cost reconciliation was removed (see #215): the Anthropic cost
@@ -253,7 +259,7 @@ describe('cost ledger', () => {
       });
     }
 
-    expect(decision).toEqual({ allowed: false });
+    expect(decision).toEqual({ allowed: false, capUsd: 2, spendUsd: 2, remainingUsd: 0 });
     expect(await countLlmEvents()).toBe(before);
   });
 
@@ -292,7 +298,10 @@ describe('cost ledger', () => {
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
     expect(sandboxRows[0]?.occurredAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
-    expect(sandboxRows[0]?.meta).toEqual({ window: '2026-06-17T12:00:00.000Z' });
+    expect(sandboxRows[0]?.meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      window: '2026-06-17T12:00:00.000Z',
+    });
   });
 
   it('records sandbox cost port events at shorthand billing window starts', async () => {
@@ -466,11 +475,7 @@ describe('cost ledger', () => {
     const [budget] = await testDatabase.db.select().from(costBudgetDay);
     expect(Number(budget?.spentUsd)).toBe(0.01);
     expect(Number(budget?.reservedUsd)).toBe(0);
-    await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({
-      allowed: false,
-      spendUsd: 0.01,
-      remainingUsd: 0,
-    });
+    await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({ allowed: false });
   });
 
   it('treats duplicate reservation idempotency keys as a single active reservation', async () => {
@@ -501,6 +506,42 @@ describe('cost ledger', () => {
     const reservations = await testDatabase.db.select().from(costReservation);
     const [budget] = await testDatabase.db.select().from(costBudgetDay);
     expect(reservations).toHaveLength(1);
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('extends an active idempotent reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:retry-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(portAtNoon.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    const portBeforeExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:04:00.000Z'),
+    });
+    await expect(
+      portBeforeExpiry.enforceDailyCap(user.id, {
+        ...reservation,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
     expect(Number(budget?.reservedUsd)).toBe(0.01);
   });
 
@@ -814,5 +855,40 @@ describe('cost ledger', () => {
     });
 
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
+  });
+
+  it('rejects invalid daily cap reservation inputs before touching the ledger', async () => {
+    const { user } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 25, {
+        idempotencyKey: 'llm:invalid-amount:estimate',
+        amountUsd: 0,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).rejects.toThrow('Daily cap reservation amount must be a positive finite number.');
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 25, {
+        idempotencyKey: 'llm:expired:estimate',
+        amountUsd: 0.01,
+        expiresAt: now,
+      }),
+    ).rejects.toThrow('Daily cap reservation expiry must be after the reservation time.');
+  });
+
+  it('treats driver results without rows as a denied reservation decision', async () => {
+    const database = {
+      execute: async () => undefined,
+      select: testDatabase.db.select,
+    } as unknown as Parameters<typeof enforceDailyCap>[0];
+
+    await expect(
+      enforceDailyCap(database, 1, new Date('2026-06-17T12:00:00.000Z'), 25, {
+        idempotencyKey: 'llm:empty-driver:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toEqual({ allowed: false, capUsd: 25, spendUsd: 0, remainingUsd: 25 });
   });
 });

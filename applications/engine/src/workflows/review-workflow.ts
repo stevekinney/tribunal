@@ -992,6 +992,10 @@ export class ReviewWorkflowEngine {
     );
     reviewRun.costEstimateUsd += verificationCostEstimateUsd;
     if (verificationQuotaBlocked) {
+      reviewRun.costEstimateUsd =
+        triageResult.costEstimateUsd +
+        verificationCostEstimateUsd +
+        agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
       reviewRun.status = 'quota_blocked';
       reviewRun.finishedAt = this.now();
       await this.persistReviewRun(reviewRun);

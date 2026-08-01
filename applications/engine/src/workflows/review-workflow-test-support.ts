@@ -909,12 +909,7 @@ class FakeCostPort implements CostPort {
     ) {
       this.dailyCapReservations.set(reservation.idempotencyKey, reservationAmountUsd);
     }
-    return {
-      allowed,
-      capUsd,
-      spendUsd,
-      remainingUsd: Math.max(0, capUsd - spendUsd),
-    };
+    return { allowed };
   }
 
   setSpendTodayEstimate(value: number): void {

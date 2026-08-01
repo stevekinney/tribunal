@@ -23,6 +23,12 @@ import {
 
 type CostDatabase = Pick<Database, 'execute' | 'select'>;
 
+type LedgerDailyCapDecision = DailyCapDecision & {
+  capUsd: number;
+  spendUsd: number;
+  remainingUsd: number;
+};
+
 export type RecordSandboxInput = {
   userId: number;
   repositoryId: number;
@@ -266,9 +272,18 @@ async function recordSandboxEstimateEvent(
   amountUsd: number,
   occurredAt: Date,
 ): Promise<void> {
+  await ensureDailyBudgetRow(database, values.userId, occurredAt);
+
   await database.execute(sql`
     WITH event_day AS (
       SELECT ${dayStartedAtSql(occurredAt)} AS day_started_at
+    ),
+    locked_budget AS (
+      SELECT ${costBudgetDay.userId}, ${costBudgetDay.dayStartedAt}
+      FROM ${costBudgetDay}
+      WHERE ${costBudgetDay.userId} = ${values.userId}
+        AND ${costBudgetDay.dayStartedAt} = (SELECT day_started_at FROM event_day)
+      FOR UPDATE OF ${costBudgetDay}
     ),
     inserted_event AS (
       INSERT INTO ${costEvent} (
@@ -283,7 +298,7 @@ async function recordSandboxEstimateEvent(
         "occurred_at",
         "idempotency_key"
       )
-      VALUES (
+      SELECT
         ${values.id},
         ${values.userId},
         'sandbox',
@@ -294,29 +309,41 @@ async function recordSandboxEstimateEvent(
         ${JSON.stringify(values.meta ?? {})}::jsonb,
         ${occurredAt},
         ${values.idempotencyKey}
-      )
+      FROM locked_budget
       ON CONFLICT ("idempotency_key") DO NOTHING
       RETURNING "user_id", "amount_usd"
+    ),
+    event_spend AS (
+      SELECT
+        locked_budget.user_id,
+        locked_budget.day_started_at,
+        COALESCE(SUM(${costEvent.amountUsd}), 0)::numeric AS spent_usd
+      FROM locked_budget
+      LEFT JOIN ${costEvent}
+        ON ${costEvent.userId} = locked_budget.user_id
+        AND ${costEvent.source} = 'estimate'
+        AND ${costEvent.occurredAt} >= locked_budget.day_started_at
+        AND ${costEvent.occurredAt} < locked_budget.day_started_at + interval '1 day'
+      GROUP BY locked_budget.user_id, locked_budget.day_started_at
     )
-    INSERT INTO ${costBudgetDay} (
-      "user_id",
-      "day_started_at",
-      "spent_usd",
-      "reserved_usd",
-      "created_at",
-      "updated_at"
-    )
-    SELECT
-      ${values.userId},
-      (SELECT day_started_at FROM event_day),
-      COALESCE((SELECT SUM("amount_usd") FROM inserted_event), 0)::numeric,
-      0::numeric,
-      ${occurredAt},
-      ${occurredAt}
-    WHERE EXISTS (SELECT 1 FROM inserted_event)
-    ON CONFLICT ("user_id", "day_started_at") DO UPDATE SET
-      "spent_usd" = ${costBudgetDay.spentUsd} + EXCLUDED."spent_usd",
+    UPDATE ${costBudgetDay}
+    SET
+      "spent_usd" = GREATEST(
+        ${costBudgetDay.spentUsd},
+        COALESCE((
+          SELECT event_spend.spent_usd
+          FROM event_spend
+          WHERE event_spend.user_id = ${costBudgetDay.userId}
+            AND event_spend.day_started_at = ${costBudgetDay.dayStartedAt}
+        ), 0)
+      ) + COALESCE((SELECT SUM("amount_usd") FROM inserted_event), 0)::numeric,
       "updated_at" = ${occurredAt}
+    WHERE EXISTS (
+      SELECT 1
+      FROM locked_budget
+      WHERE locked_budget.user_id = ${costBudgetDay.userId}
+        AND locked_budget.day_started_at = ${costBudgetDay.dayStartedAt}
+    )
   `);
 }
 
@@ -394,7 +421,7 @@ export async function enforceDailyCap(
   now = new Date(),
   defaultDailyCostCapUsd = 25,
   reservation?: DailyCapReservationInput,
-): Promise<DailyCapDecision> {
+): Promise<LedgerDailyCapDecision> {
   if (reservation !== undefined) {
     return reserveDailyCap(database, userId, now, defaultDailyCostCapUsd, reservation);
   }
@@ -406,6 +433,9 @@ export async function enforceDailyCap(
 
   return {
     allowed: spendUsd < capUsd,
+    capUsd,
+    spendUsd,
+    remainingUsd: Math.max(0, capUsd - spendUsd),
   };
 }
 
@@ -415,7 +445,7 @@ async function reserveDailyCap(
   now: Date,
   defaultDailyCostCapUsd: number,
   reservation: DailyCapReservationInput,
-): Promise<DailyCapDecision> {
+): Promise<LedgerDailyCapDecision> {
   if (
     reservation.amountUsd !== undefined &&
     (!Number.isFinite(reservation.amountUsd) || reservation.amountUsd <= 0)
@@ -588,7 +618,8 @@ async function reserveDailyCap(
           AND claim_decision.requested_usd <= claim_decision.remaining_usd
           AND (SELECT COUNT(*) FROM released_expired_reservation) >= 0
         ON CONFLICT ("idempotency_key") WHERE "released_at" IS NULL DO UPDATE SET
-          "updated_at" = ${costReservation.updatedAt}
+          "expires_at" = EXCLUDED."expires_at",
+          "updated_at" = ${now}
         WHERE ${costReservation.userId} = ${userId}
           AND ${costReservation.dayStartedAt} = (SELECT day_started_at FROM budget_day)
           AND ${costReservation.expiresAt} > ${now}
@@ -697,10 +728,7 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
           reviewRunId: event.reviewRunId,
           amountUsd: numericText(event.amountUsd),
           meta: {
-            pricingVersion: event.pricingVersion ?? CURRENT_PRICING_VERSION,
-            runtime: event.runtime,
-            resources: event.resources,
-            sandboxId: event.sandboxId,
+            pricingVersion: CURRENT_PRICING_VERSION,
             window: event.window,
           },
           occurredAt,
@@ -710,13 +738,16 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
         occurredAt,
       );
     },
-    enforceDailyCap: (userId, reservation) =>
-      enforceDailyCap(
+    enforceDailyCap: async (userId, reservation) => {
+      const decision = await enforceDailyCap(
         database,
         userId,
         options.now?.() ?? new Date(),
         options.defaultDailyCostCapUsd ?? 25,
         reservation,
-      ),
+      );
+      if (reservation !== undefined) return decision;
+      return { allowed: decision.allowed };
+    },
   };
 }

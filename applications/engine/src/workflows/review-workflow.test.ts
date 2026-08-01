@@ -1017,6 +1017,34 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
     expect(ports.cost.enforceDailyCapCalls).toEqual([1]);
     expect(ports.cost.llmEstimateKeys).toHaveLength(0);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'quota_blocked',
+      costEstimateUsd: 0,
+    });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('blocks before triage when the remaining budget cannot cover a reservation', async () => {
+    const ports = createFakePorts({
+      spendTodayEstimate: 9.99,
+      unboundedReservationAmountUsd: 0.02,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'quota_blocked',
+    });
+
+    expect(ports.cost.enforceDailyCapCalls).toEqual([1, 1]);
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
@@ -1691,6 +1719,7 @@ describe('ReviewWorkflowEngine', () => {
       },
     ]);
     expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ costEstimateUsd: 0.01 });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
