@@ -305,7 +305,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
 
@@ -331,7 +330,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_assignment'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -352,7 +350,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
 
@@ -703,7 +700,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -744,7 +740,6 @@ describe('review operator server helpers', () => {
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: null,
     });
-    expect(intent?.failedAt).toBeInstanceOf(Date);
   });
 
   it('retries the same enabled-agent save after a failed wake-up releases retryable intents', async () => {
@@ -763,7 +758,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -785,7 +779,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_retry_save'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -811,7 +804,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -831,7 +823,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_during_failed_wakeup'));
     expect(intent).toMatchObject({
       claimedAt,
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -841,13 +832,11 @@ describe('review operator server helpers', () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
-    const newerFailedAt = new Date('2026-06-17T12:00:45Z');
     const newerNextAttemptAt = new Date('2026-06-17T12:04:45Z');
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       await testDb.db
         .update(reviewIntent)
         .set({
-          failedAt: newerFailedAt,
           lastError: 'Workflow dispatch failed after release.',
           nextAttemptAt: newerNextAttemptAt,
         })
@@ -862,7 +851,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -882,7 +870,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_failed_during_failed_wakeup'));
     expect(intent).toMatchObject({
       claimedAt: null,
-      failedAt: newerFailedAt,
       lastError: 'Workflow dispatch failed after release.',
       nextAttemptAt: newerNextAttemptAt,
     });
@@ -930,7 +917,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     await testDb.db.insert(reviewIntent).values([
@@ -943,7 +929,6 @@ describe('review operator server helpers', () => {
         prNumber: 8,
         processedAt: new Date('2026-06-17T12:00:30Z'),
         lastError: 'Review intent is waiting for an eligible review agent.',
-        failedAt: new Date('2026-06-17T12:00:00Z'),
         nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
       },
       {
@@ -955,7 +940,6 @@ describe('review operator server helpers', () => {
         prNumber: 9,
         deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
         lastError: 'Review intent is waiting for an eligible review agent.',
-        failedAt: new Date('2026-06-17T12:00:00Z'),
         nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
       },
     ]);
@@ -982,7 +966,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_agent'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -992,7 +975,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_processed_waiting_for_agent'));
     expect(processedIntent).toMatchObject({
       processedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1002,7 +984,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_dead_lettered_waiting_for_agent'));
     expect(deadLetteredIntent).toMatchObject({
       deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1037,7 +1018,6 @@ describe('review operator server helpers', () => {
       prNumber: 7,
       claimedAt: new Date('2026-06-17T12:00:30Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1053,7 +1033,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_for_assigned_disabled_agent'));
     expect(intent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1117,7 +1096,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     await testDb.db.insert(reviewIntent).values({
@@ -1129,7 +1107,6 @@ describe('review operator server helpers', () => {
       prNumber: 8,
       claimedAt: new Date('2026-06-17T12:00:30Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1150,7 +1127,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_deleted_assignment'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1160,7 +1136,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_after_deleted_assignment'));
     expect(claimedIntent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1194,7 +1169,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1213,7 +1187,6 @@ describe('review operator server helpers', () => {
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: null,
     });
-    expect(intent?.failedAt).toBeInstanceOf(Date);
   });
 
   it('retries a review intent engine wake-up without requiring the deleted agent', async () => {
@@ -1358,7 +1331,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1380,7 +1352,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_agent'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1400,7 +1371,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
