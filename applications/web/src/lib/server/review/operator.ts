@@ -307,7 +307,14 @@ export async function saveRepositoryWatchSettings(
   const now = new Date();
 
   await db.execute(sql`
-    WITH updated_settings AS (
+    WITH ensured_user_settings AS (
+      INSERT INTO ${userReviewSettings} ("user_id")
+      SELECT ${userId}
+      WHERE ${input.watched}
+      ON CONFLICT ("user_id") DO NOTHING
+      RETURNING "user_id"
+    ),
+    updated_settings AS (
       INSERT INTO ${repositoryReviewSettings}
         ("user_id", "repository_id", "watched", "ignore_globs", "updated_at")
       VALUES (${userId}, ${input.repositoryId}, ${input.watched}, ${ignoreGlobsSql}, ${now})

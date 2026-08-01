@@ -409,6 +409,62 @@ describe('review operator server helpers', () => {
     expect(await withTestDatabase(() => hasWatchedRepositories(owner.id))).toBe(false);
   });
 
+  it('creates default user review settings before saving a watched repository', async () => {
+    const { owner } = await seedRepositoryOwnership();
+
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: true,
+        ignoreGlobs: [],
+        agentIds: [],
+      }),
+    );
+
+    const [settings] = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+
+    expect(settings).toMatchObject({
+      userId: owner.id,
+      dailyCostCapUsd: '25',
+      defaultModel: 'sonnet',
+      reviewsEnabled: true,
+    });
+  });
+
+  it('preserves existing user review settings when saving a watched repository', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(userReviewSettings).values({
+      userId: owner.id,
+      dailyCostCapUsd: '7.50',
+      defaultModel: 'opus',
+      reviewsEnabled: false,
+    });
+
+    await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: true,
+        ignoreGlobs: [],
+        agentIds: [],
+      }),
+    );
+
+    const [settings] = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+
+    expect(settings).toMatchObject({
+      userId: owner.id,
+      dailyCostCapUsd: '7.50',
+      defaultModel: 'opus',
+      reviewsEnabled: false,
+    });
+  });
+
   it('reads reviews-enabled without creating a settings row, defaulting to enabled', async () => {
     const { owner } = await seedRepositoryOwnership();
 
@@ -590,6 +646,25 @@ describe('review operator server helpers', () => {
       .where(eq(repositoryReviewSettings.repositoryId, 9001));
 
     expect(settings).toMatchObject({ watched: true, ignoreGlobs: ['dist/**', 'coverage/**'] });
+  });
+
+  it('creates default user review settings through the repository settings form path', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    const formData = new FormData();
+
+    await withTestDatabase(() => submitRepositorySettingsForm(owner.id, 9001, formData));
+
+    const [settings] = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+
+    expect(settings).toMatchObject({
+      userId: owner.id,
+      dailyCostCapUsd: '25',
+      defaultModel: 'sonnet',
+      reviewsEnabled: true,
+    });
   });
 
   it('denies non-owner agent mutations with 403 while preserving not-found responses', async () => {
