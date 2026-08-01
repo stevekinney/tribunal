@@ -1,7 +1,11 @@
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../../context.js';
 import { upsertPRState } from './state.js';
-import { getAggregateReviewState, getFailingCheckCount, mapMergeableState } from './queries.js';
+import {
+  getFailingCheckCount,
+  getUnresolvedReviewThreadCount,
+  mapMergeableState,
+} from './queries.js';
 
 // ============================================================================
 // PULL REQUEST EVENT HANDLER
@@ -11,11 +15,10 @@ interface PullRequestPayload {
   pull_request: {
     number: number;
     state: string;
-    draft: boolean;
     // GitHub sends `null` for not-yet-merged PRs; treated as not-merged below.
     merged: boolean | null;
     head: { sha: string };
-    base: { sha: string; ref: string };
+    base: { ref: string };
     updated_at: string;
     merge_commit_sha?: string | null;
     mergeable_state?: string;
@@ -54,10 +57,8 @@ export async function handlePullRequestStateUpdate(
     repositoryId: repository.id,
     prNumber: pr.number,
     state: pr.state,
-    isDraft: pr.draft,
     isMerged,
     headSha: pr.head.sha,
-    baseSha: pr.base.sha,
     baseRef: pr.base.ref,
     mergeStatus,
     mergeUpdatedAt: new Date(pr.updated_at),
@@ -81,7 +82,7 @@ interface ReviewPayload {
 
 /**
  * Handle pull_request_review webhook events (submitted/dismissed).
- * Makes one REST API call + one GraphQL call to compute aggregate review state.
+ * Reads unresolved review thread count for dashboard freshness.
  */
 export async function handleReviewStateUpdate(
   context: GithubServiceContext,
@@ -90,14 +91,13 @@ export async function handleReviewStateUpdate(
 ): Promise<void> {
   const { pull_request: pr, repository } = payload;
 
-  const { reviewStatus, approvalCount, changesRequestedCount, unresolvedThreadCount } =
-    await getAggregateReviewState(
-      context,
-      octokit,
-      repository.owner.login,
-      repository.name,
-      pr.number,
-    );
+  const unresolvedThreadCount = await getUnresolvedReviewThreadCount(
+    context,
+    octokit,
+    repository.owner.login,
+    repository.name,
+    pr.number,
+  );
 
   const reviewUpdatedAt = payload.review.submitted_at
     ? new Date(payload.review.submitted_at)
@@ -106,9 +106,6 @@ export async function handleReviewStateUpdate(
   await upsertPRState(context, {
     repositoryId: repository.id,
     prNumber: pr.number,
-    reviewStatus,
-    approvalCount,
-    changesRequestedCount,
     unresolvedThreadCount,
     reviewUpdatedAt,
   });
@@ -141,7 +138,7 @@ export async function handleCheckSuiteCompleted(
   // A check suite can be associated with multiple PRs
   if (check_suite.pull_requests.length === 0) return;
 
-  const { ciStatus, failingCount } = await getFailingCheckCount(
+  const { ciStatus } = await getFailingCheckCount(
     context,
     octokit,
     repository.owner.login,
@@ -157,7 +154,6 @@ export async function handleCheckSuiteCompleted(
         repositoryId: repository.id,
         prNumber: pr.number,
         ciStatus,
-        failingCheckCount: failingCount,
         ciUpdatedAt,
         headSha: check_suite.head_sha,
       }),

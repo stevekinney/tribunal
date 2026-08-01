@@ -1,23 +1,8 @@
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { GithubServiceContext } from '../../context.js';
 import { pullRequestState } from '@tribunal/database/schema';
-import type {
-  PullRequestState,
-  PullRequestStateInsert,
-  AutomationStatus,
-  CIStatus,
-} from '@tribunal/database/schema';
+import type { PullRequestState, PullRequestStateInsert } from '@tribunal/database/schema';
 import { getPRState as getPRStateFromDb } from '@tribunal/database/queries';
-
-// ============================================================================
-// TYPES
-// ============================================================================
-
-export interface PRStateFilters {
-  automationStatus?: AutomationStatus;
-  ciStatus?: CIStatus;
-  isPaused?: boolean;
-}
 
 // ============================================================================
 // UPSERT
@@ -44,11 +29,6 @@ export async function upsertPRState(
           : data.state !== undefined
             ? sql`${data.state}`
             : pullRequestState.state,
-        isDraft: data.prUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.prUpdatedAt} IS NULL OR ${pullRequestState.prUpdatedAt} < ${data.prUpdatedAt} THEN ${data.isDraft ?? sql`${pullRequestState.isDraft}`} ELSE ${pullRequestState.isDraft} END`
-          : data.isDraft !== undefined
-            ? sql`${data.isDraft}`
-            : pullRequestState.isDraft,
         isMerged: data.prUpdatedAt
           ? sql`CASE WHEN ${pullRequestState.prUpdatedAt} IS NULL OR ${pullRequestState.prUpdatedAt} < ${data.prUpdatedAt} THEN ${data.isMerged ?? sql`${pullRequestState.isMerged}`} ELSE ${pullRequestState.isMerged} END`
           : data.isMerged !== undefined
@@ -59,11 +39,6 @@ export async function upsertPRState(
           : data.headSha !== undefined
             ? sql`${data.headSha}`
             : pullRequestState.headSha,
-        baseSha: data.prUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.prUpdatedAt} IS NULL OR ${pullRequestState.prUpdatedAt} < ${data.prUpdatedAt} THEN ${data.baseSha ?? sql`${pullRequestState.baseSha}`} ELSE ${pullRequestState.baseSha} END`
-          : data.baseSha !== undefined
-            ? sql`${data.baseSha}`
-            : pullRequestState.baseSha,
         baseRef: data.prUpdatedAt
           ? sql`CASE WHEN ${pullRequestState.prUpdatedAt} IS NULL OR ${pullRequestState.prUpdatedAt} < ${data.prUpdatedAt} THEN ${data.baseRef ?? sql`${pullRequestState.baseRef}`} ELSE ${pullRequestState.baseRef} END`
           : data.baseRef !== undefined
@@ -89,31 +64,11 @@ export async function upsertPRState(
           : data.ciStatus !== undefined
             ? sql`${data.ciStatus}`
             : pullRequestState.ciStatus,
-        failingCheckCount: data.ciUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.ciUpdatedAt} IS NULL OR ${pullRequestState.ciUpdatedAt} < ${data.ciUpdatedAt} THEN ${data.failingCheckCount ?? 0} ELSE ${pullRequestState.failingCheckCount} END`
-          : data.failingCheckCount !== undefined
-            ? sql`${data.failingCheckCount}`
-            : pullRequestState.failingCheckCount,
         ciUpdatedAt: data.ciUpdatedAt
           ? sql`CASE WHEN ${pullRequestState.ciUpdatedAt} IS NULL OR ${pullRequestState.ciUpdatedAt} < ${data.ciUpdatedAt} THEN ${data.ciUpdatedAt} ELSE ${pullRequestState.ciUpdatedAt} END`
           : pullRequestState.ciUpdatedAt,
 
         // Reviews — update if reviewUpdatedAt is newer
-        reviewStatus: data.reviewUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.reviewUpdatedAt} IS NULL OR ${pullRequestState.reviewUpdatedAt} < ${data.reviewUpdatedAt} THEN ${data.reviewStatus ?? sql`${pullRequestState.reviewStatus}`} ELSE ${pullRequestState.reviewStatus} END`
-          : data.reviewStatus !== undefined
-            ? sql`${data.reviewStatus}`
-            : pullRequestState.reviewStatus,
-        approvalCount: data.reviewUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.reviewUpdatedAt} IS NULL OR ${pullRequestState.reviewUpdatedAt} < ${data.reviewUpdatedAt} THEN ${data.approvalCount ?? 0} ELSE ${pullRequestState.approvalCount} END`
-          : data.approvalCount !== undefined
-            ? sql`${data.approvalCount}`
-            : pullRequestState.approvalCount,
-        changesRequestedCount: data.reviewUpdatedAt
-          ? sql`CASE WHEN ${pullRequestState.reviewUpdatedAt} IS NULL OR ${pullRequestState.reviewUpdatedAt} < ${data.reviewUpdatedAt} THEN ${data.changesRequestedCount ?? 0} ELSE ${pullRequestState.changesRequestedCount} END`
-          : data.changesRequestedCount !== undefined
-            ? sql`${data.changesRequestedCount}`
-            : pullRequestState.changesRequestedCount,
         unresolvedThreadCount: data.reviewUpdatedAt
           ? sql`CASE WHEN ${pullRequestState.reviewUpdatedAt} IS NULL OR ${pullRequestState.reviewUpdatedAt} < ${data.reviewUpdatedAt} THEN ${data.unresolvedThreadCount ?? 0} ELSE ${pullRequestState.unresolvedThreadCount} END`
           : data.unresolvedThreadCount !== undefined
@@ -122,9 +77,6 @@ export async function upsertPRState(
         reviewUpdatedAt: data.reviewUpdatedAt
           ? sql`CASE WHEN ${pullRequestState.reviewUpdatedAt} IS NULL OR ${pullRequestState.reviewUpdatedAt} < ${data.reviewUpdatedAt} THEN ${data.reviewUpdatedAt} ELSE ${pullRequestState.reviewUpdatedAt} END`
           : pullRequestState.reviewUpdatedAt,
-
-        // Always update updatedAt
-        updatedAt: new Date(),
       },
     })
     .returning();
@@ -151,21 +103,11 @@ export async function getPRState(
 export async function listPRStates(
   context: GithubServiceContext,
   repositoryId: number,
-  filters?: PRStateFilters,
   limit = 50,
   cursor?: number,
 ): Promise<PullRequestState[]> {
   const conditions = [eq(pullRequestState.repositoryId, repositoryId)];
 
-  if (filters?.automationStatus) {
-    conditions.push(eq(pullRequestState.automationStatus, filters.automationStatus));
-  }
-  if (filters?.ciStatus) {
-    conditions.push(eq(pullRequestState.ciStatus, filters.ciStatus));
-  }
-  if (filters?.isPaused !== undefined) {
-    conditions.push(eq(pullRequestState.isPaused, filters.isPaused));
-  }
   if (cursor) {
     conditions.push(gt(pullRequestState.id, cursor));
   }
@@ -212,25 +154,4 @@ export async function listPRStatesForRepositories(
     }
   }
   return map;
-}
-
-// ============================================================================
-// MUTATIONS
-// ============================================================================
-
-export async function setIsPaused(
-  context: GithubServiceContext,
-  repositoryId: number,
-  prNumber: number,
-  isPaused: boolean,
-): Promise<PullRequestState | null> {
-  const [result] = await context.db
-    .update(pullRequestState)
-    .set({ isPaused, updatedAt: new Date() })
-    .where(
-      and(eq(pullRequestState.repositoryId, repositoryId), eq(pullRequestState.prNumber, prNumber)),
-    )
-    .returning();
-
-  return result ?? null;
 }

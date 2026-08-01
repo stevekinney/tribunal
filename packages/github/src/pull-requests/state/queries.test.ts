@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { GithubServiceContext } from '../../context.js';
 import {
-  getAggregateReviewState,
   getDefaultBranchCiStatus,
   getFailingCheckCount,
+  getUnresolvedReviewThreadCount,
   mapMergeableState,
 } from './queries.js';
 
@@ -56,147 +56,65 @@ describe('mapMergeableState', () => {
   });
 });
 
-describe('getAggregateReviewState', () => {
+describe('getUnresolvedReviewThreadCount', () => {
   function createReviewOctokit(
-    reviews: Array<Record<string, unknown>>,
     threadPages: Array<{
       nodes: Array<{ isResolved: boolean }>;
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
     }> = [{ nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }],
   ) {
-    const listReviews = vi.fn().mockResolvedValueOnce({ data: reviews });
     const graphql = vi.fn();
     for (const page of threadPages) {
       graphql.mockResolvedValueOnce({
         repository: { pullRequest: { reviewThreads: page } },
       });
     }
-    return { rest: { pulls: { listReviews } }, graphql } as never;
+    return { graphql } as never;
   }
 
-  it('computes approvalCount/changesRequestedCount and reviewStatus from the latest review per user', async () => {
-    const octokit = createReviewOctokit([
-      { user: { id: 1 }, state: 'CHANGES_REQUESTED' },
-      // A later review from the same user supersedes the earlier one.
-      { user: { id: 1 }, state: 'APPROVED' },
-      { user: { id: 2 }, state: 'APPROVED' },
-    ]);
-
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
-
-    expect(result).toEqual({
-      reviewStatus: 'approved',
-      approvalCount: 2,
-      changesRequestedCount: 0,
-      unresolvedThreadCount: 0,
-    });
-  });
-
-  it('reports changes_requested when at least one reviewer requested changes', async () => {
-    const octokit = createReviewOctokit([
-      { user: { id: 1 }, state: 'APPROVED' },
-      { user: { id: 2 }, state: 'CHANGES_REQUESTED' },
-    ]);
-
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
-
-    expect(result.reviewStatus).toBe('changes_requested');
-    expect(result.changesRequestedCount).toBe(1);
-  });
-
-  it('reports pending when there are no reviews', async () => {
-    const octokit = createReviewOctokit([]);
-
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
-
-    expect(result.reviewStatus).toBe('pending');
-  });
-
-  it('ignores a review with no user or no state', async () => {
-    const octokit = createReviewOctokit([{ user: null, state: 'APPROVED' }, { user: { id: 1 } }]);
-
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
-
-    expect(result.approvalCount).toBe(0);
-  });
-
-  it('paginates reviews across more than one page', async () => {
-    // GitHub user ids are always positive; start at 1 rather than 0 so this
-    // fixture reflects a real payload (an id of exactly 0 would be dropped
-    // by the source's `!review.user?.id` falsy check, which is only ever
-    // true in that unreachable-in-practice case).
-    const fullPage = Array.from({ length: 100 }, (_, index) => ({
-      user: { id: index + 1 },
-      state: 'APPROVED',
-    }));
-    const listReviews = vi.fn();
-    listReviews.mockResolvedValueOnce({ data: fullPage });
-    listReviews.mockResolvedValueOnce({ data: [{ user: { id: 999 }, state: 'APPROVED' }] });
-    const octokit = {
-      rest: { pulls: { listReviews } },
-      graphql: vi.fn().mockResolvedValueOnce({
-        repository: {
-          pullRequest: {
-            reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
-          },
-        },
-      }),
-    } as never;
-
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
-
-    expect(result.approvalCount).toBe(101);
-    expect(listReviews).toHaveBeenCalledTimes(2);
-  });
-
   it('sums unresolved thread counts across paginated GraphQL results', async () => {
-    const octokit = createReviewOctokit(
-      [],
-      [
-        {
-          nodes: [{ isResolved: false }, { isResolved: true }],
-          pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
-        },
-        {
-          nodes: [{ isResolved: false }],
-          pageInfo: { hasNextPage: false, endCursor: null },
-        },
-      ],
-    );
+    const octokit = createReviewOctokit([
+      {
+        nodes: [{ isResolved: false }, { isResolved: true }],
+        pageInfo: { hasNextPage: true, endCursor: 'cursor-1' },
+      },
+      {
+        nodes: [{ isResolved: false }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    ]);
 
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+    const result = await getUnresolvedReviewThreadCount(undefined, octokit, 'owner', 'repo', 42);
 
-    expect(result.unresolvedThreadCount).toBe(2);
+    expect(result).toBe(2);
   });
 
   it('logs and falls back to 0 unresolved threads when the GraphQL call fails', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const listReviews = vi.fn().mockResolvedValueOnce({ data: [] });
     const octokit = {
-      rest: { pulls: { listReviews } },
       graphql: vi.fn().mockRejectedValueOnce(new Error('GraphQL down')),
     } as never;
 
-    const result = await getAggregateReviewState(undefined, octokit, 'owner', 'repo', 42);
+    const result = await getUnresolvedReviewThreadCount(undefined, octokit, 'owner', 'repo', 42);
 
-    expect(result.unresolvedThreadCount).toBe(0);
+    expect(result).toBe(0);
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      '[github-cache] getAggregateReviewState GraphQL thread count failed:',
+      '[github-cache] getUnresolvedReviewThreadCount GraphQL thread count failed:',
       expect.any(Error),
     );
 
     consoleErrorSpy.mockRestore();
   });
 
-  it('caches results under the get-aggregate-review-state policy when a context is provided', async () => {
+  it('caches results under the get-unresolved-review-thread-count policy when a context is provided', async () => {
     const context = createMockContext();
-    const octokit = createReviewOctokit([{ user: { id: 1 }, state: 'APPROVED' }]);
+    const octokit = createReviewOctokit();
 
-    await getAggregateReviewState(context, octokit, 'acme', 'widgets', 42);
+    await getUnresolvedReviewThreadCount(context, octokit, 'acme', 'widgets', 42);
 
     expect(context.cache.setCache).toHaveBeenCalledTimes(1);
     const [cacheKey] = (context.cache.setCache as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(cacheKey).toBe('github:response:acme:widgets:pr:42:review-state');
+    expect(cacheKey).toBe('github:response:acme:widgets:pr:42:unresolved-review-thread-count');
   });
 });
 

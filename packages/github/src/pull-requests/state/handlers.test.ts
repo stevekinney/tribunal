@@ -12,39 +12,22 @@ vi.mock('./state.js', () => ({
     repositoryId: 100,
     prNumber: 1,
     state: 'open',
-    isDraft: false,
     isMerged: false,
     headSha: 'abc',
-    baseSha: 'def',
     baseRef: 'main',
     ciStatus: 'unknown',
-    failingCheckCount: 0,
     ciUpdatedAt: null,
-    reviewStatus: 'unknown',
-    approvalCount: 0,
-    changesRequestedCount: 0,
     unresolvedThreadCount: 0,
     reviewUpdatedAt: null,
     mergeStatus: 'unknown',
     mergeUpdatedAt: null,
-    automationStatus: 'idle',
-    attemptCount: 0,
-    lastErrorMessage: null,
-    isPaused: false,
     prUpdatedAt: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
   }),
 }));
 
 vi.mock('./queries.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./queries.js')>()),
-  getAggregateReviewState: vi.fn().mockResolvedValue({
-    reviewStatus: 'approved',
-    approvalCount: 1,
-    changesRequestedCount: 0,
-    unresolvedThreadCount: 0,
-  }),
+  getUnresolvedReviewThreadCount: vi.fn().mockResolvedValue(0),
   getFailingCheckCount: vi.fn().mockResolvedValue({
     ciStatus: 'passing',
     failingCount: 0,
@@ -52,7 +35,7 @@ vi.mock('./queries.js', async (importOriginal) => ({
 }));
 
 const { upsertPRState } = await import('./state.js');
-const { getAggregateReviewState, getFailingCheckCount } = await import('./queries.js');
+const { getFailingCheckCount, getUnresolvedReviewThreadCount } = await import('./queries.js');
 
 const mockOctokit = {} as any;
 
@@ -85,7 +68,7 @@ describe('handlePullRequestStateUpdate', () => {
       draft: false,
       merged: false,
       head: { sha: 'head123' },
-      base: { sha: 'base456', ref: 'main' },
+      base: { ref: 'main' },
       updated_at: '2024-01-15T10:00:00Z',
     },
     repository: { id: 100, owner: { login: 'test-org' }, name: 'test-repo' },
@@ -100,9 +83,9 @@ describe('handlePullRequestStateUpdate', () => {
         repositoryId: 100,
         prNumber: 42,
         state: 'open',
-        isDraft: false,
         isMerged: false,
         headSha: 'head123',
+        baseRef: 'main',
       }),
     );
   });
@@ -126,14 +109,17 @@ describe('handlePullRequestStateUpdate', () => {
     expect(upsertPRState).not.toHaveBeenCalled();
   });
 
-  it('handles converted_to_draft', async () => {
+  it('handles converted_to_draft without storing draft state', async () => {
     const context = createMockContext();
     const payload = {
       ...basePayload,
       pull_request: { ...basePayload.pull_request, draft: true },
     };
     await handlePullRequestStateUpdate(context, payload, 'converted_to_draft');
-    expect(upsertPRState).toHaveBeenCalledWith(context, expect.objectContaining({ isDraft: true }));
+    expect(upsertPRState).toHaveBeenCalledWith(
+      context,
+      expect.not.objectContaining({ isDraft: expect.anything() }),
+    );
   });
 });
 
@@ -144,10 +130,10 @@ describe('handleReviewStateUpdate', () => {
     repository: { id: 100, owner: { login: 'test-org' }, name: 'test-repo' },
   };
 
-  it('calls getAggregateReviewState and upserts', async () => {
+  it('calls getUnresolvedReviewThreadCount and upserts the unresolved thread count', async () => {
     const context = createMockContext();
     await handleReviewStateUpdate(context, payload, mockOctokit);
-    expect(getAggregateReviewState).toHaveBeenCalledWith(
+    expect(getUnresolvedReviewThreadCount).toHaveBeenCalledWith(
       context,
       mockOctokit,
       'test-org',
@@ -159,8 +145,7 @@ describe('handleReviewStateUpdate', () => {
       expect.objectContaining({
         repositoryId: 100,
         prNumber: 42,
-        reviewStatus: 'approved',
-        approvalCount: 1,
+        unresolvedThreadCount: 0,
       }),
     );
   });

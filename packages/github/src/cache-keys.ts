@@ -73,11 +73,11 @@ export const CACHE_KEYS = {
   // `webhooks/resource-invalidation.ts`.
   GITHUB_USER_INSTALLATIONS_PATTERN: 'github:response:user:*:installations',
 
-  // GitHub review state and CI check caches (Redis)
-  GITHUB_REVIEW_STATE: (owner: string, repo: string, prNumber: number) =>
-    `github:response:${owner}:${repo}:pr:${prNumber}:review-state`,
+  // GitHub review thread and CI check caches (Redis)
   GITHUB_REVIEW_THREAD_COUNTS: (owner: string, repo: string, prNumber: number) =>
     `github:response:${owner}:${repo}:pr:${prNumber}:review-thread-counts`,
+  GITHUB_UNRESOLVED_REVIEW_THREAD_COUNT: (owner: string, repo: string, prNumber: number) =>
+    `github:response:${owner}:${repo}:pr:${prNumber}:unresolved-review-thread-count`,
   GITHUB_CHECK_COUNTS: (owner: string, repo: string, headSha: string) =>
     `github:response:${owner}:${repo}:checks:${headSha}`,
   GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string) =>

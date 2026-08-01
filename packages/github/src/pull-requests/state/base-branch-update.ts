@@ -69,9 +69,7 @@ export async function handleBaseBranchPush(
         .update(pullRequestState)
         .set({
           mergeStatus,
-          baseSha: prData.base.sha,
           mergeUpdatedAt: new Date(),
-          updatedAt: new Date(),
         })
         .where(eq(pullRequestState.id, pr.id));
 

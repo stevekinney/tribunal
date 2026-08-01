@@ -197,7 +197,7 @@ registerPolicy({
 registerPolicy({
   operationId: 'list-user-installations',
   keyFactory: (userId: number) => CACHE_KEYS.GITHUB_USER_INSTALLATIONS(userId),
-  // Short TTL, matching the get-branch-*/get-aggregate-review-state precedent:
+  // Short TTL, matching the get-branch-*/get-review-thread-counts precedent:
   // this result backs `userCanAccessRepository`, an authorization check, not
   // just UI copy. A longer TTL would let a revoked installation or a removed
   // collaborator keep seeing repositories they can no longer reach on GitHub
@@ -207,21 +207,21 @@ registerPolicy({
 });
 
 // ============================================================================
-// Registered policies — review state and CI (previously uncached)
+// Registered policies — review threads and CI (previously uncached)
 // ============================================================================
-
-registerPolicy({
-  operationId: 'get-aggregate-review-state',
-  keyFactory: (owner: string, repo: string, prNumber: number) =>
-    CACHE_KEYS.GITHUB_REVIEW_STATE(owner, repo, prNumber),
-  ttlSeconds: 30, // Short TTL — review state changes frequently
-  supportsEtag: false, // Multi-call aggregation, no single eTag
-});
 
 registerPolicy({
   operationId: 'get-review-thread-counts',
   keyFactory: (owner: string, repo: string, prNumber: number) =>
     CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS(owner, repo, prNumber),
+  ttlSeconds: 30, // Short TTL — review threads change frequently
+  supportsEtag: false, // GraphQL — no eTag support
+});
+
+registerPolicy({
+  operationId: 'get-unresolved-review-thread-count',
+  keyFactory: (owner: string, repo: string, prNumber: number) =>
+    CACHE_KEYS.GITHUB_UNRESOLVED_REVIEW_THREAD_COUNT(owner, repo, prNumber),
   ttlSeconds: 30, // Short TTL — review threads change frequently
   supportsEtag: false, // GraphQL — no eTag support
 });

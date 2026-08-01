@@ -220,14 +220,12 @@ async function invalidatePullRequestReviewRelatedCache(
 
   const invalidations: Promise<unknown>[] = [
     context.cache.deleteCache(CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, prNumber)),
-    // GITHUB_RESPONSE_PR_PATTERN covers: review-comments, thread-lookup, review-state, and check counts
+    // GITHUB_RESPONSE_PR_PATTERN covers: review-comments, thread-lookup, review thread counts, and check counts
     // for this PR. Thread-validate entries use a different key shape (keyed by threadId, not PR number)
     // and are invalidated individually below when thread.node_id is present.
     context.cache.deleteCacheByPattern(
       CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN(owner, repo, prNumber),
     ),
-    // Invalidate cached review state — approval/changes-requested status may have changed
-    context.cache.deleteCache(CACHE_KEYS.GITHUB_REVIEW_STATE(owner, repo, prNumber)),
   ];
 
   if (threadNodeId) {
