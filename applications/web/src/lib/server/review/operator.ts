@@ -533,7 +533,6 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
   const releasedIntents = await db
     .update(reviewIntent)
     .set({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     })
@@ -562,7 +561,6 @@ async function markReleasedReviewIntentsWaitingForWakeupRetry(
   await db
     .update(reviewIntent)
     .set({
-      failedAt: new Date(),
       lastError: waitingForEligibleReviewAgentReason,
       nextAttemptAt: null,
     })
@@ -572,7 +570,6 @@ async function markReleasedReviewIntentsWaitingForWakeupRetry(
         inArray(reviewIntent.id, releasedIntentIds),
         isNull(reviewIntent.claimedAt),
         isNull(reviewIntent.processedAt),
-        isNull(reviewIntent.failedAt),
         isNull(reviewIntent.lastError),
         isNull(reviewIntent.nextAttemptAt),
         isNull(reviewIntent.deadLetteredAt),
