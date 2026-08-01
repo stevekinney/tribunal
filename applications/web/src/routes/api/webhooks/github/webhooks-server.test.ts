@@ -273,6 +273,23 @@ describe('POST /api/webhooks/github', () => {
     );
   });
 
+  it('throws, releases the claim, and returns 500 when an installation target rename fails schema validation', async () => {
+    await expect(
+      POST(
+        createPostEvent(
+          { action: 'renamed', installation: { id: 1 } },
+          { 'x-github-event': 'installation_target' },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'installation_target',
+    );
+  });
+
   it('throws, releases the claim, and returns 500 when installation sync dispatch fails', async () => {
     handlers.handleInstallation.mockRejectedValueOnce(new Error('engine unavailable'));
 
@@ -289,6 +306,25 @@ describe('POST /api/webhooks/github', () => {
       expect.anything(),
       'delivery-1',
       'installation',
+    );
+  });
+
+  it('throws, releases the claim, and returns 500 when installation target rename metadata persistence fails', async () => {
+    handlers.handleInstallationTarget.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(
+      POST(
+        createPostEvent(
+          { __route: 'installationTarget', action: 'renamed', installation: { id: 1 } },
+          { 'x-github-event': 'installation_target' },
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+
+    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'installation_target',
     );
   });
 

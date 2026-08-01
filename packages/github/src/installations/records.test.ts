@@ -7,6 +7,7 @@ import {
   deleteInstallation,
   getInstallationBindingStatus,
   getInstallationById,
+  updateInstallationAccountMetadata,
   updateInstallationStatus,
   upsertInstallation,
 } from './records.js';
@@ -169,6 +170,51 @@ describe('getInstallationById', () => {
     const installation = await getInstallationById(context, 99999);
 
     expect(installation).toBeNull();
+  });
+});
+
+describe('updateInstallationAccountMetadata', () => {
+  it('updates account metadata without changing binding or repository selection', async () => {
+    const owner = await factories.user.create();
+    await factories.githubInstallation.create({
+      installationId: 566,
+      accountLogin: 'old-org',
+      accountType: 'Organization',
+      accountId: 1005,
+      accountAvatarUrl: 'https://avatar/old',
+      repositorySelection: 'selected',
+      userId: owner.id,
+    });
+
+    const result = await updateInstallationAccountMetadata(context, {
+      installationId: 566,
+      accountLogin: 'new-org',
+      accountType: 'User',
+      accountId: 2005,
+      accountAvatarUrl: 'https://avatar/new',
+    });
+
+    const installation = await getInstallationById(context, 566);
+
+    expect(result).toEqual({ updated: true });
+    expect(installation?.accountLogin).toBe('new-org');
+    expect(installation?.accountType).toBe('User');
+    expect(installation?.accountId).toBe(2005);
+    expect(installation?.accountAvatarUrl).toBe('https://avatar/new');
+    expect(installation?.repositorySelection).toBe('selected');
+    expect(installation?.userId).toBe(owner.id);
+  });
+
+  it('reports when no installation row was updated', async () => {
+    const result = await updateInstallationAccountMetadata(context, {
+      installationId: 999999,
+      accountLogin: 'missing-org',
+      accountType: 'Organization',
+      accountId: 3005,
+      accountAvatarUrl: null,
+    });
+
+    expect(result).toEqual({ updated: false });
   });
 });
 

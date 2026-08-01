@@ -29,6 +29,14 @@ export interface UpsertInstallationData {
   userId?: number;
 }
 
+export interface UpdateInstallationAccountMetadataData {
+  installationId: number;
+  accountLogin: string;
+  accountType: GitHubAccountType;
+  accountId: number;
+  accountAvatarUrl?: string | null;
+}
+
 /**
  * Create or update a GitHub installation record.
  * When `userId` is provided, binds the installation to that user.
@@ -80,6 +88,33 @@ export async function getInstallationById(context: GithubServiceContext, install
     .from(githubInstallation)
     .where(eq(githubInstallation.installationId, installationId));
   return installation ?? null;
+}
+
+/**
+ * Update account metadata for an existing GitHub installation.
+ * Does not create a stub row or change local ownership/configuration fields.
+ */
+export async function updateInstallationAccountMetadata(
+  context: GithubServiceContext,
+  data: UpdateInstallationAccountMetadataData,
+): Promise<{ updated: boolean }> {
+  const accountType: GitHubAccountType = VALID_ACCOUNT_TYPES.includes(data.accountType)
+    ? data.accountType
+    : 'Organization';
+
+  const updated = await context.db
+    .update(githubInstallation)
+    .set({
+      accountLogin: data.accountLogin,
+      accountType,
+      accountId: data.accountId,
+      accountAvatarUrl: data.accountAvatarUrl ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(githubInstallation.installationId, data.installationId))
+    .returning({ id: githubInstallation.id });
+
+  return { updated: updated.length > 0 };
 }
 
 /**
