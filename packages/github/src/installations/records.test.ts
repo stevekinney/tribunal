@@ -118,6 +118,38 @@ describe('upsertInstallation', () => {
     expect(installation?.accountAvatarUrl).toBe('https://avatar/renamed');
   });
 
+  it('preserves existing account metadata on conflict when requested', async () => {
+    const owner = await factories.user.create();
+    await upsertInstallation(context, {
+      installationId: 561,
+      accountLogin: 'new-org',
+      accountType: 'Organization',
+      accountId: 2006,
+      accountAvatarUrl: 'https://avatar/new',
+      repositorySelection: 'selected',
+      userId: owner.id,
+    });
+
+    await upsertInstallation(context, {
+      installationId: 561,
+      accountLogin: 'old-org',
+      accountType: 'Organization',
+      accountId: 1006,
+      repositorySelection: 'all',
+      accountAvatarUrl: 'https://avatar/old',
+      preserveExistingAccountMetadata: true,
+    });
+
+    const installation = await getInstallationById(context, 561);
+
+    expect(installation?.accountLogin).toBe('new-org');
+    expect(installation?.accountType).toBe('Organization');
+    expect(installation?.accountId).toBe(2006);
+    expect(installation?.accountAvatarUrl).toBe('https://avatar/new');
+    expect(installation?.repositorySelection).toBe('all');
+    expect(installation?.userId).toBe(owner.id);
+  });
+
   it('overwrites the binding on conflict when a userId is supplied', async () => {
     const firstOwner = await factories.user.create();
     const secondOwner = await factories.user.create();

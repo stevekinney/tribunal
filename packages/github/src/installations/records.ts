@@ -27,6 +27,8 @@ export interface UpsertInstallationData {
   repositorySelection: RepositorySelection;
   /** Tribunal user the installation is bound to. Omitted for webhook stub creates. */
   userId?: number;
+  /** Keep existing account fields on conflict when a newer lifecycle event may have repaired them. */
+  preserveExistingAccountMetadata?: boolean;
 }
 
 export interface UpdateInstallationAccountMetadataData {
@@ -65,9 +67,14 @@ export async function upsertInstallation(
     .onConflictDoUpdate({
       target: githubInstallation.installationId,
       set: {
-        accountLogin: data.accountLogin,
-        accountType,
-        accountAvatarUrl: data.accountAvatarUrl,
+        ...(data.preserveExistingAccountMetadata
+          ? {}
+          : {
+              accountLogin: data.accountLogin,
+              accountType,
+              accountId: data.accountId,
+              accountAvatarUrl: data.accountAvatarUrl,
+            }),
         repositorySelection: data.repositorySelection,
         // Only overwrite the binding when an owner is supplied; webhook
         // stub upserts (no userId) must not clear an existing binding.

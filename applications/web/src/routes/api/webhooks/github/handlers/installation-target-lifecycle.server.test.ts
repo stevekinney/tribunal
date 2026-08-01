@@ -4,16 +4,19 @@ import { handleInstallationTarget } from './installation-target-lifecycle.server
 import type { WebhookContext } from './types';
 
 const updateInstallationAccountMetadataMock = vi.hoisted(() => vi.fn());
+const upsertInstallationMock = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
 vi.mock('@tribunal/github/installations/records', () => ({
   updateInstallationAccountMetadata: updateInstallationAccountMetadataMock,
+  upsertInstallation: upsertInstallationMock,
 }));
 
 describe('handleInstallationTarget', () => {
   beforeEach(() => {
     updateInstallationAccountMetadataMock.mockReset().mockResolvedValue({ updated: true });
+    upsertInstallationMock.mockReset().mockResolvedValue(undefined);
   });
 
   it('updates installation account metadata for installation_target.renamed', async () => {
@@ -41,11 +44,15 @@ describe('handleInstallationTarget', () => {
     expect(context.logger.info).toHaveBeenCalledWith(expect.stringContaining('old-org to new-org'));
   });
 
-  it('logs when the installation row is missing', async () => {
+  it('creates an unbound installation row when the rename arrives before installation creation', async () => {
     updateInstallationAccountMetadataMock.mockResolvedValue({ updated: false });
     const context = createContext();
     const payload = {
       action: 'renamed',
+      installation: {
+        id: 100,
+        repository_selection: 'selected',
+      },
       changes: { login: { from: 'old-org' } },
       account: {
         id: 123,
@@ -60,6 +67,17 @@ describe('handleInstallationTarget', () => {
     expect(context.logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ installationId: 100 }),
       expect.stringContaining('not found'),
+    );
+    expect(upsertInstallationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        installationId: 100,
+        accountLogin: 'new-org',
+        accountType: 'Organization',
+        accountId: 123,
+        accountAvatarUrl: null,
+        repositorySelection: 'selected',
+      }),
     );
   });
 

@@ -77,7 +77,11 @@ describe('handleInstallation', () => {
 
     expect(upsertInstallationMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ installationId: 100, accountLogin: 'acme' }),
+      expect.objectContaining({
+        installationId: 100,
+        accountLogin: 'acme',
+        preserveExistingAccountMetadata: true,
+      }),
     );
     expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({ installationId: 100, reason: 'webhook:installation.created' }),

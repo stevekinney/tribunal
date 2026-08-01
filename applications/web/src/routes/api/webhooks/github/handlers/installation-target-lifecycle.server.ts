@@ -7,7 +7,10 @@
 import type { InstallationTargetEvent } from '@octokit/webhooks-types';
 import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
-import { updateInstallationAccountMetadata } from '@tribunal/github/installations/records';
+import {
+  updateInstallationAccountMetadata,
+  upsertInstallation,
+} from '@tribunal/github/installations/records';
 
 /**
  * Handle installation_target webhook events.
@@ -39,6 +42,15 @@ export async function handleInstallationTarget(
             { installationId, accountLogin: account.login },
             'Installation target rename metadata row not found',
           );
+
+          await upsertInstallation(githubContext, {
+            installationId,
+            accountLogin: account.login,
+            accountType: account.type as 'User' | 'Organization',
+            accountId: account.id,
+            accountAvatarUrl: account.avatar_url ?? null,
+            repositorySelection: getRepositorySelection(payload.installation),
+          });
         }
       }
 
@@ -51,4 +63,15 @@ export async function handleInstallationTarget(
     default:
       logger.debug({ action }, 'Unhandled installation_target action');
   }
+}
+
+function getRepositorySelection(
+  installation: InstallationTargetEvent['installation'],
+): 'all' | 'selected' {
+  const repositorySelection = (installation as { repository_selection?: unknown } | undefined)
+    ?.repository_selection;
+
+  return repositorySelection === 'all' || repositorySelection === 'selected'
+    ? repositorySelection
+    : 'selected';
 }
