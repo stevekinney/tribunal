@@ -59,13 +59,15 @@ describe('handleInstallationDeleted', () => {
     await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
 
     const cancel = vi.fn().mockResolvedValue(undefined);
+    const cancelInstallationSync = vi.fn().mockResolvedValue(undefined);
     const context = createContext({
       resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
+      cancelInstallationSync,
     });
 
     await handleInstallationDeleted(context, installation.installationId);
 
-    expect(cancel).toHaveBeenCalledWith(`github:installations:${installation.installationId}:sync`);
+    expect(cancelInstallationSync).toHaveBeenCalledWith(installation.installationId);
 
     const [run] = await testDatabase.db
       .select()
@@ -87,31 +89,18 @@ describe('handleInstallationDeleted', () => {
     expect(remaining).toBeNull();
   });
 
-  it('treats an unresolvable engine as nothing-to-cancel and still deletes the installation', async () => {
+  it('does not delete the installation when engine-owned sync cancellation fails', async () => {
     const installation = await factories.githubInstallation.create({ installationId: 7009 });
     const context = createContext({
-      resolveWeftClient: vi.fn().mockRejectedValue(new Error('engine unavailable')),
+      cancelInstallationSync: vi.fn().mockRejectedValue(new Error('engine unavailable')),
     });
 
-    await handleInstallationDeleted(context, installation.installationId);
+    await expect(handleInstallationDeleted(context, installation.installationId)).rejects.toThrow(
+      'engine unavailable',
+    );
 
     const remaining = await getInstallationById(context, installation.installationId);
-    expect(remaining).toBeNull();
-  });
-
-  it('treats a missing sync workflow as nothing-to-cancel and still deletes the installation', async () => {
-    const installation = await factories.githubInstallation.create({ installationId: 7008 });
-    const notFoundError = Object.assign(new Error('missing'), { code: 'WorkflowNotFoundError' });
-    const cancel = vi.fn().mockRejectedValue(notFoundError);
-    const context = createContext({
-      resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
-    });
-
-    await handleInstallationDeleted(context, installation.installationId);
-
-    expect(cancel).toHaveBeenCalledWith(`github:installations:${installation.installationId}:sync`);
-    const remaining = await getInstallationById(context, installation.installationId);
-    expect(remaining).toBeNull();
+    expect(remaining).not.toBeNull();
   });
 });
 
@@ -271,6 +260,54 @@ describe('cancelWorkflowsForRepositories', () => {
       .from(workflowRun)
       .where(eq(workflowRun.repositoryId, repository.id));
     expect(run.phase).toBe('cancelled');
+  });
+
+  it('treats missing orchestrator engine configuration as nothing to cancel', async () => {
+    const repository = await factories.repository.create();
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: repository.id,
+      prNumber: 44,
+      state: 'open',
+    });
+    const context = createContext();
+
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+
+    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
+  });
+
+  it('treats an unavailable orchestrator engine as nothing to cancel', async () => {
+    const repository = await factories.repository.create();
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: repository.id,
+      prNumber: 46,
+      state: 'open',
+    });
+    const context = createContext({
+      resolveWeftClient: vi.fn().mockRejectedValue(new Error('engine unavailable')),
+    });
+
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+
+    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
+  });
+
+  it('treats a missing PR orchestrator as already cancelled', async () => {
+    const repository = await factories.repository.create();
+    await testDatabase.db.insert(pullRequestState).values({
+      repositoryId: repository.id,
+      prNumber: 45,
+      state: 'open',
+    });
+    const notFoundError = Object.assign(new Error('missing'), { code: 'WorkflowNotFoundError' });
+    const cancel = vi.fn().mockRejectedValue(notFoundError);
+    const context = createContext({
+      resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
+    });
+
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+
+    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
   });
 
   it('counts a genuine PR orchestrator cancellation failure in the aggregated result', async () => {

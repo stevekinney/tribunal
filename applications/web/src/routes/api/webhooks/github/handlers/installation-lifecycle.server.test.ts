@@ -9,7 +9,7 @@ const handleInstallationUnsuspendMock = vi.hoisted(() => vi.fn());
 const upsertInstallationMock = vi.hoisted(() => vi.fn());
 const updateInstallationStatusMock = vi.hoisted(() => vi.fn());
 const getPrimaryWorkspaceIdForInstallationMock = vi.hoisted(() => vi.fn());
-const fireAndForgetInstallationSyncMock = vi.hoisted(() => vi.fn());
+const dispatchInstallationSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
@@ -29,7 +29,7 @@ vi.mock('$lib/server/github/webhooks/handlers', () => ({
 }));
 
 vi.mock('./installation-sync-dispatch', () => ({
-  fireAndForgetInstallationSync: fireAndForgetInstallationSyncMock,
+  dispatchInstallationSync: dispatchInstallationSyncMock,
 }));
 
 describe('handleInstallation', () => {
@@ -40,7 +40,7 @@ describe('handleInstallation', () => {
     upsertInstallationMock.mockReset().mockResolvedValue(undefined);
     updateInstallationStatusMock.mockReset().mockResolvedValue(undefined);
     getPrimaryWorkspaceIdForInstallationMock.mockReset().mockResolvedValue(7);
-    fireAndForgetInstallationSyncMock.mockReset();
+    dispatchInstallationSyncMock.mockReset();
   });
 
   it('handles deleted', async () => {
@@ -79,7 +79,7 @@ describe('handleInstallation', () => {
       expect.anything(),
       expect.objectContaining({ installationId: 100, accountLogin: 'acme' }),
     );
-    expect(fireAndForgetInstallationSyncMock).toHaveBeenCalledWith(
+    expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({ installationId: 100, reason: 'webhook:installation.created' }),
       context.logger,
     );
@@ -100,7 +100,7 @@ describe('handleInstallation', () => {
     await handleInstallation(createPayload('new_permissions_accepted'), context);
 
     expect(updateInstallationStatusMock).toHaveBeenCalledWith(expect.anything(), 100, 'active');
-    expect(fireAndForgetInstallationSyncMock).toHaveBeenCalledWith(
+    expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({
         installationId: 100,
         reason: 'webhook:installation.new_permissions_accepted',
@@ -109,6 +109,14 @@ describe('handleInstallation', () => {
     );
   });
 
+  it('propagates installation sync dispatch failures so the webhook can retry', async () => {
+    dispatchInstallationSyncMock.mockRejectedValueOnce(new Error('engine unavailable'));
+    const context = createContext();
+
+    await expect(
+      handleInstallation(createPayload('new_permissions_accepted'), context),
+    ).rejects.toThrow('engine unavailable');
+  });
   it('no-ops for an unhandled action', async () => {
     const context = createContext();
     await handleInstallation(createPayload('some-other-action'), context);

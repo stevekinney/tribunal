@@ -166,6 +166,8 @@ export type AgentRunRecord = {
   userId: number;
   /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
   agentId: string | null;
+  agentSlug: string;
+  agentDescription: string;
   role: AgentRunRole;
   status: AgentRunStatus;
   findingsCount: number;
@@ -1071,6 +1073,7 @@ export class ReviewWorkflowEngine {
       supervisor.checkRunId,
       buildCompletedCheckRunPatch(
         verifiedAgentResults,
+        reviewRun.costEstimateUsd,
         diffContext,
         input.checkConclusionMode ?? 'advisory',
       ),
@@ -1406,6 +1409,8 @@ export class ReviewWorkflowEngine {
       reviewRunId: reviewRun.id,
       userId: reviewRun.userId,
       agentId: agentIdForPersistence,
+      agentSlug: agentSpec.slug,
+      agentDescription: agentSpec.description,
       role,
       status: 'running',
       findingsCount: 0,
@@ -1804,6 +1809,7 @@ function createSignedReviewRunMarker(reviewRunId: string, signingKey: string): s
 
 function buildCompletedCheckRunPatch(
   agentResults: AgentResult[],
+  costEstimateUsd: number,
   diffContext: DiffContext,
   checkConclusionMode: CheckConclusionMode,
 ): CheckRunPatch {
@@ -1812,7 +1818,6 @@ function buildCompletedCheckRunPatch(
   const hasErrorSeverityFinding = agentResults.some((result) =>
     result.findings.some((finding) => finding.severity === 'error'),
   );
-  const costEstimateUsd = agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
   const commentableLineKeys = createCommentableLineKeys(diffContext);
   const annotations = agentResults.flatMap((result) =>
     result.findings.flatMap((finding) =>

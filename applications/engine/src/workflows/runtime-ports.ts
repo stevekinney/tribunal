@@ -15,6 +15,7 @@ import {
 } from '@tribunal/database/schema';
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
+import { createInstallationSyncWorkflow } from '@tribunal/github/sync/workflow';
 import { createCheckRun, updateCheckRun } from '@tribunal/github/reviews/check-runs';
 import { getDiffContext, getPullRequestMetadata } from '@tribunal/github/reviews/diff-context';
 import { mintSingleRepositoryReadToken } from '@tribunal/github/reviews/read-tokens';
@@ -133,7 +134,10 @@ export function createReviewIntentConsumer(
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
 
   return {
-    workflows: createReviewWorkflowDefinitions(reviewWorkflowEngine),
+    workflows: {
+      ...createReviewWorkflowDefinitions(reviewWorkflowEngine),
+      'installation-sync': createInstallationSyncWorkflow(githubContext).installationSyncWorkflow,
+    },
     bindWorkflowEngine(engine: ReviewIntentWorkflowEngine) {
       workflowEngine = engine;
     },
@@ -648,6 +652,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           userId: run.userId,
           runId: run.reviewRunId,
           agentId: run.agentId,
+          agentSlug: run.agentSlug,
+          agentDescription: run.agentDescription,
           role: run.role,
           modelUsed: run.modelUsed,
           effortUsed: run.effortUsed,
@@ -665,6 +671,8 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
         .onConflictDoUpdate({
           target: agentRun.id,
           set: {
+            agentSlug: run.agentSlug,
+            agentDescription: run.agentDescription,
             modelUsed: run.modelUsed,
             effortUsed: run.effortUsed,
             status: run.status,
@@ -791,6 +799,8 @@ function toAgentRunRecord(row: typeof agentRun.$inferSelect): AgentRunRecord {
     reviewRunId: row.runId,
     userId: row.userId,
     agentId: row.agentId,
+    agentSlug: row.agentSlug,
+    agentDescription: row.agentDescription,
     role: row.role as AgentRunRecord['role'],
     status: row.status as AgentRunRecord['status'],
     findingsCount: row.findingsCount,

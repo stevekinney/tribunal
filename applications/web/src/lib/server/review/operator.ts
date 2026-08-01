@@ -533,7 +533,6 @@ async function releaseReviewIntentsWaitingForEligibleAgent(
   const releasedIntents = await db
     .update(reviewIntent)
     .set({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     })
@@ -562,7 +561,6 @@ async function markReleasedReviewIntentsWaitingForWakeupRetry(
   await db
     .update(reviewIntent)
     .set({
-      failedAt: new Date(),
       lastError: waitingForEligibleReviewAgentReason,
       nextAttemptAt: null,
     })
@@ -572,7 +570,6 @@ async function markReleasedReviewIntentsWaitingForWakeupRetry(
         inArray(reviewIntent.id, releasedIntentIds),
         isNull(reviewIntent.claimedAt),
         isNull(reviewIntent.processedAt),
-        isNull(reviewIntent.failedAt),
         isNull(reviewIntent.lastError),
         isNull(reviewIntent.nextAttemptAt),
         isNull(reviewIntent.deadLetteredAt),
@@ -664,13 +661,22 @@ export async function getRunInspector(userId: number, runId: string) {
     db
       .select({
         agentRun,
-        slug: agent.slug,
-        description: agent.description,
+        slug: sql<string>`coalesce(nullif(${agentRun.agentSlug}, ''), ${agent.slug}, 'deleted-agent')`,
+        description: sql<string>`coalesce(nullif(${agentRun.agentDescription}, ''), ${agent.description}, 'Deleted agent')`,
       })
       .from(agentRun)
-      .innerJoin(agent, eq(agent.id, agentRun.agentId))
-      .where(and(eq(agentRun.userId, userId), eq(agentRun.runId, runId)))
-      .orderBy(agent.slug),
+      .leftJoin(agent, eq(agent.id, agentRun.agentId))
+      .where(
+        and(
+          eq(agentRun.userId, userId),
+          eq(agentRun.runId, runId),
+          eq(agentRun.role, 'specialist'),
+        ),
+      )
+      .orderBy(
+        sql`coalesce(nullif(${agentRun.agentSlug}, ''), ${agent.slug}, 'deleted-agent')`,
+        agentRun.id,
+      ),
     db
       .select({ finding })
       .from(finding)
@@ -752,12 +758,6 @@ export async function getRunInspector(userId: number, runId: string) {
 
 export type RunAgentEventStreamEvent = {
   id: number;
-  agentRunId: string;
-  seq: number;
-  kind: string;
-  tool: string | null;
-  detail: unknown;
-  at: string;
 };
 
 export async function streamRunAgentEvents(
@@ -798,7 +798,7 @@ export async function streamRunAgentEvents(
 
         for (const event of events) {
           latestEventId = Math.max(latestEventId, event.id);
-          enqueue(`id: ${event.id}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`);
+          enqueue(`id: ${event.id}\nevent: agent_event\ndata:\n\n`);
         }
 
         return true;
@@ -868,15 +868,7 @@ async function listRunAgentEvents(
   afterEventId: number,
 ): Promise<RunAgentEventStreamEvent[]> {
   const rows = await db
-    .select({
-      id: agentEvent.id,
-      agentRunId: agentEvent.agentRunId,
-      seq: agentEvent.seq,
-      kind: agentEvent.kind,
-      tool: agentEvent.tool,
-      detail: agentEvent.detail,
-      at: agentEvent.at,
-    })
+    .select({ id: agentEvent.id })
     .from(agentEvent)
     .innerJoin(agentRun, eq(agentRun.id, agentEvent.agentRunId))
     .innerJoin(tribunalRun, eq(tribunalRun.id, agentRun.runId))
@@ -890,7 +882,7 @@ async function listRunAgentEvents(
     .orderBy(asc(agentEvent.id))
     .limit(100);
 
-  return rows.map((event) => ({ ...event, at: event.at.toISOString() }));
+  return rows;
 }
 
 async function getReplacementRun(

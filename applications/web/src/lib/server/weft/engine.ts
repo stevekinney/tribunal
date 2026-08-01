@@ -136,7 +136,7 @@ let warnedMissingProductionUrl = false;
  *
  * When `WEFT_DATABASE_URL` is set we build `NeonStorage` (asserted
  * recovery-capable). When it is unset we return `null` in *every* environment —
- * the engine stays unbuilt and producers run log-only.
+ * the local in-process engine stays unbuilt.
  *
  * Crucially, a missing URL never throws: a configuration gap must not turn into a
  * per-dispatch rejection, which webhook handlers translate into 500s (and GitHub
@@ -155,7 +155,7 @@ export function resolveDurableStorage(): Storage | null {
   if (isProduction() && !warnedMissingProductionUrl) {
     warnedMissingProductionUrl = true;
     console.error(
-      '[weft] WEFT_DATABASE_URL is not set in production: durable workflow dispatch is DISABLED (producers run log-only). Set it to enable the engine.',
+      '[weft] WEFT_DATABASE_URL is not set in production: the local in-process Weft engine is disabled. Keep WEFT_DATABASE_URL on tribunal-engine for production workflow execution.',
     );
   }
   return null;
@@ -199,7 +199,7 @@ async function buildClient(): Promise<WeftClient | null> {
  * Get the shared Weft client (a {@link LocalClient} over the in-process engine),
  * or `null` when no durable store is configured. This is the resolver the GitHub
  * service context carries; producers dispatch through it transport-agnostically
- * and fall back to log-only when it is `null`.
+ * and handle `null` according to their own dispatch contract.
  *
  * Builds lazily on first call and caches only on success. If the build rejects,
  * the rejection is not cached: the next call retries (so a transient storage

@@ -3,8 +3,6 @@ import { handleIssueComment } from './issue-comment.server';
 import type { WebhookContext } from './types';
 
 const signalPullRequestEventMock = vi.hoisted(() => vi.fn());
-const hasDurableReviewIntentForDrainMock = vi.hoisted(() => vi.fn());
-const kickReviewEngineAfterDurableIntentMock = vi.hoisted(() => vi.fn());
 const guards = vi.hoisted(() => ({
   isIssueCommentCreatedEvent: vi.fn(),
   isIssueCommentEditedEvent: vi.fn(),
@@ -17,19 +15,7 @@ vi.mock('@tribunal/github/pull-requests/state/workflow-signals', () => ({
   signalPullRequestEvent: signalPullRequestEventMock,
 }));
 
-vi.mock('./review-engine-kick.server', () => ({
-  hasDurableReviewIntentForDrain: hasDurableReviewIntentForDrainMock,
-  kickReviewEngineAfterDurableIntent: kickReviewEngineAfterDurableIntentMock,
-}));
-
 vi.mock('@tribunal/github/webhooks/validate-github-webhook', () => guards);
-
-const okResult = {
-  ok: true,
-  workflowId: 'review:pr:42:7',
-  enqueued: true,
-  enqueueStatus: 'enqueued',
-};
 
 /** A minimal issue_comment-on-PR payload shape, narrowed by the mocked guards. */
 function payload(
@@ -56,47 +42,35 @@ function payload(
 
 describe('handleIssueComment', () => {
   beforeEach(() => {
-    signalPullRequestEventMock.mockReset().mockResolvedValue(okResult);
-    hasDurableReviewIntentForDrainMock.mockReset().mockReturnValue(true);
-    kickReviewEngineAfterDurableIntentMock.mockReset().mockResolvedValue(undefined);
+    signalPullRequestEventMock.mockReset();
     guards.isIssueCommentCreatedEvent.mockReset().mockReturnValue(false);
     guards.isIssueCommentEditedEvent.mockReset().mockReturnValue(false);
     guards.isIssueCommentDeletedEvent.mockReset().mockReturnValue(false);
   });
 
-  it('signals issue_comment_created for a human-authored created comment', async () => {
+  it('accepts human-authored created pull request comments without enqueuing review-engine work', async () => {
     guards.isIssueCommentCreatedEvent.mockReturnValue(true);
     const data = payload();
 
     await handleIssueComment('created', data as never, createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'issue_comment_created', prNumber: 7 }),
-    );
-    expect(kickReviewEngineAfterDurableIntentMock).toHaveBeenCalledTimes(1);
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
-  it('signals issue_comment_edited for a matching payload', async () => {
+  it('accepts edited pull request comments without enqueuing review-engine work', async () => {
     guards.isIssueCommentEditedEvent.mockReturnValue(true);
 
     await handleIssueComment('edited', payload() as never, createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'issue_comment_edited' }),
-    );
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
-  it('signals issue_comment_deleted for a matching payload', async () => {
+  it('accepts deleted pull request comments without enqueuing review-engine work', async () => {
     guards.isIssueCommentDeletedEvent.mockReturnValue(true);
 
     await handleIssueComment('deleted', payload() as never, createContext());
 
-    expect(signalPullRequestEventMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ eventType: 'issue_comment_deleted' }),
-    );
+    expect(signalPullRequestEventMock).not.toHaveBeenCalled();
   });
 
   it('no-ops when no guard matches the payload', async () => {
@@ -123,32 +97,6 @@ describe('handleIssueComment', () => {
     await handleIssueComment('created', payload({ botSender: true }) as never, createContext());
 
     expect(signalPullRequestEventMock).not.toHaveBeenCalled();
-  });
-
-  it('throws when the signal is not ok', async () => {
-    guards.isIssueCommentCreatedEvent.mockReturnValue(true);
-    signalPullRequestEventMock.mockResolvedValue({
-      ok: false,
-      workflowId: 'review:pr:42:7',
-      error: 'boom',
-    });
-
-    await expect(
-      handleIssueComment('created', payload() as never, createContext()),
-    ).rejects.toThrow(/Failed to signal issue_comment created/);
-  });
-
-  it('logs and skips the kick when the result is not a durable intent', async () => {
-    guards.isIssueCommentCreatedEvent.mockReturnValue(true);
-    hasDurableReviewIntentForDrainMock.mockReturnValue(false);
-    const context = createContext();
-
-    await handleIssueComment('created', payload() as never, context);
-
-    expect(kickReviewEngineAfterDurableIntentMock).not.toHaveBeenCalled();
-    expect(context.logger.debug).toHaveBeenCalledWith(
-      expect.stringContaining('did not map to a durable review intent'),
-    );
   });
 });
 
