@@ -63,6 +63,7 @@ export async function handleInstallation(
           accountId: account.id,
           accountAvatarUrl: account.avatar_url ?? null,
           repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
+          preserveExistingAccountMetadata: true,
         });
 
         // Trigger sync to fetch repositories through the engine control channel.
