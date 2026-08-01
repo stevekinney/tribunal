@@ -324,6 +324,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -975,6 +976,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -1143,6 +1145,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -1231,6 +1234,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -1373,6 +1377,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -2135,6 +2140,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -2397,6 +2403,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });

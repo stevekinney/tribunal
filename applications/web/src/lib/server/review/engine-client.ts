@@ -1,6 +1,8 @@
 import { env } from '$env/dynamic/private';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
 
+export const ENGINE_CONTROL_REQUEST_TIMEOUT_MS = 8_000;
+
 export type ReviewEngineSignalResult =
   | { status: 'not_configured'; missingSettings: string[] }
   | { status: 'sent'; ok: boolean; responseStatus: number }
@@ -21,16 +23,25 @@ export async function postReviewEngineControl(
 
   try {
     const url = new URL(path, env.TRIBUNAL_ENGINE_URL);
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => {
+      abortController.abort(new Error('Engine control request timed out.'));
+    }, ENGINE_CONTROL_REQUEST_TIMEOUT_MS);
     const headers: Record<string, string> = {
       authorization: `Bearer ${env.TRIBUNAL_ENGINE_CONTROL_TOKEN}`,
     };
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    return { status: 'sent', ok: response.ok, responseStatus: response.status };
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal: abortController.signal,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: 'sent', ok: response.ok, responseStatus: response.status };
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch (error) {
     return { status: 'failed', error };
   }

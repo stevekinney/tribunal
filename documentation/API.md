@@ -1,9 +1,14 @@
 # API
 
-Tribunal exposes a deliberately small HTTP surface via native SvelteKit
+Tribunal exposes a deliberately small public HTTP surface via native SvelteKit
 `+server.ts` endpoints in `applications/web/src/routes/`. The application is
 primarily rendered through SvelteKit page routes: log in with GitHub, install
 the GitHub App, browse repositories, and inspect open pull requests.
+
+The separate `tribunal-engine` process also exposes private control endpoints
+for the web process. Those routes are not browser or GitHub webhook endpoints;
+they require the shared engine control token and are intended only for internal
+service-to-service calls.
 
 ## Endpoints
 
@@ -12,6 +17,17 @@ the GitHub App, browse repositories, and inspect open pull requests.
 | `/api/webhooks/github` | POST   | Receive and process GitHub App webhook deliveries |
 | `/api/webhooks/github` | GET    | List registered webhooks for the configured App   |
 
+### Private Engine Control Endpoints
+
+| Endpoint                                      | Method | Description                                       |
+| --------------------------------------------- | ------ | ------------------------------------------------- |
+| `/review-intents/drain`                       | POST   | Drain queued review-intent work                   |
+| `/review-intents/kick`                        | POST   | Wake or start review-intent processing            |
+| `/installation-syncs`                         | POST   | Enqueue or signal an installation repository sync |
+| `/installation-syncs/:installationId/cancel`  | POST   | Cancel a stable installation sync workflow        |
+| `/review-runs/:runId/stop`                    | POST   | Stop an active review run                         |
+| `/review-runs/:runId/agents/:agentRunId/stop` | POST   | Stop one active agent run within a review run     |
+
 ## Authentication
 
 Browser pages and `GET /api/webhooks/github` use cookie-based user sessions
@@ -19,6 +35,11 @@ populated by `hooks.server.ts` and exposed as `event.locals.user`.
 
 GitHub webhook deliveries do not use browser sessions. They are verified by
 HMAC signature against `GITHUB_APP_WEBHOOK_SECRET`.
+
+Private engine control endpoints use bearer-token authentication. Requests must
+include `Authorization: Bearer <TRIBUNAL_ENGINE_CONTROL_TOKEN>`, and the token
+must match the engine process configuration. Unauthorized control requests
+return `401 { ok: false, error: "unauthorized" }`.
 
 ## POST `/api/webhooks/github`
 
@@ -78,6 +99,59 @@ List the webhooks registered for the configured GitHub App.
 | 401    | No authenticated user session       |
 | 400    | GitHub App is not configured        |
 | 502    | Failed to fetch registered webhooks |
+
+## POST `/installation-syncs`
+
+Enqueue or signal the engine-owned installation repository sync workflow.
+
+**Auth:** `Authorization: Bearer <TRIBUNAL_ENGINE_CONTROL_TOKEN>`.
+
+**Handler:** `applications/engine/src/index.ts`, delegated to
+`applications/engine/src/installation-syncs.ts`.
+
+**Request body:**
+
+```json
+{
+  "installationId": 123,
+  "reason": "webhook:installation.created",
+  "workspaceId": 456,
+  "triggeredByUserId": 789,
+  "deliveryId": "github-delivery-id"
+}
+```
+
+`installationId` and `reason` are required. `workspaceId`, `triggeredByUserId`,
+and `deliveryId` are optional.
+
+**Response codes:**
+
+| Status | Meaning                                      |
+| ------ | -------------------------------------------- |
+| 202    | Sync was accepted                            |
+| 400    | Request body was invalid                     |
+| 401    | Missing or invalid engine control token      |
+| 502    | Engine failed to enqueue or signal the sync  |
+| 503    | Engine is starting, released, or unavailable |
+
+## POST `/installation-syncs/:installationId/cancel`
+
+Cancel the stable engine-owned installation sync workflow for an installation.
+Missing workflows are treated as already cancelled.
+
+**Auth:** `Authorization: Bearer <TRIBUNAL_ENGINE_CONTROL_TOKEN>`.
+
+**Handler:** `applications/engine/src/index.ts`, delegated to
+`applications/engine/src/installation-syncs.ts`.
+
+**Response codes:**
+
+| Status | Meaning                                      |
+| ------ | -------------------------------------------- |
+| 202    | Cancellation was accepted                    |
+| 400    | Installation ID was invalid                  |
+| 401    | Missing or invalid engine control token      |
+| 503    | Engine is starting, released, or unavailable |
 
 ## Error Handling
 

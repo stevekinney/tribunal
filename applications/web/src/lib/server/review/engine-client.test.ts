@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cancelInstallationSyncEngine,
+  ENGINE_CONTROL_REQUEST_TIMEOUT_MS,
   kickReviewEngine,
   postReviewEngineControl,
   signalInstallationSyncEngine,
@@ -22,6 +23,10 @@ describe('review engine client', () => {
     mocks.env.TRIBUNAL_ENGINE_URL = '';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = '';
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('does not send engine requests when engine control is unconfigured', async () => {
@@ -53,6 +58,7 @@ describe('review engine client', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -64,6 +70,28 @@ describe('review engine client', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(error);
 
     await expect(kickReviewEngine()).resolves.toEqual({ status: 'failed', error });
+  });
+
+  it('aborts stalled engine control requests', async () => {
+    vi.useFakeTimers();
+    mocks.env.TRIBUNAL_ENGINE_URL = 'http://tribunal-engine.flycast';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    let signal: AbortSignal | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal?.reason));
+      });
+    });
+
+    const result = kickReviewEngine();
+    await vi.advanceTimersByTimeAsync(ENGINE_CONTROL_REQUEST_TIMEOUT_MS);
+
+    await expect(result).resolves.toEqual({
+      status: 'failed',
+      error: expect.any(Error),
+    });
+    expect(signal?.aborted).toBe(true);
   });
 
   it('posts installation sync dispatches to the engine receiver', async () => {
@@ -94,6 +122,7 @@ describe('review engine client', () => {
           authorization: 'Bearer control-token',
           'content-type': 'application/json',
         },
+        signal: expect.any(AbortSignal),
         body: JSON.stringify(options),
       },
     );
@@ -118,6 +147,7 @@ describe('review engine client', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
