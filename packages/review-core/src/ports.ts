@@ -79,7 +79,7 @@ export interface LlmEstimateInput {
   userId: number;
   repositoryId: number;
   reviewRunId: string;
-  agentRunId: string;
+  agentRunId: string | null;
   /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
   agentId: string | null;
   amountUsd: number;
@@ -99,8 +99,17 @@ export interface DailyCapDecision {
   allowed: boolean;
 }
 
+export interface DailyCapReservationInput {
+  idempotencyKey: string;
+  amountUsd?: number;
+  expiresAt: Date;
+}
+
 export interface CostPort {
   recordLlmEstimate(event: LlmEstimateInput): Promise<void>;
   recordSandbox(event: SandboxCostInput): Promise<void>;
-  enforceDailyCap(userId: number): Promise<DailyCapDecision>;
+  enforceDailyCap(
+    userId: number,
+    reservation?: DailyCapReservationInput,
+  ): Promise<DailyCapDecision>;
 }

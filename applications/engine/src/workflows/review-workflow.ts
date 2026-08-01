@@ -117,6 +117,7 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
+const VERIFIER_MAX_BUDGET_USD = 0.01;
 
 export type ReviewRunStatus =
   | 'queued'
@@ -899,6 +900,33 @@ export class ReviewWorkflowEngine {
       return reviewRun;
     }
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
+    const triageCapDecision = await this.ports.cost.enforceDailyCap(input.userId, {
+      idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
+      expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
+    });
+    if (isStoppedReviewRun(reviewRun)) {
+      if (triageCapDecision.allowed) {
+        await this.releaseDailyCapReservation(
+          reviewRun,
+          createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
+        );
+      }
+      return reviewRun;
+    }
+    if (!triageCapDecision.allowed) {
+      reviewRun.status = 'quota_blocked';
+      reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review quota blocked',
+          summary: 'Daily review cost cap reached.',
+        },
+      });
+      return reviewRun;
+    }
     const triageResult = await this.runTriageAgent(
       supervisor,
       reviewRun,
@@ -960,15 +988,36 @@ export class ReviewWorkflowEngine {
       if (agentRunId === undefined) return [];
       return result.findings.map((finding) => ({ agentRunId, finding }));
     });
-    const { verifiedFindings, costEstimateUsd: verificationCostEstimateUsd } =
-      await this.runVerificationStage(
-        supervisor,
-        reviewRun,
-        diffContext,
-        runToken,
-        verificationCandidates,
-      );
+    const {
+      verifiedFindings,
+      costEstimateUsd: verificationCostEstimateUsd,
+      quotaBlocked: verificationQuotaBlocked,
+    } = await this.runVerificationStage(
+      supervisor,
+      reviewRun,
+      diffContext,
+      runToken,
+      verificationCandidates,
+    );
     reviewRun.costEstimateUsd += verificationCostEstimateUsd;
+    if (verificationQuotaBlocked) {
+      reviewRun.costEstimateUsd =
+        triageResult.costEstimateUsd +
+        verificationCostEstimateUsd +
+        agentResults.reduce((total, result) => total + result.costEstimateUsd, 0);
+      reviewRun.status = 'quota_blocked';
+      reviewRun.finishedAt = this.now();
+      await this.persistReviewRun(reviewRun);
+      await this.updateCheckRun(input, supervisor.checkRunId, {
+        status: 'completed',
+        conclusion: 'neutral',
+        output: {
+          title: 'Tribunal review quota blocked',
+          summary: 'Daily review cost cap reached before all verifier agents could run.',
+        },
+      });
+      return reviewRun;
+    }
     // A supersede/abort can arrive while verifiers are still in flight; an
     // in-flight verifier can resolve just after the signal (it isn't wired to
     // the AbortController the way specialist processes are). Re-check here so
@@ -1145,7 +1194,21 @@ export class ReviewWorkflowEngine {
         return { results, quotaBlocked: false };
       }
 
-      const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId);
+      const agentRunId = createAgentRunId(reviewRun.id, agent);
+      const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
+        idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+        ...(agent.maxBudgetUsd === undefined ? {} : { amountUsd: agent.maxBudgetUsd }),
+        expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
+      });
+      if (isStoppedReviewRun(reviewRun)) {
+        if (dailyCapDecision.allowed) {
+          await this.releaseDailyCapReservation(
+            reviewRun,
+            createLlmEstimateIdempotencyKey(agentRunId),
+          );
+        }
+        return { results, quotaBlocked: false };
+      }
       if (!dailyCapDecision.allowed) {
         return { results, quotaBlocked: true };
       }
@@ -1277,6 +1340,7 @@ export class ReviewWorkflowEngine {
       model: 'haiku',
       effort: 'low',
       enabled: true,
+      maxBudgetUsd: VERIFIER_MAX_BUDGET_USD,
       role: 'verifier',
       findingToVerify: finding,
     };
@@ -1306,19 +1370,40 @@ export class ReviewWorkflowEngine {
     diffContext: DiffContext,
     runToken: string,
     candidates: Array<{ agentRunId: string; finding: Finding }>,
-  ): Promise<{ verifiedFindings: Finding[]; costEstimateUsd: number }> {
+  ): Promise<{ verifiedFindings: Finding[]; costEstimateUsd: number; quotaBlocked: boolean }> {
     const verifiedFindings: Finding[] = [];
     let costEstimateUsd = 0;
+    let quotaBlocked = false;
     let cursor = 0;
     const concurrency = Math.min(4, candidates.length);
 
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (quotaBlocked) return;
         const index = cursor;
         cursor += 1;
         if (index >= candidates.length) return;
         const candidate = candidates[index]!;
         const fingerprint = computeCanonicalFindingFingerprint(candidate.finding);
+        const agentRunId = createVerifierAgentRunId(reviewRun.id, fingerprint);
+        const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
+          idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+          amountUsd: VERIFIER_MAX_BUDGET_USD,
+          expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
+        });
+        if (isStoppedReviewRun(reviewRun)) {
+          if (dailyCapDecision.allowed) {
+            await this.releaseDailyCapReservation(
+              reviewRun,
+              createLlmEstimateIdempotencyKey(agentRunId),
+            );
+          }
+          return;
+        }
+        if (!dailyCapDecision.allowed) {
+          quotaBlocked = true;
+          return;
+        }
         const verifierResult = await this.runVerifierAgent(
           supervisor,
           reviewRun,
@@ -1333,14 +1418,14 @@ export class ReviewWorkflowEngine {
           ...createFindingRecord(reviewRun.userId, candidate.agentRunId, candidate.finding),
           verificationStatus: verified ? 'verified' : 'rejected',
           verificationNote: verifierResult.verification?.note,
-          verifierAgentRunId: createVerifierAgentRunId(reviewRun.id, fingerprint),
+          verifierAgentRunId: agentRunId,
         });
         if (verified) verifiedFindings.push(candidate.finding);
       }
     };
 
     await Promise.all(Array.from({ length: concurrency }, worker));
-    return { verifiedFindings, costEstimateUsd };
+    return { verifiedFindings, costEstimateUsd, quotaBlocked };
   }
 
   /**
@@ -1545,6 +1630,21 @@ export class ReviewWorkflowEngine {
       agentId: agentIdForPersistence,
       amountUsd: result.costEstimateUsd,
       idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
+    });
+  }
+
+  private async releaseDailyCapReservation(
+    reviewRun: ReviewRunRecord,
+    idempotencyKey: string,
+  ): Promise<void> {
+    await this.ports.cost.recordLlmEstimate({
+      userId: reviewRun.userId,
+      repositoryId: reviewRun.repositoryId,
+      reviewRunId: reviewRun.id,
+      agentRunId: null,
+      agentId: null,
+      amountUsd: 0,
+      idempotencyKey,
     });
   }
 

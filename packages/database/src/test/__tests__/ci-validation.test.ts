@@ -214,4 +214,29 @@ describe('CI workflow validation', () => {
       expect(text).toContain('process.exit(0)');
     });
   });
+
+  describe('cost reservation migration guards', () => {
+    it('scopes foreign-key constraint existence checks to the public schema', async () => {
+      const migration = await readRepositoryFile(
+        'packages/database/drizzle/0055_green_true_believers.sql',
+      );
+      const checks = migration.matchAll(
+        /WHERE conname = '(cost_(?:budget_day|reservation)_user_id_user_id_fk)'(?<body>[\s\S]*?)\) THEN/gu,
+      );
+      const constraintChecks = new Map<string, string>();
+
+      for (const check of checks) {
+        const [, constraintName, body] = check;
+        constraintChecks.set(constraintName, body);
+      }
+
+      expect([...constraintChecks.keys()].sort()).toEqual([
+        'cost_budget_day_user_id_user_id_fk',
+        'cost_reservation_user_id_user_id_fk',
+      ]);
+      for (const body of constraintChecks.values()) {
+        expect(body).toContain("AND connamespace = 'public'::regnamespace");
+      }
+    });
+  });
 });

@@ -1017,9 +1017,78 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
     expect(ports.cost.enforceDailyCapCalls).toEqual([1]);
     expect(ports.cost.llmEstimateKeys).toHaveLength(0);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'quota_blocked',
+      costEstimateUsd: 0,
+    });
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
+  });
+
+  it('blocks before triage when the remaining budget cannot cover a reservation', async () => {
+    const ports = createFakePorts({
+      spendTodayEstimate: 9.99,
+      unboundedReservationAmountUsd: 0.02,
+    });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'quota_blocked',
+    });
+
+    expect(ports.cost.enforceDailyCapCalls).toEqual([1, 1]);
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('honors cancellation after a triage reservation wait', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 1 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservation();
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.cost.llmEstimates).toContainEqual(
+      expect.objectContaining({
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        agentRunId: null,
+        amountUsd: 0,
+      }),
+    );
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('does not overwrite cancellation with a denied triage reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 1 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservation();
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
   });
 
   it('records one LLM estimate per agent run even when a retry reaches the cost boundary twice', async () => {
@@ -1028,6 +1097,23 @@ describe('ReviewWorkflowEngine', () => {
 
     await engine.startPullRequestReview(baseInput);
 
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
+        ),
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
     const specialistKey = 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate';
     expect(ports.cost.recordLlmEstimateCalls.filter((key) => key === specialistKey)).toHaveLength(
       2,
@@ -1620,6 +1706,148 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
+  });
+
+  it('honors cancellation after a specialist reservation wait', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 2 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(2);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.cost.llmEstimates).toContainEqual(
+      expect.objectContaining({
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        agentRunId: null,
+        amountUsd: 0,
+      }),
+    );
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('does not overwrite cancellation with a denied specialist reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 2 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(2);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls).toHaveLength(0);
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('blocks a specialist when remaining budget is below its configured maximum', async () => {
+    const ports = createFakePorts({ spendTodayEstimate: 9.95 });
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        agents: [{ ...reviewAgent, maxBudgetUsd: 0.1 }],
+      }),
+    ).resolves.toMatchObject({ status: 'quota_blocked' });
+
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        amountUsd: 0.1,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual([]);
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('blocks verifier agents when the daily cap is reached after specialist review', async () => {
+    const ports = createFakePorts({ spendAfterFirstEstimate: 10 });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'quota_blocked',
+    });
+
+    expect(ports.cost.reservationCalls).toEqual([
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
+        ),
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ]);
+    expect(ports.github.reviews).toHaveLength(0);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ costEstimateUsd: 0.01 });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: { status: 'completed', conclusion: 'neutral' },
+    });
+  });
+
+  it('honors cancellation after a verifier reservation wait', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 3 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(3);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual(['agent_security']);
+    expect(ports.cost.llmEstimates).toContainEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
+        ),
+        agentRunId: null,
+        amountUsd: 0,
+      }),
+    );
+    expect(ports.github.reviews).toHaveLength(0);
+  });
+
+  it('does not overwrite cancellation with a denied verifier reservation result', async () => {
+    const ports = createFakePorts({ holdDailyCapReservationCall: 3 });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.cost.waitForDailyCapReservations(3);
+
+    await expect(engine.stopRun('run:42:7:aaa111:opened', 'timeout')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.cost.setSpendTodayEstimate(10);
+    ports.cost.resolveHeldDailyCapReservations();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ status: 'cancelled' });
+    expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual(['agent_security']);
+    expect(ports.github.reviews).toHaveLength(0);
   });
 
   it('posts deterministic sorted comments for multiple findings', async () => {

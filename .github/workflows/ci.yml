@@ -416,6 +416,8 @@ jobs:
             echo "Applying $f..."
             psql -v ON_ERROR_STOP=1 -f "$f"
           done
+      - name: Run PostgreSQL cost reservation concurrency regression
+        run: bun run --cwd packages/cost test:postgres
       - name: Verify rename migration compatibility with pre-renamed template tables
         run: |
           set -euo pipefail
