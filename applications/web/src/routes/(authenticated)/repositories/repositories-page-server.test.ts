@@ -71,7 +71,6 @@ function watchedDetails() {
     ignoreGlobs: [],
     agents: [],
     lastRunStatus: null,
-    estimatedCostLast30DaysUsd: 0,
   };
 }
 
@@ -378,7 +377,6 @@ describe('/repositories actions.watch', () => {
             ignoreGlobs: ['saved/**'],
             agents: [{ id: 'agent_saved' }],
             lastRunStatus: null,
-            estimatedCostLast30DaysUsd: 0,
           },
         ],
       ]),

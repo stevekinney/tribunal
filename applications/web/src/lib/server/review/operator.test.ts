@@ -506,8 +506,7 @@ describe('review operator server helpers', () => {
     );
 
     // Two runs for the same repository (newest first, per orderBy) exercise
-    // the `seenRuns` dedup so only the most recent run's status is kept, and
-    // a non-"estimate" cost event exercises the source-filter skip below.
+    // the `seenRuns` dedup so only the most recent run's status is kept.
     await insertReviewRun({
       id: 'run_9101_older',
       userId: firstOwner.id,
@@ -528,27 +527,6 @@ describe('review operator server helpers', () => {
       status: 'posted',
       startedAt: new Date(),
     });
-    await testDb.db.insert(costEvent).values([
-      {
-        id: 'cost_9101_estimate',
-        userId: firstOwner.id,
-        kind: 'llm',
-        source: 'estimate',
-        repositoryId: 9101,
-        amountUsd: '3.00',
-        idempotencyKey: 'cost_9101_estimate',
-      },
-      {
-        id: 'cost_9101_reconciled',
-        userId: firstOwner.id,
-        kind: 'llm',
-        source: 'reconciled',
-        repositoryId: 9101,
-        amountUsd: '99.00',
-        idempotencyKey: 'cost_9101_reconciled',
-      },
-    ]);
-
     const firstDetails = await withTestDatabase(() =>
       getRepositoryOperatorDetails(firstOwner.id, [9101]),
     );
@@ -560,11 +538,10 @@ describe('review operator server helpers', () => {
       watched: true,
       ignoreGlobs: ['docs/**'],
       agents: [{ id: firstAgent.id, slug: firstAgent.slug, enabled: true }],
-      // Only the newest run's status survives the dedup, and only the
-      // "estimate"-sourced cost event (not the "actual" one) is rolled up.
+      // Only the newest run's status survives the dedup.
       lastRunStatus: 'posted',
-      estimatedCostLast30DaysUsd: 3,
     });
+    expect(firstDetails.get(9101)).not.toHaveProperty('estimatedCostLast30DaysUsd');
     expect(secondDetails.get(9101)).toMatchObject({
       watched: false,
       ignoreGlobs: ['src/generated/**'],

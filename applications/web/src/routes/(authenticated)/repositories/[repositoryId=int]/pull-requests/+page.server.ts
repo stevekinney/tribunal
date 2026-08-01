@@ -179,7 +179,6 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
         ignoreGlobs: [],
         agents: [],
         lastRunStatus: null,
-        estimatedCostLast30DaysUsd: 0,
       },
     },
     agents,

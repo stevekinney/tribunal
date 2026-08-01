@@ -167,7 +167,6 @@ function makeRepository(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
       hasSavedSettings: true,
       watched: true,
       lastRunStatus: null,
-      estimatedCostLast30DaysUsd: 0,
       ignoreGlobs: [],
       agents: [],
     },

@@ -150,7 +150,6 @@ describe('/repositories/[repositoryId]/pull-requests legacy load data shape', ()
             ignoreGlobs: ['dist/**'],
             agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
             lastRunStatus: null,
-            estimatedCostLast30DaysUsd: 0,
           },
         ],
       ]),

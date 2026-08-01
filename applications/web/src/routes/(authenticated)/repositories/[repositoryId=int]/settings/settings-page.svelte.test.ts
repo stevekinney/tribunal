@@ -67,7 +67,6 @@ const baseData = {
       ignoreGlobs: ['dist/**', 'coverage/**'],
       agents: [{ id: 'agent_1', slug: 'security', enabled: true }],
       lastRunStatus: null,
-      estimatedCostLast30DaysUsd: 0,
     },
   },
   agents: [
