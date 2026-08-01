@@ -239,6 +239,8 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Build container images
         shell: bash
+        env:
+          DOCKER_BUILD_WALL_CLOCK_TIMEOUT_MS: '600000'
         run: |
           set -euo pipefail
           reviewer_context="$RUNNER_TEMP/tensorlake-reviewer-context"
@@ -271,7 +273,11 @@ jobs:
           docker build -f deployment/containers/web.Dockerfile -t tribunal-web:test .
           docker build -f deployment/containers/engine.Dockerfile -t tribunal-engine:test .
           docker build -f deployment/containers/proxy.Dockerfile -t tribunal-proxy:test .
-          docker build -f "$reviewer_context/Dockerfile" -t tribunal-reviewer:test "$reviewer_context"
+          bun run scripts/docker-build-with-retry.ts \
+            docker build \
+            -f "$reviewer_context/Dockerfile" \
+            -t tribunal-reviewer:test \
+            "$reviewer_context"
           docker run --rm tribunal-reviewer:test
       - name: Publish reviewer image to Tensorlake
         if: ${{ env.TENSORLAKE_API_KEY != '' }}

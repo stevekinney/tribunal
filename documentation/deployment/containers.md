@@ -298,6 +298,18 @@ live-state check uses `bun run deploy:status -- --live-status-only` without
 those allowances, so the refreshed engine secret and singleton engine Machine
 are required before the workflow can finish.
 
+The reviewer-image `docker build` is wrapped with a bounded retry for transient
+Docker Hub base-image metadata timeouts while resolving `oven/bun`. The wrapper
+retries only that timeout class, stops after three attempts or fifteen minutes of
+wall-clock time, and preserves all other Docker build failures as immediate
+failures. The reviewer image self-test (`docker run --rm tribunal-reviewer:*`)
+still runs after the build succeeds and remains required before Tensorlake
+publication or deploy continuation.
+
+The CI `container-images` job uses the same wrapper with a ten-minute wall-clock
+budget so setup, the other image builds, and the required reviewer image
+self-test still fit inside the job timeout.
+
 ### When the reviewer image cannot be published
 
 Publishing the reviewer image to Tensorlake is allowed to fail without stranding
