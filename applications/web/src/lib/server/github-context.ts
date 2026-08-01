@@ -24,6 +24,7 @@ import {
 } from '$lib/server/github/github-application';
 import { getWeftClient } from '$lib/server/weft/engine';
 import type { GithubServiceContext } from '@tribunal/github/context';
+import { cancelInstallationSyncEngine } from '$lib/server/review/engine-client';
 
 export const githubContext: GithubServiceContext = {
   db,
@@ -37,9 +38,26 @@ export const githubContext: GithubServiceContext = {
   },
   getInstallationOctokit,
   getGithubApplication,
-  // Resolve the engine lazily on first dispatch (not at module load) so web-app
-  // startup never blocks on Engine.create + recoverAll(). `getWeftClient` is the
-  // memoized resolver — it builds the engine once and returns null when no
-  // WEFT_DATABASE_URL is configured.
+  // Resolve the local Weft client lazily for local/test producers that still use
+  // this context directly. Production installation sync goes through the engine
+  // control endpoint; `WEFT_DATABASE_URL` remains owned by tribunal-engine.
   resolveWeftClient: getWeftClient,
+  async cancelInstallationSync(installationId) {
+    const result = await cancelInstallationSyncEngine(installationId);
+    if (result.status === 'not_configured') {
+      console.warn(
+        '[github-context] Installation sync engine control is not configured; skipping remote cancellation.',
+        { installationId, missingSettings: result.missingSettings },
+      );
+      return;
+    }
+    if (result.status === 'failed') {
+      throw result.error instanceof Error ? result.error : new Error(String(result.error));
+    }
+    if (!result.ok) {
+      throw new Error(
+        `Installation sync engine cancellation failed with status ${result.responseStatus}.`,
+      );
+    }
+  },
 };

@@ -65,7 +65,7 @@ function makeEvent(overrides: Record<string, unknown> = {}) {
     installationId: BASE_INPUT.installationId,
     owner: BASE_INPUT.owner,
     repo: BASE_INPUT.repo,
-    eventType: 'review_submitted' as const,
+    eventType: 'pr_opened' as const,
     ...overrides,
   };
 }
@@ -353,7 +353,7 @@ describe('pull-request-orchestrator (behavioral, real engine)', () => {
       await client.signal(
         WORKFLOW_ID,
         'pull_request_event',
-        makeEvent({ eventType: 'review_comment_created' }),
+        makeEvent({ eventType: 'pr_synchronized' }),
       );
     }
 

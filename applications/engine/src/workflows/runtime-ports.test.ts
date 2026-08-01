@@ -154,6 +154,7 @@ describe('runtime review intent consumer wiring', () => {
       'review-run',
       'agent-review',
       'sandbox-reaper',
+      'installation-sync',
     ]);
     await expect(consumer.drain()).resolves.toBe(0);
     await expect(consumer.stopReviewRun('missing-run')).resolves.toEqual({ stopped: false });
@@ -423,7 +424,6 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent).toMatchObject({
       claimedAt: expect.any(Date),
       processedAt: null,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,
@@ -503,7 +503,6 @@ describe('runtime review intent consumer wiring', () => {
     expect(intent).toMatchObject({
       claimedAt: secondClaimedAt,
       processedAt: null,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
     });

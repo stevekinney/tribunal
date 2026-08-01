@@ -28,20 +28,8 @@ type PullRequestEventType =
   | 'pr_reopened'
   | 'pr_ready_for_review'
   | 'pr_synchronized'
-  | 'review_submitted'
-  | 'review_dismissed'
-  | 'review_comment_created'
-  | 'review_comment_edited'
-  | 'review_comment_deleted'
-  | 'review_thread_resolved'
-  | 'review_thread_unresolved'
-  | 'issue_comment_created'
-  | 'issue_comment_edited'
-  | 'issue_comment_deleted'
   | 'check_completed'
-  | 'base_branch_updated'
-  | 'pr_closed'
-  | 'manual';
+  | 'pr_closed';
 
 export type { PullRequestEventType, ReviewIntentKind };
 
@@ -104,7 +92,7 @@ export function buildPullRequestOrchestratorWorkflowId(
 
 export function mapPullRequestEventToReviewIntentKind(
   eventType: PullRequestEventType,
-): ReviewIntentKind | null {
+): ReviewIntentKind {
   switch (eventType) {
     case 'pr_opened':
     case 'pr_reopened':
@@ -115,8 +103,6 @@ export function mapPullRequestEventToReviewIntentKind(
       return 'commit_pushed';
     case 'pr_closed':
       return 'pr_closed';
-    default:
-      return null;
   }
 }
 
@@ -271,10 +257,6 @@ export async function signalPullRequestEvent(
 ): Promise<SignalPullRequestResult> {
   const workflowId = buildPullRequestOrchestratorWorkflowId(input.repositoryId, input.prNumber);
   const intentKind = mapPullRequestEventToReviewIntentKind(input.eventType);
-
-  if (!intentKind) {
-    return { ok: true, workflowId, enqueued: false };
-  }
 
   try {
     const { status, intent, intents } = await enqueueReviewIntent(context, {

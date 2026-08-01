@@ -588,7 +588,6 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent).toMatchObject({
       claimedAt: null,
       processedAt: null,
-      failedAt: new Date('2026-06-17T12:01:00.000Z'),
       failureCount: 1,
       lastError: 'check run creation failed',
       nextAttemptAt: new Date('2026-06-17T12:02:00.000Z'),
@@ -754,7 +753,6 @@ describe('createDatabaseReviewIntentPort', () => {
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent).toMatchObject({
       processedAt: new Date('2026-06-17T12:03:00.000Z'),
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,
@@ -789,7 +787,6 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent).toMatchObject({
       claimedAt,
       processedAt,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,
@@ -934,7 +931,6 @@ describe('createDatabaseReviewIntentPort', () => {
                     .update(reviewIntent)
                     .set({
                       claimedAt: null,
-                      failedAt: null,
                       lastError: null,
                       nextAttemptAt: null,
                     })
@@ -961,7 +957,6 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent).toMatchObject({
       userId: user.id,
       claimedAt: null,
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1037,7 +1032,6 @@ describe('createDatabaseReviewIntentPort', () => {
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:00.000Z'),
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1411,7 +1405,6 @@ describe('createDatabaseReviewIntentPort', () => {
       .where(eq(reviewIntent.id, 'intent_1'));
     expect(intent).toMatchObject({
       claimedAt: secondClaimedAt,
-      failedAt: null,
       failureCount: 0,
       lastError: null,
       nextAttemptAt: null,

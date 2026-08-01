@@ -305,7 +305,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
 
@@ -324,6 +323,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -331,7 +331,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_assignment'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -352,7 +351,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
 
@@ -703,7 +701,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -744,7 +741,6 @@ describe('review operator server helpers', () => {
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: null,
     });
-    expect(intent?.failedAt).toBeInstanceOf(Date);
   });
 
   it('retries the same enabled-agent save after a failed wake-up releases retryable intents', async () => {
@@ -763,7 +759,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -785,7 +780,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_retry_save'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -811,7 +805,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -831,7 +824,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_during_failed_wakeup'));
     expect(intent).toMatchObject({
       claimedAt,
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -841,13 +833,11 @@ describe('review operator server helpers', () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
-    const newerFailedAt = new Date('2026-06-17T12:00:45Z');
     const newerNextAttemptAt = new Date('2026-06-17T12:04:45Z');
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       await testDb.db
         .update(reviewIntent)
         .set({
-          failedAt: newerFailedAt,
           lastError: 'Workflow dispatch failed after release.',
           nextAttemptAt: newerNextAttemptAt,
         })
@@ -862,7 +852,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -882,7 +871,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_failed_during_failed_wakeup'));
     expect(intent).toMatchObject({
       claimedAt: null,
-      failedAt: newerFailedAt,
       lastError: 'Workflow dispatch failed after release.',
       nextAttemptAt: newerNextAttemptAt,
     });
@@ -930,7 +918,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     await testDb.db.insert(reviewIntent).values([
@@ -943,7 +930,6 @@ describe('review operator server helpers', () => {
         prNumber: 8,
         processedAt: new Date('2026-06-17T12:00:30Z'),
         lastError: 'Review intent is waiting for an eligible review agent.',
-        failedAt: new Date('2026-06-17T12:00:00Z'),
         nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
       },
       {
@@ -955,7 +941,6 @@ describe('review operator server helpers', () => {
         prNumber: 9,
         deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
         lastError: 'Review intent is waiting for an eligible review agent.',
-        failedAt: new Date('2026-06-17T12:00:00Z'),
         nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
       },
     ]);
@@ -975,6 +960,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -982,7 +968,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_agent'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -992,7 +977,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_processed_waiting_for_agent'));
     expect(processedIntent).toMatchObject({
       processedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1002,7 +986,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_dead_lettered_waiting_for_agent'));
     expect(deadLetteredIntent).toMatchObject({
       deadLetteredAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1037,7 +1020,6 @@ describe('review operator server helpers', () => {
       prNumber: 7,
       claimedAt: new Date('2026-06-17T12:00:30Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1053,7 +1035,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_for_assigned_disabled_agent'));
     expect(intent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1117,7 +1098,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     await testDb.db.insert(reviewIntent).values({
@@ -1129,7 +1109,6 @@ describe('review operator server helpers', () => {
       prNumber: 8,
       claimedAt: new Date('2026-06-17T12:00:30Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1143,6 +1122,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -1150,7 +1130,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_deleted_assignment'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1160,7 +1139,6 @@ describe('review operator server helpers', () => {
       .where(eq(reviewIntent.id, 'intent_claimed_after_deleted_assignment'));
     expect(claimedIntent).toMatchObject({
       claimedAt: new Date('2026-06-17T12:00:30Z'),
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
@@ -1194,7 +1172,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1213,7 +1190,6 @@ describe('review operator server helpers', () => {
       lastError: 'Review intent is waiting for an eligible review agent.',
       nextAttemptAt: null,
     });
-    expect(intent?.failedAt).toBeInstanceOf(Date);
   });
 
   it('retries a review intent engine wake-up without requiring the deleted agent', async () => {
@@ -1231,6 +1207,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -1358,7 +1335,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -1373,6 +1349,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
     const [intent] = await testDb.db
@@ -1380,7 +1357,6 @@ describe('review operator server helpers', () => {
       .from(reviewIntent)
       .where(eq(reviewIntent.id, 'intent_waiting_for_agent'));
     expect(intent).toMatchObject({
-      failedAt: null,
       lastError: null,
       nextAttemptAt: null,
     });
@@ -1400,7 +1376,6 @@ describe('review operator server helpers', () => {
       userId: owner.id,
       prNumber: 7,
       lastError: 'Review intent is waiting for an eligible review agent.',
-      failedAt: new Date('2026-06-17T12:00:00Z'),
       nextAttemptAt: new Date('2026-06-17T12:01:00Z'),
     });
     const formData = new FormData();
@@ -2019,6 +1994,14 @@ describe('review operator server helpers', () => {
     await reader.cancel().catch(() => undefined);
 
     expect(streamedText).toContain('event: agent_event');
+    expect(streamedText).toContain('id: 1');
+    expect(streamedText).toContain('data:');
+    expect(streamedText).not.toContain('agent_run_1');
+    expect(streamedText).not.toContain('agentRunId');
+    expect(streamedText).not.toContain('seq');
+    expect(streamedText).not.toContain('tool_pre');
+    expect(streamedText).not.toContain('tool');
+    expect(streamedText).not.toContain('detail');
   });
 
   it('resolves the latest event id from the database when no cursor is supplied', async () => {
@@ -2127,6 +2110,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -2269,6 +2253,67 @@ describe('review operator server helpers', () => {
     ]);
   });
 
+  it('inspects historical specialist runs after the agent is deleted', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_deleted_agent',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 12,
+      headSha: 'abc123',
+      trigger: 'opened',
+      status: 'posted',
+      startedAt: new Date('2026-06-17T12:00:00Z'),
+    });
+    await testDb.db.insert(agentRun).values({
+      id: 'agent_run_deleted_agent',
+      userId: owner.id,
+      runId: 'run_deleted_agent',
+      agentId: reviewAgent.id,
+      agentSlug: reviewAgent.slug,
+      agentDescription: reviewAgent.description,
+      status: 'succeeded',
+    });
+    await testDb.db.insert(finding).values({
+      id: 'finding_deleted_agent',
+      userId: owner.id,
+      agentRunId: 'agent_run_deleted_agent',
+      path: 'src/a.ts',
+      startLine: 10,
+      endLine: null,
+      side: 'RIGHT',
+      severity: 'warning',
+      title: 'Historical finding',
+      body: 'This finding should remain inspectable.',
+      anchored: true,
+      fingerprint: 'fingerprint_deleted_agent',
+    });
+    await testDb.db.insert(agentEvent).values({
+      agentRunId: 'agent_run_deleted_agent',
+      seq: 1,
+      kind: 'message',
+      detail: { text: 'historical event' },
+    });
+    const formData = new FormData();
+    formData.set('id', reviewAgent.id);
+
+    await withTestDatabase(() => deleteAgent(owner.id, formData));
+
+    const inspected = await withTestDatabase(() => getRunInspector(owner.id, 'run_deleted_agent'));
+
+    expect(inspected.agentRuns).toHaveLength(1);
+    expect(inspected.agentRuns[0]).toMatchObject({
+      id: 'agent_run_deleted_agent',
+      agentId: null,
+      slug: reviewAgent.slug,
+      description: reviewAgent.description,
+    });
+    expect(inspected.agentRuns[0]?.events.map((event) => event.kind)).toEqual(['message']);
+    expect(inspected.agentRuns[0]?.findings.map((row) => row.id)).toEqual([
+      'finding_deleted_agent',
+    ]);
+  });
+
   it('links a superseded run to the replacement run derived from the previous head', async () => {
     const { owner } = await seedRepositoryOwnership();
     await insertReviewRun({
@@ -2328,6 +2373,7 @@ describe('review operator server helpers', () => {
       {
         method: 'POST',
         headers: { authorization: 'Bearer control-token' },
+        signal: expect.any(AbortSignal),
       },
     );
   });

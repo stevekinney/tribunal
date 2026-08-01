@@ -11,13 +11,16 @@
  *
  *   - `computeHandledWebhookEventDrift` powers the `/webhooks` page banner
  *     (`(authenticated)/webhooks/+page.server.ts`).
- *   - `warnOnHandledWebhookEventDriftAtStartup` logs the same diff once at
- *     server boot (wired as SvelteKit's `init` hook in `hooks.server.ts`), so
- *     drift is visible in deploy/process logs without anyone needing to know
- *     to query `GET /api/webhooks/github` first.
+ *   - `warnOnGitHubAppConfigurationDriftAtStartup` logs the event and
+ *     permission diffs together once at server boot (wired as SvelteKit's
+ *     `init` hook in `hooks.server.ts`), so drift is visible in deploy/process
+ *     logs without anyone needing to know to query `GET /api/webhooks/github`
+ *     first.
  */
 import {
-  getRegisteredWebhooks,
+  getGitHubAppConfiguration,
+  type GitHubAppPermissionLevel,
+  type GitHubAppPermissions,
   NON_CONFIGURABLE_GITHUB_WEBHOOK_EVENTS,
 } from '@tribunal/github/webhooks/registered-webhooks';
 import { githubContext } from '$lib/server/github-context';
@@ -26,6 +29,55 @@ import { HANDLED_GITHUB_WEBHOOK_EVENT_TYPES } from './handled-event-types';
 const nonConfigurableEventSet: ReadonlySet<string> = new Set(
   NON_CONFIGURABLE_GITHUB_WEBHOOK_EVENTS,
 );
+
+type RequiredGitHubAppPermission = {
+  permission: string;
+  level: GitHubAppPermissionLevel;
+};
+
+export type GitHubAppPermissionDrift = RequiredGitHubAppPermission & {
+  configured: GitHubAppPermissionLevel | 'missing';
+};
+
+const permissionRank: Readonly<Record<GitHubAppPermissionLevel, number>> = {
+  read: 1,
+  write: 2,
+  admin: 3,
+};
+
+/**
+ * GitHub App permissions required by Tribunal's supported GitHub browsing and
+ * webhook surfaces.
+ *
+ * This list is intentionally explicit instead of derived from REST method
+ * names. GitHub permissions are product-level contracts, not a one-to-one
+ * mapping from endpoint namespaces:
+ *
+ * - `administration:read`: default-branch ruleset/protection reads.
+ * - `checks:read`: check-run reads for dashboard and webhook follow-up paths.
+ * - `contents:read`: repository file, branch, commit, and diff context reads.
+ * - `issues:read`: issue list/detail/comment reads plus `issues` and
+ *   `issue_comment` webhook subscriptions.
+ * - `members:read`: member/team/organization access-change webhook delivery.
+ * - `metadata:read`: repository discovery and installation metadata.
+ * - `organization_administration:read`: organization-level membership/access
+ *   webhook delivery used to invalidate access caches.
+ * - `pull_requests:read`: pull request list/detail/diff/review reads plus pull
+ *   request webhook subscriptions.
+ * - `statuses:read`: combined commit-status reads and `status` webhook
+ *   subscription.
+ */
+export const REQUIRED_GITHUB_APP_PERMISSIONS: readonly RequiredGitHubAppPermission[] = [
+  { permission: 'administration', level: 'read' },
+  { permission: 'checks', level: 'read' },
+  { permission: 'contents', level: 'read' },
+  { permission: 'issues', level: 'read' },
+  { permission: 'members', level: 'read' },
+  { permission: 'metadata', level: 'read' },
+  { permission: 'organization_administration', level: 'read' },
+  { permission: 'pull_requests', level: 'read' },
+  { permission: 'statuses', level: 'read' },
+] as const;
 
 /**
  * Handled event types the GitHub App is not currently subscribed to.
@@ -52,12 +104,32 @@ export function computeHandledWebhookEventDrift(
     .sort();
 }
 
+export function computeRequiredGitHubAppPermissionDrift(
+  grantedPermissions: Readonly<GitHubAppPermissions>,
+  requiredPermissions: readonly RequiredGitHubAppPermission[] = REQUIRED_GITHUB_APP_PERMISSIONS,
+): GitHubAppPermissionDrift[] {
+  return requiredPermissions
+    .filter(({ permission, level }) => {
+      const actual = grantedPermissions[permission];
+      return actual === undefined || permissionRank[actual] < permissionRank[level];
+    })
+    .map(({ permission, level }) => ({
+      permission,
+      level,
+      configured: grantedPermissions[permission] ?? 'missing',
+    }))
+    .sort((left, right) =>
+      left.permission < right.permission ? -1 : left.permission > right.permission ? 1 : 0,
+    );
+}
+
 /**
  * Warn (never throw) once at server startup when the GitHub App's webhook
- * subscription is missing event types Tribunal can act on.
+ * subscription or App-level requested permissions are missing runtime behavior Tribunal
+ * relies on.
  *
  * Unlike `assertDevAuthBypassNotInProduction` / `assertE2EModeNotInProduction`,
- * this is not a security guard — subscription drift is an operational
+ * this is not a security guard — configuration drift is an operational
  * blind spot, not an exploitable bypass — so it only ever logs, it never
  * throws or blocks startup. The GitHub App may also be legitimately
  * unconfigured in some environments (local dev, CI, preview sandboxes); that
@@ -70,27 +142,46 @@ export function computeHandledWebhookEventDrift(
  * on every restart until the cache entry naturally expires, per
  * `.claude/rules/github-api.md`'s write-then-read bypass carve-out.
  */
-export async function warnOnHandledWebhookEventDriftAtStartup(): Promise<void> {
+export async function warnOnGitHubAppConfigurationDriftAtStartup(): Promise<void> {
   let registered: string[];
+  let configuredPermissions: GitHubAppPermissions;
   try {
-    ({ registered } = await getRegisteredWebhooks(githubContext, { bypass: true }));
+    ({ registered, permissions: configuredPermissions } = await getGitHubAppConfiguration(
+      githubContext,
+      {
+        bypass: true,
+      },
+    ));
   } catch (error) {
     console.warn(
-      '[webhook-subscription] Could not determine the GitHub App webhook subscription at ' +
-        'startup; skipping the drift check:',
+      '[github-app-configuration] Could not determine the GitHub App webhook subscription ' +
+        'and permissions at startup; skipping the drift check:',
       error,
     );
     return;
   }
 
-  const drifted = computeHandledWebhookEventDrift(registered);
-  if (drifted.length === 0) return;
+  const driftedEvents = computeHandledWebhookEventDrift(registered);
+  const driftedPermissions = computeRequiredGitHubAppPermissionDrift(configuredPermissions);
+  if (driftedEvents.length === 0 && driftedPermissions.length === 0) return;
 
   console.warn(
-    `[webhook-subscription] GitHub App is not subscribed to webhook event types Tribunal can ` +
-      `act on: ${drifted.join(', ')}. Webhook deliveries for these event types will never ` +
-      `arrive until the GitHub App's webhook event subscription is updated to include them. ` +
-      'See documentation/INTEGRATIONS.md#subscribed-events for the expected subscription list ' +
-      'and how to confirm the fix.',
+    '[github-app-configuration] GitHub App configuration drift detected. Missing webhook ' +
+      `event subscriptions: ${formatEventDrift(driftedEvents)}. Insufficient requested App permissions: ` +
+      `${formatPermissionDrift(driftedPermissions)}. Webhook deliveries for missing event ` +
+      'types will never arrive, and newly-restored deliveries may fail with 403s until the ' +
+      'GitHub App permissions are updated and installation owners accept the request. See documentation/INTEGRATIONS.md#subscribed-events ' +
+      'for the expected configuration list and how to confirm the fix.',
   );
+}
+
+function formatEventDrift(driftedEvents: readonly string[]): string {
+  return driftedEvents.length > 0 ? driftedEvents.join(', ') : 'none';
+}
+
+function formatPermissionDrift(driftedPermissions: readonly GitHubAppPermissionDrift[]): string {
+  if (driftedPermissions.length === 0) return 'none';
+  return driftedPermissions
+    .map(({ permission, level, configured }) => `${permission} (${configured} < ${level})`)
+    .join(', ');
 }

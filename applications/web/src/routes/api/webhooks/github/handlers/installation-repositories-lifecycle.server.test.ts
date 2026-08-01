@@ -5,7 +5,7 @@ import type { WebhookContext } from './types';
 
 const handleRepositoriesRemovedMock = vi.hoisted(() => vi.fn());
 const getPrimaryWorkspaceIdForInstallationMock = vi.hoisted(() => vi.fn());
-const fireAndForgetInstallationSyncMock = vi.hoisted(() => vi.fn());
+const dispatchInstallationSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
@@ -18,21 +18,21 @@ vi.mock('$lib/server/github/webhooks/handlers', () => ({
 }));
 
 vi.mock('./installation-sync-dispatch', () => ({
-  fireAndForgetInstallationSync: fireAndForgetInstallationSyncMock,
+  dispatchInstallationSync: dispatchInstallationSyncMock,
 }));
 
 describe('handleInstallationRepositories', () => {
   beforeEach(() => {
     handleRepositoriesRemovedMock.mockReset().mockResolvedValue(undefined);
     getPrimaryWorkspaceIdForInstallationMock.mockReset().mockResolvedValue(7);
-    fireAndForgetInstallationSyncMock.mockReset();
+    dispatchInstallationSyncMock.mockReset();
   });
 
   it('triggers a sync on added', async () => {
     const context = createContext();
     await handleInstallationRepositories(createPayload('added'), context);
 
-    expect(fireAndForgetInstallationSyncMock).toHaveBeenCalledWith(
+    expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({
         installationId: 100,
         workspaceId: 7,
@@ -53,7 +53,7 @@ describe('handleInstallationRepositories', () => {
       expect.objectContaining({ error: expect.any(Error) }),
       expect.stringContaining('Failed to resolve workspace'),
     );
-    expect(fireAndForgetInstallationSyncMock).toHaveBeenCalledWith(
+    expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: undefined }),
       context.logger,
     );
@@ -64,7 +64,7 @@ describe('handleInstallationRepositories', () => {
     await handleInstallationRepositories(createPayload('removed'), context);
 
     expect(handleRepositoriesRemovedMock).toHaveBeenCalledWith(expect.anything(), 100, [1, 2]);
-    expect(fireAndForgetInstallationSyncMock).toHaveBeenCalledWith(
+    expect(dispatchInstallationSyncMock).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'webhook:installation_repositories.removed' }),
       context.logger,
     );
@@ -90,7 +90,7 @@ describe('handleInstallationRepositories', () => {
     const context = createContext();
     await handleInstallationRepositories(createPayload('some-other-action'), context);
 
-    expect(fireAndForgetInstallationSyncMock).not.toHaveBeenCalled();
+    expect(dispatchInstallationSyncMock).not.toHaveBeenCalled();
     expect(context.logger.debug).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'some-other-action' }),
       expect.stringContaining('Unhandled'),

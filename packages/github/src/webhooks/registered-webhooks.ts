@@ -69,6 +69,15 @@ export interface RegisteredWebhooks {
   unregistered: string[];
 }
 
+export type GitHubAppPermissionLevel = 'read' | 'write' | 'admin';
+
+export type GitHubAppPermissions = Record<string, GitHubAppPermissionLevel>;
+
+export interface GitHubAppConfiguration extends RegisteredWebhooks {
+  /** App-level requested permissions, keyed by GitHub permission name. */
+  permissions: GitHubAppPermissions;
+}
+
 // ============================================================================
 // Main function
 // ============================================================================
@@ -95,10 +104,10 @@ export interface RegisteredWebhooks {
  * pattern where stale data would be actively misleading, per
  * `.claude/rules/github-api.md`.
  */
-export async function getRegisteredWebhooks(
+export async function getGitHubAppConfiguration(
   context: GithubServiceContext,
   options: { bypass?: boolean } = {},
-): Promise<RegisteredWebhooks> {
+): Promise<GitHubAppConfiguration> {
   const policy = requirePolicy('get-app-webhook-configuration');
 
   const fetchFunction = async (etag?: string) => {
@@ -135,7 +144,11 @@ export async function getRegisteredWebhooks(
       );
 
       return {
-        data: { registered, unregistered } satisfies RegisteredWebhooks,
+        data: {
+          registered,
+          unregistered,
+          permissions: normalizeGitHubAppPermissions(response.data?.permissions),
+        } satisfies GitHubAppConfiguration,
         etag: response.headers.etag,
       };
     } catch (error) {
@@ -146,7 +159,7 @@ export async function getRegisteredWebhooks(
     }
   };
 
-  const { value } = await cachedRead<RegisteredWebhooks>(
+  const { value } = await cachedRead<GitHubAppConfiguration>(
     context.cache,
     policy,
     fetchFunction,
@@ -154,4 +167,43 @@ export async function getRegisteredWebhooks(
     options,
   );
   return value;
+}
+
+export async function getRegisteredWebhooks(
+  context: GithubServiceContext,
+  options: { bypass?: boolean } = {},
+): Promise<RegisteredWebhooks> {
+  const { registered, unregistered } = await getGitHubAppConfiguration(context, options);
+  return { registered, unregistered };
+}
+
+function normalizeGitHubAppPermissions(rawPermissions: unknown): GitHubAppPermissions {
+  if (
+    rawPermissions === null ||
+    rawPermissions === undefined ||
+    typeof rawPermissions !== 'object' ||
+    Array.isArray(rawPermissions)
+  ) {
+    throw new ValidationError('GitHub App permissions response is malformed');
+  }
+
+  const permissions: GitHubAppPermissions = {};
+  for (const [permission, level] of Object.entries(rawPermissions)) {
+    if (!isGitHubAppPermissionLevel(level)) {
+      throw new ValidationError(
+        `GitHub App permission "${permission}" has unsupported level "${String(level)}"`,
+      );
+    }
+    permissions[permission] = level;
+  }
+
+  return Object.fromEntries(
+    Object.entries(permissions).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    ),
+  ) as GitHubAppPermissions;
+}
+
+function isGitHubAppPermissionLevel(value: unknown): value is GitHubAppPermissionLevel {
+  return value === 'read' || value === 'write' || value === 'admin';
 }

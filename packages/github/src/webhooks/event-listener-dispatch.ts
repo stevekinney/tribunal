@@ -268,6 +268,8 @@ async function dispatchClaimedDelivery(
       userId: listener.userId,
       runId,
       agentId: agentRow.id,
+      agentSlug: agentRow.slug,
+      agentDescription: agentRow.description,
       role: 'specialist',
       status: 'queued',
     })

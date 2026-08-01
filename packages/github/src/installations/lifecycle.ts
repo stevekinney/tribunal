@@ -125,10 +125,9 @@ export async function handleInstallationDeleted(
     });
   }
 
-  // Cancel the per-installation sync workflow by its stable Weft id (it is not
-  // recorded in workflow_run and is not tied to a repository, so the repo-scoped
-  // cancellation above cannot reach it).
-  await cancelWeftWorkflowsById(context, [`github:installations:${installationId}:sync`]);
+  // Cancel the per-installation sync workflow in the engine process that owns
+  // the run before deleting the installation row it would otherwise act on.
+  await context.cancelInstallationSync?.(installationId);
 
   // Delete the installation (cascades to installation-repository links)
   await deleteInstallation(context, installationId);

@@ -80,17 +80,18 @@ describe('enqueueInstallationSync', () => {
     expect(idB).not.toBe(idA);
   });
 
-  it('falls back to log-only "started" when no engine is configured', async () => {
+  it('reports an error when no engine is configured', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const context = createContext(undefined);
 
     const result = await enqueueInstallationSync(context, options);
 
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
-    expect(log).toHaveBeenCalledWith(
-      '[sync] would enqueue installation sync (no engine)',
-      expect.objectContaining({ workflowId: EXPECTED_ID, installationId: 555 }),
-    );
+    expect(result).toEqual({
+      workflowId: EXPECTED_ID,
+      status: 'error',
+      error: 'Installation sync receiver is not configured.',
+    });
+    expect(log).not.toHaveBeenCalled();
     log.mockRestore();
   });
 
@@ -119,7 +120,7 @@ describe('enqueueInstallationSync', () => {
     });
   });
 
-  it('reports "started" when the sync workflow is not registered yet', async () => {
+  it('reports an error when the sync workflow is not registered', async () => {
     const startOrSignal = vi
       .fn()
       .mockRejectedValue(new WorkflowNotRegisteredError('installation-sync'));
@@ -127,7 +128,11 @@ describe('enqueueInstallationSync', () => {
 
     const result = await enqueueInstallationSync(context, options);
 
-    expect(result).toEqual({ workflowId: EXPECTED_ID, status: 'started' });
+    expect(result).toEqual({
+      workflowId: EXPECTED_ID,
+      status: 'error',
+      error: 'installation-sync is not registered on the receiver.',
+    });
   });
 });
 

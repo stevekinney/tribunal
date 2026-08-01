@@ -10,11 +10,12 @@ import type { WebhookContext } from './types';
 import { githubContext } from '$lib/server/github-context';
 import { handleRepositoriesRemoved } from '@tribunal/github/installations/lifecycle';
 import { getPrimaryWorkspaceIdForInstallation } from '$lib/server/github/webhooks/handlers';
-import { fireAndForgetInstallationSync } from './installation-sync-dispatch';
+import { dispatchInstallationSync } from './installation-sync-dispatch';
 
 /**
  * Handle installation_repositories webhook events.
- * Non-orchestrator events - already claimed early in ingress, log errors without throwing.
+ * Durable installation-sync events throw on dispatch failures so ingress can release the
+ * delivery claim and let GitHub redeliver.
  */
 export async function handleInstallationRepositories(
   payload: InstallationRepositoriesEvent,
@@ -25,8 +26,8 @@ export async function handleInstallationRepositories(
 
   switch (action) {
     case 'added': {
-      // workspaceId is only needed for fire-and-forget sync; resolve it here so a throw
-      // does not block other actions and the delivery remains claimed (non-orchestrator event).
+      // workspaceId is only needed for durable sync; resolve it here so a throw
+      // only controls the sync metadata; dispatch failures still remain retryable.
       let workspaceId: number | undefined;
       try {
         workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
@@ -34,9 +35,8 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list (fire-and-forget — logs error
-      // results too, see fireAndForgetInstallationSync for the durability note).
-      fireAndForgetInstallationSync(
+      // Trigger sync to update repository list through the engine control channel.
+      await dispatchInstallationSync(
         {
           installationId,
           reason: `webhook:installation_repositories.${action}`,
@@ -53,7 +53,7 @@ export async function handleInstallationRepositories(
     case 'removed': {
       // Cancel workflows and mark repositories as inactive first — this is critical and must
       // not be blocked by workspace resolution. workspaceId is only needed for the subsequent
-      // fire-and-forget sync.
+      // durable sync.
       const removedRepoIds = payload.repositories_removed.map((r) => r.id);
       await handleRepositoriesRemoved(githubContext, installationId, removedRepoIds);
 
@@ -64,9 +64,8 @@ export async function handleInstallationRepositories(
         logger.warn({ error: e }, 'Failed to resolve workspace for installation sync, skipping');
       }
 
-      // Trigger sync to update repository list (fire-and-forget — logs error
-      // results too, see fireAndForgetInstallationSync for the durability note).
-      fireAndForgetInstallationSync(
+      // Trigger sync to update repository list through the engine control channel.
+      await dispatchInstallationSync(
         {
           installationId,
           reason: `webhook:installation_repositories.${action}`,
