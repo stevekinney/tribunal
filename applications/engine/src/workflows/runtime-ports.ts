@@ -15,6 +15,7 @@ import {
 } from '@tribunal/database/schema';
 import { createGithubApplicationSingleton } from '@tribunal/github';
 import { createCache } from '@tribunal/github/cache';
+import { createInstallationSyncWorkflow } from '@tribunal/github/sync/workflow';
 import { createCheckRun, updateCheckRun } from '@tribunal/github/reviews/check-runs';
 import { getDiffContext, getPullRequestMetadata } from '@tribunal/github/reviews/diff-context';
 import { mintSingleRepositoryReadToken } from '@tribunal/github/reviews/read-tokens';
@@ -133,7 +134,10 @@ export function createReviewIntentConsumer(
   let workflowEngine: ReviewIntentWorkflowEngine | undefined;
 
   return {
-    workflows: createReviewWorkflowDefinitions(reviewWorkflowEngine),
+    workflows: {
+      ...createReviewWorkflowDefinitions(reviewWorkflowEngine),
+      'installation-sync': createInstallationSyncWorkflow(githubContext).installationSyncWorkflow,
+    },
     bindWorkflowEngine(engine: ReviewIntentWorkflowEngine) {
       workflowEngine = engine;
     },

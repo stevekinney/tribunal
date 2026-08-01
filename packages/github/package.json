@@ -58,7 +58,8 @@
     "./webhooks/webhook-events": "./src/webhooks/webhook-events.ts",
     "./webhooks/registered-webhooks": "./src/webhooks/registered-webhooks.ts",
     "./sync": "./src/sync/index.ts",
-    "./sync/types": "./src/sync/types.ts"
+    "./sync/types": "./src/sync/types.ts",
+    "./sync/workflow": "./src/sync/workflow.ts"
   },
   "scripts": {
     "test": "vitest run -c vitest.configuration.ts",

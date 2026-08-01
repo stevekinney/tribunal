@@ -3,8 +3,15 @@ import {
   MemoryStorage,
   assertDurableStorageForRecovery,
   workflow,
+  type WorkflowStatus,
 } from '@lostgradient/weft';
+import { LocalClient } from '@lostgradient/weft/client/local';
 import type { EngineLeaseHealth, Storage } from '@lostgradient/weft';
+import { dispatchInstallationSync } from '@tribunal/github/sync';
+import type {
+  EnqueueInstallationSyncOptions,
+  EnqueueInstallationSyncResult,
+} from '@tribunal/github/sync/types';
 import type { EngineHealthDependency } from '../health';
 import type { StopReviewRunResult } from './review-workflow';
 
@@ -64,6 +71,11 @@ export type EngineRuntime = {
   consumePendingReviewIntentDrain?(): boolean;
   getReviewIntentQueueStatus(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes(): Promise<unknown>;
+  hasActiveInstallationSyncs?(): Promise<boolean>;
+  cancelInstallationSync?(installationId: number): Promise<void>;
+  enqueueInstallationSync?(
+    options: EnqueueInstallationSyncOptions,
+  ): Promise<EnqueueInstallationSyncResult>;
   stopReviewRun(reviewRunId: string): Promise<StopReviewRunResult>;
   stopReviewAgent(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
   release(): Promise<void>;
@@ -93,6 +105,7 @@ export async function createEngineRuntime(
       leaseWaitTimeout: '60s',
       detectSecondInstance: true,
     });
+    const client = new LocalClient(engine);
     options.reviewIntentConsumer?.bindWorkflowEngine?.(engine as ReviewIntentWorkflowEngine);
     const drainReviewIntents = createSerializedReviewIntentDrain(options.reviewIntentConsumer);
 
@@ -132,6 +145,21 @@ export async function createEngineRuntime(
         return (
           options.reviewIntentConsumer?.reapClosedPullRequestSandboxes?.() ?? Promise.resolve([])
         );
+      },
+      async hasActiveInstallationSyncs() {
+        const activeStatuses: WorkflowStatus[] = ['pending', 'running', 'suspended'];
+        const page = await engine.list({
+          type: 'installation-sync',
+          status: activeStatuses,
+          limit: 1,
+        });
+        return page.total > 0;
+      },
+      async cancelInstallationSync(installationId) {
+        await engine.cancel(`github:installations:${installationId}:sync`);
+      },
+      enqueueInstallationSync(options) {
+        return dispatchInstallationSync(client, options);
       },
       stopReviewRun(reviewRunId: string) {
         return (

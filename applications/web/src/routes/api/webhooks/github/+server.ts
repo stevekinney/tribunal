@@ -163,6 +163,10 @@ export const POST: RequestHandler = async (event) => {
   const isRerunTrigger = isRerunTriggerWebhookEvent(eventType, action, data, env.GITHUB_APP_ID);
   const isReviewEngineTrigger =
     isPullRequestWebhookEvent(eventType, action, data) || isRerunTrigger;
+  const isInstallationSyncTrigger =
+    (eventType === 'installation' &&
+      (action === 'created' || action === 'new_permissions_accepted' || action === 'deleted')) ||
+    (eventType === 'installation_repositories' && (action === 'added' || action === 'removed'));
 
   if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(
@@ -324,19 +328,19 @@ export const POST: RequestHandler = async (event) => {
     const dispatch = createWebhookDispatcher(context);
     const handlerDispatched = await dispatch(data);
 
-    // Guard against silent Zod validation failures for review-engine events.
+    // Guard against silent Zod validation failures for durable dispatch events.
     // If the event type is handled by the typed router but no handler ran, the payload failed
-    // schema validation. For review-engine triggers this would result in a silent claim with no
-    // signal sent — GitHub would not retry because the delivery appears processed. Throw so the
-    // caller can return 500 and allow GitHub to retry with the original payload.
+    // schema validation. For durable triggers this would result in a silent claim with no
+    // signal/cancellation sent -- GitHub would not retry because the delivery appears processed.
+    // Throw so the caller can return 500 and allow GitHub to retry with the original payload.
     if (
-      isReviewEngineTrigger &&
+      (isReviewEngineTrigger || isInstallationSyncTrigger) &&
       !handlerDispatched &&
       eventType &&
       ROUTER_HANDLED_EVENT_TYPES.has(eventType)
     ) {
       throw new Error(
-        `[webhook] Review-engine trigger '${eventType}' failed schema validation — delivery not claimed`,
+        `[webhook] Durable trigger '${eventType}' failed schema validation -- delivery not claimed`,
       );
     }
 
@@ -348,26 +352,26 @@ export const POST: RequestHandler = async (event) => {
       await handleReviewThread(action, data, context);
     }
   } catch (e) {
-    if (isReviewEngineTrigger) {
-      console.error('[webhook] Review intent dispatch failed:', e);
-      // Release the early claim so GitHub's redelivery can retry durable review-intent enqueue.
+    if (isReviewEngineTrigger || isInstallationSyncTrigger) {
+      console.error('[webhook] Durable dispatch failed:', e);
+      // Release the early claim so GitHub's redelivery can retry durable enqueue/cancellation.
       const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
       // Any listener matched above (before this error path) still has
       // pending deliveries -- drain them now, since this request exits via
       // `error(500, ...)` below and never reaches the success-path drain.
       scheduleDrain();
       if (!claimReleased) {
-        console.error('[webhook] Failed to release review-engine delivery claim:', {
+        console.error('[webhook] Failed to release durable dispatch delivery claim:', {
           deliveryId,
           eventType,
           action,
           installationId,
           repositoryId,
         });
-        error(500, 'Review intent dispatch failed and delivery claim could not be released');
+        error(500, 'Durable dispatch failed and delivery claim could not be released');
       }
-      // Return 500 so GitHub retries this delivery (review intent failures).
-      error(500, 'Review intent dispatch failed');
+      // Return 500 so GitHub retries this delivery.
+      error(500, 'Durable dispatch failed');
     } else {
       // For non-review-engine events, the delivery may already be claimed. Log and continue
       // so we do not create a claimed-but-unprocessed drop that GitHub will not retry.

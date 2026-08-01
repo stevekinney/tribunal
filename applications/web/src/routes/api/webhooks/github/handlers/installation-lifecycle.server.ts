@@ -18,11 +18,12 @@ import {
   handleInstallationUnsuspend,
 } from '@tribunal/github/installations/lifecycle';
 import { getPrimaryWorkspaceIdForInstallation } from '$lib/server/github/webhooks/handlers';
-import { fireAndForgetInstallationSync } from './installation-sync-dispatch';
+import { dispatchInstallationSync } from './installation-sync-dispatch';
 
 /**
  * Handle installation webhook events.
- * Non-orchestrator events - already claimed early in ingress, log errors without throwing.
+ * Durable installation-sync events throw on dispatch failures so ingress can release the
+ * delivery claim and let GitHub redeliver.
  */
 export async function handleInstallation(
   payload: InstallationEvent,
@@ -64,13 +65,12 @@ export async function handleInstallation(
           repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
         });
 
-        // Trigger sync to fetch repositories (fire-and-forget — see
-        // fireAndForgetInstallationSync for the durability limitation).
+        // Trigger sync to fetch repositories through the engine control channel.
         // deliveryId (the GitHub delivery GUID) becomes the Weft signalId so
         // retries/redeliveries dedup at the signal layer too (on top of the
         // upstream claimWebhookDelivery dedup).
         const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
-        fireAndForgetInstallationSync(
+        await dispatchInstallationSync(
           { installationId, reason: 'webhook:installation.created', workspaceId, deliveryId },
           logger,
         );
@@ -87,10 +87,9 @@ export async function handleInstallation(
     case 'new_permissions_accepted': {
       await updateInstallationStatus(githubContext, installationId, 'active');
 
-      // Trigger sync in case new permissions grant access to more repos
-      // (fire-and-forget — see fireAndForgetInstallationSync for the limitation).
+      // Trigger sync in case new permissions grant access to more repos.
       const workspaceId = await getPrimaryWorkspaceIdForInstallation(installationId);
-      fireAndForgetInstallationSync(
+      await dispatchInstallationSync(
         {
           installationId,
           reason: 'webhook:installation.new_permissions_accepted',

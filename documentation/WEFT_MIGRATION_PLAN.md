@@ -44,14 +44,11 @@
 > perpetual-spinner case CLOSED; a generation-token hardening for the
 > finalizer/success-write race remains tracked below).
 >
-> **Remaining (pre-production gates):** the fire-and-forget sync durability fix
-> (outbox + reconciler, or claim-after-enqueue) is a HARD prerequisite before
-> enabling `WEFT_DATABASE_URL` in production (§4.2); a durable per-attempt
-> generation token for installation-sync so the finalizer's `failed` and the
-> activity's success `idle` write cannot race to a wrong last-writer (§7 item 3 —
-> the stranded-spinner case is closed, this hardening is not); and analyze-activity
-> concurrency hardening (the same-commit supersede gap and full-body overwrite,
-> §7 item 5).
+> **Remaining (pre-production gates):** a durable per-attempt generation token for
+> installation-sync so the finalizer's `failed` and the activity's success `idle`
+> write cannot race to a wrong last-writer (§7 item 3 — the stranded-spinner case
+> is closed, this hardening is not); and analyze-activity concurrency hardening
+> (the same-commit supersede gap and full-body overwrite, §7 item 5).
 >
 > **Upstream issues — all resolved.** 0.4.0 shipped 446–453, 455, 458, 465–470.
 > 0.5.0 shipped weft#583 (`StartOrSignalOutcome` not exported), weft#584
@@ -163,19 +160,13 @@ of the process being poisoned until restart. It returns `null` when no
 `WEFT_DATABASE_URL` is set. The ported workflow definitions are registered on the
 in-process engine through `Engine.create({ workflows })`.
 
-**Webhook delivery acceptance is never blocked on the engine**, guaranteed two
-ways:
-
-1. When no durable store is configured (`WEFT_DATABASE_URL` unset), the resolver
-   returns `null` and producers run log-only.
-2. When a client _is_ resolved but points at a deployment where the expected
-   workflow name is not registered, `startOrSignal` throws
-   `WorkflowNotRegisteredError` — and the producers treat that as a **no-op
-   success**, not a webhook-failing error.
-
-So readiness is gated on the deployment resolving a client whose engine has the
-ported workflows _registered and dispatchable_, not merely on storage being
-configured.
+The current production topology does not resolve this in-process client from
+`tribunal-web`: web keeps `WEFT_DATABASE_URL` unset and dispatches installation
+sync and cancellation requests to `tribunal-engine` through the authenticated
+control channel. The historical no-client log-only behavior remains useful for
+local or test contexts, but production readiness is gated on the separate engine
+owning `WEFT_DATABASE_URL`, registering the workflow definitions, and accepting
+control-channel requests.
 
 ### Storage isolation (critical)
 
@@ -208,40 +199,32 @@ outer route, invalidate the relevant caches, and run any applicable state
 tracking or event-listener matching, but they do not call the review-engine
 signaling API and do not create durable review-engine work.
 
-The `pull-request-orchestrator` workflow definition itself is already ported,
-registered on the in-process engine, and tested. The current review-activity
-webhook path is disconnected from that Weft producer path by design: it writes
-durable `review_intent` rows for the separate review engine instead of
-`startOrSignal`ing the Weft workflow.
+The `pull-request-orchestrator` workflow definition itself is already ported and
+tested, but the current review-activity webhook path is disconnected from that
+Weft producer path by design: it writes durable `review_intent` rows for the
+separate review engine instead of `startOrSignal`ing the Weft workflow.
 
 ### 4.2 Installation sync (wired)
 
 `packages/github/src/sync/index.ts` — `enqueueInstallationSync` now
-`startOrSignal`s `installation-sync` with id `github:installations:{id}:sync`. Its
-`signalId` is the caller's stable `deliveryId` (the GitHub delivery GUID) when
-present so retries/redeliveries dedup, falling back to a fresh UUID only for
-distinct manual intents. Webhook handlers thread the GitHub delivery GUID through
-as `deliveryId`, while upstream `claimWebhookDelivery` still provides the
-webhook-level dedup boundary. The `installation-sync` workflow definition is
-already ported, registered on the in-process engine, and e2e-tested; dispatch is
-active only in deployments where `resolveWeftClient` returns a configured client.
+`startOrSignal`s `installation-sync` with id `github:installations:{id}:sync` when
+a process-local Weft client is intentionally supplied, and `tribunal-web` uses the
+authenticated engine control channel for production dispatch. Its `signalId` is
+the caller's stable `deliveryId` (the GitHub delivery GUID) when present so
+retries/redeliveries dedup, falling back to a fresh UUID only for distinct manual
+intents. Webhook handlers thread the GitHub delivery GUID through as `deliveryId`,
+while upstream `claimWebhookDelivery` still provides the webhook-level dedup
+boundary. The production handoff is awaited far enough to verify the engine
+accepted the request; if that handoff fails after the delivery is claimed, the
+webhook claim is released and GitHub redelivery can retry.
 
-> [!WARNING]
-> **Fire-and-forget durability gap — must close before enabling installation-sync
-> dispatch in production.** The installation webhook delivery is claimed
-> (`claimWebhookDelivery`) _before_ the handler runs, and the handler enqueues the
-> sync fire-and-forget (it must return inside GitHub's ~10s timeout; awaiting a
-> repo-provisioning sync would regress latency). So a failed enqueue after the
-> delivery is claimed is lost — a GitHub redelivery gets deduped away. This is
-> **operationally inert while the web deployment has no configured Weft client**;
-> once dispatch is activated, the enqueue must become recoverable: an outbox row +
-> reconciler, or claim-after-enqueue.
+### 4.3 Repository refresh + installation cancellation (wired)
 
-### 4.3 Repository refresh + installation cancellation (pending)
-
-`repositories/service.ts` (synchronous refresh) and `installations/lifecycle.ts`
-(`cancelWorkflows` should `client.cancel(id)` running runs). Durable
-cancellation teardown for sandbox-holding workflows is blocked on weft#446.
+`repositories/service.ts` handles synchronous refresh, while
+`installations/lifecycle.ts` routes installation-sync cancellation through the
+context-provided cancellation function. In production, `githubContext` sends that
+cancellation to `tribunal-engine` over the authenticated control channel before
+local installation teardown removes the records.
 
 ### 4.4 Error taxonomy → retry policies (maps 1:1)
 

@@ -154,6 +154,7 @@ describe('runtime review intent consumer wiring', () => {
       'review-run',
       'agent-review',
       'sandbox-reaper',
+      'installation-sync',
     ]);
     await expect(consumer.drain()).resolves.toBe(0);
     await expect(consumer.stopReviewRun('missing-run')).resolves.toEqual({ stopped: false });

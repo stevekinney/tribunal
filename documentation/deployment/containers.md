@@ -69,7 +69,9 @@ set `TRIBUNAL_PROXY_CIDR` to that address with a `/32` suffix.
 
 `WEFT_DATABASE_URL` belongs only on `tribunal-engine`. Never set it on
 `tribunal-web`. The web service writes review intents to the application
-database; the engine claims those intents and owns durable Weft execution state.
+database and sends installation-sync control requests to the engine; the engine
+claims review intents, receives installation-sync dispatches, and owns durable
+Weft execution state.
 
 Use pooled Neon runtime URLs for long-running Fly services unless a specific
 driver path requires direct Postgres. Use a direct, unpooled Neon URL for

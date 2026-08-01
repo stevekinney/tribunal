@@ -4,6 +4,10 @@ import { EngineLeaseNotHeldError } from '@lostgradient/weft';
 import type { Storage } from '@lostgradient/weft';
 import { createHealthResponse, type EngineHealthDependency } from './health';
 import {
+  handleInstallationSyncCancellationRequest,
+  handleInstallationSyncRequest,
+} from './installation-syncs';
+import {
   createEngineRuntime,
   type EngineBootstrapOptions,
   type EngineRuntime,
@@ -362,6 +366,28 @@ export function createEngineServerOptions(
         }
         return Response.json({ ok: true, started: result.started }, { status: 202 });
       }
+      const installationSyncCancelMatch = /^\/installation-syncs\/(\d+)\/cancel$/.exec(
+        url.pathname,
+      );
+      if (installationSyncCancelMatch !== null && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        return handleInstallationSyncCancellationRequest(
+          Number(installationSyncCancelMatch[1]),
+          runtime,
+        );
+      }
+      if (url.pathname === '/installation-syncs' && request.method === 'POST') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const acceptance = reviewIntentKickScheduler.noteBackgroundWorkAccepted();
+        if (!acceptance.accepted && acceptance.reason === 'released') {
+          return Response.json({ ok: false, error: 'engine_released' }, { status: 503 });
+        }
+        return handleInstallationSyncRequest(request, runtime);
+      }
       const stopMatch = /^\/review-runs\/([^/]+)\/stop$/.exec(url.pathname);
       if (stopMatch !== null && request.method === 'POST') {
         if (!hasValidControlToken(request, controlToken)) {
@@ -394,12 +420,17 @@ export function createEngineServerOptions(
 
 export type ReviewIntentKickScheduler = {
   kick(): ReviewIntentKickResult;
+  noteBackgroundWorkAccepted(): BackgroundWorkAcceptanceResult;
   stop(): void;
 };
 
 export type ReviewIntentKickResult =
   | { started: true }
   | { started: false; reason: 'already_running' | 'released' };
+
+export type BackgroundWorkAcceptanceResult =
+  | { accepted: true }
+  | { accepted: false; reason: 'released' };
 
 export type ReviewIntentKickSchedulerOptions = {
   idleShutdownSeconds?: number;
@@ -413,7 +444,10 @@ export type ReviewIntentKickSchedulerOptions = {
 };
 
 export function createReviewIntentKickScheduler(
-  runtime: Pick<EngineRuntime, 'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release'> &
+  runtime: Pick<
+    EngineRuntime,
+    'drainReviewIntents' | 'getReviewIntentQueueStatus' | 'release' | 'hasActiveInstallationSyncs'
+  > &
     Partial<Pick<EngineRuntime, 'consumePendingReviewIntentDrain'>>,
   options: ReviewIntentKickSchedulerOptions = {},
 ): ReviewIntentKickScheduler {
@@ -545,7 +579,9 @@ export function createReviewIntentKickScheduler(
         scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
         return;
       }
-      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive()) {
+      const hasActiveInstallationSyncs = (await runtime.hasActiveInstallationSyncs?.()) === true;
+      if (hasNewDrainActivity()) return;
+      if (hasClaimedWork(queueStatus) || isBackgroundWorkActive() || hasActiveInstallationSyncs) {
         scheduleConfiguredIdleShutdown();
         return;
       }
@@ -580,6 +616,12 @@ export function createReviewIntentKickScheduler(
 
   return {
     kick: startDrain,
+    noteBackgroundWorkAccepted() {
+      if (released) return { accepted: false, reason: 'released' };
+      drainGeneration += 1;
+      scheduleConfiguredIdleShutdown();
+      return { accepted: true };
+    },
     stop() {
       // Quiesce the drain so no new review intents are claimed during shutdown:
       // setting `released` makes `drainUntilIdle` exit after its current batch

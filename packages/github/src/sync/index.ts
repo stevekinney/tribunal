@@ -2,14 +2,9 @@
  * GitHub sync job queue.
  *
  * This module provides the interface for enqueuing GitHub sync operations.
- * The workflow runtime that previously executed the sync has been removed, so
- * these functions log the work that would have been enqueued and report a
- * started status. Callers remain fire-and-forget.
- *
- * This producer dispatches through the in-process Weft client when one is
- * configured, and falls back to logging when it is not (or when the
- * installation-sync workflow is not registered yet). The matching
- * `installation-sync` workflow definition still needs to be ported.
+ * These functions dispatch to the registered `installation-sync` Weft workflow.
+ * Callers remain fire-and-forget, but a missing receiver is reported as an
+ * observable error result instead of a successful no-op.
  *
  * Terminal-restart semantics (weft#604, shipped in 0.7.0): periodic re-sync
  * reuses a stable workflow id (`github:installations:{id}:sync`). Passing
@@ -20,6 +15,7 @@
  */
 
 import { isWeftFault } from '@lostgradient/weft';
+import type { WeftClient } from '@lostgradient/weft/client';
 import type { GithubServiceContext } from '../context.js';
 import type { EnqueueInstallationSyncOptions, EnqueueInstallationSyncResult } from './types.js';
 
@@ -36,8 +32,8 @@ export type { EnqueueInstallationSyncOptions, EnqueueInstallationSyncResult } fr
  * Fire-and-forget: returns a result object instead of throwing. When a Weft
  * client is configured, this start-or-signals the per-installation sync workflow
  * (coalescing rapid lifecycle webhooks onto one run, the shape Depict used with
- * Temporal's signalWithStart). When no engine is configured, it logs what would
- * have been enqueued and reports `started`.
+ * Temporal's signalWithStart). When no receiver is configured, it reports an
+ * error so the caller can make the failed handoff visible.
  *
  * Terminal prior runs are restarted atomically via `onTerminalConflict: 'start-new'`
  * (Weft ≥ 0.7.0 / weft#604), so a re-sync after a completed, failed, cancelled,
@@ -54,46 +50,21 @@ export async function enqueueInstallationSync(
     // not throw past the caller (webhook handlers and lifecycle paths).
     const client = await context.resolveWeftClient?.();
     if (!client) {
-      console.log('[sync] would enqueue installation sync (no engine)', {
+      return {
         workflowId,
-        installationId: options.installationId,
-        reason: options.reason,
-        triggeredByUserId: options.triggeredByUserId,
-      });
-      return { workflowId, status: 'started' };
+        status: 'error',
+        error: 'Installation sync receiver is not configured.',
+      };
     }
 
-    const handle = await client.startOrSignal(
-      'installation-sync',
-      options,
-      // signalId (with the workflow id) lets concurrent lifecycle webhooks
-      // converge on one sync run while each logical event delivers exactly once.
-      // Use the caller's stable deliveryId (the GitHub delivery GUID) when
-      // present so redeliveries/retries dedup; mint a fresh id only for distinct
-      // manual/non-retryable intents that pass no deliveryId.
-      {
-        name: 'sync_requested',
-        payload: options,
-        signalId: options.deliveryId ?? crypto.randomUUID(),
-      },
-      {
-        id: workflowId,
-        // Restart terminal prior runs atomically rather than rejecting as a
-        // conflict. Requires an explicit id (supplied above) and a caller-supplied
-        // signalId — stable/deduplicating when deliveryId is present, or a fresh
-        // UUID for distinct manual/non-retryable intents. Weft ≥ 0.7.0 (weft#604).
-        onTerminalConflict: 'start-new',
-      },
-    );
-    // weft#466: the handle reports whether this started a fresh sync run or
-    // coalesced onto a live one.
-    return { workflowId, status: 'started', outcome: handle.outcome };
+    return await dispatchInstallationSync(client, options);
   } catch (error) {
-    // A configured client can still point at a deployment where installation-sync
-    // is not registered. Keep webhook acceptance fail-open in that case.
     if (isWeftFault(error, 'WorkflowNotRegisteredError')) {
-      console.log('[sync] installation-sync not registered yet; skipping dispatch', { workflowId });
-      return { workflowId, status: 'started' };
+      return {
+        workflowId,
+        status: 'error',
+        error: 'installation-sync is not registered on the receiver.',
+      };
     }
     return {
       workflowId,
@@ -101,4 +72,25 @@ export async function enqueueInstallationSync(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export async function dispatchInstallationSync(
+  client: WeftClient,
+  options: EnqueueInstallationSyncOptions,
+): Promise<EnqueueInstallationSyncResult> {
+  const workflowId = `github:installations:${options.installationId}:sync`;
+  const handle = await client.startOrSignal(
+    'installation-sync',
+    options,
+    {
+      name: 'sync_requested',
+      payload: options,
+      signalId: options.deliveryId ?? crypto.randomUUID(),
+    },
+    {
+      id: workflowId,
+      onTerminalConflict: 'start-new',
+    },
+  );
+  return { workflowId, status: 'started', outcome: handle.outcome };
 }
