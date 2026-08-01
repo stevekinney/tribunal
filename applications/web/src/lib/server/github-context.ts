@@ -45,9 +45,11 @@ export const githubContext: GithubServiceContext = {
   async cancelInstallationSync(installationId) {
     const result = await cancelInstallationSyncEngine(installationId);
     if (result.status === 'not_configured') {
-      throw new Error(
-        `Installation sync engine control is not configured. Missing settings: ${result.missingSettings.join(', ')}.`,
+      console.warn(
+        '[github-context] Installation sync engine control is not configured; skipping remote cancellation.',
+        { installationId, missingSettings: result.missingSettings },
       );
+      return;
     }
     if (result.status === 'failed') {
       throw result.error instanceof Error ? result.error : new Error(String(result.error));

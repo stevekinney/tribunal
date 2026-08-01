@@ -328,19 +328,19 @@ export const POST: RequestHandler = async (event) => {
     const dispatch = createWebhookDispatcher(context);
     const handlerDispatched = await dispatch(data);
 
-    // Guard against silent Zod validation failures for review-engine events.
+    // Guard against silent Zod validation failures for durable dispatch events.
     // If the event type is handled by the typed router but no handler ran, the payload failed
-    // schema validation. For review-engine triggers this would result in a silent claim with no
-    // signal sent — GitHub would not retry because the delivery appears processed. Throw so the
-    // caller can return 500 and allow GitHub to retry with the original payload.
+    // schema validation. For durable triggers this would result in a silent claim with no
+    // signal/cancellation sent -- GitHub would not retry because the delivery appears processed.
+    // Throw so the caller can return 500 and allow GitHub to retry with the original payload.
     if (
-      isReviewEngineTrigger &&
+      (isReviewEngineTrigger || isInstallationSyncTrigger) &&
       !handlerDispatched &&
       eventType &&
       ROUTER_HANDLED_EVENT_TYPES.has(eventType)
     ) {
       throw new Error(
-        `[webhook] Review-engine trigger '${eventType}' failed schema validation — delivery not claimed`,
+        `[webhook] Durable trigger '${eventType}' failed schema validation -- delivery not claimed`,
       );
     }
 

@@ -59,16 +59,14 @@ describe('githubContext', () => {
     expect(mocks.cancelInstallationSyncEngine).toHaveBeenCalledWith(123);
   });
 
-  it('rejects cancellation when engine control is not configured', async () => {
+  it('treats absent engine control as nothing to cancel', async () => {
     mocks.cancelInstallationSyncEngine.mockResolvedValue({
       status: 'not_configured',
       missingSettings: ['TRIBUNAL_ENGINE_URL'],
     });
     const cancelInstallationSync = getCancelInstallationSync();
 
-    await expect(cancelInstallationSync(123)).rejects.toThrow(
-      'Installation sync engine control is not configured',
-    );
+    await expect(cancelInstallationSync(123)).resolves.toBeUndefined();
   });
 
   it('rejects cancellation when the engine client returns a structured failure', async () => {
