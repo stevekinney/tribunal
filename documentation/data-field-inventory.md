@@ -94,7 +94,8 @@ Follow-ups filed and read back from this audit:
   `cost_event.id`, `kind`, and `agent_run_id` are written without current
   readers.
 - [#259](https://github.com/stevekinney/tribunal/issues/259):
-  claimable listener-delivery query fields are returned without current readers.
+  claimable listener-delivery query fields were removed after confirming the
+  drain re-reads listener and agent state after claiming.
 - [#262](https://github.com/stevekinney/tribunal/issues/262):
   run event stream payload fields are serialized without current client readers.
 
@@ -198,11 +199,11 @@ Follow-ups filed and read back from this audit:
 
 ### `@tribunal/database`
 
-| Shape                                                       | decision                                                                             | display                                                                 | observability                             | test-only | none                                         | Evidence                                                                                                                                                                                                                                                                               |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------- | --------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ClaimableEventListenerDelivery`                            | `delivery`, `listenerId`                                                             | none                                                                    | none                                      | none      | `listenerEnabled`, `agentId`, `agentEnabled` | `packages/database/src/queries/event-listener-deliveries.ts` returns candidate state to `packages/github/src/webhooks/event-listener-dispatch.ts`; the drain reads `delivery.id` and `listenerId`, then re-reads listener/agent state after claiming. Tracked in #259.                 |
-| `EventListenerWithProgress` and `EventListenerLastDelivery` | listener, delivery, and progress fields drive repository event-listener route output | complete rows are returned to the repository events route               | `lastError`, `runId`, delivery timestamps | none      | none                                         | `packages/database/src/queries/event-listeners.ts` exports both shapes from `listEventListenersWithProgressForRepository`; `applications/web/src/routes/(authenticated)/repositories/[repositoryId=int]/events` consumes them for the event-listener page.                             |
-| `EventListenerDisplayStatus`                                | status mapping changes event-listener progress classification                        | derived statuses are rendered on event-listener and webhook event pages | none                                      | none      | none                                         | `packages/database/src/queries/event-listener-deliveries.ts` exports the status vocabulary and `deriveEventListenerDisplayStatus`; `packages/database/src/queries/event-listeners.ts` and `applications/web/src/lib/server/webhook-events.ts` return it to listener and webhook pages. |
+| Shape                                                       | decision                                                                             | display                                                                 | observability                             | test-only | none | Evidence                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------- | --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ClaimableEventListenerDelivery`                            | `delivery`, `listenerId`                                                             | none                                                                    | none                                      | none      | none | `packages/database/src/queries/event-listener-deliveries.ts` returns only the candidate delivery and listener id to `packages/github/src/webhooks/event-listener-dispatch.ts`; the drain reads `delivery.id` and `listenerId`, then re-reads listener/agent state after claiming. Removed in #259. |
+| `EventListenerWithProgress` and `EventListenerLastDelivery` | listener, delivery, and progress fields drive repository event-listener route output | complete rows are returned to the repository events route               | `lastError`, `runId`, delivery timestamps | none      | none | `packages/database/src/queries/event-listeners.ts` exports both shapes from `listEventListenersWithProgressForRepository`; `applications/web/src/routes/(authenticated)/repositories/[repositoryId=int]/events` consumes them for the event-listener page.                                         |
+| `EventListenerDisplayStatus`                                | status mapping changes event-listener progress classification                        | derived statuses are rendered on event-listener and webhook event pages | none                                      | none      | none | `packages/database/src/queries/event-listener-deliveries.ts` exports the status vocabulary and `deriveEventListenerDisplayStatus`; `packages/database/src/queries/event-listeners.ts` and `applications/web/src/lib/server/webhook-events.ts` return it to listener and webhook pages.             |
 
 ### `@tribunal/github`
 
@@ -270,8 +271,6 @@ for these exact findings:
   `SandboxCreateInput.metadata`, `SandboxCreateInput.secretNames`, sandbox cost
   metadata, and `PostedReviewRecord`.
 - Request-reviewer service surface.
-- `ClaimableEventListenerDelivery.listenerEnabled`, `agentId`, and
-  `agentEnabled`.
 - `RunAgentEventStreamEvent.agentRunId`, `seq`, `kind`, `tool`, `detail`, and
   `at`.
 
