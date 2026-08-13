@@ -51,8 +51,7 @@ export interface CachedReadResult<T> {
 export type CachedReadFetchFunction<T> = (etag?: string) => Promise<CachedReadFetchResult<T>>;
 
 export type CachedReadFetchResult<T> =
-  | { notModified: true }
-  | { notModified?: false; data: T; etag?: string };
+  { notModified: true } | { notModified?: false; data: T; etag?: string };
 
 /** Options for a single cachedRead call. */
 export interface CachedReadOptions {

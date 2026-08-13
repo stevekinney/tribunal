@@ -195,8 +195,7 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
     // Production passes no services. Tests inject tiny values so the in-process
     // race-branch timers — which advanceTime cannot drive — fire in milliseconds.
     const services = ctx.services as
-      | { debounceDuration?: Duration; idleDuration?: Duration }
-      | undefined;
+      { debounceDuration?: Duration; idleDuration?: Duration } | undefined;
     const debounceDuration: Duration = services?.debounceDuration ?? DEBOUNCE_DURATION;
     const idleDuration: Duration = services?.idleDuration ?? IDLE_DURATION;
 

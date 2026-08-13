@@ -82,7 +82,7 @@
 </script>
 
 <svelte:head>
-  <svelte:element this={'style'} media={SIDEBAR_MOBILE_MEDIA_QUERY}
+  <svelte:element this={"style"} media={SIDEBAR_MOBILE_MEDIA_QUERY}
     >{mobileLayoutStyles}</svelte:element
   >
 </svelte:head>

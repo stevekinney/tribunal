@@ -46,8 +46,7 @@ export interface CreateInstallationTokenOptions {
  * Result type for installation token creation.
  */
 export type CreateInstallationTokenResult =
-  | { ok: true; token: InstallationToken }
-  | { ok: false; error: InstallationTokenError };
+  { ok: true; token: InstallationToken } | { ok: false; error: InstallationTokenError };
 
 // ============================================================================
 // Core Function

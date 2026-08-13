@@ -12,8 +12,7 @@ export type HookPolicyInput = {
 };
 
 export type HookPolicyDecision =
-  | { permissionDecision: 'allow' }
-  | { permissionDecision: 'deny'; reason: string };
+  { permissionDecision: 'allow' } | { permissionDecision: 'deny'; reason: string };
 
 /** Enforces Tribunal's read-only tool and repository-boundary policy for PreToolUse hooks. */
 export function enforceReadOnlyToolUse(policyInput: HookPolicyInput): HookPolicyDecision {

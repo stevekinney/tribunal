@@ -30,8 +30,7 @@ export async function invalidateGitHubResourceCacheForEvent(
 ): Promise<void> {
   try {
     const repository = data.repository as
-      | { owner: { login?: string; name?: string }; name: string }
-      | undefined;
+      { owner: { login?: string; name?: string }; name: string } | undefined;
 
     // Fall back to owner.name when owner.login is absent, mirroring the
     // pattern used in pr-state-dispatch.ts and extract.ts so push deliveries
@@ -275,11 +274,9 @@ async function invalidateCheckRelatedCache(
     headBranch = data.check_suite.head_branch;
   } else {
     const checkRun = data.check_run as
-      | { head_sha?: string; check_suite?: { head_branch?: string | null } }
-      | undefined;
+      { head_sha?: string; check_suite?: { head_branch?: string | null } } | undefined;
     const checkSuite = data.check_suite as
-      | { head_sha?: string; head_branch?: string | null }
-      | undefined;
+      { head_sha?: string; head_branch?: string | null } | undefined;
     headSha = checkRun?.head_sha ?? checkSuite?.head_sha;
     headBranch = checkRun?.check_suite?.head_branch ?? checkSuite?.head_branch;
   }

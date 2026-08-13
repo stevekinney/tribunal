@@ -55,12 +55,7 @@ export type RefreshInstallationRepositoriesOptions =
     };
 
 export type RepositorySortField =
-  | 'name'
-  | 'updated_at'
-  | 'created_at'
-  | 'pushed_at'
-  | 'stargazers_count'
-  | 'open_issues_count';
+  'name' | 'updated_at' | 'created_at' | 'pushed_at' | 'stargazers_count' | 'open_issues_count';
 export type SortDirection = 'asc' | 'desc';
 export type RepositoryVisibility = 'all' | 'public' | 'private';
 
