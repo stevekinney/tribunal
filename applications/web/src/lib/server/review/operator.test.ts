@@ -373,6 +373,74 @@ describe('review operator server helpers', () => {
     expect(settings?.watched).toBe(false);
   });
 
+  it('reports unwatch failure when the engine rejects policy cancellation', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(repositoryReviewSettings).values({
+      userId: owner.id,
+      repositoryId: 9001,
+      watched: true,
+    });
+    await insertReviewRun({
+      id: 'run_rejected_cancellation',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 7,
+      headSha: 'active-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json(
+        { cancelled: 0, failed: 1, errors: ['review:pr:9001:7: ownership mismatch'] },
+        { status: 502 },
+      ),
+    );
+
+    const result = await withTestDatabase(() => setRepositoryWatched(owner.id, 9001, false));
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+    });
+  });
+
+  it('reports settings-save failure when unwatch cancellation is rejected', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_rejected_settings_cancellation',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 7,
+      headSha: 'active-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json(
+        { cancelled: 0, failed: 1, errors: ['review:pr:9001:7: ownership mismatch'] },
+        { status: 502 },
+      ),
+    );
+
+    const result = await withTestDatabase(() =>
+      saveRepositoryWatchSettings(owner.id, {
+        repositoryId: 9001,
+        watched: false,
+        ignoreGlobs: [],
+        agentIds: [],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+    });
+  });
+
   it('kicks the review engine when repository assignment changes can make waiting intents eligible', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
