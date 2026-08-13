@@ -9,6 +9,7 @@ import {
   githubInstallation,
   oauthConnection,
   pullRequestState,
+  pullRequestActionItem,
   repository,
   repositoryEventListener,
   repositoryReviewSettings,
@@ -311,6 +312,38 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
       .where(eq(pullRequestState.id, state.id));
 
     expect(updated.isDraft).toBe(true);
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
+  });
+
+  it('bumps pullRequestActionItem.updatedAt on update', async () => {
+    const factories = createFactories(testDatabase.db);
+    const repo = await factories.repository.create();
+    const [state] = await testDatabase.db
+      .insert(pullRequestState)
+      .values({ repositoryId: repo.id, prNumber: 2 })
+      .returning();
+
+    const [item] = await testDatabase.db
+      .insert(pullRequestActionItem)
+      .values({
+        pullRequestStateId: state.id,
+        stableKey: 'ci-check-lint',
+        subject: 'Fix lint failure',
+        updatedAt: distantPast,
+      })
+      .returning();
+
+    await testDatabase.db
+      .update(pullRequestActionItem)
+      .set({ status: 'done' })
+      .where(eq(pullRequestActionItem.id, item.id));
+
+    const [updated] = await testDatabase.db
+      .select()
+      .from(pullRequestActionItem)
+      .where(eq(pullRequestActionItem.id, item.id));
+
+    expect(updated.status).toBe('done');
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 

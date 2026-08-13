@@ -1,0 +1,1 @@
+ALTER TABLE "pull_request_action_item" ALTER COLUMN "subject" DROP NOT NULL;

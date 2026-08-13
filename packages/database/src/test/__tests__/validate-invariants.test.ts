@@ -219,6 +219,20 @@ describe('validate-invariants', () => {
       expect(check.validate(rows)).toBe(true);
     });
 
+    it('fails when pull_request_action_item has timestamp without timezone', () => {
+      const rows = createMockTimestampRows([
+        { table: 'pull_request_action_item', column: 'created_at' },
+      ]);
+      expect(check.validate(rows)).toBe(false);
+    });
+
+    it('fails when pull_request_action_item_source has timestamp without timezone', () => {
+      const rows = createMockTimestampRows([
+        { table: 'pull_request_action_item_source', column: 'created_at' },
+      ]);
+      expect(check.validate(rows)).toBe(false);
+    });
+
     it('fails when github_webhook_delivery has timestamp without timezone', () => {
       const rows = createMockTimestampRows([
         { table: 'github_webhook_delivery', column: 'delivered_at' },
@@ -235,8 +249,8 @@ describe('validate-invariants', () => {
 
     it('fails when multiple newer tables have violations', () => {
       const rows = createMockTimestampRows([
+        { table: 'pull_request_action_item', column: 'created_at' },
         { table: 'github_webhook_delivery', column: 'delivered_at' },
-        { table: 'linear_webhook_delivery', column: 'delivered_at' },
         { table: 'session', column: 'created_at' }, // Legacy: not counted
       ]);
       expect(check.validate(rows)).toBe(false);
