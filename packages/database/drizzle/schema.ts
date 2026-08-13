@@ -259,9 +259,6 @@ export const githubWebhookDelivery = pgTable(
     }),
     deliveryId: text('delivery_id').notNull(),
     eventType: text('event_type').notNull(),
-    processedAt: timestamp('processed_at', { mode: 'string' }).defaultNow().notNull(),
-    // You can use { mode: "bigint" } if numbers are exceeding js number limitations
-    installationId: bigint('installation_id', { mode: 'number' }),
   },
   (table) => [
     uniqueIndex('github_webhook_delivery_unique').using(
@@ -562,8 +559,6 @@ export const webhookEvent = pgTable(
     repositoryId: bigint('repository_id', { mode: 'number' }).notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     installationId: bigint('installation_id', { mode: 'number' }),
-    // You can use { mode: "bigint" } if numbers are exceeding js number limitations
-    senderId: bigint('sender_id', { mode: 'number' }),
     senderLogin: text('sender_login'),
     prNumber: integer('pr_number'),
     issueNumber: integer('issue_number'),
@@ -571,17 +566,11 @@ export const webhookEvent = pgTable(
     commitSha: text('commit_sha'),
     githubCreatedAt: timestamp('github_created_at', { mode: 'string' }),
     receivedAt: timestamp('received_at', { mode: 'string' }).defaultNow().notNull(),
-    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
   },
   (table) => [
-    index('webhook_event_repository_created_idx').using(
-      'btree',
-      table.repositoryId.asc().nullsLast().op('int8_ops'),
-      table.createdAt.asc().nullsLast().op('int8_ops'),
-    ),
     index('webhook_event_repository_received_idx').using(
       'btree',
-      table.repositoryId.asc().nullsLast().op('timestamp_ops'),
+      table.repositoryId.asc().nullsLast().op('int8_ops'),
       table.receivedAt.asc().nullsLast().op('timestamp_ops'),
     ),
     index('webhook_event_repository_type_idx').using(

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { createTableRelationsHelpers, getTableName, is, isTable, Relations } from 'drizzle-orm';
 import * as schema from '../index';
@@ -71,6 +72,19 @@ describe('schema table configuration', () => {
       'github_created_at',
       'received_at',
     ]);
+  });
+
+  it('uses type-correct operator classes for the introspected webhook received index', () => {
+    const introspectedSchema = readFileSync(
+      new URL('../../../drizzle/schema.ts', import.meta.url),
+      'utf8',
+    );
+    const receivedIndex = introspectedSchema.match(
+      /index\('webhook_event_repository_received_idx'\)[\s\S]*?\n {4}\),/,
+    )?.[0];
+
+    expect(receivedIndex).toContain("table.repositoryId.asc().nullsLast().op('int8_ops')");
+    expect(receivedIndex).toContain("table.receivedAt.asc().nullsLast().op('timestamp_ops')");
   });
 
   describe.each(tables.map((table) => [getTableName(table), table] as const))(
