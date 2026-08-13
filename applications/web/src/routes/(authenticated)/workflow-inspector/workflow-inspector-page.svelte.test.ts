@@ -135,7 +135,7 @@ describe('/workflow-inspector page', () => {
     await expect.element(page.getByText('quota_blocked')).toBeInTheDocument();
     await expect.element(page.getByText('Active signals')).toBeInTheDocument();
     await expect.element(page.getByText('Failed or stopped')).toBeInTheDocument();
-    const metadataList = document.querySelector('.cinder-description-list');
+    const metadataList = document.querySelector('dl');
     expect(metadataList).not.toBeNull();
     const metadataText = metadataList?.textContent ?? '';
     expect(metadataText).toContain('Active signals');

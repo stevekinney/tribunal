@@ -336,17 +336,14 @@ describe('/repositories page', () => {
     // name) to resolve before asserting on the Stat typography. A text
     // match on "Repositories" would be satisfied by the page's `<h1>`
     // immediately, without ever waiting on the resolved summary.
-    await expect
-      .element(page.getByRole('group', { name: 'Dashboard summary' }))
-      .toBeInTheDocument();
+    const summary = page.getByRole('group', { name: 'Dashboard summary' });
+    await expect.element(summary).toBeInTheDocument();
 
-    const label = document.querySelector('.cinder-statistic__label');
-    const value = document.querySelector('.cinder-statistic__value');
-    expect(label).not.toBeNull();
-    expect(value).not.toBeNull();
-    const labelFontSize = getComputedStyle(label as Element).fontSize;
-    const valueFontSize = getComputedStyle(value as Element).fontSize;
-    const valueFontWeight = getComputedStyle(value as Element).fontWeight;
+    const label = summary.getByText('Repositories', { exact: true }).element();
+    const value = summary.getByText('1', { exact: true }).element();
+    const labelFontSize = getComputedStyle(label).fontSize;
+    const valueFontSize = getComputedStyle(value).fontSize;
+    const valueFontWeight = getComputedStyle(value).fontWeight;
 
     // Unstyled (bug) text runs would inherit identical, plain body typography.
     // A landed stat.css gives the label a small muted size and the value a

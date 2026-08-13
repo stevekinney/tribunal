@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
+// Direct route rendering skips the root layout's public Cinder base stylesheet,
+// which is required to observe the visually hidden label behavior.
+import '@lostgradient/cinder/styles';
 import SettingsPage from './+page.svelte';
 import type { PageProps } from './$types';
 
@@ -48,26 +51,27 @@ describe('/settings page — default model', () => {
     render(SettingsPage, { data: baseData, form: null, params: {} });
 
     // The card title stays the single visible "Default model" heading.
-    await expect
-      .element(page.getByRole('heading', { name: 'Default model', level: 2 }))
-      .toBeVisible();
+    const defaultModelHeadings = page
+      .getByRole('heading', { name: 'Default model', level: 2 })
+      .all();
+    expect(defaultModelHeadings).toHaveLength(1);
+    await expect.element(defaultModelHeadings[0]).toBeVisible();
 
     // The select keeps its accessible name via a visually hidden label,
     // rather than a second on-screen "Default model" heading.
     const select = page.getByRole('combobox', { name: 'Default model' }).element();
-    expect(select.tagName).toBe('SELECT');
+    expect(select).toBeInstanceOf(HTMLSelectElement);
 
-    const selectLabel = document.querySelector('.cinder-select-field__label');
-    expect(selectLabel).not.toBeNull();
-    expect(selectLabel).toHaveClass('cinder-sr-only');
+    const associatedLabel = (select as HTMLSelectElement).labels?.[0];
+    if (!associatedLabel) {
+      throw new Error('Expected the Default model select to have an associated label.');
+    }
 
-    const visibleDefaultModelText = [...document.querySelectorAll('body *')].filter(
-      (element) =>
-        element.textContent?.trim() === 'Default model' &&
-        !element.classList.contains('cinder-sr-only') &&
-        element.children.length === 0,
-    );
-    expect(visibleDefaultModelText).toHaveLength(1);
+    const labelStyle = getComputedStyle(associatedLabel);
+    expect(labelStyle.position).toBe('absolute');
+    expect(labelStyle.width).toBe('1px');
+    expect(labelStyle.height).toBe('1px');
+    expect(labelStyle.overflow).toBe('hidden');
   });
 });
 

@@ -250,15 +250,16 @@ describe('(authenticated) layout', () => {
 
     render(AuthenticatedLayout, { data: baseData, children: childrenSnippet, params: {} });
 
-    const desktopBrand = document.querySelector('.desktop-sidebar-shell > .desktop-brand-link');
+    const desktopBrand = browserPage.getByRole('link', { name: 'Tribunal' }).element();
+    const sidebar = document.getElementById('app-sidebar');
 
-    if (!desktopBrand) {
-      throw new Error('Expected desktop shell brand link.');
+    if (!sidebar) {
+      throw new Error('Expected the app sidebar.');
     }
 
     expect(desktopBrand.getAttribute('href')).toBe('/repositories');
     expect(desktopBrand.textContent?.trim()).toBe('Tribunal');
-    expect(desktopBrand.closest('.cinder-sidebar')).toBeNull();
+    expect(sidebar.contains(desktopBrand)).toBe(false);
     await expect.element(browserPage.elementLocator(desktopBrand)).toBeVisible();
   });
 
