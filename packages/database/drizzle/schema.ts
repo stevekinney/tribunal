@@ -4482,10 +4482,6 @@ export const pullRequestActionItemSource = pgTable(
     actionItemId: integer('action_item_id').notNull(),
     sourceType: actionItemSourceType('source_type').notNull(),
     sourceIdentifier: text('source_identifier').notNull(),
-    sourceUrl: text('source_url'),
-    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
   },
   (table) => [
     uniqueIndex('pull_request_action_item_source_dedup_idx').using(
@@ -4630,15 +4626,6 @@ export const pullRequestActionItem = pgTable(
     }),
     pullRequestStateId: integer('pull_request_state_id').notNull(),
     stableKey: text('stable_key').notNull(),
-    subject: text(),
-    description: text(),
-    status: actionItemStatus().default('pending').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
     firstSeenHeadSha: text('first_seen_head_sha'),
   },
   (table) => [
@@ -4646,10 +4633,6 @@ export const pullRequestActionItem = pgTable(
       'btree',
       table.pullRequestStateId.asc().nullsLast().op('int4_ops'),
       table.stableKey.asc().nullsLast().op('int4_ops'),
-    ),
-    index('pull_request_action_item_status_idx').using(
-      'btree',
-      table.status.asc().nullsLast().op('enum_ops'),
     ),
     foreignKey({
       columns: [table.pullRequestStateId],

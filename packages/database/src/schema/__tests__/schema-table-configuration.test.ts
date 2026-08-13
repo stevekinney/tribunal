@@ -26,13 +26,26 @@ describe('schema table configuration', () => {
     expect(tableNames).not.toContain('pull_request_action_item_dependency');
   });
 
-  it('keeps the unused subject column nullable during writer-removal deployment', () => {
-    const subjectColumn = getTableConfig(schema.pullRequestActionItem).columns.find(
-      (column) => column.name === 'subject',
+  it('exposes only retained pull request action item columns', () => {
+    const actionItemColumns = getTableConfig(schema.pullRequestActionItem).columns.map(
+      (column) => column.name,
+    );
+    const actionItemSourceColumns = getTableConfig(schema.pullRequestActionItemSource).columns.map(
+      (column) => column.name,
     );
 
-    expect(subjectColumn).toBeDefined();
-    expect(subjectColumn?.notNull).toBe(false);
+    expect(actionItemColumns).toEqual([
+      'id',
+      'pull_request_state_id',
+      'stable_key',
+      'first_seen_head_sha',
+    ]);
+    expect(actionItemSourceColumns).toEqual([
+      'id',
+      'action_item_id',
+      'source_type',
+      'source_identifier',
+    ]);
   });
 
   describe.each(tables.map((table) => [getTableName(table), table] as const))(

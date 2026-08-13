@@ -1,5 +1,5 @@
-import { index, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
-import { actionItemSourceTypeEnum, actionItemStatusEnum } from './enums';
+import { integer, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
+import { actionItemSourceTypeEnum } from './enums';
 import { pullRequestState } from './pull-request-state';
 
 // ============================================================================
@@ -13,8 +13,7 @@ import { pullRequestState } from './pull-request-state';
  * `review-comment:{threadId}:{commentId}`, `ci-check-{name}`) so repeated
  * analysis cycles reconcile against the same row instead of creating duplicates.
  * `firstSeenHeadSha` is set once and never overwritten so "done since first
- * seen" can be computed. Unread payload fields remain temporarily while the
- * writer removal is deployed before their follow-up schema removal.
+ * seen" can be computed.
  */
 export const pullRequestActionItem = pgTable(
   'pull_request_action_item',
@@ -24,15 +23,7 @@ export const pullRequestActionItem = pgTable(
       .notNull()
       .references(() => pullRequestState.id, { onDelete: 'cascade' }),
     stableKey: text('stable_key').notNull(),
-    subject: text('subject'),
-    description: text('description'),
-    status: actionItemStatusEnum('status').notNull().default('pending'),
     firstSeenHeadSha: text('first_seen_head_sha'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true })
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
   },
   (table) => [
     // Reconciliation key: one item per (PR state, stable key).
@@ -40,7 +31,6 @@ export const pullRequestActionItem = pgTable(
       table.pullRequestStateId,
       table.stableKey,
     ),
-    index('pull_request_action_item_status_idx').on(table.status),
   ],
 );
 
@@ -58,8 +48,6 @@ export const pullRequestActionItemSource = pgTable(
       .references(() => pullRequestActionItem.id, { onDelete: 'cascade' }),
     sourceType: actionItemSourceTypeEnum('source_type').notNull(),
     sourceIdentifier: text('source_identifier').notNull(),
-    sourceUrl: text('source_url'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     // The composite unique index leads with actionItemId, so it also satisfies
