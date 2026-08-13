@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -414,7 +414,10 @@ async function cancelActiveReviewWorkflows(
       .where(
         and(
           eq(tribunalRun.userId, userId),
-          inArray(tribunalRun.status, ['queued', 'running']),
+          or(
+            inArray(tribunalRun.status, ['queued', 'running']),
+            and(eq(tribunalRun.status, 'cancelled'), isNotNull(tribunalRun.error)),
+          ),
           repositoryRunFilter,
         ),
       ),

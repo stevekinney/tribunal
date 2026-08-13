@@ -113,6 +113,7 @@ describe('installation-lifecycle', () => {
         workspaceId: owner.id,
         repositoryId: repository.id,
         phase: 'executing',
+        triggeredByUserId: owner.id,
       });
 
       await handleInstallationDeleted(context, installation.installationId);
@@ -152,6 +153,7 @@ describe('installation-lifecycle', () => {
         workspaceId: owner.id,
         repositoryId: repository.id,
         phase: 'executing',
+        triggeredByUserId: owner.id,
       });
 
       await handleRepositoriesRemoved(context, installation.installationId, [repository.id]);

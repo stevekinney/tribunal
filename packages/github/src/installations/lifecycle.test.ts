@@ -84,6 +84,7 @@ describe('handleInstallationDeleted', () => {
     const repository = await factories.repository.create({ installationId: 7001 });
     await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'executing',
+      triggeredByUserId: owner.id,
     });
 
     const cancel = vi.fn().mockResolvedValue(undefined);
@@ -228,7 +229,10 @@ describe('handleRepositoriesRemoved', () => {
       installationId: installation.installationId,
       repositoryId: repository.id,
     });
-    await factories.workflowRun.createForRepository(owner.id, repository.id, { phase: 'pending' });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'pending',
+      triggeredByUserId: owner.id,
+    });
     const cancel = vi.fn().mockResolvedValue(undefined);
     const context = createContext({
       resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
@@ -263,6 +267,7 @@ describe('handleRepositoriesRemoved', () => {
     });
     await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'executing',
+      triggeredByUserId: owner.id,
     });
     const context = createContext({
       cancelWorkflowsById: vi.fn().mockResolvedValue({
@@ -315,6 +320,7 @@ describe('cancelWorkflowsForRepositories', () => {
     const repository = await factories.repository.create();
     await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'cloning',
+      triggeredByUserId: owner.id,
     });
     await createActiveReview(owner.id, repository.id, 42);
     const cancel = vi.fn().mockResolvedValue(undefined);
@@ -338,9 +344,13 @@ describe('cancelWorkflowsForRepositories', () => {
   it('uses the remote engine cancellation port when production web owns no local Weft client', async () => {
     const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await factories.workflowRun.createForRepository(owner.id, repository.id, { phase: 'cloning' });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'cloning',
+      triggeredByUserId: owner.id,
+    });
     await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'executing',
+      triggeredByUserId: owner.id,
     });
     await createActiveReview(owner.id, repository.id, 42);
     const cancelWorkflowsById = vi.fn().mockResolvedValue({
@@ -367,6 +377,48 @@ describe('cancelWorkflowsForRepositories', () => {
     ]);
     expect(cancelWorkflowsById).toHaveBeenCalledWith(
       ['review:pr:' + repository.id + ':42'],
+      'repository_removed',
+      owner.id,
+    );
+  });
+
+  it('discovers an idle open-pull-request supervisor from its retained sandbox', async () => {
+    const owner = await factories.user.create();
+    const repository = await factories.repository.create();
+    const runId = `review:${owner.id}:${repository.id}:45`;
+    await testDatabase.db.insert(tribunalRun).values({
+      id: runId,
+      userId: owner.id,
+      repositoryId: repository.id,
+      runKind: 'pull_request_review',
+      status: 'posted',
+      workflowId: `review:pr:${repository.id}:45`,
+      sandboxId: 'sandbox-idle',
+    });
+    await testDatabase.db.insert(pullRequestReviewRun).values({
+      runId,
+      userId: owner.id,
+      repositoryId: repository.id,
+      prNumber: 45,
+      headSha: 'abc123',
+      trigger: 'opened',
+      checkRunId: 9001,
+    });
+    const cancelWorkflowsById = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+
+    await cancelWorkflowsForRepositories(
+      createContext({ cancelWorkflowsById }),
+      [repository.id],
+      'repository_removed',
+      owner.id,
+    );
+
+    expect(cancelWorkflowsById).toHaveBeenCalledWith(
+      [`review:pr:${repository.id}:45`],
       'repository_removed',
       owner.id,
     );
@@ -400,11 +452,12 @@ describe('cancelWorkflowsForRepositories', () => {
     ]);
     const ownerWorkflow = await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'executing',
+      triggeredByUserId: owner.id,
     });
     const otherWorkflow = await factories.workflowRun.createForRepository(
       otherOwner.id,
       repository.id,
-      { phase: 'executing' },
+      { phase: 'executing', triggeredByUserId: otherOwner.id },
     );
     const cancelWorkflowsById = vi.fn().mockImplementation(async (workflowIds: string[]) => ({
       cancelled: workflowIds.length,
@@ -424,6 +477,29 @@ describe('cancelWorkflowsForRepositories', () => {
     const rows = await testDatabase.db.select().from(workflowRun);
     expect(rows.find((run) => run.id === ownerWorkflow.id)?.phase).toBe('cancelled');
     expect(rows.find((run) => run.id === otherWorkflow.id)?.phase).toBe('executing');
+  });
+
+  it('scopes workflow cancellation by triggering user rather than workspace id', async () => {
+    const owner = await factories.user.create();
+    const repository = await factories.repository.create();
+    const ownedWorkflow = await factories.workflowRun.createForRepository(9001, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
+    const cancelWorkflowsById = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+
+    await cancelWorkflowsForRepositories(
+      createContext({ cancelWorkflowsById }),
+      [repository.id],
+      'repository_removed',
+      owner.id,
+    );
+
+    expect(cancelWorkflowsById).toHaveBeenCalledWith([ownedWorkflow.workflowId]);
   });
 
   it('does not report success when remote workflow cancellation delivery fails', async () => {

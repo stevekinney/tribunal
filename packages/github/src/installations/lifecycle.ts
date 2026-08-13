@@ -6,7 +6,7 @@
  */
 
 import { isWeftFault } from '@lostgradient/weft';
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import {
   isWorkflowCancellationReason,
   type GithubServiceContext,
@@ -303,7 +303,7 @@ export async function cancelWorkflowsForRepositories(
       and(
         inArray(workflowRun.repositoryId, repositoryIds),
         inArray(workflowRun.phase, CANCELLABLE_PHASES),
-        ...(userId === undefined ? [] : [eq(workflowRun.workspaceId, userId)]),
+        ...(userId === undefined ? [] : [eq(workflowRun.triggeredByUserId, userId)]),
       ),
     );
 
@@ -325,7 +325,11 @@ export async function cancelWorkflowsForRepositories(
             and(
               eq(tribunalRun.userId, userId),
               inArray(tribunalRun.repositoryId, repositoryIds),
-              inArray(tribunalRun.status, ['queued', 'running']),
+              or(
+                inArray(tribunalRun.status, ['queued', 'running']),
+                and(eq(tribunalRun.status, 'cancelled'), isNotNull(tribunalRun.error)),
+                and(isNotNull(tribunalRun.sandboxId), ne(tribunalRun.sandboxId, '')),
+              ),
             ),
           );
   const claimedIntents =

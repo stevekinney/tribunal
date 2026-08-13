@@ -29,6 +29,7 @@ import {
   type ReviewWorkflowStatePort,
   type DurableReviewWorkflowState,
 } from './review-workflow';
+import { createPullRequestWorkflowId } from './identifiers';
 
 /**
  * Shared fixtures and fakes for `review-workflow.test.ts` and
@@ -252,11 +253,16 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   private clearedClaimSinceLastClaim = false;
   private ownershipCheckFailureCountdown: number | undefined;
   private claimRefreshFailureCountdown: number | undefined;
+  private readonly stopInputs = new Map<string, PullRequestReviewInput>();
 
   constructor(private readonly options: FakePortOptions = {}) {}
 
   seedReviewRun(run: ReviewRunRecord): void {
     this.reviewRuns.push(run);
+  }
+
+  seedStopInput(input: PullRequestReviewInput): void {
+    this.stopInputs.set(createPullRequestWorkflowId(input), input);
   }
 
   reportAlreadyPostedOnNextClaim(commentsPosted: number): void {
@@ -292,17 +298,24 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
       reviewRuns: this.reviewRuns.filter(
         (run) =>
           run.repositoryId === input.repositoryId &&
-          run.pullRequestNumber === input.pullRequestNumber,
+          run.pullRequestNumber === input.pullRequestNumber &&
+          run.userId === input.userId,
       ),
       agentRuns: this.agentRuns.filter((agentRun) =>
         this.reviewRuns.some(
           (reviewRun) =>
             reviewRun.id === agentRun.reviewRunId &&
             reviewRun.repositoryId === input.repositoryId &&
-            reviewRun.pullRequestNumber === input.pullRequestNumber,
+            reviewRun.pullRequestNumber === input.pullRequestNumber &&
+            reviewRun.userId === input.userId,
         ),
       ),
     };
+  }
+
+  async loadPullRequestInputForStop(workflowId: string, userId: number) {
+    const input = this.stopInputs.get(workflowId);
+    return input?.userId === userId ? input : undefined;
   }
 
   async upsertReviewRun(run: ReviewRunRecord): Promise<void> {

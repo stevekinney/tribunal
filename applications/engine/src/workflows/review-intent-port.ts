@@ -1,5 +1,6 @@
 import type { Database } from '@tribunal/database';
 import { and, asc, eq, isNull, sql } from '@tribunal/database/operators';
+import { isNotNull } from 'drizzle-orm';
 import {
   agent,
   githubInstallation,
@@ -142,6 +143,7 @@ export function createDatabaseReviewIntentPort(
             eq(reviewIntent.userId, userId),
             eq(reviewIntent.repositoryId, repositoryId),
             eq(reviewIntent.prNumber, pullRequestNumber),
+            isNotNull(reviewIntent.claimedAt),
             isNull(reviewIntent.processedAt),
           ),
         )

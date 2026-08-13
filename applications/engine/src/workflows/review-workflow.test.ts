@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { verifyCapabilityToken } from '@tribunal/review-core/capability-token';
 import type { PullRequestReviewInput } from './review-workflow';
 import {
@@ -2322,10 +2322,12 @@ describe('ReviewWorkflowEngine', () => {
     const engine = createEngine(ports);
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForRunningAgent();
-    const otherUserReview = engine.startPullRequestReview({
-      ...baseInput,
-      userId: baseInput.userId + 1,
-    });
+    const otherUserReview = expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        userId: baseInput.userId + 1,
+      }),
+    ).rejects.toThrow('Another review is already running for this pull request.');
     await Promise.resolve();
 
     await expect(
@@ -2341,7 +2343,7 @@ describe('ReviewWorkflowEngine', () => {
     await engine.stopWorkflow('review:pr:42:7', 'repository_unwatched', baseInput.userId);
     ports.sandbox.resolveHeldAgents();
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
-    await expect(otherUserReview).resolves.toMatchObject({ userId: baseInput.userId });
+    await otherUserReview;
   });
 
   it('terminates workflow resources and permits a retry when the stop check update fails', async () => {
@@ -2356,13 +2358,89 @@ describe('ReviewWorkflowEngine', () => {
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
     expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'cancelled',
+      sandboxId: '',
+      error: 'Review cancellation is pending external teardown.',
+    });
     expect(engine.snapshot().supervisors).toHaveLength(1);
 
     await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({ stopped: true });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({ error: undefined });
     expect(engine.snapshot().supervisors).toEqual([]);
   });
 
-  it('rejects new review intents while a user-scoped workflow stop is in progress', async () => {
+  it('hydrates persisted running work after restart before reporting a scoped stop', async () => {
+    const ports = createFakePorts();
+    ports.state.seedStopInput(baseInput);
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: baseInput.userId,
+      repositoryId: baseInput.repositoryId,
+      pullRequestNumber: baseInput.pullRequestNumber,
+      headSha: baseInput.headSha,
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    const restartedEngine = createEngine(ports);
+
+    await expect(
+      restartedEngine.stopWorkflow('review:pr:42:7', 'reviews_paused', baseInput.userId),
+    ).resolves.toEqual({ stopped: true });
+
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-existing']);
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      checkRunId: 9001,
+      patch: { status: 'completed', conclusion: 'cancelled' },
+    });
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'cancelled',
+      sandboxId: '',
+      error: undefined,
+    });
+  });
+
+  it('clears a persisted idle supervisor sandbox after lifecycle teardown', async () => {
+    const ports = createFakePorts();
+    ports.state.seedStopInput(baseInput);
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: baseInput.userId,
+      repositoryId: baseInput.repositoryId,
+      pullRequestNumber: baseInput.pullRequestNumber,
+      headSha: baseInput.headSha,
+      trigger: 'opened',
+      status: 'posted',
+      sandboxId: 'sandbox-idle',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0.01,
+      startedAt: new Date('2026-06-17T11:58:00.000Z'),
+      finishedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    const restartedEngine = createEngine(ports);
+
+    await expect(
+      restartedEngine.stopWorkflow('review:pr:42:7', 'repository_removed', baseInput.userId),
+    ).resolves.toEqual({ stopped: true });
+
+    expect(ports.sandbox.terminateCalls).toEqual(['sandbox-idle']);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      status: 'posted',
+      sandboxId: '',
+    });
+  });
+
+  it('keeps another user outside a user-scoped stop without overlapping the active review', async () => {
     const ports = createFakePorts({ holdAgentRuns: true });
     const engine = createEngine(ports);
     const runningReview = engine.startPullRequestReview(baseInput);
@@ -2373,11 +2451,61 @@ describe('ReviewWorkflowEngine', () => {
       'repository_unwatched',
       baseInput.userId,
     );
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Cannot start a review while the pull request supervisor is stopping.',
+    );
     await expect(
       engine.startPullRequestReview({ ...baseInput, userId: baseInput.userId + 1 }),
-    ).rejects.toThrow('Cannot start a review while the pull request supervisor is stopping.');
+    ).rejects.toThrow('Another review is already running for this pull request.');
 
     ports.sandbox.resolveHeldAgents();
+    await expect(stopResult).resolves.toEqual({ stopped: true });
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+  });
+
+  it('rejects a persisted overlapping run that has no in-memory execution promise', async () => {
+    const ports = createFakePorts();
+    ports.state.seedReviewRun({
+      id: 'run:42:7:aaa111:opened',
+      idempotencyKey: 'review:run:42:7:aaa111:opened',
+      workflowId: 'review:pr:42:7',
+      userId: baseInput.userId,
+      repositoryId: baseInput.repositoryId,
+      pullRequestNumber: baseInput.pullRequestNumber,
+      headSha: baseInput.headSha,
+      trigger: 'opened',
+      status: 'running',
+      sandboxId: 'sandbox-existing',
+      checkRunId: 9001,
+      commentsPosted: 0,
+      costEstimateUsd: 0,
+      startedAt: new Date('2026-06-17T11:59:00.000Z'),
+    });
+    const restartedEngine = createEngine(ports);
+
+    await expect(
+      restartedEngine.startPullRequestReview({ ...baseInput, trigger: 'manual' }),
+    ).rejects.toThrow('Another review is already running for this pull request.');
+    expect(ports.sandbox.runAgentCalls).toEqual([]);
+  });
+
+  it('rejects a serialized same-user review when policy cancellation wins the wait', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+    const patchCount = ports.github.checkRunPatches.length;
+    const waitingReview = expect(
+      engine.startPullRequestReview({ ...baseInput, trigger: 'manual' }),
+    ).rejects.toThrow('Cannot start a review while the pull request supervisor is stopping.');
+    await vi.waitFor(() => {
+      expect(ports.github.checkRunPatches.length).toBeGreaterThan(patchCount);
+    });
+
+    const stopResult = engine.stopWorkflow('review:pr:42:7', 'reviews_paused', baseInput.userId);
+    ports.sandbox.resolveHeldAgents();
+
+    await waitingReview;
     await expect(stopResult).resolves.toEqual({ stopped: true });
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
   });

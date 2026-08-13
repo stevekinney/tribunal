@@ -93,6 +93,7 @@ describe('review operator server helpers', () => {
     trigger: string;
     status?: string;
     startedAt?: Date;
+    error?: string;
   }) {
     await testDb.db.insert(tribunalRun).values({
       id: input.id,
@@ -101,6 +102,7 @@ describe('review operator server helpers', () => {
       runKind: 'pull_request_review',
       status: input.status ?? 'queued',
       startedAt: input.startedAt,
+      error: input.error,
     });
     await testDb.db.insert(pullRequestReviewRun).values({
       runId: input.id,
@@ -1789,6 +1791,16 @@ describe('review operator server helpers', () => {
       trigger: 'opened',
       status: 'posted',
     });
+    await insertReviewRun({
+      id: 'run_cancellation_pending',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 11,
+      headSha: 'cancelled-sha',
+      trigger: 'opened',
+      status: 'cancelled',
+      error: 'Review cancellation is pending external teardown.',
+    });
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
     mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
     const fetchMock = vi
@@ -1804,7 +1816,7 @@ describe('review operator server helpers', () => {
 
     const [, request] = fetchMock.mock.calls[0]!;
     expect(JSON.parse(String(request?.body))).toEqual({
-      workflowIds: ['review:pr:9001:7', 'review:pr:9001:9'],
+      workflowIds: ['review:pr:9001:11', 'review:pr:9001:7', 'review:pr:9001:9'],
       cancellationReason: 'reviews_paused',
       userId: owner.id,
     });

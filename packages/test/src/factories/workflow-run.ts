@@ -12,6 +12,7 @@ export type WorkflowRunFactoryInput = Partial<{
   pullRequestNumber: number | null;
   taskType: WorkflowTaskType;
   triggerSource: string;
+  triggeredByUserId: number | null;
   phase: WorkflowPhase;
   errorMessage: string | null;
   cancellationReason: string | null;
@@ -43,6 +44,7 @@ export function createWorkflowRunFactory(db: Database): WorkflowRunFactory {
           pullRequestNumber: input.pullRequestNumber ?? null,
           taskType: input.taskType ?? 'remediation',
           triggerSource: input.triggerSource ?? 'manual',
+          triggeredByUserId: input.triggeredByUserId ?? null,
           phase: input.phase ?? 'pending',
           errorMessage: input.errorMessage ?? null,
           cancellationReason: input.cancellationReason ?? null,

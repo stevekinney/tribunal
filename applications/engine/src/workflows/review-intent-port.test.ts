@@ -117,6 +117,26 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
+  it('does not consume an unclaimed intent whose queued Check Run still needs processing', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(
+      port.cancelClaimedReviewIntents(
+        user.id,
+        repository.id,
+        7,
+        new Date('2026-06-17T12:01:00.000Z'),
+      ),
+    ).resolves.toEqual([]);
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({ claimedAt: null, processedAt: null, lastError: null });
+  });
+
   it("carries the user's stored default_model onto the claimed review workflow input", async () => {
     const { user, repository } = await createReviewIntentFixture({ defaultModel: 'opus' });
     await testDatabase.db.insert(agent).values({
