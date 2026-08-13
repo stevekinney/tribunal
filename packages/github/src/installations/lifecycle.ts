@@ -39,8 +39,8 @@ function isWorkflowNotFound(error: unknown): boolean {
 async function cancelWeftWorkflowsById(
   context: GithubServiceContext,
   workflowIds: string[],
-  reason?: string,
-  userId?: number,
+  reason: string | undefined,
+  userId: number,
 ): Promise<WorkflowCancellationResult> {
   if (workflowIds.length === 0) {
     return { cancelled: 0, failed: 0, errors: [] };
@@ -52,36 +52,13 @@ async function cancelWeftWorkflowsById(
       userId,
     );
   }
-  if (userId !== undefined) {
-    return {
-      cancelled: 0,
-      failed: workflowIds.length,
-      errors: workflowIds.map(
-        (workflowId) => `${workflowId}: User-scoped workflow cancellation is not configured.`,
-      ),
-    };
-  }
-  const client = await context.resolveWeftClient?.().catch(() => null);
-  if (!client) {
-    return { cancelled: 0, failed: 0, errors: [] };
-  }
-
-  let cancelled = 0;
-  let failed = 0;
-  const errors: string[] = [];
-  for (const workflowId of workflowIds) {
-    try {
-      await client.cancel(workflowId);
-      cancelled++;
-    } catch (error) {
-      if (isWorkflowNotFound(error)) {
-        continue; // nothing running under this id — not an error
-      }
-      failed++;
-      errors.push(`${workflowId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return { cancelled, failed, errors };
+  return {
+    cancelled: 0,
+    failed: workflowIds.length,
+    errors: workflowIds.map(
+      (workflowId) => `${workflowId}: User-scoped workflow cancellation is not configured.`,
+    ),
+  };
 }
 
 // =============================================================================
@@ -372,12 +349,10 @@ export async function cancelWorkflowsForRepositories(
       ),
     ),
   ];
-  const orchestratorResult = await cancelWeftWorkflowsById(
-    context,
-    orchestratorIds,
-    reason,
-    userId,
-  );
+  const orchestratorResult =
+    userId === undefined
+      ? { cancelled: 0, failed: 0, errors: [] }
+      : await cancelWeftWorkflowsById(context, orchestratorIds, reason, userId);
 
   return {
     cancelled: runResult.cancelled + orchestratorResult.cancelled,
