@@ -570,7 +570,7 @@ export const webhookEvent = pgTable(
   (table) => [
     index('webhook_event_repository_received_idx').using(
       'btree',
-      table.repositoryId.asc().nullsLast().op('timestamp_ops'),
+      table.repositoryId.asc().nullsLast().op('int8_ops'),
       table.receivedAt.asc().nullsLast().op('timestamp_ops'),
     ),
     index('webhook_event_repository_type_idx').using(
