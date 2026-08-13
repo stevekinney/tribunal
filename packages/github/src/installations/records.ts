@@ -27,6 +27,16 @@ export interface UpsertInstallationData {
   repositorySelection: RepositorySelection;
   /** Tribunal user the installation is bound to. Omitted for webhook stub creates. */
   userId?: number;
+  /** Keep existing account fields on conflict when a newer lifecycle event may have repaired them. */
+  preserveExistingAccountMetadata?: boolean;
+}
+
+export interface UpdateInstallationAccountMetadataData {
+  installationId: number;
+  accountLogin: string;
+  accountType: GitHubAccountType;
+  accountId: number;
+  accountAvatarUrl?: string | null;
 }
 
 /**
@@ -57,9 +67,14 @@ export async function upsertInstallation(
     .onConflictDoUpdate({
       target: githubInstallation.installationId,
       set: {
-        accountLogin: data.accountLogin,
-        accountType,
-        accountAvatarUrl: data.accountAvatarUrl,
+        ...(data.preserveExistingAccountMetadata
+          ? {}
+          : {
+              accountLogin: data.accountLogin,
+              accountType,
+              accountId: data.accountId,
+              accountAvatarUrl: data.accountAvatarUrl,
+            }),
         repositorySelection: data.repositorySelection,
         // Only overwrite the binding when an owner is supplied; webhook
         // stub upserts (no userId) must not clear an existing binding.
@@ -80,6 +95,33 @@ export async function getInstallationById(context: GithubServiceContext, install
     .from(githubInstallation)
     .where(eq(githubInstallation.installationId, installationId));
   return installation ?? null;
+}
+
+/**
+ * Update account metadata for an existing GitHub installation.
+ * Does not create a stub row or change local ownership/configuration fields.
+ */
+export async function updateInstallationAccountMetadata(
+  context: GithubServiceContext,
+  data: UpdateInstallationAccountMetadataData,
+): Promise<{ updated: boolean }> {
+  const accountType: GitHubAccountType = VALID_ACCOUNT_TYPES.includes(data.accountType)
+    ? data.accountType
+    : 'Organization';
+
+  const updated = await context.db
+    .update(githubInstallation)
+    .set({
+      accountLogin: data.accountLogin,
+      accountType,
+      accountId: data.accountId,
+      accountAvatarUrl: data.accountAvatarUrl ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(githubInstallation.installationId, data.installationId))
+    .returning({ id: githubInstallation.id });
+
+  return { updated: updated.length > 0 };
 }
 
 /**

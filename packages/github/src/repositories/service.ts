@@ -471,6 +471,43 @@ export async function refreshInstallationRepositories(
   };
 }
 
+/**
+ * Update repository identity after GitHub renames an installation target.
+ * Only active links owned by this installation and carrying the old owner are
+ * changed, so unrelated installations and already-reconciled repositories are
+ * left untouched.
+ */
+export async function updateInstallationRepositoryOwnerMetadata(
+  context: GithubServiceContext,
+  installationId: number,
+  previousOwner: string,
+  nextOwner: string,
+): Promise<{ updated: number }> {
+  const updated = await context.db
+    .update(repository)
+    .set({
+      owner: nextOwner,
+      uri: sql`concat('https://github.com/', cast(${nextOwner} as text), '/', ${repository.name}, '.git')`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(repository.installationId, installationId),
+        eq(repository.owner, previousOwner),
+        sql`exists (
+          select 1
+          from ${githubInstallationRepository}
+          where ${githubInstallationRepository.installationId} = ${installationId}
+            and ${githubInstallationRepository.repositoryId} = ${repository.id}
+            and ${githubInstallationRepository.isActive} = true
+        )`,
+      ),
+    )
+    .returning({ id: repository.id });
+
+  return { updated: updated.length };
+}
+
 async function upsertRepositoryBatch(
   context: GithubServiceContext,
   installationId: number,

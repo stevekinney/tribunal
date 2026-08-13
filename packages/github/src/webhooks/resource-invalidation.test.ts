@@ -461,6 +461,21 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
   });
 
   // --------------------------------------------------------------------------
+  // installation_target
+  // --------------------------------------------------------------------------
+  describe('installation_target events', () => {
+    it('invalidates cached user-installations entries after account metadata changes', async () => {
+      const data = makePayload({ action: 'renamed' });
+
+      await invalidateGitHubResourceCacheForEvent(context, 'installation_target', 'renamed', data);
+
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_USER_INSTALLATIONS_PATTERN,
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // repository
   // --------------------------------------------------------------------------
   describe('repository events', () => {
