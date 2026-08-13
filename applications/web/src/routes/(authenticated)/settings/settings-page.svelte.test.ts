@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
+// Direct route rendering skips the root layout's public Cinder base stylesheet,
+// which is required to observe the visually hidden label behavior.
+import '@lostgradient/cinder/styles';
 import SettingsPage from './+page.svelte';
 import type { PageProps } from './$types';
 
@@ -57,7 +60,18 @@ describe('/settings page — default model', () => {
     // The select keeps its accessible name via a visually hidden label,
     // rather than a second on-screen "Default model" heading.
     const select = page.getByRole('combobox', { name: 'Default model' }).element();
-    expect(select.tagName).toBe('SELECT');
+    expect(select).toBeInstanceOf(HTMLSelectElement);
+
+    const associatedLabel = (select as HTMLSelectElement).labels?.[0];
+    if (!associatedLabel) {
+      throw new Error('Expected the Default model select to have an associated label.');
+    }
+
+    const labelStyle = getComputedStyle(associatedLabel);
+    expect(labelStyle.position).toBe('absolute');
+    expect(labelStyle.width).toBe('1px');
+    expect(labelStyle.height).toBe('1px');
+    expect(labelStyle.overflow).toBe('hidden');
   });
 });
 

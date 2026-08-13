@@ -339,9 +339,8 @@ describe('/repositories page', () => {
     const summary = page.getByRole('group', { name: 'Dashboard summary' });
     await expect.element(summary).toBeInTheDocument();
 
-    const repositoryStatistic = summary.getByRole('group', { name: 'Repositories 1' });
-    const label = repositoryStatistic.getByText('Repositories', { exact: true }).element();
-    const value = repositoryStatistic.getByText('1', { exact: true }).element();
+    const label = summary.getByText('Repositories', { exact: true }).element();
+    const value = summary.getByText('1', { exact: true }).element();
     const labelFontSize = getComputedStyle(label).fontSize;
     const valueFontSize = getComputedStyle(value).fontSize;
     const valueFontWeight = getComputedStyle(value).fontWeight;
