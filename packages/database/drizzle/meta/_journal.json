@@ -414,6 +414,13 @@
       "when": 1786660036681,
       "tag": "0058_dry_shen",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1786662167907,
+      "tag": "0059_remove-webhook-metadata",
+      "breakpoints": true
     }
   ]
 }
