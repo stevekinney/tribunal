@@ -1233,7 +1233,7 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
   const now = new Date();
   await db
     .insert(userReviewSettings)
-    .values({ userId, dailyCostCapUsd, defaultModel, reviewsEnabled })
+    .values({ userId, dailyCostCapUsd, defaultModel, reviewsEnabled, updatedAt: now })
     .onConflictDoUpdate({
       target: userReviewSettings.userId,
       set: { dailyCostCapUsd, defaultModel, reviewsEnabled, updatedAt: now },
