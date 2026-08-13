@@ -123,7 +123,7 @@ export function createFakePorts(options: FakePortOptions = {}): FakePorts {
     sandbox: new FakeSandboxPort(options),
     cost: new FakeCostPort(options),
     intents: new FakeReviewIntentPort(options),
-    state: new FakeReviewWorkflowStatePort(),
+    state: new FakeReviewWorkflowStatePort(options),
   };
 }
 
@@ -133,6 +133,7 @@ export type FakePortOptions = {
   spendTodayEstimate?: number;
   duplicateCostRecordCalls?: boolean;
   failAgentRuns?: boolean;
+  failAgentRunPersistence?: boolean;
   failCheckRunCreation?: boolean;
   failCheckRunCreationsRemaining?: number;
   failCheckRunUpdatesRemaining?: number;
@@ -223,6 +224,8 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   private clearedClaimSinceLastClaim = false;
   private ownershipCheckFailureCountdown: number | undefined;
   private claimRefreshFailureCountdown: number | undefined;
+
+  constructor(private readonly options: FakePortOptions = {}) {}
 
   seedReviewRun(run: ReviewRunRecord): void {
     this.reviewRuns.push(run);
@@ -362,6 +365,9 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   }
 
   async upsertAgentRun(run: AgentRunRecord): Promise<void> {
+    if (this.options.failAgentRunPersistence) {
+      throw new Error('agent run persistence failed');
+    }
     const index = this.agentRuns.findIndex((existingRun) => existingRun.id === run.id);
     if (index === -1) {
       this.agentRuns.push({ ...run });

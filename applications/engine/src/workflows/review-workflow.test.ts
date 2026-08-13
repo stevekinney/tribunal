@@ -1818,6 +1818,18 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toHaveLength(0);
   });
 
+  it('releases a reservation when agent setup persistence fails', async () => {
+    const ports = createFakePorts({ failAgentRunPersistence: true });
+    const engine = createEngine(ports);
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'agent run persistence failed',
+    );
+    expect(ports.cost.releasedReservationKeys).toContain(
+      'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+    );
+  });
+
   it('does not overwrite cancellation with a denied verifier reservation result', async () => {
     const ports = createFakePorts({ holdDailyCapReservationCall: 3 });
     const engine = createEngine(ports);
