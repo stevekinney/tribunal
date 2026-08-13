@@ -139,7 +139,7 @@ export async function createEphemeralBranch(
         const cleanup = async () => {
           console.log(`Cleaning up branch: ${branchName}`);
           try {
-            await client.deleteProjectBranch(projectId, branch.id);
+            await client.deleteProjectBranch({ projectId, branchId: branch.id });
             console.log(`Branch ${branchName} deleted successfully`);
           } catch (error) {
             console.error(`Failed to delete branch ${branchName}:`, error);
@@ -163,7 +163,7 @@ export async function createEphemeralBranch(
   } catch (error) {
     // Cleanup on any error after branch creation
     try {
-      await client.deleteProjectBranch(projectId, branch.id);
+      await client.deleteProjectBranch({ projectId, branchId: branch.id });
       console.log(`Cleaned up branch ${branchName} after error`);
     } catch (cleanupError) {
       console.error(`Failed to cleanup branch ${branchName} after error:`, cleanupError);

@@ -2,7 +2,8 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type UserConfig } from 'vite';
+import type { InlineConfig } from 'vitest/node';
 import { playwright } from '@vitest/browser-playwright';
 import devtoolsJson from 'vite-plugin-devtools-json';
 import { sveltekit } from '@sveltejs/kit/vite';
@@ -32,7 +33,7 @@ const devPort = getPortWithEnvOverride('VITE_PORT', BASE_PORTS.viteDev);
 const previewPort = getPortWithEnvOverride('VITE_PREVIEW_PORT', BASE_PORTS.vitePreview);
 const vitestBrowserPort = getPortWithEnvOverride('VITEST_BROWSER_PORT', BASE_PORTS.vitestBrowser);
 
-export default defineConfig({
+const config: UserConfig & { test: InlineConfig } = {
   envDir: repositoryRoot,
   plugins: [sveltekit(), devtoolsJson()],
   server: {
@@ -127,4 +128,6 @@ export default defineConfig({
       },
     ],
   },
-});
+};
+
+export default defineConfig(config);

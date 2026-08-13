@@ -426,7 +426,8 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
     // fence can still skip a stale write if a prior run is still in flight.
     // FIX 4: only increment analysisCount on a non-error return.
     // =========================================================================
-    const finalGeneration = ++analysisGeneration;
+    analysisGeneration += 1;
+    const finalGeneration = analysisGeneration;
     ctx.log?.info('pull-request-orchestrator: running final analysis after close', {
       repositoryId,
       prNumber,

@@ -195,7 +195,7 @@
             <StatusDot
               status={data.reviewsEnabled ? 'success' : 'neutral'}
               label={data.reviewsEnabled ? 'Reviews active' : 'Reviews paused'}
-              showLabel
+              labelVisible
               size="sm"
             />
           </div>

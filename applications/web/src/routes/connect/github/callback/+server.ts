@@ -150,7 +150,7 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
       installationId: installation.id,
       accountLogin,
       accountType,
-      accountId: account?.id ?? 0,
+      accountId: Number(account?.id ?? 0),
       accountAvatarUrl: account?.avatar_url,
       repositorySelection: (installation.repository_selection ?? 'selected') as RepositorySelection,
       userId: locals.user.id,

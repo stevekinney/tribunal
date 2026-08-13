@@ -23,14 +23,14 @@
     "@tribunal/database": "workspace:*",
     "@electric-sql/pglite": "^0.3.14",
     "@oslojs/encoding": "^1.1.0",
-    "axe-core": "^4.11.0",
-    "bcryptjs": "^2.4.3",
-    "drizzle-orm": "^0.45.1"
+    "axe-core": "^4.13.0",
+    "bcryptjs": "^3.0.3",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "@tribunal/typescript": "workspace:*",
-    "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^25",
-    "vitest": "^4.0.16"
+    "@types/bcryptjs": "^3.0.0",
+    "@types/node": "^26.2.0",
+    "vitest": "4.0.16"
   }
 }

@@ -340,8 +340,8 @@ describe('/repositories page', () => {
       .element(page.getByRole('group', { name: 'Dashboard summary' }))
       .toBeInTheDocument();
 
-    const label = document.querySelector('.cinder-stat__label');
-    const value = document.querySelector('.cinder-stat__value');
+    const label = document.querySelector('.cinder-statistic__label');
+    const value = document.querySelector('.cinder-statistic__value');
     expect(label).not.toBeNull();
     expect(value).not.toBeNull();
     const labelFontSize = getComputedStyle(label as Element).fontSize;
@@ -995,7 +995,7 @@ describe('/repositories page', () => {
     const combobox = page.getByRole('combobox', { name: 'Add repository' });
     await combobox.fill('no-such-repository');
 
-    await expect.element(page.getByText('No results')).toBeInTheDocument();
+    await expect.element(page.getByRole('option', { name: 'No results' })).toBeInTheDocument();
   });
 
   it('shows a top-level alert when the page failed to load some data', async () => {

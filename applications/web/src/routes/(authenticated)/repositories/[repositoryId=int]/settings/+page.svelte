@@ -117,7 +117,7 @@
         <TagInput
           id="ignore-globs"
           name="ignoreGlobs"
-          defaultValue={data.repository.review.ignoreGlobs}
+          value={data.repository.review.ignoreGlobs}
           commitOnSubmit
           placeholder="dist/**"
           disabled={saving || unwatching}
@@ -260,7 +260,7 @@
   typeToConfirm={data.repository.name}
   typeToConfirmLabel="Type the repository name to confirm"
   confirmLabel="Stop watching"
-  onconfirm={confirmUnwatch}
+  onConfirm={confirmUnwatch}
 />
 
 <style>

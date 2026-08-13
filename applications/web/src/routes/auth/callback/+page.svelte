@@ -32,7 +32,7 @@
           hasVerifier: true,
           hasSession: Boolean(result?.data?.session),
         });
-        throw new Error(message);
+        throw new Error(message, { cause: result?.error });
       }
 
       let sessionBridgeResult: { postLoginPath?: string };
@@ -41,7 +41,7 @@
       } catch (bridgeError) {
         failureCode = 'neon_auth_session_failed';
         console.error('Tribunal Neon Auth session bridge failed', bridgeError);
-        throw new Error('Tribunal could not establish a Neon Auth session');
+        throw new Error('Tribunal could not establish a Neon Auth session', { cause: bridgeError });
       }
 
       // When the caller didn't ask for a specific destination (the default

@@ -122,7 +122,7 @@
       {/snippet}
       <div class="kill-switch-body">
         <div class="kill-switch-status">
-          <StatusDot status={reviewStatus} label={reviewLabel} showLabel />
+          <StatusDot status={reviewStatus} label={reviewLabel} labelVisible />
           {#if hasUnsavedKillSwitchChange}
             <Alert variant="warning">
               Unsaved change — save settings to {reviewsEnabled ? 'resume' : 'pause'} dispatch.
@@ -132,7 +132,7 @@
         <Toggle
           id="reviews-enabled"
           checked={reviewsEnabled}
-          onValueChange={handleReviewsToggle}
+          onValueChangeRequest={handleReviewsToggle}
           name="reviewsEnabled"
           label="Reviews enabled"
         />
@@ -145,8 +145,8 @@
       description="Once you save, this stops new run and automation dispatch across every repository. In-flight runs keep going."
       confirmLabel="Pause reviews"
       destructive
-      onconfirm={confirmPause}
-      oncancel={cancelPause}
+      onConfirm={confirmPause}
+      onCancel={cancelPause}
     />
 
     <div class="form-actions">
