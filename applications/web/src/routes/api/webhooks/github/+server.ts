@@ -170,12 +170,7 @@ export const POST: RequestHandler = async (event) => {
     (eventType === 'installation_target' && action === 'renamed');
 
   if (deliveryId && eventType) {
-    const claimed = await claimWebhookDelivery(
-      githubContext,
-      deliveryId,
-      eventType,
-      installationId,
-    );
+    const claimed = await claimWebhookDelivery(githubContext, deliveryId, eventType);
 
     if (!claimed) {
       console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
@@ -221,7 +216,7 @@ export const POST: RequestHandler = async (event) => {
       try {
         const { owner, repo } = getRepositoryIdentity(data);
         const eventFields = extractEventFields(eventType, data);
-        const sender = data.sender as { id: number; login: string } | undefined;
+        const sender = data.sender as { login: string } | undefined;
 
         storedEvent = await storeWebhookEvent(githubContext, {
           eventType,
@@ -232,7 +227,6 @@ export const POST: RequestHandler = async (event) => {
           repositoryOwner: owner ?? '',
           repositoryName: repo ?? '',
           installationId: installationId ?? null,
-          senderId: sender?.id ?? null,
           senderLogin: sender?.login ?? null,
           ...eventFields,
         });

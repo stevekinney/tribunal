@@ -12,7 +12,6 @@ export interface StoreWebhookEventData {
   repositoryOwner: string;
   repositoryName: string;
   installationId: number | null;
-  senderId: number | null;
   senderLogin: string | null;
   prNumber?: number;
   issueNumber?: number;
@@ -88,7 +87,6 @@ export async function storeWebhookEvent(
       payload: data.payload,
       repositoryId: data.repositoryId,
       installationId: data.installationId,
-      senderId: data.senderId,
       senderLogin: data.senderLogin,
       prNumber: data.prNumber,
       issueNumber: data.issueNumber,
@@ -96,7 +94,6 @@ export async function storeWebhookEvent(
       commitSha: data.commitSha,
       githubCreatedAt: data.githubCreatedAt,
       receivedAt: new Date(),
-      createdAt: new Date(),
     })
     .onConflictDoNothing({ target: webhookEvent.deliveryId })
     .returning(RETURNING_COLUMNS);
