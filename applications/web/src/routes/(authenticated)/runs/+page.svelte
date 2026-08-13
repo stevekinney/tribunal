@@ -86,7 +86,7 @@
                   <StatusDot
                     status={statusConfig.dot}
                     size="sm"
-                    showLabel={false}
+                    labelVisible={false}
                     aria-hidden="true"
                   />
                   {statusConfig.label}

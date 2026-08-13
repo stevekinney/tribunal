@@ -66,7 +66,9 @@ async function sh(cmd: string, args: string[]): Promise<string> {
       stderr: 'pipe',
     });
   } catch (spawnError) {
-    throw new Error(`Failed to start command: ${cmd} ${args.join(' ')}\n${String(spawnError)}`);
+    throw new Error(`Failed to start command: ${cmd} ${args.join(' ')}\n${String(spawnError)}`, {
+      cause: spawnError,
+    });
   }
 
   const stdoutPromise = proc.stdout

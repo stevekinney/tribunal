@@ -30,7 +30,9 @@ function readJsonC<T>(absolutePath: string): T | undefined {
     // A bare JSON.parse message names no file, which makes a CI or pre-commit
     // failure needlessly hard to act on.
     const reason = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(`Failed to parse ${relative(repositoryRoot, absolutePath)}: ${reason}`);
+    throw new Error(`Failed to parse ${relative(repositoryRoot, absolutePath)}: ${reason}`, {
+      cause,
+    });
   }
 }
 

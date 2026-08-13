@@ -249,10 +249,10 @@
     searchQuery={labelsInput}
     searchPlaceholder="Filter by label (comma-separated)…"
     searchAriaLabel="Labels"
-    onsearchchange={handleLabelsChange}
-    onfacetchange={handleFacetChange}
-    onfilterremove={handleFilterRemove}
-    onclearall={handleClearAll}
+    onSearchChange={handleLabelsChange}
+    onFacetChange={handleFacetChange}
+    onFilterRemove={handleFilterRemove}
+    onClearAll={handleClearAll}
   />
 
   {#if data.issues.length === 0}

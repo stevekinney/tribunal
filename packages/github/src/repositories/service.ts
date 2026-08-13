@@ -55,12 +55,7 @@ export type RefreshInstallationRepositoriesOptions =
     };
 
 export type RepositorySortField =
-  | 'name'
-  | 'updated_at'
-  | 'created_at'
-  | 'pushed_at'
-  | 'stargazers_count'
-  | 'open_issues_count';
+  'name' | 'updated_at' | 'created_at' | 'pushed_at' | 'stargazers_count' | 'open_issues_count';
 export type SortDirection = 'asc' | 'desc';
 export type RepositoryVisibility = 'all' | 'public' | 'private';
 
@@ -387,10 +382,11 @@ export async function refreshInstallationRepositories(
   if (repositories.length > 0) {
     const repositoryRows = repositories.map((gitHubRepository) => {
       const owner = gitHubRepository.owner.login;
-      activeRepositoryIds.add(gitHubRepository.id);
+      const repositoryId = Number(gitHubRepository.id);
+      activeRepositoryIds.add(repositoryId);
 
       return {
-        id: gitHubRepository.id,
+        id: repositoryId,
         owner,
         name: gitHubRepository.name,
         uri: computeRepositoryUri(owner, gitHubRepository.name),
@@ -416,7 +412,7 @@ export async function refreshInstallationRepositories(
 
   const repositoryIdsToDeactivate = activeLinks
     .filter((link) => !activeRepositoryIds.has(link.repositoryId))
-    .map((link) => link.repositoryId);
+    .map((link) => Number(link.repositoryId));
 
   if (repositoryIdsToDeactivate.length > 0) {
     const deactivatedRepositories = await context.db

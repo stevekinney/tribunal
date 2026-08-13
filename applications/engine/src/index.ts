@@ -457,12 +457,10 @@ export type ReviewIntentKickScheduler = {
 };
 
 export type ReviewIntentKickResult =
-  | { started: true }
-  | { started: false; reason: 'already_running' | 'released' };
+  { started: true } | { started: false; reason: 'already_running' | 'released' };
 
 export type BackgroundWorkAcceptanceResult =
-  | { accepted: true }
-  | { accepted: false; reason: 'released' };
+  { accepted: true } | { accepted: false; reason: 'released' };
 
 export type ReviewIntentKickSchedulerOptions = {
   idleShutdownSeconds?: number;

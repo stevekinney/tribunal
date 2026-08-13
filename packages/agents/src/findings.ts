@@ -6,8 +6,7 @@ import type { DiffContext, Finding } from '@tribunal/review-core/types';
 const MAXIMUM_COMMENT_BODY_LENGTH = 8_000;
 
 export type FindingValidationResult =
-  | { ok: true; finding: Finding }
-  | { ok: false; reason: string };
+  { ok: true; finding: Finding } | { ok: false; reason: string };
 
 export type AnchoredFinding = {
   finding: Finding;

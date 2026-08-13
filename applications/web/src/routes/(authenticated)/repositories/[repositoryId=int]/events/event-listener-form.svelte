@@ -144,7 +144,7 @@
           id="acknowledge-filters-reset"
           label="I understand this replaces the invalid filters below."
           bind:checked={acknowledgeFiltersReset}
-          fieldClass="acknowledge-filters-reset"
+          class="acknowledge-filters-reset"
         />
         <input
           type="hidden"

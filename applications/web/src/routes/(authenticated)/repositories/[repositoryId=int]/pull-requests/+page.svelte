@@ -243,7 +243,7 @@
     label="Base branch"
     placeholder="main"
     value={value ?? ''}
-    onchange={(event) => onchange(event.currentTarget.value)}
+    onValueChange={onchange}
   />
 {/snippet}
 
@@ -259,7 +259,7 @@
     label="Head branch"
     placeholder="owner:branch"
     value={value ?? ''}
-    onchange={(event) => onchange(event.currentTarget.value)}
+    onValueChange={onchange}
   />
 {/snippet}
 
@@ -282,12 +282,12 @@
 <Page title="Pull requests" {subtitle} {breadcrumbs} actions={pageActions}>
   <FacetedFilterBar
     aria-label="Pull request filters"
-    showSearch={false}
+    searchVisible={false}
     {facets}
     {appliedFilters}
-    onfacetchange={handleFacetChange}
-    onfilterremove={handleFilterRemove}
-    onclearall={handleClearAll}
+    onFacetChange={handleFacetChange}
+    onFilterRemove={handleFilterRemove}
+    onClearAll={handleClearAll}
   />
 
   {#if data.pullRequests.length === 0}

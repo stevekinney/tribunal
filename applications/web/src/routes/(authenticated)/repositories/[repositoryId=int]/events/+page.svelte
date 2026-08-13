@@ -216,10 +216,10 @@
     confirmLabel="Delete"
     destructive
     typeToConfirm={deleteTarget?.name}
-    onconfirm={() => {
+    onConfirm={() => {
       if (deleteTarget) submitDeleteForm(deleteTarget.id);
     }}
-    oncancel={closeDeleteDialog}
+    onCancel={closeDeleteDialog}
   />
 </Page>
 

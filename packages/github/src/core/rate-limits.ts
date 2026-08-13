@@ -44,8 +44,7 @@ export interface RateLimitState {
  * Result of checking rate limit state.
  */
 export type RateLimitCheckResult =
-  | { limited: true; retryAfterSeconds: number; isSecondary: boolean }
-  | { limited: false };
+  { limited: true; retryAfterSeconds: number; isSecondary: boolean } | { limited: false };
 
 // ============================================================================
 // Constants

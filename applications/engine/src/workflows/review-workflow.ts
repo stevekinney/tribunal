@@ -119,13 +119,7 @@ export type ReviewWorkflowConfiguration = {
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
 
 export type ReviewRunStatus =
-  | 'queued'
-  | 'running'
-  | 'posted'
-  | 'superseded'
-  | 'failed'
-  | 'cancelled'
-  | 'quota_blocked';
+  'queued' | 'running' | 'posted' | 'superseded' | 'failed' | 'cancelled' | 'quota_blocked';
 
 export type AgentRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type AgentRunStoppedReason = NonNullable<AgentResult['stopped']>;
