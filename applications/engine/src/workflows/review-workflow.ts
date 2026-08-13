@@ -540,6 +540,7 @@ export class ReviewWorkflowEngine {
       (activeRun !== undefined && supervisor.input.userId === activeRun.userId
         ? supervisor.input
         : undefined);
+    let checkRunUpdateError: unknown;
     if (activeRun?.status === 'cancelled' && cancellationInput !== undefined) {
       try {
         await this.updateCheckRun(
@@ -548,6 +549,7 @@ export class ReviewWorkflowEngine {
           buildCancelledWorkflowCheckRunPatch(cancellationReason),
         );
       } catch (error) {
+        checkRunUpdateError = error;
         console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
           workflowId,
           error: error instanceof Error ? error.message : String(error),
@@ -557,9 +559,10 @@ export class ReviewWorkflowEngine {
     await this.terminateSandboxOnce(supervisor.sandboxId);
     await Promise.allSettled([...supervisor.runPromises.values()]);
     supervisor.status = 'closed';
+    this.stoppingWorkflowIds.delete(workflowId);
+    if (checkRunUpdateError !== undefined) throw checkRunUpdateError;
     supervisor.activeRunId = undefined;
     this.supervisors.delete(workflowId);
-    this.stoppingWorkflowIds.delete(workflowId);
     return { stopped: true };
   }
 
@@ -644,6 +647,9 @@ export class ReviewWorkflowEngine {
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
     });
+    if (this.stoppingWorkflowIds.has(workflowId)) {
+      throw new Error('Cannot start a review while the pull request supervisor is stopping.');
+    }
     const existingSupervisor = this.supervisors.get(workflowId);
     if (existingSupervisor !== undefined) {
       existingSupervisor.input = input;

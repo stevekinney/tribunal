@@ -152,6 +152,11 @@ export async function handleInstallationDeleted(
       repositoryCount: repositoryIds.length,
       ...result,
     });
+    if (result.failed > 0) {
+      throw new Error(
+        `Failed to cancel ${result.failed} workflow(s) for deleted installation: ${result.errors.join('; ')}`,
+      );
+    }
   }
 
   // Cancel the per-installation sync workflow in the engine process that owns

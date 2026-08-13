@@ -2341,21 +2341,42 @@ describe('ReviewWorkflowEngine', () => {
     await expect(otherUserReview).resolves.toMatchObject({ userId: baseInput.userId });
   });
 
-  it('terminates workflow resources even when the stop check update fails', async () => {
+  it('terminates workflow resources and permits a retry when the stop check update fails', async () => {
     const ports = createFakePorts({ holdAgentRuns: true, failCheckRunUpdatesRemaining: 1 });
     const engine = createEngine(ports);
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForRunningAgent();
 
-    await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({
-      stopped: true,
-    });
+    await expect(engine.stopWorkflow('review:pr:42:7')).rejects.toThrow('check run update failed');
     ports.sandbox.resolveHeldAgents();
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.stopCalls).toEqual(['arun:run:42:7:aaa111:opened:agent_security']);
     expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(engine.snapshot().supervisors).toHaveLength(1);
+
+    await expect(engine.stopWorkflow('review:pr:42:7')).resolves.toEqual({ stopped: true });
     expect(engine.snapshot().supervisors).toEqual([]);
+  });
+
+  it('rejects new review intents while a user-scoped workflow stop is in progress', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    const stopResult = engine.stopWorkflow(
+      'review:pr:42:7',
+      'repository_unwatched',
+      baseInput.userId,
+    );
+    await expect(
+      engine.startPullRequestReview({ ...baseInput, userId: baseInput.userId + 1 }),
+    ).rejects.toThrow('Cannot start a review while the pull request supervisor is stopping.');
+
+    ports.sandbox.resolveHeldAgents();
+    await expect(stopResult).resolves.toEqual({ stopped: true });
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
   });
 
   it('cancels a workflow whose supervisor is still being created', async () => {

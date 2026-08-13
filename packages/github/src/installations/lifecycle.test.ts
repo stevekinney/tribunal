@@ -130,6 +130,30 @@ describe('handleInstallationDeleted', () => {
     const remaining = await getInstallationById(context, installation.installationId);
     expect(remaining).not.toBeNull();
   });
+
+  it('does not delete the installation when review cancellation fails', async () => {
+    const owner = await factories.user.create();
+    const installation = await factories.githubInstallation.create({
+      installationId: 7011,
+      userId: owner.id,
+    });
+    const repository = await factories.repository.create({ installationId: 7011 });
+    await createActiveReview(owner.id, repository.id, 7);
+    const context = createContext({
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 0,
+        failed: 1,
+        errors: [`review:pr:${repository.id}:7: engine unavailable`],
+      }),
+    });
+
+    await expect(handleInstallationDeleted(context, installation.installationId)).rejects.toThrow(
+      'engine unavailable',
+    );
+
+    const remaining = await getInstallationById(context, installation.installationId);
+    expect(remaining).not.toBeNull();
+  });
 });
 
 describe('handleInstallationSuspend', () => {
