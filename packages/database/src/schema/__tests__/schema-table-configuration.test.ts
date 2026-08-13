@@ -74,6 +74,36 @@ describe('schema table configuration', () => {
     ]);
   });
 
+  it('does not map GitHub installation metadata retained only for deployment sequencing', () => {
+    const installationColumns = getTableConfig(schema.githubInstallation).columns.map(
+      (column) => column.name,
+    );
+    const installationRepositoryColumns = getTableConfig(
+      schema.githubInstallationRepository,
+    ).columns.map((column) => column.name);
+
+    expect(installationColumns).toEqual([
+      'id',
+      'installation_id',
+      'user_id',
+      'account_login',
+      'account_id',
+      'account_avatar_url',
+      'status',
+      'sync_status',
+      'sync_started_at',
+      'sync_workflow_execution_token',
+      'sync_activity_attempt_token',
+    ]);
+    expect(installationRepositoryColumns).toEqual([
+      'id',
+      'installation_id',
+      'repository_id',
+      'is_active',
+      'added_at',
+    ]);
+  });
+
   it('uses type-correct operator classes for the introspected webhook received index', () => {
     const introspectedSchema = readFileSync(
       new URL('../../../drizzle/schema.ts', import.meta.url),

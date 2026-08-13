@@ -47,9 +47,7 @@ describe('upsertInstallation', () => {
     await upsertInstallation(context, {
       installationId: 555,
       accountLogin: 'octo-org',
-      accountType: 'Organization',
       accountId: 999,
-      repositorySelection: 'all',
     });
 
     const installation = await getInstallationById(context, 555);
@@ -60,29 +58,13 @@ describe('upsertInstallation', () => {
     expect(installation?.userId).toBeNull();
   });
 
-  it('falls back to Organization when accountType is invalid', async () => {
-    await upsertInstallation(context, {
-      installationId: 556,
-      accountLogin: 'octo-org',
-      accountType: 'NotARealType' as never,
-      accountId: 1000,
-      repositorySelection: 'all',
-    });
-
-    const installation = await getInstallationById(context, 556);
-
-    expect(installation?.accountType).toBe('Organization');
-  });
-
   it('binds the installation to a user when userId is supplied', async () => {
     const owner = await factories.user.create();
 
     await upsertInstallation(context, {
       installationId: 557,
       accountLogin: 'octo-org',
-      accountType: 'User',
       accountId: 1001,
-      repositorySelection: 'selected',
       userId: owner.id,
     });
 
@@ -96,7 +78,6 @@ describe('upsertInstallation', () => {
     await factories.githubInstallation.create({
       installationId: 558,
       accountLogin: 'octo-org',
-      accountType: 'Organization',
       userId: owner.id,
     });
 
@@ -104,16 +85,13 @@ describe('upsertInstallation', () => {
     await upsertInstallation(context, {
       installationId: 558,
       accountLogin: 'octo-org-renamed',
-      accountType: 'Organization',
       accountId: 1002,
-      repositorySelection: 'selected',
       accountAvatarUrl: 'https://avatar/renamed',
     });
 
     const installation = await getInstallationById(context, 558);
 
     expect(installation?.accountLogin).toBe('octo-org-renamed');
-    expect(installation?.repositorySelection).toBe('selected');
     expect(installation?.userId).toBe(owner.id);
     expect(installation?.accountAvatarUrl).toBe('https://avatar/renamed');
   });
@@ -123,19 +101,15 @@ describe('upsertInstallation', () => {
     await upsertInstallation(context, {
       installationId: 561,
       accountLogin: 'new-org',
-      accountType: 'Organization',
       accountId: 2006,
       accountAvatarUrl: 'https://avatar/new',
-      repositorySelection: 'selected',
       userId: owner.id,
     });
 
     await upsertInstallation(context, {
       installationId: 561,
       accountLogin: 'old-org',
-      accountType: 'Organization',
       accountId: 1006,
-      repositorySelection: 'all',
       accountAvatarUrl: 'https://avatar/old',
       preserveExistingAccountMetadata: true,
     });
@@ -143,10 +117,8 @@ describe('upsertInstallation', () => {
     const installation = await getInstallationById(context, 561);
 
     expect(installation?.accountLogin).toBe('new-org');
-    expect(installation?.accountType).toBe('Organization');
     expect(installation?.accountId).toBe(2006);
     expect(installation?.accountAvatarUrl).toBe('https://avatar/new');
-    expect(installation?.repositorySelection).toBe('all');
     expect(installation?.userId).toBe(owner.id);
   });
 
@@ -156,16 +128,13 @@ describe('upsertInstallation', () => {
     await factories.githubInstallation.create({
       installationId: 559,
       accountLogin: 'octo-org',
-      accountType: 'Organization',
       userId: firstOwner.id,
     });
 
     await upsertInstallation(context, {
       installationId: 559,
       accountLogin: 'octo-org',
-      accountType: 'Organization',
       accountId: 1003,
-      repositorySelection: 'all',
       userId: secondOwner.id,
     });
 
@@ -174,26 +143,23 @@ describe('upsertInstallation', () => {
     expect(installation?.userId).toBe(secondOwner.id);
   });
 
-  it('clears the status reason when reactivating an installation on conflict', async () => {
+  it('reactivates an installation on conflict', async () => {
     await factories.githubInstallation.create({
       installationId: 560,
       accountLogin: 'octo-org',
       status: 'suspended',
     });
-    await updateInstallationStatus(context, 560, 'suspended', 'Billing issue');
+    await updateInstallationStatus(context, 560, 'suspended');
 
     await upsertInstallation(context, {
       installationId: 560,
       accountLogin: 'octo-org',
-      accountType: 'Organization',
       accountId: 1004,
-      repositorySelection: 'all',
     });
 
     const installation = await getInstallationById(context, 560);
 
     expect(installation?.status).toBe('active');
-    expect(installation?.statusReason).toBeNull();
   });
 });
 
@@ -206,22 +172,19 @@ describe('getInstallationById', () => {
 });
 
 describe('updateInstallationAccountMetadata', () => {
-  it('updates account metadata without changing binding or repository selection', async () => {
+  it('updates account metadata without changing the binding', async () => {
     const owner = await factories.user.create();
     await factories.githubInstallation.create({
       installationId: 566,
       accountLogin: 'old-org',
-      accountType: 'Organization',
       accountId: 1005,
       accountAvatarUrl: 'https://avatar/old',
-      repositorySelection: 'selected',
       userId: owner.id,
     });
 
     const result = await updateInstallationAccountMetadata(context, {
       installationId: 566,
       accountLogin: 'new-org',
-      accountType: 'User',
       accountId: 2005,
       accountAvatarUrl: 'https://avatar/new',
     });
@@ -230,10 +193,8 @@ describe('updateInstallationAccountMetadata', () => {
 
     expect(result).toEqual({ updated: true });
     expect(installation?.accountLogin).toBe('new-org');
-    expect(installation?.accountType).toBe('User');
     expect(installation?.accountId).toBe(2005);
     expect(installation?.accountAvatarUrl).toBe('https://avatar/new');
-    expect(installation?.repositorySelection).toBe('selected');
     expect(installation?.userId).toBe(owner.id);
   });
 
@@ -241,7 +202,6 @@ describe('updateInstallationAccountMetadata', () => {
     const result = await updateInstallationAccountMetadata(context, {
       installationId: 999999,
       accountLogin: 'missing-org',
-      accountType: 'Organization',
       accountId: 3005,
       accountAvatarUrl: null,
     });
@@ -298,24 +258,12 @@ describe('deleteInstallation', () => {
 });
 
 describe('updateInstallationStatus', () => {
-  it('updates status and reason', async () => {
+  it('updates status', async () => {
     await factories.githubInstallation.create({ installationId: 564 });
 
-    await updateInstallationStatus(context, 564, 'suspended', 'Rate limited');
+    await updateInstallationStatus(context, 564, 'suspended');
 
     const installation = await getInstallationById(context, 564);
     expect(installation?.status).toBe('suspended');
-    expect(installation?.statusReason).toBe('Rate limited');
-  });
-
-  it('clears the reason when omitted', async () => {
-    await factories.githubInstallation.create({ installationId: 565 });
-    await updateInstallationStatus(context, 565, 'suspended', 'Rate limited');
-
-    await updateInstallationStatus(context, 565, 'active');
-
-    const installation = await getInstallationById(context, 565);
-    expect(installation?.status).toBe('active');
-    expect(installation?.statusReason).toBeNull();
   });
 });

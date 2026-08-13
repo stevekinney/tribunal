@@ -337,8 +337,8 @@ export async function getOrCreateRepository(
  *     is the wrong latency for "user just clicked Install and expects to see
  *     their repos." The two paths are complementary, not duplicative.
  *
- * On success, tokenless setup calls set `githubInstallation.syncStatus = 'idle'`,
- * clear any sync error, and update `lastSyncedAt`. Workflow callers pass
+ * On success, tokenless setup calls set `githubInstallation.syncStatus = 'idle'`.
+ * Workflow callers pass
  * `syncWorkflowExecutionToken` and `syncActivityAttemptToken`; for them, the
  * status settlement and token clear only happen if the installation row still
  * carries those same tokens.
@@ -419,7 +419,6 @@ export async function refreshInstallationRepositories(
       .update(githubInstallationRepository)
       .set({
         isActive: false,
-        removedAt: now,
       })
       .where(
         and(
@@ -437,12 +436,8 @@ export async function refreshInstallationRepositories(
     );
   }
 
-  const settlementAt = new Date();
   const settlement = {
-    lastSyncedAt: settlementAt,
     syncStatus: 'idle' as const,
-    syncError: null,
-    updatedAt: settlementAt,
     ...(options.syncWorkflowExecutionToken === undefined
       ? {}
       : {
@@ -555,21 +550,20 @@ async function upsertInstallationRepositoryBatch(
   const linkValuesSql = sql.join(
     repositoryRows.map(
       (gitHubRepository) =>
-        sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean, NULL::timestamp)`,
+        sql`(${installationId}::bigint, ${gitHubRepository.id}::bigint, ${true}::boolean)`,
     ),
     sql`, `,
   );
   const linkResult = await context.db.execute(sql`
       INSERT INTO ${githubInstallationRepository}
-        ("installation_id", "repository_id", "is_active", "removed_at")
+        ("installation_id", "repository_id", "is_active")
       SELECT *
       FROM (
         VALUES ${linkValuesSql}
-      ) AS incoming("installation_id", "repository_id", "is_active", "removed_at")
+      ) AS incoming("installation_id", "repository_id", "is_active")
       WHERE ${ownershipSql}
       ON CONFLICT ("installation_id", "repository_id") DO UPDATE SET
-        "is_active" = excluded."is_active",
-        "removed_at" = excluded."removed_at"
+        "is_active" = excluded."is_active"
       WHERE ${ownershipSql}
       RETURNING "repository_id"
     `);
@@ -926,7 +920,6 @@ export async function markInstallationRepositoryInactive(
     .update(githubInstallationRepository)
     .set({
       isActive: false,
-      removedAt: new Date(),
     })
     .where(
       and(

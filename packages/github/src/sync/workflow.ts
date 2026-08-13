@@ -122,7 +122,6 @@ function createSyncRepositoriesActivity(contextResolver: GithubContextResolver) 
         syncStartedAt: claimStartedAt,
         syncWorkflowExecutionToken: syncWorkflowExecutionToken ?? null,
         syncActivityAttemptToken: syncActivityAttemptToken ?? null,
-        updatedAt: claimStartedAt,
       })
       .where(
         buildActivityClaimPredicate(
@@ -139,17 +138,13 @@ function createSyncRepositoriesActivity(contextResolver: GithubContextResolver) 
           : { syncWorkflowExecutionToken, syncActivityAttemptToken };
       return await refreshInstallationRepositories(context, installationId, refreshOptions);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
       await context.db
         .update(githubInstallation)
         .set({
           syncStatus: 'failed',
-          syncError: errorMessage,
           syncStartedAt: null,
           syncWorkflowExecutionToken: null,
           syncActivityAttemptToken: null,
-          updatedAt: new Date(),
         })
         .where(
           buildActivitySyncPredicate(
@@ -177,9 +172,7 @@ function createSyncStatusTeardownActivity(contextResolver: GithubContextResolver
       .update(githubInstallation)
       .set({
         syncStatus: 'failed',
-        syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
         syncStartedAt: null,
-        updatedAt: new Date(),
       })
       .where(
         buildFinalizerSyncPredicate(installationId, syncWorkflowExecutionToken, workflowStartedAt),

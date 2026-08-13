@@ -163,7 +163,6 @@ describe('createInstallationSyncWorkflow', () => {
 
     expect(database.updates[1]?.set).toMatchObject({
       syncStatus: 'failed',
-      syncError: 'refresh failed',
       syncStartedAt: null,
       syncWorkflowExecutionToken: null,
       syncActivityAttemptToken: null,
@@ -183,7 +182,6 @@ describe('createInstallationSyncWorkflow', () => {
 
     expect(database.updates[0]?.set).toMatchObject({
       syncStatus: 'failed',
-      syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
       syncStartedAt: null,
     });
   });

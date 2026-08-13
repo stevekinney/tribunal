@@ -10,9 +10,7 @@ import { and, eq } from 'drizzle-orm';
 import {
   githubInstallation,
   user,
-  type GitHubAccountType,
   type GitHubInstallationStatus,
-  type RepositorySelection,
   type SyncStatus,
 } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../context.js';
@@ -32,7 +30,7 @@ export async function connectInstallationToUser(
 ): Promise<{ success: true }> {
   await context.db
     .update(githubInstallation)
-    .set({ userId: params.userId, updatedAt: new Date() })
+    .set({ userId: params.userId })
     .where(eq(githubInstallation.installationId, params.installationId));
   return { success: true };
 }
@@ -63,14 +61,9 @@ export interface UserInstallation {
   id: number;
   installationId: number;
   accountLogin: string;
-  accountType: GitHubAccountType;
   accountAvatarUrl: string | null;
-  repositorySelection: RepositorySelection;
   status: GitHubInstallationStatus;
-  statusReason: string | null;
-  lastSyncedAt: Date | null;
   syncStatus: SyncStatus;
-  syncError: string | null;
   connectedBy: {
     id: number;
     username: string;
@@ -90,14 +83,9 @@ export async function getInstallationsForUser(
       id: githubInstallation.id,
       installationId: githubInstallation.installationId,
       accountLogin: githubInstallation.accountLogin,
-      accountType: githubInstallation.accountType,
       accountAvatarUrl: githubInstallation.accountAvatarUrl,
-      repositorySelection: githubInstallation.repositorySelection,
       status: githubInstallation.status,
-      statusReason: githubInstallation.statusReason,
-      lastSyncedAt: githubInstallation.lastSyncedAt,
       syncStatus: githubInstallation.syncStatus,
-      syncError: githubInstallation.syncError,
       ownerUserId: githubInstallation.userId,
       ownerUsername: user.username,
       ownerAvatarUrl: user.avatarUrl,
@@ -110,14 +98,9 @@ export async function getInstallationsForUser(
     id: row.id,
     installationId: row.installationId,
     accountLogin: row.accountLogin,
-    accountType: row.accountType,
     accountAvatarUrl: row.accountAvatarUrl,
-    repositorySelection: row.repositorySelection,
     status: row.status,
-    statusReason: row.statusReason,
-    lastSyncedAt: row.lastSyncedAt,
     syncStatus: row.syncStatus,
-    syncError: row.syncError,
     connectedBy:
       row.ownerUserId && row.ownerUsername
         ? {

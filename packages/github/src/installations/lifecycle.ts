@@ -169,12 +169,7 @@ export async function handleInstallationSuspend(
 ): Promise<void> {
   console.log('[lifecycle] Handling installation suspend', { installationId, reason });
 
-  await updateInstallationStatus(
-    context,
-    installationId,
-    'suspended',
-    reason ?? 'Suspended by GitHub',
-  );
+  await updateInstallationStatus(context, installationId, 'suspended');
 
   // Log active workflow count for observability (not cancelled — see rationale above)
   const repositories = await context.db

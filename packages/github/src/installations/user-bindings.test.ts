@@ -91,20 +91,15 @@ describe('isInstallationOwnedByUser', () => {
 
 describe('getInstallationsForUser', () => {
   it('maps rows to UserInstallation shape with connectedBy', async () => {
-    expect.assertions(3);
+    expect.assertions(8);
     const context = createContext([
       {
         id: 1,
         installationId: 12345,
         accountLogin: 'test-org',
-        accountType: 'Organization',
         accountAvatarUrl: null,
-        repositorySelection: 'all',
         status: 'active',
-        statusReason: null,
-        lastSyncedAt: null,
         syncStatus: 'idle',
-        syncError: null,
         ownerUserId: 7,
         ownerUsername: 'octocat',
         ownerAvatarUrl: 'https://avatar',
@@ -115,6 +110,11 @@ describe('getInstallationsForUser', () => {
 
     expect(installations).toHaveLength(1);
     expect(installations[0].installationId).toBe(12345);
+    expect(installations[0]).not.toHaveProperty('accountType');
+    expect(installations[0]).not.toHaveProperty('repositorySelection');
+    expect(installations[0]).not.toHaveProperty('statusReason');
+    expect(installations[0]).not.toHaveProperty('lastSyncedAt');
+    expect(installations[0]).not.toHaveProperty('syncError');
     expect(installations[0].connectedBy).toEqual({
       id: 7,
       username: 'octocat',
@@ -129,14 +129,9 @@ describe('getInstallationsForUser', () => {
         id: 1,
         installationId: 12345,
         accountLogin: 'test-org',
-        accountType: 'Organization',
         accountAvatarUrl: null,
-        repositorySelection: 'all',
         status: 'active',
-        statusReason: null,
-        lastSyncedAt: null,
         syncStatus: 'idle',
-        syncError: null,
         ownerUserId: null,
         ownerUsername: null,
         ownerAvatarUrl: null,

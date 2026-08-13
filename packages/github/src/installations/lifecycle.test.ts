@@ -158,7 +158,7 @@ describe('handleInstallationDeleted', () => {
 });
 
 describe('handleInstallationSuspend', () => {
-  it('marks the installation suspended with the given reason', async () => {
+  it('marks the installation suspended', async () => {
     const installation = await factories.githubInstallation.create({ installationId: 7003 });
     const context = createContext();
 
@@ -166,10 +166,9 @@ describe('handleInstallationSuspend', () => {
 
     const updated = await getInstallationById(context, installation.installationId);
     expect(updated?.status).toBe('suspended');
-    expect(updated?.statusReason).toBe('Billing issue');
   });
 
-  it('defaults the reason and logs active workflows without cancelling them', async () => {
+  it('logs active workflows without cancelling them', async () => {
     const installation = await factories.githubInstallation.create({ installationId: 7004 });
     const repository = await factories.repository.create({ installationId: 7004 });
     await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
@@ -180,7 +179,6 @@ describe('handleInstallationSuspend', () => {
 
     const updated = await getInstallationById(context, installation.installationId);
     expect(updated?.status).toBe('suspended');
-    expect(updated?.statusReason).toBe('Suspended by GitHub');
 
     const [run] = await testDatabase.db
       .select()
@@ -245,7 +243,6 @@ describe('handleRepositoriesRemoved', () => {
       .from(githubInstallationRepository)
       .where(eq(githubInstallationRepository.repositoryId, repository.id));
     expect(link.isActive).toBe(false);
-    expect(link.removedAt).not.toBeNull();
 
     const [run] = await testDatabase.db
       .select()

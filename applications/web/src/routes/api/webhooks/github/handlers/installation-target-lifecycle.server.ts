@@ -33,7 +33,6 @@ export async function handleInstallationTarget(
         const result = await updateInstallationAccountMetadata(githubContext, {
           installationId,
           accountLogin: account.login,
-          accountType: account.type as 'User' | 'Organization',
           accountId: account.id,
           accountAvatarUrl: account.avatar_url ?? null,
         });
@@ -51,10 +50,8 @@ export async function handleInstallationTarget(
           await upsertInstallation(githubContext, {
             installationId,
             accountLogin: account.login,
-            accountType: account.type as 'User' | 'Organization',
             accountId: account.id,
             accountAvatarUrl: account.avatar_url ?? null,
-            repositorySelection: getRepositorySelection(payload.installation),
           });
         }
 
@@ -78,15 +75,4 @@ export async function handleInstallationTarget(
     default:
       logger.debug({ action }, 'Unhandled installation_target action');
   }
-}
-
-function getRepositorySelection(
-  installation: InstallationTargetEvent['installation'],
-): 'all' | 'selected' {
-  const repositorySelection = (installation as { repository_selection?: unknown } | undefined)
-    ?.repository_selection;
-
-  return repositorySelection === 'all' || repositorySelection === 'selected'
-    ? repositorySelection
-    : 'selected';
 }

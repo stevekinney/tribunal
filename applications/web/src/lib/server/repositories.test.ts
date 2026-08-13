@@ -130,10 +130,8 @@ describe('getRepositoriesForUser', () => {
         installationId: 12345,
         userId: owner.id,
         accountLogin: 'test-org',
-        accountType: 'Organization',
         accountId: 67890,
         accountAvatarUrl: 'https://example.test/test-org.png',
-        repositorySelection: 'all',
         status: 'active',
       })
       .returning();
@@ -409,10 +407,8 @@ describe('getRepositoriesForUser', () => {
         installationId: 12345,
         userId: owner.id,
         accountLogin: 'test-org',
-        accountType: 'Organization',
         accountId: 67890,
         accountAvatarUrl: 'https://example.test/test-org.png',
-        repositorySelection: 'all',
         status: 'active',
       },
     ]);
@@ -461,9 +457,7 @@ describe('getRepositoriesForUser', () => {
       installationId: 12345,
       userId: owner.id,
       accountLogin: 'test-org',
-      accountType: 'Organization',
       accountId: 67890,
-      repositorySelection: 'all',
       status: 'active',
     });
 
@@ -510,9 +504,7 @@ describe('getRepositoriesForUser', () => {
       installationId: 12345,
       userId: owner.id,
       accountLogin: 'test-org',
-      accountType: 'Organization',
       accountId: 67890,
-      repositorySelection: 'all',
       status: 'active',
     });
 
@@ -559,9 +551,7 @@ describe('getRepositoriesForUser', () => {
       installationId: 55555,
       userId: owner.id,
       accountLogin: 'zzz-org',
-      accountType: 'Organization',
       accountId: 11111,
-      repositorySelection: 'all',
       status: 'active',
     });
 
@@ -617,18 +607,14 @@ describe('getRepositoriesForUser', () => {
         installationId: 66661,
         userId: owner.id,
         accountLogin: 'same-org',
-        accountType: 'Organization',
         accountId: 22221,
-        repositorySelection: 'all',
         status: 'active',
       },
       {
         installationId: 66662,
         userId: owner.id,
         accountLogin: 'same-org',
-        accountType: 'Organization',
         accountId: 22222,
-        repositorySelection: 'all',
         status: 'active',
       },
     ]);
@@ -683,18 +669,14 @@ describe('getRepositoriesForUser', () => {
         installationId: 77771,
         userId: owner.id,
         accountLogin: 'zzz-org',
-        accountType: 'Organization',
         accountId: 33331,
-        repositorySelection: 'all',
         status: 'active',
       },
       {
         installationId: 77772,
         userId: owner.id,
         accountLogin: 'aaa-org',
-        accountType: 'Organization',
         accountId: 33332,
-        repositorySelection: 'all',
         status: 'active',
       },
     ]);

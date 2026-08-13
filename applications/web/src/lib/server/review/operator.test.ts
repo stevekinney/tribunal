@@ -138,9 +138,7 @@ describe('review operator server helpers', () => {
       installationId: 7001,
       userId: owner.id,
       accountLogin: 'lost-gradient',
-      accountType: 'Organization',
       accountId: 7002,
-      repositorySelection: 'selected',
     });
     await testDb.db.insert(githubInstallationRepository).values({
       installationId: 7001,
@@ -184,17 +182,13 @@ describe('review operator server helpers', () => {
         installationId: 7101,
         userId: firstOwner.id,
         accountLogin: 'lost-gradient',
-        accountType: 'Organization',
         accountId: 7102,
-        repositorySelection: 'selected',
       },
       {
         installationId: 7201,
         userId: secondOwner.id,
         accountLogin: 'lost-gradient',
-        accountType: 'Organization',
         accountId: 7202,
-        repositorySelection: 'selected',
       },
     ]);
     await testDb.db.insert(githubInstallationRepository).values([

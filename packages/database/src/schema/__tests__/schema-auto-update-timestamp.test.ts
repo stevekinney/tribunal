@@ -6,7 +6,6 @@ import {
   agent,
   costBudgetDay,
   costReservation,
-  githubInstallation,
   oauthConnection,
   pullRequestState,
   repository,
@@ -83,29 +82,6 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
     const [updated] = await testDatabase.db.select().from(agent).where(eq(agent.id, created.id));
 
     expect(updated.enabled).toBe(false);
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
-  });
-
-  it('bumps githubInstallation.updatedAt on update', async () => {
-    const factories = createFactories(testDatabase.db);
-    const user = await factories.user.create();
-    const installation = await factories.githubInstallation.createForUser(user.id);
-    await testDatabase.db
-      .update(githubInstallation)
-      .set({ updatedAt: distantPast })
-      .where(eq(githubInstallation.id, installation.id));
-
-    await testDatabase.db
-      .update(githubInstallation)
-      .set({ status: 'suspended' })
-      .where(eq(githubInstallation.id, installation.id));
-
-    const [updated] = await testDatabase.db
-      .select()
-      .from(githubInstallation)
-      .where(eq(githubInstallation.id, installation.id));
-
-    expect(updated.status).toBe('suspended');
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 

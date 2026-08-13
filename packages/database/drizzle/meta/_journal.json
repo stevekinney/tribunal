@@ -421,6 +421,20 @@
       "when": 1786662167907,
       "tag": "0059_remove-webhook-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1786664697484,
+      "tag": "0060_prepare-github-installation-metadata-removal",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1786664980500,
+      "tag": "0061_stop-mapping-github-installation-metadata",
+      "breakpoints": true
     }
   ]
 }

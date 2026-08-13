@@ -18,7 +18,6 @@ import {
   listUserInstallations,
   userHasInstallationAccess,
 } from '$lib/server/github/user-installations';
-import type { GitHubAccountType, RepositorySelection } from '@tribunal/database/schema';
 import type { RequestHandler } from './$types';
 
 type InstallationResponse =
@@ -131,7 +130,6 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
 
     // Extract account info
     let accountLogin = 'unknown';
-    let accountType: GitHubAccountType = 'User';
 
     if (account) {
       if ('login' in account && account.login) {
@@ -139,20 +137,14 @@ export const GET: RequestHandler = async ({ url, cookies, locals }) => {
       } else if ('name' in account && account.name) {
         accountLogin = account.name;
       }
-
-      if ('type' in account && account.type) {
-        accountType = account.type as GitHubAccountType;
-      }
     }
 
     // Create or update the installation record, bound to this user.
     await upsertInstallation(githubContext, {
       installationId: installation.id,
       accountLogin,
-      accountType,
       accountId: Number(account?.id ?? 0),
       accountAvatarUrl: account?.avatar_url,
-      repositorySelection: (installation.repository_selection ?? 'selected') as RepositorySelection,
       userId: locals.user.id,
     });
 

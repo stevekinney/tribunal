@@ -207,9 +207,7 @@ export async function seedOperatorData(
       installationId,
       userId: options.userId,
       accountLogin: 'e2e-organization',
-      accountType: 'Organization',
       accountId: 800_000 + options.userId,
-      repositorySelection: 'selected',
       status: 'active',
       syncStatus: 'idle',
     })
