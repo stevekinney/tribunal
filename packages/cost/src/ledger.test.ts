@@ -527,6 +527,7 @@ describe('cost ledger', () => {
       }),
     ).resolves.toMatchObject({ allowed: true });
     await port.releaseDailyCapReservation(user.id, idempotencyKey);
+    await port.releaseDailyCapReservation(user.id, idempotencyKey);
 
     const reservations = await testDatabase.db.select().from(costReservation);
     const events = await testDatabase.db.select().from(costEvent);

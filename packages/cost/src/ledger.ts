@@ -303,6 +303,7 @@ export async function releaseDailyCapReservation(
         ON locked_budget.user_id = active_reservation.user_id
         AND locked_budget.day_started_at = active_reservation.day_started_at
       WHERE ${costReservation.id} = active_reservation.id
+        AND ${costReservation.releasedAt} IS NULL
       RETURNING active_reservation.user_id, active_reservation.day_started_at, active_reservation.amount_usd
     )
     UPDATE ${costBudgetDay}
