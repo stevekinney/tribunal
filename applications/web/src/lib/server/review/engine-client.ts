@@ -1,5 +1,8 @@
 import { env } from '$env/dynamic/private';
-import type { WorkflowCancellationResult } from '@tribunal/github/context';
+import type {
+  WorkflowCancellationReason,
+  WorkflowCancellationResult,
+} from '@tribunal/github/context';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
 
 export const ENGINE_CONTROL_REQUEST_TIMEOUT_MS = 8_000;
@@ -85,10 +88,16 @@ export function cancelInstallationSyncEngine(
 
 export function cancelReviewWorkflowsEngine(
   workflowIds: string[],
+  cancellationReason?: WorkflowCancellationReason,
+  userId?: number,
 ): Promise<ReviewEngineSignalResult> {
   return postReviewEngineControl(
     '/workflows/cancel',
-    { workflowIds },
+    {
+      workflowIds,
+      ...(cancellationReason === undefined ? {} : { cancellationReason }),
+      ...(userId === undefined ? {} : { userId }),
+    },
     { timeoutMs: workflowCancellationRequestTimeoutMs(workflowIds) },
   );
 }

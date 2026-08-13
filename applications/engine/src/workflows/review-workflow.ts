@@ -8,6 +8,7 @@ import {
   mergeNearDuplicateFindings,
 } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
+import type { WorkflowCancellationReason } from '@tribunal/github/context';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import { defaultReviewModelSchema } from '@tribunal/review-core/schemas';
 import type {
@@ -107,6 +108,13 @@ export type ReviewIntentPort = {
     now: Date,
     error: unknown,
   ): Promise<void>;
+  isReviewIntentClaimActive(intentId: string, claimedAt: Date): Promise<boolean>;
+  cancelClaimedReviewIntents(
+    userId: number,
+    repositoryId: number,
+    pullRequestNumber: number,
+    now: Date,
+  ): Promise<string[]>;
 };
 
 export type ReviewWorkflowConfiguration = {
@@ -118,6 +126,11 @@ export type ReviewWorkflowConfiguration = {
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
 const VERIFIER_MAX_BUDGET_USD = 0.05;
+const REVIEW_CANCELLATION_PENDING_ERROR = 'Review cancellation is pending external teardown.';
+
+function createWorkflowStopKey(workflowId: string, userId?: number): string {
+  return `${workflowId}:${userId ?? '*'}`;
+}
 
 export type ReviewRunStatus =
   'queued' | 'running' | 'posted' | 'superseded' | 'failed' | 'cancelled' | 'quota_blocked';
@@ -206,6 +219,7 @@ type AgentExecution = {
 
 type SupervisorState = PullRequestSupervisorSnapshot & {
   input: PullRequestReviewInput;
+  activeRunInput?: PullRequestReviewInput;
   checkRunId?: number;
   activeAgents: Map<string, AgentExecution>;
   runPromises: Map<string, Promise<ReviewRunRecord>>;
@@ -236,6 +250,10 @@ export type ReviewPostClaimResult =
 
 export type ReviewWorkflowStatePort = {
   loadPullRequestState(input: PullRequestReviewInput): Promise<PullRequestWorkflowState>;
+  loadPullRequestInputForStop(
+    workflowId: string,
+    userId: number,
+  ): Promise<PullRequestReviewInput | undefined>;
   upsertReviewRun(run: ReviewRunRecord): Promise<void>;
   upsertAgentRun(run: AgentRunRecord): Promise<void>;
   upsertAgentEvent?(event: AgentEvent): Promise<void>;
@@ -267,7 +285,6 @@ export function isReviewPostAlreadyClaimedError(error: unknown): boolean {
 }
 
 const staleReviewPostClaimMilliseconds = 5 * 60 * 1000;
-
 export type ReviewWorkflowSnapshot = {
   supervisors: PullRequestSupervisorSnapshot[];
   reviewRuns: ReviewRunRecord[];
@@ -292,7 +309,8 @@ export class ReviewWorkflowEngine {
   private readonly agentEventWrites: Promise<void>[] = [];
   private readonly postedReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
-  private readonly stoppingWorkflowIds = new Set<string>();
+  private readonly stoppingWorkflowOwners = new Set<string>();
+  private readonly cancelledReviewIntentIds = new Set<string>();
 
   constructor(
     private readonly ports: ReviewWorkflowPorts,
@@ -337,6 +355,17 @@ export class ReviewWorkflowEngine {
     const supervisor = await this.ensureSupervisor(input);
     if (supervisor.status === 'closed') {
       throw new Error('Cannot start a review for a closed pull request supervisor.');
+    }
+    const activeRun =
+      supervisor.activeRunId === undefined
+        ? undefined
+        : this.reviewRuns.get(supervisor.activeRunId);
+    if (
+      activeRun !== undefined &&
+      activeRun.userId !== input.userId &&
+      (activeRun.status === 'running' || supervisor.runPromises.has(activeRun.id))
+    ) {
+      throw new Error('Another review is already running for this pull request.');
     }
 
     // A manual re-review targets a head sha the supervisor already reviewed,
@@ -494,49 +523,136 @@ export class ReviewWorkflowEngine {
     return { stopped: false };
   }
 
-  async stopWorkflow(workflowId: string): Promise<StopReviewRunResult> {
-    this.stoppingWorkflowIds.add(workflowId);
-    const supervisor =
-      this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
-    if (supervisor === undefined) {
-      this.stoppingWorkflowIds.delete(workflowId);
-      return { stopped: false };
-    }
-
-    await this.stopActiveAgents(supervisor, 'pr_closed');
-    const activeRun = supervisor.activeRunId
-      ? this.reviewRuns.get(supervisor.activeRunId)
-      : undefined;
-    if (activeRun?.status === 'running') {
-      activeRun.status = 'cancelled';
-      activeRun.finishedAt = this.now();
-      await this.persistReviewRun(activeRun);
-      activeRun.sandboxId = '';
-      await this.ports.state?.upsertReviewRun(activeRun);
-    }
+  async stopWorkflow(
+    workflowId: string,
+    cancellationReason: WorkflowCancellationReason = 'repository_removed',
+    userId?: number,
+  ): Promise<StopReviewRunResult> {
+    const stopKey = createWorkflowStopKey(workflowId, userId);
+    this.stoppingWorkflowOwners.add(stopKey);
+    let activeRun: ReviewRunRecord | undefined;
 
     try {
-      await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
-        status: 'completed',
-        conclusion: 'cancelled',
-        output: {
-          title: 'Tribunal review stopped',
-          summary: 'Repository removed; stopped in-flight review work.',
-        },
-      });
+      let cancelledIntentCount = 0;
+      if (userId !== undefined) {
+        const identity = parsePullRequestWorkflowId(workflowId);
+        if (identity !== undefined) {
+          const cancelledIntentIds = await this.ports.intents.cancelClaimedReviewIntents(
+            userId,
+            identity.repositoryId,
+            identity.pullRequestNumber,
+            this.now(),
+          );
+          cancelledIntentCount = cancelledIntentIds.length;
+          for (const intentId of cancelledIntentIds) this.cancelledReviewIntentIds.add(intentId);
+        }
+      }
+
+      let supervisor =
+        this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
+      if (supervisor === undefined && userId !== undefined) {
+        const stopInput = await this.ports.state?.loadPullRequestInputForStop(workflowId, userId);
+        if (stopInput !== undefined) {
+          supervisor = await this.hydrateSupervisor(workflowId, stopInput);
+        }
+      }
+      if (supervisor === undefined) {
+        return { stopped: userId !== undefined || cancelledIntentCount > 0 };
+      }
+
+      activeRun = supervisor.activeRunId ? this.reviewRuns.get(supervisor.activeRunId) : undefined;
+      activeRun ??= [...this.reviewRuns.values()].find(
+        (run) =>
+          run.workflowId === workflowId &&
+          run.status === 'cancelled' &&
+          run.error === REVIEW_CANCELLATION_PENDING_ERROR &&
+          (userId === undefined || run.userId === userId),
+      );
+      const activeRunInput = supervisor.activeRunInput;
+      const activeUserId =
+        activeRun?.userId ??
+        activeRunInput?.userId ??
+        (supervisor.activeRunId === undefined ? supervisor.input.userId : undefined);
+      if (userId !== undefined && activeUserId !== userId) {
+        return { stopped: cancelledIntentCount > 0 };
+      }
+
+      if (activeRun?.status === 'running') {
+        activeRun.status = 'cancelled';
+        activeRun.finishedAt = this.now();
+        activeRun.error = REVIEW_CANCELLATION_PENDING_ERROR;
+        await this.persistReviewRun(activeRun);
+      }
+      await this.stopActiveAgents(supervisor, 'pr_closed');
+
+      const cancellationInput =
+        activeRunInput ??
+        (activeRun !== undefined && supervisor.input.userId === activeRun.userId
+          ? supervisor.input
+          : undefined);
+      let checkRunUpdateError: unknown;
+      if (activeRun?.status === 'cancelled' && cancellationInput !== undefined) {
+        try {
+          await this.updateCheckRun(
+            cancellationInput,
+            activeRun.checkRunId ?? supervisor.checkRunId,
+            buildCancelledWorkflowCheckRunPatch(cancellationReason),
+          );
+        } catch (error) {
+          checkRunUpdateError = error;
+          console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
+            workflowId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (supervisor.sandboxId !== '') {
+        await this.terminateSandboxOnce(supervisor.sandboxId);
+      }
+      await Promise.allSettled([...supervisor.runPromises.values()]);
+
+      if (checkRunUpdateError !== undefined) {
+        if (activeRun?.status === 'cancelled') {
+          activeRun.sandboxId = '';
+          await this.ports.state?.upsertReviewRun(activeRun);
+        }
+        throw checkRunUpdateError;
+      }
+
+      if (activeRun?.status === 'cancelled') {
+        activeRun.sandboxId = '';
+        activeRun.error = undefined;
+        await this.persistReviewRun(activeRun);
+      } else {
+        const retainedSandboxRun = [...this.reviewRuns.values()].find(
+          (run) =>
+            run.workflowId === workflowId &&
+            run.sandboxId === supervisor.sandboxId &&
+            (userId === undefined || run.userId === userId),
+        );
+        if (retainedSandboxRun !== undefined) {
+          retainedSandboxRun.sandboxId = '';
+          await this.ports.state?.upsertReviewRun(retainedSandboxRun);
+        }
+      }
+      supervisor.status = 'closed';
+      supervisor.activeRunId = undefined;
+      this.supervisors.delete(workflowId);
+      return { stopped: true };
     } catch (error) {
-      console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
-        workflowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (activeRun?.status === 'cancelled') {
+        activeRun.error = REVIEW_CANCELLATION_PENDING_ERROR;
+        try {
+          await this.ports.state?.upsertReviewRun(activeRun);
+        } catch {
+          // Preserve the original cancellation failure; discovery still sees
+          // a running row when this best-effort marker write also fails.
+        }
+      }
+      throw error;
+    } finally {
+      this.stoppingWorkflowOwners.delete(stopKey);
     }
-    await this.terminateSandboxOnce(supervisor.sandboxId);
-    await Promise.allSettled([...supervisor.runPromises.values()]);
-    supervisor.status = 'closed';
-    supervisor.activeRunId = undefined;
-    this.supervisors.delete(workflowId);
-    this.stoppingWorkflowIds.delete(workflowId);
-    return { stopped: true };
   }
 
   async reapClosedPullRequestSandboxes(
@@ -577,6 +693,8 @@ export class ReviewWorkflowEngine {
   }
 
   async processClaimedReviewIntent(intent: ClaimedReviewIntent): Promise<void> {
+    if (this.cancelledReviewIntentIds.delete(intent.id)) return;
+    if (!(await this.ports.intents.isReviewIntentClaimActive(intent.id, intent.claimedAt))) return;
     if (intent.kind === 'start' || intent.kind === 'manual') {
       // A repeat "Re-review" click on an already-reviewed sha resolves to the
       // same review_run id (createReviewRunId keys on headSha + trigger, and
@@ -620,6 +738,9 @@ export class ReviewWorkflowEngine {
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
     });
+    if (this.isWorkflowStopping(workflowId, input.userId)) {
+      throw new Error('Cannot start a review while the pull request supervisor is stopping.');
+    }
     const existingSupervisor = this.supervisors.get(workflowId);
     if (existingSupervisor !== undefined) {
       existingSupervisor.input = input;
@@ -629,7 +750,9 @@ export class ReviewWorkflowEngine {
     if (existingPromise !== undefined) {
       const supervisor = await existingPromise;
       supervisor.input = input;
-      if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
+      if (this.isWorkflowStopping(workflowId, input.userId)) {
+        supervisor.status = 'closed';
+      }
       return supervisor;
     }
 
@@ -638,8 +761,17 @@ export class ReviewWorkflowEngine {
     });
     this.supervisorPromises.set(workflowId, supervisorPromise);
     const supervisor = await supervisorPromise;
-    if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
+    if (this.isWorkflowStopping(workflowId, input.userId)) {
+      supervisor.status = 'closed';
+    }
     return supervisor;
+  }
+
+  private isWorkflowStopping(workflowId: string, userId: number): boolean {
+    return (
+      this.stoppingWorkflowOwners.has(createWorkflowStopKey(workflowId)) ||
+      this.stoppingWorkflowOwners.has(createWorkflowStopKey(workflowId, userId))
+    );
   }
 
   private async createSupervisor(
@@ -667,6 +799,7 @@ export class ReviewWorkflowEngine {
       reviewedHeadShas: [],
       status: 'running',
       input,
+      activeRunInput: undefined,
       checkRunId,
       activeAgents: new Map(),
       runPromises: new Map(),
@@ -739,6 +872,28 @@ export class ReviewWorkflowEngine {
     const existingRun = this.reviewRuns.get(runId);
     if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
 
+    const activeRun =
+      supervisor.activeRunId === undefined
+        ? undefined
+        : this.reviewRuns.get(supervisor.activeRunId);
+    if (activeRun?.status === 'running' && activeRun.id !== runId) {
+      const activeRunPromise = supervisor.runPromises.get(activeRun.id);
+      if (activeRunPromise === undefined) {
+        throw new Error('Another review is already running for this pull request.');
+      }
+      try {
+        await activeRunPromise;
+      } catch {
+        // A failed prior run is terminal for serialization purposes. The next
+        // run can proceed unless policy cancellation won the race below.
+      }
+      if (this.isWorkflowStopping(supervisor.workflowId, input.userId)) {
+        throw new Error('Cannot start a review while the pull request supervisor is stopping.');
+      }
+      return this.startReviewRun(supervisor, input, headSha, trigger, previousHeadSha);
+    }
+
+    supervisor.activeRunInput = input;
     const runPromise = this.executeReviewRun(
       supervisor,
       input,
@@ -780,7 +935,10 @@ export class ReviewWorkflowEngine {
         const run = this.reviewRuns.get(runId);
         if (run !== undefined && run.status !== 'running') {
           supervisor.runPromises.delete(runId);
-          if (supervisor.activeRunId === runId) supervisor.activeRunId = undefined;
+          if (supervisor.activeRunId === runId) {
+            supervisor.activeRunId = undefined;
+            supervisor.activeRunInput = undefined;
+          }
         }
       });
     supervisor.runPromises.set(runId, runPromise);
@@ -1740,16 +1898,22 @@ export class ReviewWorkflowEngine {
     }
 
     const usableRun = persistedState.reviewRuns.find(
-      (run) => run.sandboxId !== '' && run.checkRunId !== undefined,
+      (run) =>
+        run.checkRunId !== undefined &&
+        (run.sandboxId !== '' || run.error === REVIEW_CANCELLATION_PENDING_ERROR),
     );
     if (usableRun === undefined) return undefined;
 
-    const activeRun = persistedState.reviewRuns.find((run) => run.status === 'running');
+    const activeRun = persistedState.reviewRuns.find(
+      (run) =>
+        run.status === 'running' ||
+        (run.status === 'cancelled' && run.error === REVIEW_CANCELLATION_PENDING_ERROR),
+    );
     const supervisor: SupervisorState = {
       workflowId,
       repositoryId: input.repositoryId,
       pullRequestNumber: input.pullRequestNumber,
-      sandboxId: usableRun.sandboxId,
+      sandboxId: activeRun?.sandboxId ?? usableRun.sandboxId,
       headSha: activeRun?.headSha ?? input.headSha,
       activeRunId: activeRun?.id,
       reviewedHeadShas: persistedState.reviewRuns
@@ -1758,7 +1922,8 @@ export class ReviewWorkflowEngine {
         .map((run) => run.headSha),
       status: 'running',
       input,
-      checkRunId: usableRun.checkRunId,
+      activeRunInput: activeRun?.userId === input.userId ? input : undefined,
+      checkRunId: activeRun?.checkRunId ?? usableRun.checkRunId,
       activeAgents: new Map(),
       runPromises: new Map(),
     };
@@ -1825,6 +1990,14 @@ function getSandboxBillingWindows(
   }
 
   return windows;
+}
+
+function parsePullRequestWorkflowId(
+  workflowId: string,
+): { repositoryId: number; pullRequestNumber: number } | undefined {
+  const match = /^review:pr:(\d+):(\d+)$/.exec(workflowId);
+  if (match === null) return undefined;
+  return { repositoryId: Number(match[1]), pullRequestNumber: Number(match[2]) };
 }
 
 function floorToUtcHour(date: Date): Date {
@@ -2009,6 +2182,40 @@ function buildCompletedCheckRunPatch(
       annotations,
     },
   };
+}
+
+function buildCancelledWorkflowCheckRunPatch(
+  cancellationReason: WorkflowCancellationReason,
+): CheckRunPatch {
+  switch (cancellationReason) {
+    case 'reviews_paused':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Reviews paused; stopped in-flight review work.',
+        },
+      };
+    case 'repository_unwatched':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Repository unwatched; stopped in-flight review work.',
+        },
+      };
+    case 'repository_removed':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Repository removed; stopped in-flight review work.',
+        },
+      };
+  }
 }
 
 function deduplicateAgentResultFindings(agentResults: AgentResult[]): AgentResult[] {

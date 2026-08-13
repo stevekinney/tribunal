@@ -66,9 +66,18 @@ export const githubContext: GithubServiceContext = {
       );
     }
   },
-  async cancelWorkflowsById(workflowIds) {
-    const result = await cancelReviewWorkflowsEngine(workflowIds);
+  async cancelWorkflowsById(workflowIds, cancellationReason, userId) {
+    const result =
+      cancellationReason === undefined && userId === undefined
+        ? await cancelReviewWorkflowsEngine(workflowIds)
+        : await cancelReviewWorkflowsEngine(workflowIds, cancellationReason, userId);
     if (result.status === 'not_configured') {
+      if (userId !== undefined) {
+        return createFailedWorkflowCancellationResult(
+          workflowIds,
+          new Error('User-scoped review workflow cancellation is not configured.'),
+        );
+      }
       console.warn(
         '[github-context] Review workflow engine control is not configured; falling back to local cancellation.',
         { workflowCount: workflowIds.length, missingSettings: result.missingSettings },

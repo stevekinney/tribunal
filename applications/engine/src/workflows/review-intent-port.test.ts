@@ -84,6 +84,59 @@ describe('createDatabaseReviewIntentPort', () => {
     expect(intent?.processedAt).toEqual(new Date('2026-06-17T12:01:00.000Z'));
   });
 
+  it('durably cancels a claimed intent and makes its claim inactive', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    });
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+    const claimedAt = new Date('2026-06-17T12:00:00.000Z');
+    const cancelledAt = new Date('2026-06-17T12:01:00.000Z');
+    const claimed = await port.claimNextReviewIntent(claimedAt);
+
+    await expect(port.isReviewIntentClaimActive('intent_1', claimedAt)).resolves.toBe(true);
+    await expect(
+      port.cancelClaimedReviewIntents(user.id, repository.id, 7, cancelledAt),
+    ).resolves.toEqual(['intent_1']);
+    await expect(port.isReviewIntentClaimActive('intent_1', claimedAt)).resolves.toBe(false);
+
+    expect(claimed?.id).toBe('intent_1');
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({
+      processedAt: cancelledAt,
+      lastError: 'Cancelled by review policy.',
+    });
+  });
+
+  it('does not consume an unclaimed intent whose queued Check Run still needs processing', async () => {
+    const { user, repository } = await createReviewIntentFixture();
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(
+      port.cancelClaimedReviewIntents(
+        user.id,
+        repository.id,
+        7,
+        new Date('2026-06-17T12:01:00.000Z'),
+      ),
+    ).resolves.toEqual([]);
+
+    const [intent] = await testDatabase.db
+      .select()
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_1'));
+    expect(intent).toMatchObject({ claimedAt: null, processedAt: null, lastError: null });
+  });
+
   it("carries the user's stored default_model onto the claimed review workflow input", async () => {
     const { user, repository } = await createReviewIntentFixture({ defaultModel: 'opus' });
     await testDatabase.db.insert(agent).values({

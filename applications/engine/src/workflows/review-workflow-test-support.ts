@@ -29,6 +29,7 @@ import {
   type ReviewWorkflowStatePort,
   type DurableReviewWorkflowState,
 } from './review-workflow';
+import { createPullRequestWorkflowId } from './identifiers';
 
 /**
  * Shared fixtures and fakes for `review-workflow.test.ts` and
@@ -174,6 +175,7 @@ export type FakePortOptions = {
 
 class FakeReviewIntentPort implements ReviewIntentPort {
   private readonly intents: ReviewIntent[] = [];
+  private readonly claimedIntents = new Map<string, ClaimedReviewIntent>();
   readonly processedIntentIds: string[] = [];
   readonly failedIntentErrors: Array<{ intentId: string; message: string }> = [];
 
@@ -185,7 +187,10 @@ class FakeReviewIntentPort implements ReviewIntentPort {
 
   async claimNextReviewIntent(now: Date): Promise<ClaimedReviewIntent | null> {
     const intent = this.intents.shift();
-    return intent === undefined ? null : { ...intent, claimedAt: now };
+    if (intent === undefined) return null;
+    const claimedIntent = { ...intent, claimedAt: now };
+    this.claimedIntents.set(intent.id, claimedIntent);
+    return claimedIntent;
   }
 
   async markReviewIntentProcessed(
@@ -194,8 +199,32 @@ class FakeReviewIntentPort implements ReviewIntentPort {
     _now: Date,
   ): Promise<boolean> {
     if (this.options.processedIntentClaimMatches === false) return false;
+    this.claimedIntents.delete(intentId);
     this.processedIntentIds.push(intentId);
     return true;
+  }
+
+  async isReviewIntentClaimActive(intentId: string, claimedAt: Date): Promise<boolean> {
+    return this.claimedIntents.get(intentId)?.claimedAt.getTime() === claimedAt.getTime();
+  }
+
+  async cancelClaimedReviewIntents(
+    userId: number,
+    repositoryId: number,
+    pullRequestNumber: number,
+  ): Promise<string[]> {
+    const cancelledIds: string[] = [];
+    for (const [intentId, intent] of this.claimedIntents) {
+      if (
+        intent.pullRequest.userId === userId &&
+        intent.pullRequest.repositoryId === repositoryId &&
+        intent.pullRequest.pullRequestNumber === pullRequestNumber
+      ) {
+        this.claimedIntents.delete(intentId);
+        cancelledIds.push(intentId);
+      }
+    }
+    return cancelledIds;
   }
 
   async markReviewIntentFailed(
@@ -224,11 +253,16 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   private clearedClaimSinceLastClaim = false;
   private ownershipCheckFailureCountdown: number | undefined;
   private claimRefreshFailureCountdown: number | undefined;
+  private readonly stopInputs = new Map<string, PullRequestReviewInput>();
 
   constructor(private readonly options: FakePortOptions = {}) {}
 
   seedReviewRun(run: ReviewRunRecord): void {
     this.reviewRuns.push(run);
+  }
+
+  seedStopInput(input: PullRequestReviewInput): void {
+    this.stopInputs.set(createPullRequestWorkflowId(input), input);
   }
 
   reportAlreadyPostedOnNextClaim(commentsPosted: number): void {
@@ -264,17 +298,24 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
       reviewRuns: this.reviewRuns.filter(
         (run) =>
           run.repositoryId === input.repositoryId &&
-          run.pullRequestNumber === input.pullRequestNumber,
+          run.pullRequestNumber === input.pullRequestNumber &&
+          run.userId === input.userId,
       ),
       agentRuns: this.agentRuns.filter((agentRun) =>
         this.reviewRuns.some(
           (reviewRun) =>
             reviewRun.id === agentRun.reviewRunId &&
             reviewRun.repositoryId === input.repositoryId &&
-            reviewRun.pullRequestNumber === input.pullRequestNumber,
+            reviewRun.pullRequestNumber === input.pullRequestNumber &&
+            reviewRun.userId === input.userId,
         ),
       ),
     };
+  }
+
+  async loadPullRequestInputForStop(workflowId: string, userId: number) {
+    const input = this.stopInputs.get(workflowId);
+    return input?.userId === userId ? input : undefined;
   }
 
   async upsertReviewRun(run: ReviewRunRecord): Promise<void> {

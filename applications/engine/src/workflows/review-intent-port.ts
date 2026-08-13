@@ -1,5 +1,6 @@
 import type { Database } from '@tribunal/database';
 import { and, asc, eq, isNull, sql } from '@tribunal/database/operators';
+import { isNotNull } from 'drizzle-orm';
 import {
   agent,
   githubInstallation,
@@ -118,6 +119,36 @@ export function createDatabaseReviewIntentPort(
     },
     markReviewIntentFailed(intentId: string, claimedAt: Date, now: Date, error: unknown) {
       return markReviewIntentFailed(database, intentId, claimedAt, now, error);
+    },
+    async isReviewIntentClaimActive(intentId: string, claimedAt: Date) {
+      const [row] = await database
+        .select({ id: reviewIntent.id })
+        .from(reviewIntent)
+        .where(
+          and(
+            eq(reviewIntent.id, intentId),
+            eq(reviewIntent.claimedAt, claimedAt),
+            isNull(reviewIntent.processedAt),
+          ),
+        )
+        .limit(1);
+      return row !== undefined;
+    },
+    async cancelClaimedReviewIntents(userId, repositoryId, pullRequestNumber, now) {
+      return database
+        .update(reviewIntent)
+        .set({ processedAt: now, lastError: 'Cancelled by review policy.' })
+        .where(
+          and(
+            eq(reviewIntent.userId, userId),
+            eq(reviewIntent.repositoryId, repositoryId),
+            eq(reviewIntent.prNumber, pullRequestNumber),
+            isNotNull(reviewIntent.claimedAt),
+            isNull(reviewIntent.processedAt),
+          ),
+        )
+        .returning({ id: reviewIntent.id })
+        .then((rows) => rows.map(({ id }) => id));
     },
   };
 }

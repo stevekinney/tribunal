@@ -102,16 +102,18 @@ describe('installation-lifecycle', () => {
   describe('handleInstallationDeleted', () => {
     it('cancels active workflows for all repositories in the installation', async () => {
       const factories = setupFactories();
-      const installation = await factories.githubInstallation.create();
+      const owner = await factories.user.create();
+      const installation = await factories.githubInstallation.createForUser(owner.id);
       const repository = await factories.repository.create({
         installationId: installation.installationId,
       });
 
       // Create an active workflow for the repository
       const workflow = await factories.workflowRun.create({
-        workspaceId: 1,
+        workspaceId: owner.id,
         repositoryId: repository.id,
         phase: 'executing',
+        triggeredByUserId: owner.id,
       });
 
       await handleInstallationDeleted(context, installation.installationId);
@@ -140,16 +142,18 @@ describe('installation-lifecycle', () => {
 
     it('cancels active workflows for removed repositories', async () => {
       const factories = setupFactories();
-      const installation = await factories.githubInstallation.create();
+      const owner = await factories.user.create();
+      const installation = await factories.githubInstallation.createForUser(owner.id);
       const repository = await factories.repository.create({
         installationId: installation.installationId,
       });
 
       // Create an active workflow
       const workflow = await factories.workflowRun.create({
-        workspaceId: 1,
+        workspaceId: owner.id,
         repositoryId: repository.id,
         phase: 'executing',
+        triggeredByUserId: owner.id,
       });
 
       await handleRepositoriesRemoved(context, installation.installationId, [repository.id]);

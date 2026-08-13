@@ -709,6 +709,10 @@ describe('database review workflow state port', () => {
       trigger: 'opened',
       agents: [],
     });
+    const stopInput = await port.loadPullRequestInputForStop(
+      'review:pr:42:7',
+      installation.userId!,
+    );
 
     expect(state.reviewRuns).toEqual([
       expect.objectContaining({
@@ -720,6 +724,18 @@ describe('database review workflow state port', () => {
         checkRunId: 9001,
       }),
     ]);
+    expect(stopInput).toMatchObject({
+      userId: installation.userId,
+      repositoryId: createdRepository.id,
+      installationId: installation.installationId,
+      repository: {
+        owner: createdRepository.owner,
+        name: createdRepository.name,
+        repositoryId: createdRepository.id,
+      },
+      pullRequestNumber: 7,
+      checkRunId: 9001,
+    });
     expect(state.agentRuns).toEqual([
       expect.objectContaining({
         id: 'arun:run:42:7:aaa111:opened:agent_security',

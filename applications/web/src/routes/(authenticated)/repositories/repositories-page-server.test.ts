@@ -343,6 +343,25 @@ describe('/repositories actions.watch', () => {
     expect(mockSaveRepositoryWatchSettings).not.toHaveBeenCalled();
   });
 
+  it('returns the unwatch failure instead of redirecting after engine cancellation fails', async () => {
+    mockSetRepositoryWatched.mockResolvedValue({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+      type: 'failure',
+    });
+
+    const result = await actions.watch({
+      locals: { user: { id: 1 } },
+      request: createRequest({ repositoryId: '2' }),
+    } as never);
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+    });
+    expect(mockSaveRepositoryWatchSettings).not.toHaveBeenCalled();
+  });
+
   it('saves watch settings using the submitted ignoreGlobs and agentIds', async () => {
     mockSaveRepositoryWatchSettings.mockResolvedValue({ success: true });
 

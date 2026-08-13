@@ -143,6 +143,23 @@ describe('githubContext', () => {
     expect(mocks.cancelReviewWorkflowsEngine).toHaveBeenCalledWith(['review:pr:42:7']);
   });
 
+  it('forwards policy reason and user ownership to the engine owner', async () => {
+    mocks.cancelReviewWorkflowsEngine.mockResolvedValue({
+      status: 'sent',
+      ok: true,
+      responseStatus: 202,
+    });
+    const cancelWorkflowsById = getCancelWorkflowsById();
+
+    await cancelWorkflowsById(['review:pr:42:7'], 'repository_removed', 17);
+
+    expect(mocks.cancelReviewWorkflowsEngine).toHaveBeenCalledWith(
+      ['review:pr:42:7'],
+      'repository_removed',
+      17,
+    );
+  });
+
   it('reports production workflow cancellation delivery failures', async () => {
     mocks.cancelReviewWorkflowsEngine.mockResolvedValue({
       status: 'sent',
@@ -209,6 +226,23 @@ describe('githubContext', () => {
     });
 
     expect(cancel).toHaveBeenCalledWith('review:pr:42:7');
+  });
+
+  it('fails closed instead of falling back locally for user-scoped cancellation', async () => {
+    mocks.cancelReviewWorkflowsEngine.mockResolvedValue({
+      status: 'not_configured',
+      missingSettings: ['TRIBUNAL_ENGINE_URL'],
+    });
+    const cancelWorkflowsById = getCancelWorkflowsById();
+
+    await expect(
+      cancelWorkflowsById(['review:pr:42:7'], 'repository_removed', 17),
+    ).resolves.toEqual({
+      cancelled: 0,
+      failed: 1,
+      errors: ['review:pr:42:7: User-scoped review workflow cancellation is not configured.'],
+    });
+    expect(mocks.getWeftClient).not.toHaveBeenCalled();
   });
 
   it('fails closed when engine control and local cancellation are both absent', async () => {

@@ -1,7 +1,8 @@
 import type { EngineLeaseHealth } from '@lostgradient/weft';
 import { createCostPort } from '@tribunal/cost';
 import { createDatabase, type Database } from '@tribunal/database';
-import { and, desc, eq, inArray, isNull, sql } from '@tribunal/database/operators';
+import { and, desc, eq, inArray, isNull, ne, or, sql } from '@tribunal/database/operators';
+import { isNotNull } from 'drizzle-orm';
 import {
   agentRun,
   agentEvent,
@@ -22,7 +23,7 @@ import {
   findPostedPullRequestReview,
   postPullRequestReview,
 } from '@tribunal/github/reviews/pull-request-reviews';
-import type { GithubServiceContext } from '@tribunal/github/context';
+import type { GithubServiceContext, WorkflowCancellationReason } from '@tribunal/github/context';
 import {
   createSandboxPort,
   type SandboxAdapter,
@@ -169,8 +170,12 @@ export function createReviewIntentConsumer(
     stopReviewRun(reviewRunId: string) {
       return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
     },
-    stopReviewWorkflow(workflowId: string) {
-      return reviewWorkflowEngine.stopWorkflow(workflowId);
+    stopReviewWorkflow(
+      workflowId: string,
+      cancellationReason?: WorkflowCancellationReason,
+      userId?: number,
+    ) {
+      return reviewWorkflowEngine.stopWorkflow(workflowId, cancellationReason, userId);
     },
     stopReviewAgent(reviewRunId: string, agentId: string) {
       return reviewWorkflowEngine.stopAgent(reviewRunId, agentId, 'timeout');
@@ -436,6 +441,7 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
           and(
             eq(pullRequestReviewRun.repositoryId, input.repositoryId),
             eq(pullRequestReviewRun.prNumber, input.pullRequestNumber),
+            eq(tribunalRun.userId, input.userId),
           ),
         )
         .orderBy(desc(tribunalRun.startedAt));
@@ -453,6 +459,46 @@ export function createDatabaseReviewWorkflowStatePort(database: Database): Revie
       return {
         reviewRuns: rows.map((row) => toReviewRunRecord(row.run, row.review)),
         agentRuns: agentRunRows.map(toAgentRunRecord),
+      };
+    },
+    async loadPullRequestInputForStop(workflowId, userId) {
+      const [row] = await database
+        .select({ run: tribunalRun, review: pullRequestReviewRun, repository: repositoryTable })
+        .from(pullRequestReviewRun)
+        .innerJoin(tribunalRun, eq(tribunalRun.id, pullRequestReviewRun.runId))
+        .innerJoin(repositoryTable, eq(repositoryTable.id, tribunalRun.repositoryId))
+        .where(
+          and(
+            eq(tribunalRun.workflowId, workflowId),
+            eq(tribunalRun.userId, userId),
+            or(
+              eq(tribunalRun.status, 'running'),
+              and(eq(tribunalRun.status, 'cancelled'), isNotNull(tribunalRun.error)),
+              and(isNotNull(tribunalRun.sandboxId), ne(tribunalRun.sandboxId, '')),
+            ),
+          ),
+        )
+        .orderBy(desc(tribunalRun.startedAt))
+        .limit(1);
+      if (row === undefined || row.repository.installationId === null) return undefined;
+
+      const run = toReviewRunRecord(row.run, row.review);
+      return {
+        userId: run.userId,
+        repositoryId: run.repositoryId,
+        installationId: row.repository.installationId,
+        repository: {
+          owner: row.repository.owner,
+          name: row.repository.name,
+          repositoryId: row.repository.id,
+        },
+        pullRequestNumber: run.pullRequestNumber,
+        headSha: run.headSha,
+        trigger: run.trigger,
+        agents: [],
+        defaultModel: 'sonnet',
+        ignoreGlobs: [],
+        checkRunId: run.checkRunId,
       };
     },
     // Runs a single multi-CTE statement so the parent (`tribunal_run`) and

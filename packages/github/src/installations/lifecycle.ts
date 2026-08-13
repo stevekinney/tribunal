@@ -6,11 +6,20 @@
  */
 
 import { isWeftFault } from '@lostgradient/weft';
-import { and, eq, inArray } from 'drizzle-orm';
-import type { GithubServiceContext, WorkflowCancellationResult } from '../context.js';
-import { repository, pullRequestState } from '@tribunal/database/schema';
+import { and, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import {
+  isWorkflowCancellationReason,
+  type GithubServiceContext,
+  type WorkflowCancellationResult,
+} from '../context.js';
+import {
+  pullRequestReviewRun,
+  repository,
+  reviewIntent,
+  tribunalRun,
+} from '@tribunal/database/schema';
 import { workflowRun, type WorkflowPhase } from '@tribunal/database/schema';
-import { deleteInstallation, updateInstallationStatus } from './records.js';
+import { deleteInstallation, getInstallationById, updateInstallationStatus } from './records.js';
 import { markInstallationRepositoryInactive } from '../repositories/service.js';
 import { buildPullRequestOrchestratorWorkflowId } from '../pull-requests/state/workflow-signals.js';
 
@@ -30,34 +39,26 @@ function isWorkflowNotFound(error: unknown): boolean {
 async function cancelWeftWorkflowsById(
   context: GithubServiceContext,
   workflowIds: string[],
+  reason: string | undefined,
+  userId: number,
 ): Promise<WorkflowCancellationResult> {
   if (workflowIds.length === 0) {
     return { cancelled: 0, failed: 0, errors: [] };
   }
   if (context.cancelWorkflowsById !== undefined) {
-    return context.cancelWorkflowsById(workflowIds);
+    return context.cancelWorkflowsById(
+      workflowIds,
+      isWorkflowCancellationReason(reason) ? reason : undefined,
+      userId,
+    );
   }
-  const client = await context.resolveWeftClient?.().catch(() => null);
-  if (!client) {
-    return { cancelled: 0, failed: 0, errors: [] };
-  }
-
-  let cancelled = 0;
-  let failed = 0;
-  const errors: string[] = [];
-  for (const workflowId of workflowIds) {
-    try {
-      await client.cancel(workflowId);
-      cancelled++;
-    } catch (error) {
-      if (isWorkflowNotFound(error)) {
-        continue; // nothing running under this id — not an error
-      }
-      failed++;
-      errors.push(`${workflowId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return { cancelled, failed, errors };
+  return {
+    cancelled: 0,
+    failed: workflowIds.length,
+    errors: workflowIds.map(
+      (workflowId) => `${workflowId}: User-scoped workflow cancellation is not configured.`,
+    ),
+  };
 }
 
 // =============================================================================
@@ -105,6 +106,7 @@ export async function handleInstallationDeleted(
   installationId: number,
 ): Promise<void> {
   console.log('[lifecycle] Handling installation deleted', { installationId });
+  const installation = await getInstallationById(context, installationId);
 
   // Get repositories for this installation before deletion
   const repositories = await context.db
@@ -115,17 +117,23 @@ export async function handleInstallationDeleted(
   const repositoryIds = repositories.map((r) => r.id);
 
   // Cancel active workflows
-  if (repositoryIds.length > 0) {
+  if (repositoryIds.length > 0 && installation?.userId != null) {
     const result = await cancelWorkflowsForRepositories(
       context,
       repositoryIds,
       'installation_deleted',
+      installation.userId,
     );
     console.log('[lifecycle] Cancelled workflows for deleted installation', {
       installationId,
       repositoryCount: repositoryIds.length,
       ...result,
     });
+    if (result.failed > 0) {
+      throw new Error(
+        `Failed to cancel ${result.failed} workflow(s) for deleted installation: ${result.errors.join('; ')}`,
+      );
+    }
   }
 
   // Cancel the per-installation sync workflow in the engine process that owns
@@ -234,6 +242,7 @@ export async function handleRepositoriesRemoved(
     installationId,
     repositoryCount: repositoryIds.length,
   });
+  const installation = await getInstallationById(context, installationId);
 
   // Mark repositories as inactive
   await Promise.all(
@@ -243,7 +252,15 @@ export async function handleRepositoriesRemoved(
   );
 
   // Cancel active workflows for these repositories
-  const result = await cancelWorkflowsForRepositories(context, repositoryIds, 'repository_removed');
+  const result =
+    installation?.userId == null
+      ? { cancelled: 0, failed: 0, errors: [] }
+      : await cancelWorkflowsForRepositories(
+          context,
+          repositoryIds,
+          'repository_removed',
+          installation.userId,
+        );
   if (result.failed > 0) {
     throw new Error(
       `Failed to cancel ${result.failed} workflow(s) for removed repositories: ${result.errors.join('; ')}`,
@@ -268,6 +285,7 @@ export async function cancelWorkflowsForRepositories(
   context: GithubServiceContext,
   repositoryIds: number[],
   reason: string,
+  userId?: number,
 ): Promise<CancellationResult> {
   if (repositoryIds.length === 0) {
     return { cancelled: 0, failed: 0, errors: [] };
@@ -285,29 +303,60 @@ export async function cancelWorkflowsForRepositories(
       and(
         inArray(workflowRun.repositoryId, repositoryIds),
         inArray(workflowRun.phase, CANCELLABLE_PHASES),
+        ...(userId === undefined ? [] : [eq(workflowRun.triggeredByUserId, userId)]),
       ),
     );
 
   const runResult = await cancelWorkflows(context, activeWorkflows, reason);
 
-  // Also cancel the ported PR orchestrators directly by their stable Weft id.
-  // These runs are not recorded in workflow_run, so the query above misses them;
-  // without this, repository removal / installation deletion would leave in-flight
-  // PR analysis running. We derive the id for every non-closed PR in the removed
-  // repositories from pull_request_state.
-  const openPrs = await context.db
-    .select({ repositoryId: pullRequestState.repositoryId, prNumber: pullRequestState.prNumber })
-    .from(pullRequestState)
-    .where(
-      and(
-        inArray(pullRequestState.repositoryId, repositoryIds),
-        eq(pullRequestState.state, 'open'),
+  // Review workflow ids are shared by repository and pull request, so only
+  // derive ids from active runs owned by the installation's Tribunal user.
+  const activeReviews =
+    userId === undefined
+      ? []
+      : await context.db
+          .select({
+            repositoryId: pullRequestReviewRun.repositoryId,
+            prNumber: pullRequestReviewRun.prNumber,
+          })
+          .from(tribunalRun)
+          .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+          .where(
+            and(
+              eq(tribunalRun.userId, userId),
+              inArray(tribunalRun.repositoryId, repositoryIds),
+              or(
+                inArray(tribunalRun.status, ['queued', 'running']),
+                and(eq(tribunalRun.status, 'cancelled'), isNotNull(tribunalRun.error)),
+                and(isNotNull(tribunalRun.sandboxId), ne(tribunalRun.sandboxId, '')),
+              ),
+            ),
+          );
+  const claimedIntents =
+    userId === undefined
+      ? []
+      : await context.db
+          .select({ repositoryId: reviewIntent.repositoryId, prNumber: reviewIntent.prNumber })
+          .from(reviewIntent)
+          .where(
+            and(
+              eq(reviewIntent.userId, userId),
+              inArray(reviewIntent.repositoryId, repositoryIds),
+              isNotNull(reviewIntent.claimedAt),
+              isNull(reviewIntent.processedAt),
+            ),
+          );
+  const orchestratorIds = [
+    ...new Set(
+      [...activeReviews, ...claimedIntents].map((review) =>
+        buildPullRequestOrchestratorWorkflowId(review.repositoryId, review.prNumber),
       ),
-    );
-  const orchestratorIds = openPrs.map((pr) =>
-    buildPullRequestOrchestratorWorkflowId(pr.repositoryId, pr.prNumber),
-  );
-  const orchestratorResult = await cancelWeftWorkflowsById(context, orchestratorIds);
+    ),
+  ];
+  const orchestratorResult =
+    userId === undefined
+      ? { cancelled: 0, failed: 0, errors: [] }
+      : await cancelWeftWorkflowsById(context, orchestratorIds, reason, userId);
 
   return {
     cancelled: runResult.cancelled + orchestratorResult.cancelled,

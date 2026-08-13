@@ -4,7 +4,9 @@ import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, type AllFactories } from '@tribunal/test/factories';
 import {
   githubInstallationRepository,
-  pullRequestState,
+  pullRequestReviewRun,
+  reviewIntent,
+  tribunalRun,
   workflowRun,
 } from '@tribunal/database/schema';
 import type { Database } from '@tribunal/database';
@@ -52,11 +54,38 @@ function createContext(overrides: Partial<GithubServiceContext> = {}): GithubSer
   };
 }
 
+async function createActiveReview(userId: number, repositoryId: number, prNumber: number) {
+  const runId = `review:${userId}:${repositoryId}:${prNumber}`;
+  await testDatabase.db.insert(tribunalRun).values({
+    id: runId,
+    userId,
+    repositoryId,
+    runKind: 'pull_request_review',
+    status: 'running',
+    workflowId: `review:pr:${repositoryId}:${prNumber}`,
+  });
+  await testDatabase.db.insert(pullRequestReviewRun).values({
+    runId,
+    userId,
+    repositoryId,
+    prNumber,
+    headSha: 'abc123',
+    trigger: 'opened',
+  });
+}
+
 describe('handleInstallationDeleted', () => {
   it('cancels active workflows, the installation sync workflow, and deletes the installation', async () => {
-    const installation = await factories.githubInstallation.create({ installationId: 7001 });
+    const owner = await factories.user.create();
+    const installation = await factories.githubInstallation.create({
+      installationId: 7001,
+      userId: owner.id,
+    });
     const repository = await factories.repository.create({ installationId: 7001 });
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
 
     const cancel = vi.fn().mockResolvedValue(undefined);
     const cancelInstallationSync = vi.fn().mockResolvedValue(undefined);
@@ -93,6 +122,30 @@ describe('handleInstallationDeleted', () => {
     const installation = await factories.githubInstallation.create({ installationId: 7009 });
     const context = createContext({
       cancelInstallationSync: vi.fn().mockRejectedValue(new Error('engine unavailable')),
+    });
+
+    await expect(handleInstallationDeleted(context, installation.installationId)).rejects.toThrow(
+      'engine unavailable',
+    );
+
+    const remaining = await getInstallationById(context, installation.installationId);
+    expect(remaining).not.toBeNull();
+  });
+
+  it('does not delete the installation when review cancellation fails', async () => {
+    const owner = await factories.user.create();
+    const installation = await factories.githubInstallation.create({
+      installationId: 7011,
+      userId: owner.id,
+    });
+    const repository = await factories.repository.create({ installationId: 7011 });
+    await createActiveReview(owner.id, repository.id, 7);
+    const context = createContext({
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 0,
+        failed: 1,
+        errors: [`review:pr:${repository.id}:7: engine unavailable`],
+      }),
     });
 
     await expect(handleInstallationDeleted(context, installation.installationId)).rejects.toThrow(
@@ -166,13 +219,20 @@ describe('handleRepositoriesRemoved', () => {
   });
 
   it('marks repositories inactive and cancels their active workflows', async () => {
-    const installation = await factories.githubInstallation.create({ installationId: 7007 });
+    const owner = await factories.user.create();
+    const installation = await factories.githubInstallation.create({
+      installationId: 7007,
+      userId: owner.id,
+    });
     const repository = await factories.repository.create({ installationId: 7007 });
     await testDatabase.db.insert(githubInstallationRepository).values({
       installationId: installation.installationId,
       repositoryId: repository.id,
     });
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'pending' });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'pending',
+      triggeredByUserId: owner.id,
+    });
     const cancel = vi.fn().mockResolvedValue(undefined);
     const context = createContext({
       resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
@@ -195,13 +255,20 @@ describe('handleRepositoriesRemoved', () => {
   });
 
   it('throws when production remote cancellation cannot be delivered', async () => {
-    const installation = await factories.githubInstallation.create({ installationId: 7010 });
+    const owner = await factories.user.create();
+    const installation = await factories.githubInstallation.create({
+      installationId: 7010,
+      userId: owner.id,
+    });
     const repository = await factories.repository.create({ installationId: 7010 });
     await testDatabase.db.insert(githubInstallationRepository).values({
       installationId: installation.installationId,
       repositoryId: repository.id,
     });
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
     const context = createContext({
       cancelWorkflowsById: vi.fn().mockResolvedValue({
         cancelled: 0,
@@ -248,14 +315,14 @@ describe('cancelWorkflowsForRepositories', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it('cancels workflow_run rows and ported PR orchestrators by their stable id', async () => {
+  it('cancels generic rows locally but refuses user-scoped review cancellation', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'cloning' });
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 42,
-      state: 'open',
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'cloning',
+      triggeredByUserId: owner.id,
     });
+    await createActiveReview(owner.id, repository.id, 42);
     const cancel = vi.fn().mockResolvedValue(undefined);
     const context = createContext({
       resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
@@ -265,22 +332,27 @@ describe('cancelWorkflowsForRepositories', () => {
       context,
       [repository.id],
       'repository_removed',
+      owner.id,
     );
 
-    expect(result.cancelled).toBe(2);
-    expect(result.failed).toBe(0);
-    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(result.cancelled).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.errors[0]).toContain('User-scoped workflow cancellation is not configured');
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('uses the remote engine cancellation port when production web owns no local Weft client', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'cloning' });
-    await factories.workflowRun.createForRepository(1, repository.id, { phase: 'executing' });
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 42,
-      state: 'open',
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'cloning',
+      triggeredByUserId: owner.id,
     });
+    await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
+    await createActiveReview(owner.id, repository.id, 42);
     const cancelWorkflowsById = vi.fn().mockResolvedValue({
       cancelled: 1,
       failed: 0,
@@ -294,6 +366,7 @@ describe('cancelWorkflowsForRepositories', () => {
       context,
       [repository.id],
       'repository_removed',
+      owner.id,
     );
 
     expect(result.cancelled).toBe(3);
@@ -302,7 +375,131 @@ describe('cancelWorkflowsForRepositories', () => {
       expect.stringMatching(/^workflow:/),
       expect.stringMatching(/^workflow:/),
     ]);
-    expect(cancelWorkflowsById).toHaveBeenCalledWith(['review:pr:' + repository.id + ':42']);
+    expect(cancelWorkflowsById).toHaveBeenCalledWith(
+      ['review:pr:' + repository.id + ':42'],
+      'repository_removed',
+      owner.id,
+    );
+  });
+
+  it('discovers an idle open-pull-request supervisor from its retained sandbox', async () => {
+    const owner = await factories.user.create();
+    const repository = await factories.repository.create();
+    const runId = `review:${owner.id}:${repository.id}:45`;
+    await testDatabase.db.insert(tribunalRun).values({
+      id: runId,
+      userId: owner.id,
+      repositoryId: repository.id,
+      runKind: 'pull_request_review',
+      status: 'posted',
+      workflowId: `review:pr:${repository.id}:45`,
+      sandboxId: 'sandbox-idle',
+    });
+    await testDatabase.db.insert(pullRequestReviewRun).values({
+      runId,
+      userId: owner.id,
+      repositoryId: repository.id,
+      prNumber: 45,
+      headSha: 'abc123',
+      trigger: 'opened',
+      checkRunId: 9001,
+    });
+    const cancelWorkflowsById = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+
+    await cancelWorkflowsForRepositories(
+      createContext({ cancelWorkflowsById }),
+      [repository.id],
+      'repository_removed',
+      owner.id,
+    );
+
+    expect(cancelWorkflowsById).toHaveBeenCalledWith(
+      [`review:pr:${repository.id}:45`],
+      'repository_removed',
+      owner.id,
+    );
+  });
+
+  it('scopes repository removal cancellation to the installation owner', async () => {
+    const owner = await factories.user.create();
+    const otherOwner = await factories.user.create();
+    const repository = await factories.repository.create();
+    await createActiveReview(owner.id, repository.id, 42);
+    await createActiveReview(otherOwner.id, repository.id, 42);
+    await testDatabase.db.insert(reviewIntent).values([
+      {
+        id: 'claimed_owner_review',
+        deliveryId: 'delivery_owner',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: owner.id,
+        prNumber: 43,
+        claimedAt: new Date('2026-08-13T18:00:00Z'),
+      },
+      {
+        id: 'claimed_other_owner_review',
+        deliveryId: 'delivery_other_owner',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: otherOwner.id,
+        prNumber: 44,
+        claimedAt: new Date('2026-08-13T18:00:00Z'),
+      },
+    ]);
+    const ownerWorkflow = await factories.workflowRun.createForRepository(owner.id, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
+    const otherWorkflow = await factories.workflowRun.createForRepository(
+      otherOwner.id,
+      repository.id,
+      { phase: 'executing', triggeredByUserId: otherOwner.id },
+    );
+    const cancelWorkflowsById = vi.fn().mockImplementation(async (workflowIds: string[]) => ({
+      cancelled: workflowIds.length,
+      failed: 0,
+      errors: [],
+    }));
+    const context = createContext({ cancelWorkflowsById });
+
+    await cancelWorkflowsForRepositories(context, [repository.id], 'repository_removed', owner.id);
+
+    expect(cancelWorkflowsById).toHaveBeenCalledWith([ownerWorkflow.workflowId]);
+    expect(cancelWorkflowsById).toHaveBeenCalledWith(
+      [`review:pr:${repository.id}:42`, `review:pr:${repository.id}:43`],
+      'repository_removed',
+      owner.id,
+    );
+    const rows = await testDatabase.db.select().from(workflowRun);
+    expect(rows.find((run) => run.id === ownerWorkflow.id)?.phase).toBe('cancelled');
+    expect(rows.find((run) => run.id === otherWorkflow.id)?.phase).toBe('executing');
+  });
+
+  it('scopes workflow cancellation by triggering user rather than workspace id', async () => {
+    const owner = await factories.user.create();
+    const repository = await factories.repository.create();
+    const ownedWorkflow = await factories.workflowRun.createForRepository(9001, repository.id, {
+      phase: 'executing',
+      triggeredByUserId: owner.id,
+    });
+    const cancelWorkflowsById = vi.fn().mockResolvedValue({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+
+    await cancelWorkflowsForRepositories(
+      createContext({ cancelWorkflowsById }),
+      [repository.id],
+      'repository_removed',
+      owner.id,
+    );
+
+    expect(cancelWorkflowsById).toHaveBeenCalledWith([ownedWorkflow.workflowId]);
   });
 
   it('does not report success when remote workflow cancellation delivery fails', async () => {
@@ -386,67 +583,66 @@ describe('cancelWorkflowsForRepositories', () => {
     expect(run.phase).toBe('cancelled');
   });
 
-  it('treats missing orchestrator engine configuration as nothing to cancel', async () => {
+  it('fails user-scoped cancellation when the authenticated engine port is absent', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 44,
-      state: 'open',
-    });
+    await createActiveReview(owner.id, repository.id, 44);
     const context = createContext();
 
-    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test', owner.id);
 
-    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
+    expect(result).toEqual({
+      cancelled: 0,
+      failed: 1,
+      errors: [
+        `review:pr:${repository.id}:44: User-scoped workflow cancellation is not configured.`,
+      ],
+    });
   });
 
-  it('treats an unavailable orchestrator engine as nothing to cancel', async () => {
+  it('does not fall back to a local engine for user-scoped cancellation', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 46,
-      state: 'open',
-    });
+    await createActiveReview(owner.id, repository.id, 46);
     const context = createContext({
       resolveWeftClient: vi.fn().mockRejectedValue(new Error('engine unavailable')),
     });
 
-    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test', owner.id);
 
-    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
+    expect(result.failed).toBe(1);
+    expect(result.errors[0]).toContain('User-scoped workflow cancellation is not configured');
+    expect(context.resolveWeftClient).not.toHaveBeenCalled();
   });
 
-  it('treats a missing PR orchestrator as already cancelled', async () => {
+  it('does not use generic local missing-workflow handling for user-scoped cancellation', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 45,
-      state: 'open',
-    });
-    const notFoundError = Object.assign(new Error('missing'), { code: 'WorkflowNotFoundError' });
-    const cancel = vi.fn().mockRejectedValue(notFoundError);
+    await createActiveReview(owner.id, repository.id, 45);
+    const cancel = vi.fn();
     const context = createContext({
       resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
     });
 
-    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test', owner.id);
 
-    expect(result).toEqual({ cancelled: 0, failed: 0, errors: [] });
+    expect(result.failed).toBe(1);
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it('counts a genuine PR orchestrator cancellation failure in the aggregated result', async () => {
+    const owner = await factories.user.create();
     const repository = await factories.repository.create();
-    await testDatabase.db.insert(pullRequestState).values({
-      repositoryId: repository.id,
-      prNumber: 99,
-      state: 'open',
-    });
-    const cancel = vi.fn().mockRejectedValue(new Error('orchestrator unreachable'));
+    await createActiveReview(owner.id, repository.id, 99);
     const context = createContext({
-      resolveWeftClient: vi.fn().mockResolvedValue({ cancel }),
+      cancelWorkflowsById: vi.fn().mockResolvedValue({
+        cancelled: 0,
+        failed: 1,
+        errors: [`review:pr:${repository.id}:99: orchestrator unreachable`],
+      }),
     });
 
-    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test');
+    const result = await cancelWorkflowsForRepositories(context, [repository.id], 'test', owner.id);
 
     expect(result.failed).toBe(1);
     expect(result.errors[0]).toContain('orchestrator unreachable');
