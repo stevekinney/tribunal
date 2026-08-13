@@ -44,6 +44,7 @@ async function resolvePushSchema() {
     const originalMessage = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Failed to load drizzle-kit/api. Make sure 'drizzle-kit' is installed. Original error: ${originalMessage}`,
+      { cause: error },
     );
   }
 }

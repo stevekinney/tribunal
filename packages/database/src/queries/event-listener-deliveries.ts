@@ -252,12 +252,7 @@ export async function markEventListenerDeliverySucceeded(
  * run's own lifecycle status takes over.
  */
 export type EventListenerDisplayStatus =
-  | 'matched'
-  | 'queued'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled';
+  'matched' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 /**
  * Maps a delivery's dispatch status (`event_listener_delivery.status`) and,

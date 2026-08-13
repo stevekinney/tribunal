@@ -12,7 +12,9 @@ test('operator UI happy path covers repositories, agents, runs, costs, and setti
   await expect(page.getByRole('link', { name: /e2e-owner-.*e2e-repository-/ })).toBeVisible();
   // No live GitHub installation exists in the E2E harness, so the dashboard
   // health columns honestly render "Unknown" rather than a guessed status.
-  await expect(page.getByText('Unknown').first()).toBeVisible();
+  await expect(
+    page.getByText('Unknown', { exact: true }).filter({ visible: true }).first(),
+  ).toBeVisible();
 
   await page.goto(`/repositories/${session.repository.id}/pull-requests`);
   await expect(page.getByRole('heading', { name: 'Pull requests', exact: true })).toBeVisible();

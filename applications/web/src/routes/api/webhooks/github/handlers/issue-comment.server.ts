@@ -36,9 +36,7 @@ export async function handleIssueComment(
 
 /** Library-validated issue_comment events handled by this dispatcher. */
 type IssueCommentEvent =
-  | IssueCommentCreatedEvent
-  | IssueCommentEditedEvent
-  | IssueCommentDeletedEvent;
+  IssueCommentCreatedEvent | IssueCommentEditedEvent | IssueCommentDeletedEvent;
 
 function acceptIssueComment(
   data: IssueCommentEvent,

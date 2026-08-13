@@ -73,10 +73,7 @@ export interface PullRequestDashboardRow {
 
 /** Why a repository row could not be fully populated from GitHub this build. */
 export type DashboardUnavailableReason =
-  | 'no-installation'
-  | 'api-budget-exhausted'
-  | 'rate-limited'
-  | 'github-error';
+  'no-installation' | 'api-budget-exhausted' | 'rate-limited' | 'github-error';
 
 /** One repository row on the dashboard. */
 export interface RepositoryDashboardRow {

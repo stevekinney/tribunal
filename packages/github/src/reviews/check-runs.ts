@@ -18,13 +18,7 @@ const ANNOTATION_BATCH_SPACING_MS = 1_000;
 
 type CheckRunStatus = 'queued' | 'in_progress' | 'completed';
 type CheckRunConclusion =
-  | 'success'
-  | 'failure'
-  | 'neutral'
-  | 'cancelled'
-  | 'skipped'
-  | 'timed_out'
-  | 'action_required';
+  'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required';
 type AnnotationLevel = 'notice' | 'warning' | 'failure';
 
 export interface CheckRunAnnotationInput {

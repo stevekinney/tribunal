@@ -92,7 +92,7 @@
   use:enhance={signOutBeforeSubmit}
 ></form>
 <Dropdown {id} class={className} placement={dropdownPlacement}>
-  <Dropdown.Trigger aria-label="User menu" showCaret={false}>
+  <Dropdown.Trigger aria-label="User menu" caretVisible={false}>
     <Avatar src={user.avatarUrl ?? undefined} alt={user.username} name={user.username} size="sm" />
   </Dropdown.Trigger>
   <Dropdown.Menu>

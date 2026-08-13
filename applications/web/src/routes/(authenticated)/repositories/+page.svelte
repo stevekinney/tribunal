@@ -15,7 +15,7 @@
   import { Tooltip } from '@lostgradient/cinder/tooltip';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
-  import { StatGroup } from '@lostgradient/cinder/stat-group';
+  import { StatisticGroup } from '@lostgradient/cinder/statistic-group';
   import { DataList } from '@lostgradient/cinder/data-list';
   import { StackedListItem } from '@lostgradient/cinder/stacked-list-item';
   import { Alert } from '@lostgradient/cinder/alert';
@@ -282,7 +282,7 @@
           placeholder="Search by owner or name…"
           options={addableRepositoryOptions}
           bind:value={repositoryToAddId}
-          bind:inputValue={repositoryToAddInput}
+          textInputValue={repositoryToAddInput}
         />
         <input type="hidden" name="watched" value="on" />
         <Button type="submit" variant="primary" size="sm" disabled={repositoryToAddId === ''}>
@@ -333,27 +333,27 @@
       </div>
     {:then summary}
       {#if summary}
-        <StatGroup label="Dashboard summary">
-          <StatGroup.Stat label="Repositories" value={summary.totalRepositoryCount} />
-          <StatGroup.Stat
+        <StatisticGroup label="Dashboard summary">
+          <StatisticGroup.Statistic label="Repositories" value={summary.totalRepositoryCount} />
+          <StatisticGroup.Statistic
             label="Failing default branch"
             value={summary.failingDefaultBranchCountExact
               ? summary.failingDefaultBranchCount
               : `${summary.failingDefaultBranchCount}+`}
           />
-          <StatGroup.Stat
+          <StatisticGroup.Statistic
             label="Open pull requests"
             value={summary.openPullRequestCountExact
               ? summary.openPullRequestCount
               : `${summary.openPullRequestCount}+`}
           />
-          <StatGroup.Stat
+          <StatisticGroup.Statistic
             label="Needs attention"
             value={summary.attentionPullRequestCountExact
               ? summary.attentionPullRequestCount
               : `${summary.attentionPullRequestCount}+`}
           />
-        </StatGroup>
+        </StatisticGroup>
       {/if}
 
       <ul class="attention-list-wrapper">
@@ -511,7 +511,7 @@
                       <StatusDot
                         status={ciStatusDotStatus(dashboard?.defaultBranchStatus ?? 'unknown')}
                         label={ciStatusLabel(dashboard?.defaultBranchStatus ?? 'unknown')}
-                        showLabel
+                        labelVisible
                         size="sm"
                       />
                       {#if dashboard?.dataStatus === 'unavailable'}

@@ -28,17 +28,17 @@
     "test:coverage": "vitest run --config vitest.configuration.ts --coverage"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.0.2",
-    "chalk": "^5.6.2",
-    "drizzle-orm": "^0.45.1",
-    "pg": "^8.21.0",
-    "zod": "^4.2.1"
+    "@neondatabase/serverless": "^1.1.0",
+    "chalk": "^6.0.0",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.23.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tribunal/typescript": "workspace:*",
-    "@neondatabase/api-client": "^1.6.0",
-    "@types/pg": "^8.16.0",
+    "@neondatabase/api-client": "^2.7.3",
+    "@types/pg": "^8.21.0",
     "change-case": "^5.4.4",
-    "drizzle-kit": "^0.31.8"
+    "drizzle-kit": "^0.31.10"
   }
 }

@@ -9,7 +9,7 @@
   import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
   import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
   import { Link } from '@lostgradient/cinder/link';
-  import { StatGroup } from '@lostgradient/cinder/stat-group';
+  import { StatisticGroup } from '@lostgradient/cinder/statistic-group';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
   import type { StatusDotStatus } from '@lostgradient/cinder/status-dot';
   import { invalidateAll } from '$app/navigation';
@@ -278,7 +278,7 @@
     <StatusDot
       connectionState={eventStreamConnectionState}
       label={connectionLabel}
-      showLabel={false}
+      labelVisible={false}
       size="sm"
     />
     {#if run.status === 'superseded'}
@@ -291,11 +291,11 @@
   </div>
 
   <div class="run-summary">
-    <StatGroup label="Run summary statistics" columns={3} variant="cards">
-      <StatGroup.Stat label="Agents" value={run.agentRuns.length} />
-      <StatGroup.Stat label="Est. cost" value={estimatedCost} />
-      <StatGroup.Stat label="Findings" value={totalFindings} />
-    </StatGroup>
+    <StatisticGroup label="Run summary statistics" columns={3} variant="cards">
+      <StatisticGroup.Statistic label="Agents" value={run.agentRuns.length} />
+      <StatisticGroup.Statistic label="Est. cost" value={estimatedCost} />
+      <StatisticGroup.Statistic label="Findings" value={totalFindings} />
+    </StatisticGroup>
     <Card padding="none">
       <div class="run-summary-detail">
         {#if run.runKind === 'pull_request_review'}
@@ -328,7 +328,7 @@
             <div class="agent-identity">
               <StatusDot
                 status={agentStatusDot(agentRun.status)}
-                showLabel={false}
+                labelVisible={false}
                 size="sm"
                 aria-hidden="true"
               />

@@ -256,7 +256,7 @@
                 <Checkbox
                   id="repo-{repository.id}"
                   checked={selectedIds.has(repository.id)}
-                  fieldClass="repo-row-checkbox"
+                  class="repo-row-checkbox"
                   onValueChange={(next) => {
                     if (next) {
                       selectedIds.add(repository.id);

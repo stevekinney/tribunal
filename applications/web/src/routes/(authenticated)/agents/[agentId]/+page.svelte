@@ -79,7 +79,7 @@
   description="This permanently deletes the agent. This action cannot be undone."
   destructive
   confirmLabel="Delete agent"
-  onconfirm={() => deleteFormElement?.requestSubmit()}
+  onConfirm={() => deleteFormElement?.requestSubmit()}
 />
 
 <style>

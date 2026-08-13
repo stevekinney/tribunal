@@ -195,8 +195,7 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
     // Production passes no services. Tests inject tiny values so the in-process
     // race-branch timers — which advanceTime cannot drive — fire in milliseconds.
     const services = ctx.services as
-      | { debounceDuration?: Duration; idleDuration?: Duration }
-      | undefined;
+      { debounceDuration?: Duration; idleDuration?: Duration } | undefined;
     const debounceDuration: Duration = services?.debounceDuration ?? DEBOUNCE_DURATION;
     const idleDuration: Duration = services?.idleDuration ?? IDLE_DURATION;
 
@@ -426,7 +425,8 @@ export const pullRequestOrchestratorWorkflow = workflow({ name: 'pull-request-or
     // fence can still skip a stale write if a prior run is still in flight.
     // FIX 4: only increment analysisCount on a non-error return.
     // =========================================================================
-    const finalGeneration = ++analysisGeneration;
+    analysisGeneration += 1;
+    const finalGeneration = analysisGeneration;
     ctx.log?.info('pull-request-orchestrator: running final analysis after close', {
       repositoryId,
       prNumber,

@@ -90,22 +90,20 @@ async function listE2EPullRequests(
       seenPullRequestNumbers.add(review.prNumber);
       return true;
     })
-    .map(
-      ({ run, review }): E2EPullRequest => ({
-        number: review.prNumber,
-        title: `E2E pull request #${review.prNumber}`,
-        state: 'open',
-        draft: false,
-        mergedAt: null,
-        htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${review.prNumber}`,
-        headRef: `e2e/pr-${review.prNumber}`,
-        headSha: review.headSha,
-        baseRef: 'main',
-        updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
-        author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },
-        status: statusForE2ERun(run.status),
-      }),
-    );
+    .map(({ run, review }): E2EPullRequest => ({
+      number: review.prNumber,
+      title: `E2E pull request #${review.prNumber}`,
+      state: 'open',
+      draft: false,
+      mergedAt: null,
+      htmlUrl: `https://github.com/${repository.owner}/${repository.name}/pull/${review.prNumber}`,
+      headRef: `e2e/pr-${review.prNumber}`,
+      headSha: review.headSha,
+      baseRef: 'main',
+      updatedAt: (run.finishedAt ?? run.startedAt ?? new Date()).toISOString(),
+      author: { login: 'e2e-contributor', htmlUrl: 'https://github.com/e2e-contributor' },
+      status: statusForE2ERun(run.status),
+    }));
 
   if (filters.state === 'closed') {
     synthesized = [];
