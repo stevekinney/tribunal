@@ -969,6 +969,9 @@ describe('ReviewWorkflowEngine', () => {
     const snapshot = engine.snapshot();
     expect(snapshot.supervisors[0]).toMatchObject({ status: 'closed', activeRunId: undefined });
     expect(ports.sandbox.terminateCalls).toEqual(['sandbox-tribunal-pr-42-7']);
+    expect(ports.cost.sandboxCostEvents[0]?.idempotencyKey).toContain(
+      'sandbox:sandbox-tribunal-pr-42-7:',
+    );
     expect(ports.sandbox.stopCalls).toHaveLength(1);
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'cancelled' },
@@ -2465,14 +2468,17 @@ describe('ReviewWorkflowEngine', () => {
   it('fences claimed user work that has not created its supervisor yet', async () => {
     const ports = createFakePorts();
     const engine = createEngine(ports);
+    ports.intents.enqueue(createIntent('intent_pending', 'delivery_pending', 'start', baseInput));
+    const claimedIntent = await ports.intents.claimNextReviewIntent(
+      new Date('2026-06-17T12:00:00.000Z'),
+    );
 
     await expect(
       engine.stopWorkflow('review:pr:42:7', 'reviews_paused', baseInput.userId),
     ).resolves.toEqual({ stopped: true });
 
-    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
-      'Cannot start a review for a closed pull request supervisor.',
-    );
+    await expect(engine.processClaimedReviewIntent(claimedIntent!)).resolves.toBeUndefined();
+    expect(ports.sandbox.ensureCalls).toEqual([]);
     expect(ports.sandbox.runAgentCalls).toEqual([]);
   });
 

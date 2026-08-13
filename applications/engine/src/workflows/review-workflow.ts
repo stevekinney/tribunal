@@ -108,6 +108,13 @@ export type ReviewIntentPort = {
     now: Date,
     error: unknown,
   ): Promise<void>;
+  isReviewIntentClaimActive(intentId: string, claimedAt: Date): Promise<boolean>;
+  cancelClaimedReviewIntents(
+    userId: number,
+    repositoryId: number,
+    pullRequestNumber: number,
+    now: Date,
+  ): Promise<string[]>;
 };
 
 export type ReviewWorkflowConfiguration = {
@@ -269,8 +276,6 @@ export function isReviewPostAlreadyClaimedError(error: unknown): boolean {
 }
 
 const staleReviewPostClaimMilliseconds = 5 * 60 * 1000;
-const pendingWorkflowStopLifetimeMilliseconds = 30_000;
-
 export type ReviewWorkflowSnapshot = {
   supervisors: PullRequestSupervisorSnapshot[];
   reviewRuns: ReviewRunRecord[];
@@ -296,7 +301,7 @@ export class ReviewWorkflowEngine {
   private readonly postedReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
   private readonly stoppingWorkflowIds = new Set<string>();
-  private readonly pendingWorkflowStopsByUser = new Map<string, Map<number, number>>();
+  private readonly cancelledReviewIntentIds = new Set<string>();
 
   constructor(
     private readonly ports: ReviewWorkflowPorts,
@@ -503,12 +508,24 @@ export class ReviewWorkflowEngine {
     cancellationReason: WorkflowCancellationReason = 'repository_removed',
     userId?: number,
   ): Promise<StopReviewRunResult> {
-    if (userId === undefined) this.stoppingWorkflowIds.add(workflowId);
+    this.stoppingWorkflowIds.add(workflowId);
+    if (userId !== undefined) {
+      const identity = parsePullRequestWorkflowId(workflowId);
+      if (identity !== undefined) {
+        const cancelledIntentIds = await this.ports.intents.cancelClaimedReviewIntents(
+          userId,
+          identity.repositoryId,
+          identity.pullRequestNumber,
+          this.now(),
+        );
+        for (const intentId of cancelledIntentIds) this.cancelledReviewIntentIds.add(intentId);
+      }
+    }
     const supervisor =
       this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
     if (supervisor === undefined) {
       if (userId !== undefined) {
-        this.registerPendingWorkflowStop(workflowId, userId);
+        this.stoppingWorkflowIds.delete(workflowId);
         return { stopped: true };
       }
       this.stoppingWorkflowIds.delete(workflowId);
@@ -523,16 +540,19 @@ export class ReviewWorkflowEngine {
       activeRunInput?.userId ??
       (supervisor.activeRunId === undefined ? supervisor.input.userId : undefined);
     if (userId !== undefined && activeUserId !== userId) {
+      this.stoppingWorkflowIds.delete(workflowId);
       return { stopped: false };
     }
-    if (userId !== undefined) this.stoppingWorkflowIds.add(workflowId);
 
     await this.stopActiveAgents(supervisor, 'pr_closed');
     if (activeRun?.status === 'running') {
+      const sandboxId = activeRun.sandboxId;
       activeRun.status = 'cancelled';
       activeRun.finishedAt = this.now();
+      await this.recordSandboxEstimate(activeRun);
       activeRun.sandboxId = '';
-      await this.persistReviewRun(activeRun);
+      await this.ports.state?.upsertReviewRun(activeRun);
+      supervisor.sandboxId = sandboxId;
     }
 
     const cancellationInput =
@@ -604,6 +624,8 @@ export class ReviewWorkflowEngine {
   }
 
   async processClaimedReviewIntent(intent: ClaimedReviewIntent): Promise<void> {
+    if (this.cancelledReviewIntentIds.delete(intent.id)) return;
+    if (!(await this.ports.intents.isReviewIntentClaimActive(intent.id, intent.claimedAt))) return;
     if (intent.kind === 'start' || intent.kind === 'manual') {
       // A repeat "Re-review" click on an already-reviewed sha resolves to the
       // same review_run id (createReviewRunId keys on headSha + trigger, and
@@ -659,10 +681,7 @@ export class ReviewWorkflowEngine {
     if (existingPromise !== undefined) {
       const supervisor = await existingPromise;
       supervisor.input = input;
-      if (
-        this.stoppingWorkflowIds.has(workflowId) ||
-        this.consumePendingWorkflowStop(workflowId, input.userId)
-      ) {
+      if (this.stoppingWorkflowIds.has(workflowId)) {
         supervisor.status = 'closed';
       }
       return supervisor;
@@ -673,28 +692,10 @@ export class ReviewWorkflowEngine {
     });
     this.supervisorPromises.set(workflowId, supervisorPromise);
     const supervisor = await supervisorPromise;
-    if (
-      this.stoppingWorkflowIds.has(workflowId) ||
-      this.consumePendingWorkflowStop(workflowId, input.userId)
-    ) {
+    if (this.stoppingWorkflowIds.has(workflowId)) {
       supervisor.status = 'closed';
     }
     return supervisor;
-  }
-
-  private registerPendingWorkflowStop(workflowId: string, userId: number): void {
-    const userStops = this.pendingWorkflowStopsByUser.get(workflowId) ?? new Map<number, number>();
-    userStops.set(userId, this.now().getTime() + pendingWorkflowStopLifetimeMilliseconds);
-    this.pendingWorkflowStopsByUser.set(workflowId, userStops);
-  }
-
-  private consumePendingWorkflowStop(workflowId: string, userId: number): boolean {
-    const userStops = this.pendingWorkflowStopsByUser.get(workflowId);
-    const expiresAt = userStops?.get(userId);
-    if (expiresAt === undefined || userStops === undefined) return false;
-    userStops.delete(userId);
-    if (userStops.size === 0) this.pendingWorkflowStopsByUser.delete(workflowId);
-    return expiresAt >= this.now().getTime();
   }
 
   private async createSupervisor(
@@ -1886,6 +1887,14 @@ function getSandboxBillingWindows(
   }
 
   return windows;
+}
+
+function parsePullRequestWorkflowId(
+  workflowId: string,
+): { repositoryId: number; pullRequestNumber: number } | undefined {
+  const match = /^review:pr:(\d+):(\d+)$/.exec(workflowId);
+  if (match === null) return undefined;
+  return { repositoryId: Number(match[1]), pullRequestNumber: Number(match[2]) };
 }
 
 function floorToUtcHour(date: Date): Date {

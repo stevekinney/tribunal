@@ -174,6 +174,7 @@ export type FakePortOptions = {
 
 class FakeReviewIntentPort implements ReviewIntentPort {
   private readonly intents: ReviewIntent[] = [];
+  private readonly claimedIntents = new Map<string, ClaimedReviewIntent>();
   readonly processedIntentIds: string[] = [];
   readonly failedIntentErrors: Array<{ intentId: string; message: string }> = [];
 
@@ -185,7 +186,10 @@ class FakeReviewIntentPort implements ReviewIntentPort {
 
   async claimNextReviewIntent(now: Date): Promise<ClaimedReviewIntent | null> {
     const intent = this.intents.shift();
-    return intent === undefined ? null : { ...intent, claimedAt: now };
+    if (intent === undefined) return null;
+    const claimedIntent = { ...intent, claimedAt: now };
+    this.claimedIntents.set(intent.id, claimedIntent);
+    return claimedIntent;
   }
 
   async markReviewIntentProcessed(
@@ -194,8 +198,32 @@ class FakeReviewIntentPort implements ReviewIntentPort {
     _now: Date,
   ): Promise<boolean> {
     if (this.options.processedIntentClaimMatches === false) return false;
+    this.claimedIntents.delete(intentId);
     this.processedIntentIds.push(intentId);
     return true;
+  }
+
+  async isReviewIntentClaimActive(intentId: string, claimedAt: Date): Promise<boolean> {
+    return this.claimedIntents.get(intentId)?.claimedAt.getTime() === claimedAt.getTime();
+  }
+
+  async cancelClaimedReviewIntents(
+    userId: number,
+    repositoryId: number,
+    pullRequestNumber: number,
+  ): Promise<string[]> {
+    const cancelledIds: string[] = [];
+    for (const [intentId, intent] of this.claimedIntents) {
+      if (
+        intent.pullRequest.userId === userId &&
+        intent.pullRequest.repositoryId === repositoryId &&
+        intent.pullRequest.pullRequestNumber === pullRequestNumber
+      ) {
+        this.claimedIntents.delete(intentId);
+        cancelledIds.push(intentId);
+      }
+    }
+    return cancelledIds;
   }
 
   async markReviewIntentFailed(
