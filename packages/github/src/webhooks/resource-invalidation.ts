@@ -93,6 +93,10 @@ export async function invalidateGitHubResourceCacheForEvent(
         await invalidateUserInstallationsCache(context);
         break;
 
+      case 'installation_target':
+        await invalidateUserInstallationsCache(context);
+        break;
+
       case 'repository':
         if (owner && repo) {
           await invalidateEntireRepoCache(context, owner, repo);

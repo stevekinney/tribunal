@@ -163,10 +163,11 @@ export const POST: RequestHandler = async (event) => {
   const isRerunTrigger = isRerunTriggerWebhookEvent(eventType, action, data, env.GITHUB_APP_ID);
   const isReviewEngineTrigger =
     isPullRequestWebhookEvent(eventType, action, data) || isRerunTrigger;
-  const isInstallationSyncTrigger =
+  const isDurableInstallationTrigger =
     (eventType === 'installation' &&
       (action === 'created' || action === 'new_permissions_accepted' || action === 'deleted')) ||
-    (eventType === 'installation_repositories' && (action === 'added' || action === 'removed'));
+    (eventType === 'installation_repositories' && (action === 'added' || action === 'removed')) ||
+    (eventType === 'installation_target' && action === 'renamed');
 
   if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(
@@ -334,7 +335,7 @@ export const POST: RequestHandler = async (event) => {
     // signal/cancellation sent -- GitHub would not retry because the delivery appears processed.
     // Throw so the caller can return 500 and allow GitHub to retry with the original payload.
     if (
-      (isReviewEngineTrigger || isInstallationSyncTrigger) &&
+      (isReviewEngineTrigger || isDurableInstallationTrigger) &&
       !handlerDispatched &&
       eventType &&
       ROUTER_HANDLED_EVENT_TYPES.has(eventType)
@@ -352,7 +353,7 @@ export const POST: RequestHandler = async (event) => {
       await handleReviewThread(action, data, context);
     }
   } catch (e) {
-    if (isReviewEngineTrigger || isInstallationSyncTrigger) {
+    if (isReviewEngineTrigger || isDurableInstallationTrigger) {
       console.error('[webhook] Durable dispatch failed:', e);
       // Release the early claim so GitHub's redelivery can retry durable enqueue/cancellation.
       const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
