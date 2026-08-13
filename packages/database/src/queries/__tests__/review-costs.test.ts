@@ -6,6 +6,7 @@ import {
   agent,
   agentEvent,
   agentRun,
+  costReservation,
   costEvent,
   finding,
   pullRequestReviewRun,
@@ -467,6 +468,24 @@ describe('review cost rollups', () => {
     await expect(
       spendTodayEstimate(testDatabase.db, user.id, new Date('2026-06-17T20:00:00.000Z')),
     ).resolves.toBe(4);
+  });
+
+  it('excludes active reservations from default cost rollups', async () => {
+    const { user } = await createReviewFixture();
+    await testDatabase.db.insert(costReservation).values({
+      id: 'cost_reservation_active',
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+      idempotencyKey: 'llm:arun_1:estimate',
+      amountUsd: '9.00',
+      expiresAt: new Date('2026-06-17T15:00:00.000Z'),
+      createdAt: new Date('2026-06-17T14:00:00.000Z'),
+      updatedAt: new Date('2026-06-17T14:00:00.000Z'),
+    });
+
+    await expect(getCostPerUserPerDay(testDatabase.db, { userId: user.id })).resolves.toEqual([
+      { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 5.1 },
+    ]);
   });
 
   it('scopes the six required rollups and spendTodayEstimate to one user', async () => {

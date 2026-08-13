@@ -6,6 +6,7 @@ import type {
   CheckRunPatch,
   CostPort,
   DailyCapDecision,
+  DailyCapReservationInput,
   DiffContext,
   Finding,
   GitHubPort,
@@ -122,7 +123,7 @@ export function createFakePorts(options: FakePortOptions = {}): FakePorts {
     sandbox: new FakeSandboxPort(options),
     cost: new FakeCostPort(options),
     intents: new FakeReviewIntentPort(options),
-    state: new FakeReviewWorkflowStatePort(),
+    state: new FakeReviewWorkflowStatePort(options),
   };
 }
 
@@ -132,6 +133,7 @@ export type FakePortOptions = {
   spendTodayEstimate?: number;
   duplicateCostRecordCalls?: boolean;
   failAgentRuns?: boolean;
+  failAgentRunPersistence?: boolean;
   failCheckRunCreation?: boolean;
   failCheckRunCreationsRemaining?: number;
   failCheckRunUpdatesRemaining?: number;
@@ -151,6 +153,9 @@ export type FakePortOptions = {
   sensitiveAgentEvent?: boolean;
   processedIntentClaimMatches?: boolean;
   spendAfterFirstEstimate?: number;
+  unboundedReservationAmountUsd?: number;
+  holdDailyCapReservations?: boolean;
+  holdDailyCapReservationCall?: number;
   holdReviewPosts?: boolean;
   failedAgentPartialCostEstimateUsd?: number | string;
   failedAgentPartialDurationMs?: number;
@@ -219,6 +224,8 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   private clearedClaimSinceLastClaim = false;
   private ownershipCheckFailureCountdown: number | undefined;
   private claimRefreshFailureCountdown: number | undefined;
+
+  constructor(private readonly options: FakePortOptions = {}) {}
 
   seedReviewRun(run: ReviewRunRecord): void {
     this.reviewRuns.push(run);
@@ -358,6 +365,9 @@ class FakeReviewWorkflowStatePort implements ReviewWorkflowStatePort {
   }
 
   async upsertAgentRun(run: AgentRunRecord): Promise<void> {
+    if (this.options.failAgentRunPersistence) {
+      throw new Error('agent run persistence failed');
+    }
     const index = this.agentRuns.findIndex((existingRun) => existingRun.id === run.id);
     if (index === -1) {
       this.agentRuns.push({ ...run });
@@ -826,8 +836,13 @@ class FakeCostPort implements CostPort {
   readonly llmEstimates: LlmEstimateInput[] = [];
   readonly reconcileCalls: string[] = [];
   readonly enforceDailyCapCalls: number[] = [];
+  readonly reservationCalls: DailyCapReservationInput[] = [];
+  readonly releasedReservationKeys: string[] = [];
   readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
+  private readonly dailyCapReservations = new Map<string, number>();
+  private readonly heldReservationResolvers: Array<() => void> = [];
+  private readonly reservationWaiters: Array<{ count: number; resolve: () => void }> = [];
   private spendTodayEstimateValue: number;
 
   constructor(private readonly options: FakePortOptions) {
@@ -852,6 +867,12 @@ class FakeCostPort implements CostPort {
     if (this.options.spendAfterFirstEstimate !== undefined && event.agentId !== null) {
       this.spendTodayEstimateValue = this.options.spendAfterFirstEstimate;
     }
+    this.dailyCapReservations.delete(event.idempotencyKey);
+  }
+
+  async releaseDailyCapReservation(_userId: number, idempotencyKey: string): Promise<void> {
+    this.releasedReservationKeys.push(idempotencyKey);
+    this.dailyCapReservations.delete(idempotencyKey);
   }
 
   async recordSandbox(event: SandboxCostInput): Promise<void> {
@@ -871,17 +892,78 @@ class FakeCostPort implements CostPort {
     );
   }
 
-  async enforceDailyCap(userId: number): Promise<DailyCapDecision> {
+  async enforceDailyCap(
+    userId: number,
+    reservation?: DailyCapReservationInput,
+  ): Promise<DailyCapDecision> {
     this.enforceDailyCapCalls.push(userId);
+    if (reservation !== undefined) {
+      this.reservationCalls.push(reservation);
+      this.resolveReservationWaiters();
+      if (
+        this.options.holdDailyCapReservations ||
+        this.options.holdDailyCapReservationCall === this.reservationCalls.length
+      ) {
+        await new Promise<void>((resolve) => this.heldReservationResolvers.push(resolve));
+      }
+    }
     const capUsd = 10;
-    const spendUsd = this.spendTodayEstimateValue;
-    return {
-      allowed: spendUsd < capUsd,
-    };
+    const reservedUsd =
+      reservation === undefined
+        ? 0
+        : [...this.dailyCapReservations.entries()]
+            .filter(([idempotencyKey]) => idempotencyKey !== reservation.idempotencyKey)
+            .reduce((total, [, amountUsd]) => total + amountUsd, 0);
+    const spendUsd = this.spendTodayEstimateValue + reservedUsd;
+    const reservationAmountUsd =
+      reservation === undefined
+        ? 0
+        : (reservation.amountUsd ??
+          this.options.unboundedReservationAmountUsd ??
+          Math.max(0, capUsd - spendUsd));
+    const allowed =
+      reservation === undefined
+        ? spendUsd < capUsd
+        : reservationAmountUsd > 0 && spendUsd + reservationAmountUsd <= capUsd;
+    if (
+      allowed &&
+      reservation !== undefined &&
+      !this.dailyCapReservations.has(reservation.idempotencyKey)
+    ) {
+      this.dailyCapReservations.set(reservation.idempotencyKey, reservationAmountUsd);
+    }
+    return { allowed };
+  }
+
+  async waitForDailyCapReservation(): Promise<void> {
+    await this.waitForDailyCapReservations(1);
+  }
+
+  async waitForDailyCapReservations(count: number): Promise<void> {
+    if (this.reservationCalls.length >= count) return;
+    await new Promise<void>((resolve) => this.reservationWaiters.push({ count, resolve }));
+  }
+
+  resolveHeldDailyCapReservations(): void {
+    for (const resolve of this.heldReservationResolvers.splice(0)) {
+      resolve();
+    }
   }
 
   setSpendTodayEstimate(value: number): void {
     this.spendTodayEstimateValue = value;
+  }
+
+  private resolveReservationWaiters(): void {
+    const readyWaiters = this.reservationWaiters.filter(
+      (waiter) => this.reservationCalls.length >= waiter.count,
+    );
+    for (const waiter of readyWaiters) {
+      waiter.resolve();
+    }
+    for (const waiter of readyWaiters) {
+      this.reservationWaiters.splice(this.reservationWaiters.indexOf(waiter), 1);
+    }
   }
 }
 

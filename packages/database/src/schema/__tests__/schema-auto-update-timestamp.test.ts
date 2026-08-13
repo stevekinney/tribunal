@@ -4,6 +4,8 @@ import { createFactories, resetIdCounter } from '@tribunal/test/factories';
 import { eq, and } from '../../operators';
 import {
   agent,
+  costBudgetDay,
+  costReservation,
   githubInstallation,
   oauthConnection,
   pullRequestState,
@@ -150,6 +152,64 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
       .where(eq(userReviewSettings.userId, user.id));
 
     expect(updated.reviewsEnabled).toBe(false);
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
+  });
+
+  it('bumps costBudgetDay.updatedAt on update', async () => {
+    const factories = createFactories(testDatabase.db);
+    const user = await factories.user.create();
+    await testDatabase.db.insert(costBudgetDay).values({
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+      updatedAt: distantPast,
+    });
+
+    await testDatabase.db
+      .update(costBudgetDay)
+      .set({ reservedUsd: '0.01' })
+      .where(eq(costBudgetDay.userId, user.id));
+
+    const [updated] = await testDatabase.db
+      .select()
+      .from(costBudgetDay)
+      .where(eq(costBudgetDay.userId, user.id));
+
+    expect(updated.reservedUsd).toBe('0.01');
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
+  });
+
+  it('bumps costReservation.updatedAt on update', async () => {
+    const factories = createFactories(testDatabase.db);
+    const user = await factories.user.create();
+    await testDatabase.db.insert(costBudgetDay).values({
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+    });
+    const [reservation] = await testDatabase.db
+      .insert(costReservation)
+      .values({
+        id: 'cost_reservation_bump',
+        userId: user.id,
+        dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+        idempotencyKey: 'llm:reservation-bump',
+        amountUsd: '0.01',
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+        createdAt: new Date('2026-06-17T12:00:00.000Z'),
+        updatedAt: distantPast,
+      })
+      .returning();
+
+    await testDatabase.db
+      .update(costReservation)
+      .set({ releasedAt: new Date('2026-06-17T12:30:00.000Z') })
+      .where(eq(costReservation.id, reservation.id));
+
+    const [updated] = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(eq(costReservation.id, reservation.id));
+
+    expect(updated.releasedAt).toEqual(new Date('2026-06-17T12:30:00.000Z'));
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 

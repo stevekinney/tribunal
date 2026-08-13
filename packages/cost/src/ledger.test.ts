@@ -1,17 +1,19 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
-import { eq } from '@tribunal/database/operators';
+import { eq, isNull, sql } from '@tribunal/database/operators';
 import {
   agent,
   agentRun,
+  costBudgetDay,
   costEvent,
+  costReservation,
   pullRequestReviewRun,
   tribunalRun,
   userReviewSettings,
 } from '@tribunal/database/schema';
 import { createCostPort, enforceDailyCap, recordLlmEstimate, recordSandbox } from './ledger';
-import { PRICING, sandboxCost } from './pricing';
+import { CURRENT_PRICING_VERSION, PRICING, sandboxCost } from './pricing';
 
 let testDatabase: TestDatabase;
 
@@ -87,6 +89,10 @@ async function countLlmEvents() {
     .then((rows) => rows.length);
 }
 
+function numericTextForTest(value: number): string {
+  return value.toFixed(8);
+}
+
 describe('sandbox pricing', () => {
   it('computes sandbox cost from runtime and resources using versioned pricing', () => {
     const actual = sandboxCost(
@@ -140,7 +146,13 @@ describe('cost ledger', () => {
       reviewRunId: review.id,
       repositoryId: repository.id,
     });
-    expect(rows[0].meta).toEqual({ window: '2026-06-17T10' });
+    expect(rows[0].meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      runtime: { runtimeSeconds: 60 },
+      resources: { cpus: 2, memoryMb: 2048, storageMb: 10_240 },
+      sandboxId: 'sandbox_1',
+      window: '2026-06-17T10',
+    });
   });
 
   // Per-run cost reconciliation was removed (see #215): the Anthropic cost
@@ -247,7 +259,7 @@ describe('cost ledger', () => {
       });
     }
 
-    expect(decision).toEqual({ allowed: false });
+    expect(decision).toEqual({ allowed: false, capUsd: 2, spendUsd: 2, remainingUsd: 0 });
     expect(await countLlmEvents()).toBe(before);
   });
 
@@ -286,7 +298,10 @@ describe('cost ledger', () => {
       .from(costEvent)
       .where(eq(costEvent.idempotencyKey, 'sandbox:sandbox_1:manual'));
     expect(sandboxRows[0]?.occurredAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
-    expect(sandboxRows[0]?.meta).toEqual({ window: '2026-06-17T12:00:00.000Z' });
+    expect(sandboxRows[0]?.meta).toMatchObject({
+      pricingVersion: CURRENT_PRICING_VERSION,
+      window: '2026-06-17T12:00:00.000Z',
+    });
   });
 
   it('records sandbox cost port events at shorthand billing window starts', async () => {
@@ -335,6 +350,657 @@ describe('cost ledger', () => {
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
+  it('counts the first LLM estimate of the day against later reservations', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await port.recordLlmEstimate({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.01,
+      idempotencyKey: `llm:${run.id}:estimate`,
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:next-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.01);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+  });
+
+  it('counts the first sandbox estimate of the day against later reservations', async () => {
+    const { user, repository, review, run } = await createCostFixture();
+    const runtime = { runtimeSeconds: 60 };
+    const resources = { cpus: 2, memoryMb: 2048, storageMb: 10_240 };
+    const amountUsd = sandboxCost(runtime, resources);
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: numericTextForTest(amountUsd) });
+
+    await recordSandbox(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      sandboxId: 'sandbox_first_spend',
+      window: '2026-06-17T12',
+      runtime,
+      resources,
+      occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:30:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:after-sandbox-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: amountUsd, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(amountUsd);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+  });
+
+  it('atomically reserves the remaining daily cap for only one concurrent same-user run', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservations = [
+      {
+        idempotencyKey: `llm:${run.id}:first-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+      {
+        idempotencyKey: `llm:${run.id}:second-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      },
+    ];
+
+    const decisions = await Promise.all(
+      reservations.map(async (reservation) => ({
+        reservation,
+        decision: await port.enforceDailyCap(user.id, reservation),
+      })),
+    );
+
+    const allowedDecisions = decisions.filter(({ decision }) => decision.allowed);
+    expect(allowedDecisions).toHaveLength(1);
+    expect(decisions.filter(({ decision }) => !decision.allowed)).toHaveLength(1);
+    const rows = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.amountUsd)).toBe(0.01);
+
+    const allowedReservation = allowedDecisions[0]!.reservation;
+    const estimate = {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.01,
+      idempotencyKey: allowedReservation.idempotencyKey,
+    };
+    await port.recordLlmEstimate(estimate);
+    await port.recordLlmEstimate(estimate);
+
+    const remainingReservations = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    expect(remainingReservations).toHaveLength(0);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.01);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+    await expect(port.enforceDailyCap(user.id)).resolves.toMatchObject({ allowed: false });
+  });
+
+  it('treats duplicate reservation idempotency keys as a single active reservation', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+    };
+
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0,
+      remainingUsd: 0.02,
+    });
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.01,
+      remainingUsd: 0.01,
+    });
+
+    const reservations = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(reservations).toHaveLength(1);
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('releases a reservation without claiming its future estimate idempotency key', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const idempotencyKey = `llm:${run.id}:estimate`;
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+    await port.releaseDailyCapReservation(user.id, idempotencyKey);
+    await port.releaseDailyCapReservation(user.id, idempotencyKey);
+
+    const reservations = await testDatabase.db.select().from(costReservation);
+    const events = await testDatabase.db.select().from(costEvent);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(reservations[0]?.releasedAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
+    expect(events).toHaveLength(0);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+  });
+
+  it('extends an active idempotent reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:retry-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(portAtNoon.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    const portBeforeExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:04:00.000Z'),
+    });
+    await expect(
+      portBeforeExpiry.enforceDailyCap(user.id, {
+        ...reservation,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('extends an omitted-amount full-remaining reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.03' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_existing_full_remaining_retry_spend',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:existing-full-remaining-retry-spend',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:full-remaining-retry-estimate`,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(portAtNoon.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.02,
+      remainingUsd: 0.01,
+    });
+
+    const portBeforeExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:04:00.000Z'),
+    });
+    await expect(
+      portBeforeExpiry.enforceDailyCap(user.id, {
+        ...reservation,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.03,
+      remainingUsd: 0,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.01);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('resizes an active idempotent reservation when a retry is admitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.05' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:resized-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+
+    await expect(port.enforceDailyCap(user.id, reservation)).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0,
+      remainingUsd: 0.05,
+    });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        ...reservation,
+        amountUsd: 0.05,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+      spendUsd: 0.01,
+      remainingUsd: 0.04,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.05);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T13:00:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.05);
+  });
+
+  it('denies an idempotent reservation resize when the extra amount no longer fits', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.05' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const reservation = {
+      idempotencyKey: `llm:${run.id}:oversized-retry-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+    };
+    await port.enforceDailyCap(user.id, reservation);
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_retry_resize_spend',
+      userId: user.id,
+      kind: 'sandbox',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'sandbox:retry-resize-spend',
+      occurredAt: new Date('2026-06-17T12:01:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        ...reservation,
+        amountUsd: 0.05,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      spendUsd: 0.03,
+      remainingUsd: 0.02,
+    });
+
+    const [activeReservation] = await testDatabase.db.select().from(costReservation);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(activeReservation?.amountUsd)).toBe(0.01);
+    expect(activeReservation?.expiresAt).toEqual(new Date('2026-06-17T12:05:00.000Z'));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+  });
+
+  it('expires stale unmatched reservations before checking the next reservation', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    const portAtNoon = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    await expect(
+      portAtNoon.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:stale-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T12:05:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    const portAfterExpiry = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:06:00.000Z'),
+    });
+    await expect(
+      portAfterExpiry.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:replacement-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true, spendUsd: 0, remainingUsd: 0.01 });
+
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    const activeReservations = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    expect(Number(budget?.reservedUsd)).toBe(0.01);
+    expect(activeReservations).toHaveLength(1);
+    expect(activeReservations[0]?.idempotencyKey).toBe(`llm:${run.id}:replacement-estimate`);
+  });
+
+  it('denies new reservations after a cap is lowered below active spend plus reservations', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const firstReservation = {
+      idempotencyKey: `llm:${run.id}:first-estimate`,
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+    };
+    await expect(port.enforceDailyCap(user.id, firstReservation)).resolves.toMatchObject({
+      allowed: true,
+    });
+    await testDatabase.db
+      .update(userReviewSettings)
+      .set({ dailyCostCapUsd: '0.005' })
+      .where(eq(userReviewSettings.userId, user.id));
+
+    await expect(port.enforceDailyCap(user.id, firstReservation)).resolves.toMatchObject({
+      allowed: true,
+      capUsd: 0.005,
+    });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:second-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      capUsd: 0.005,
+      remainingUsd: 0,
+    });
+  });
+
+  it('reserves the full remaining budget when reservation amount is omitted', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.03' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_existing_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:existing-estimate',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:remaining-estimate`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true, spendUsd: 0.02, remainingUsd: 0.01 });
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:over-remaining-estimate`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.03, remainingUsd: 0 });
+
+    const [reservation] = await testDatabase.db.select().from(costReservation);
+    expect(Number(reservation?.amountUsd)).toBe(0.01);
+  });
+
+  it('anchors reservation budget days to UTC regardless of the database session time zone', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_utc_day_estimate',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.01',
+      idempotencyKey: 'llm:utc-day-estimate',
+      occurredAt: new Date('2026-06-17T02:00:00.000Z'),
+    });
+    await testDatabase.db.execute(sql`SET TIME ZONE 'America/Los_Angeles'`);
+    try {
+      const port = createCostPort(testDatabase.db, {
+        now: () => new Date('2026-06-17T12:00:00.000Z'),
+      });
+
+      await expect(
+        port.enforceDailyCap(user.id, {
+          idempotencyKey: `llm:${run.id}:utc-day-reservation`,
+          amountUsd: 0.01,
+          expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+        }),
+      ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+    } finally {
+      await testDatabase.db.execute(sql`SET TIME ZONE 'UTC'`);
+    }
+
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(budget?.dayStartedAt).toEqual(new Date('2026-06-17T00:00:00.000Z'));
+  });
+
+  it('reconciles cached spend from estimate rows written before the reservation check', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    await testDatabase.db.insert(costBudgetDay).values({
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+      spentUsd: '0.01',
+      reservedUsd: '0',
+    });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_after_cached_budget',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.02',
+      idempotencyKey: 'llm:after-cached-budget',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:stale-cache-reservation`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.02, remainingUsd: 0 });
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(Number(budget?.spentUsd)).toBe(0.02);
+  });
+
+  it('does not treat an expired prior-day reservation as a current-day idempotent success', async () => {
+    const { user, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.01' });
+    await testDatabase.db.insert(costBudgetDay).values([
+      {
+        userId: user.id,
+        dayStartedAt: new Date('2026-06-16T00:00:00.000Z'),
+        spentUsd: '0',
+        reservedUsd: '0.01',
+      },
+      {
+        userId: user.id,
+        dayStartedAt: new Date('2026-06-17T00:00:00.000Z'),
+        spentUsd: '0.01',
+        reservedUsd: '0',
+      },
+    ]);
+    await testDatabase.db.insert(costReservation).values({
+      id: 'cost_prior_day_reservation',
+      userId: user.id,
+      dayStartedAt: new Date('2026-06-16T00:00:00.000Z'),
+      idempotencyKey: `llm:${run.id}:prior-day-reservation`,
+      amountUsd: '0.01',
+      expiresAt: new Date('2026-06-16T13:00:00.000Z'),
+      createdAt: new Date('2026-06-16T12:00:00.000Z'),
+      updatedAt: new Date('2026-06-16T12:00:00.000Z'),
+    });
+    await testDatabase.db.insert(costEvent).values({
+      id: 'cost_today_exhausted',
+      userId: user.id,
+      kind: 'llm',
+      source: 'estimate',
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: '0.01',
+      idempotencyKey: 'llm:today-exhausted',
+      occurredAt: new Date('2026-06-17T08:00:00.000Z'),
+    });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey: `llm:${run.id}:prior-day-reservation`,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, spendUsd: 0.01, remainingUsd: 0 });
+
+    const activeReservations = await testDatabase.db
+      .select()
+      .from(costReservation)
+      .where(isNull(costReservation.releasedAt));
+    const budgets = await testDatabase.db.select().from(costBudgetDay);
+    expect(activeReservations).toHaveLength(0);
+    expect(
+      Number(budgets.find((budget) => budget.dayStartedAt.getUTCDate() === 16)?.reservedUsd),
+    ).toBe(0);
+  });
+
+  it('releases reservations from their own day when estimates arrive after UTC midnight', async () => {
+    const { user, repository, review, reviewer, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '1.00' });
+    const idempotencyKey = `llm:${run.id}:cross-midnight-estimate`;
+    const beforeMidnightPort = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T23:59:00.000Z'),
+    });
+    await beforeMidnightPort.enforceDailyCap(user.id, {
+      idempotencyKey,
+      amountUsd: 0.25,
+      expiresAt: new Date('2026-06-18T01:00:00.000Z'),
+    });
+    const afterMidnightPort = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-18T00:01:00.000Z'),
+    });
+
+    await afterMidnightPort.recordLlmEstimate({
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentRunId: run.id,
+      agentId: reviewer.id,
+      amountUsd: 0.05,
+      idempotencyKey,
+    });
+
+    const budgets = await testDatabase.db.select().from(costBudgetDay);
+    const reservationDay = budgets.find(
+      (budget) => budget.dayStartedAt.getTime() === new Date('2026-06-17T00:00:00.000Z').getTime(),
+    );
+    const estimateDay = budgets.find(
+      (budget) => budget.dayStartedAt.getTime() === new Date('2026-06-18T00:00:00.000Z').getTime(),
+    );
+    expect(Number(reservationDay?.reservedUsd)).toBe(0);
+    expect(Number(reservationDay?.spentUsd)).toBe(0);
+    expect(Number(estimateDay?.reservedUsd)).toBe(0);
+    expect(Number(estimateDay?.spentUsd)).toBe(0.05);
+  });
+
   it('uses the configured default daily cap when review settings do not exist', async () => {
     const { user, review, reviewer, run } = await createCostFixture();
     await testDatabase.db.insert(costEvent).values({
@@ -355,5 +1021,67 @@ describe('cost ledger', () => {
     });
 
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
+  });
+
+  it('rejects invalid daily cap reservation inputs before touching the ledger', async () => {
+    const { user } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 25, {
+        idempotencyKey: 'llm:invalid-amount:estimate',
+        amountUsd: 0,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).rejects.toThrow('Daily cap reservation amount must be a positive finite number.');
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 25, {
+        idempotencyKey: 'llm:expired:estimate',
+        amountUsd: 0.01,
+        expiresAt: now,
+      }),
+    ).rejects.toThrow('Daily cap reservation expiry must be after the reservation time.');
+  });
+
+  it('treats driver results without rows as a denied reservation decision', async () => {
+    const database = {
+      execute: async () => undefined,
+      select: testDatabase.db.select,
+    } as unknown as Parameters<typeof enforceDailyCap>[0];
+
+    await expect(
+      enforceDailyCap(database, 1, new Date('2026-06-17T12:00:00.000Z'), 25, {
+        idempotencyKey: 'llm:empty-driver:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toEqual({ allowed: false, capUsd: 25, spendUsd: 0, remainingUsd: 25 });
+  });
+
+  it('treats an active same-key reservation as idempotent success when the claim result is empty', async () => {
+    let executeCalls = 0;
+    const database = {
+      execute: async () => {
+        executeCalls += 1;
+        if (executeCalls === 2) {
+          return {
+            rows: [{ allowed: false, capUsd: '0.05', spendUsd: '0.01', remainingUsd: '0.04' }],
+          };
+        }
+        if (executeCalls === 3) {
+          return { rows: [{ id: 'cost_active_retry', amountUsd: '0.01' }] };
+        }
+        return undefined;
+      },
+      select: testDatabase.db.select,
+    } as unknown as Parameters<typeof enforceDailyCap>[0];
+
+    await expect(
+      enforceDailyCap(database, 1, new Date('2026-06-17T12:00:00.000Z'), 25, {
+        idempotencyKey: 'llm:active-driver-retry:estimate',
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toEqual({ allowed: true, capUsd: 0.05, spendUsd: 0.01, remainingUsd: 0.04 });
   });
 });
