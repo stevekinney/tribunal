@@ -11,6 +11,7 @@ import {
   updateInstallationAccountMetadata,
   upsertInstallation,
 } from '@tribunal/github/installations/records';
+import { updateInstallationRepositoryOwnerMetadata } from '@tribunal/github/repositories/service';
 
 /**
  * Handle installation_target webhook events.
@@ -38,10 +39,14 @@ export async function handleInstallationTarget(
         });
 
         if (!result.updated) {
-          logger.warn(
-            { installationId, accountLogin: account.login },
-            'Installation target rename metadata row not found',
-          );
+          const octokit = await githubContext.getInstallationOctokit(installationId);
+          if (!octokit) {
+            logger.warn(
+              { installationId, accountLogin: account.login },
+              'Ignoring installation target rename for a deleted installation',
+            );
+            break;
+          }
 
           await upsertInstallation(githubContext, {
             installationId,
@@ -51,6 +56,16 @@ export async function handleInstallationTarget(
             accountAvatarUrl: account.avatar_url ?? null,
             repositorySelection: getRepositorySelection(payload.installation),
           });
+        }
+
+        const previousOwner = payload.changes.login?.from;
+        if (previousOwner && previousOwner !== account.login) {
+          await updateInstallationRepositoryOwnerMetadata(
+            githubContext,
+            installationId,
+            previousOwner,
+            account.login,
+          );
         }
       }
 

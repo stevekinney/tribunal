@@ -9,6 +9,7 @@ import {
 import type { GithubServiceContext } from '../context.js';
 import {
   refreshInstallationRepositories,
+  updateInstallationRepositoryOwnerMetadata,
   parseFilters,
   filterRepositories,
   sortRepositories,
@@ -480,6 +481,76 @@ describe('refreshInstallationRepositories', () => {
         syncActivityAttemptToken: 'current-attempt',
       }),
     ).rejects.toThrow('Installation sync ownership lost');
+  });
+});
+
+describe('updateInstallationRepositoryOwnerMetadata', () => {
+  let testContext: TestContext;
+
+  beforeAll(async () => {
+    testContext = await createTestContext();
+  });
+
+  afterAll(async () => {
+    await testContext.close();
+  });
+
+  beforeEach(async () => {
+    await testContext.reset();
+  });
+
+  it('updates active linked repositories and leaves unrelated rows alone', async () => {
+    await testContext.factories.githubInstallation.create({ installationId: 12345 });
+    const linked = await testContext.factories.repository.create({
+      id: 100,
+      owner: 'old-org',
+      name: 'linked',
+      installationId: 12345,
+    });
+    const inactive = await testContext.factories.repository.create({
+      id: 101,
+      owner: 'old-org',
+      name: 'inactive',
+      installationId: 12345,
+    });
+    await testContext.factories.repository.create({
+      id: 102,
+      owner: 'old-org',
+      name: 'other-installation',
+      installationId: 54321,
+    });
+    await testContext.db.insert(githubInstallationRepository).values([
+      { installationId: 12345, repositoryId: linked.id, isActive: true },
+      { installationId: 12345, repositoryId: inactive.id, isActive: false },
+    ]);
+
+    await expect(
+      updateInstallationRepositoryOwnerMetadata(
+        createGithubContext(testContext, []),
+        12345,
+        'old-org',
+        'new-org',
+      ),
+    ).resolves.toEqual({ updated: 1 });
+
+    const rows = await testContext.db
+      .select({ id: repository.id, owner: repository.owner, uri: repository.uri })
+      .from(repository);
+    expect(rows).toContainEqual({
+      id: 100,
+      owner: 'new-org',
+      uri: 'https://github.com/new-org/linked.git',
+    });
+    expect(rows).toContainEqual({
+      id: 101,
+      owner: 'old-org',
+      uri: 'https://github.com/old-org/inactive.git',
+    });
+    expect(rows).toContainEqual({
+      id: 102,
+      owner: 'old-org',
+      uri: 'https://github.com/old-org/other-installation.git',
+    });
   });
 });
 
