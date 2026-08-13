@@ -5,6 +5,7 @@ import { createFactories, type AllFactories } from '@tribunal/test/factories';
 import {
   githubInstallationRepository,
   pullRequestReviewRun,
+  reviewIntent,
   tribunalRun,
   workflowRun,
 } from '@tribunal/database/schema';
@@ -353,6 +354,26 @@ describe('cancelWorkflowsForRepositories', () => {
     const repository = await factories.repository.create();
     await createActiveReview(owner.id, repository.id, 42);
     await createActiveReview(otherOwner.id, repository.id, 42);
+    await testDatabase.db.insert(reviewIntent).values([
+      {
+        id: 'claimed_owner_review',
+        deliveryId: 'delivery_owner',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: owner.id,
+        prNumber: 43,
+        claimedAt: new Date('2026-08-13T18:00:00Z'),
+      },
+      {
+        id: 'claimed_other_owner_review',
+        deliveryId: 'delivery_other_owner',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: otherOwner.id,
+        prNumber: 44,
+        claimedAt: new Date('2026-08-13T18:00:00Z'),
+      },
+    ]);
     const ownerWorkflow = await factories.workflowRun.createForRepository(owner.id, repository.id, {
       phase: 'executing',
     });
@@ -372,7 +393,7 @@ describe('cancelWorkflowsForRepositories', () => {
 
     expect(cancelWorkflowsById).toHaveBeenCalledWith([ownerWorkflow.workflowId]);
     expect(cancelWorkflowsById).toHaveBeenCalledWith(
-      [`review:pr:${repository.id}:42`],
+      [`review:pr:${repository.id}:42`, `review:pr:${repository.id}:43`],
       'repository_removed',
       owner.id,
     );

@@ -269,6 +269,7 @@ export function isReviewPostAlreadyClaimedError(error: unknown): boolean {
 }
 
 const staleReviewPostClaimMilliseconds = 5 * 60 * 1000;
+const pendingWorkflowStopLifetimeMilliseconds = 30_000;
 
 export type ReviewWorkflowSnapshot = {
   supervisors: PullRequestSupervisorSnapshot[];
@@ -295,6 +296,7 @@ export class ReviewWorkflowEngine {
   private readonly postedReviewRunIds: Set<string>;
   private readonly terminatedSandboxIds: Set<string>;
   private readonly stoppingWorkflowIds = new Set<string>();
+  private readonly pendingWorkflowStopsByUser = new Map<string, Map<number, number>>();
 
   constructor(
     private readonly ports: ReviewWorkflowPorts,
@@ -504,13 +506,23 @@ export class ReviewWorkflowEngine {
     if (userId === undefined) this.stoppingWorkflowIds.add(workflowId);
     const supervisor =
       this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
+    if (supervisor === undefined) {
+      if (userId !== undefined) {
+        this.registerPendingWorkflowStop(workflowId, userId);
+        return { stopped: true };
+      }
+      this.stoppingWorkflowIds.delete(workflowId);
+      return { stopped: false };
+    }
     const activeRun = supervisor?.activeRunId
       ? this.reviewRuns.get(supervisor.activeRunId)
       : undefined;
     const activeRunInput = supervisor?.activeRunInput;
-    const activeUserId = activeRun?.userId ?? activeRunInput?.userId;
-    if (supervisor === undefined || (userId !== undefined && activeUserId !== userId)) {
-      if (userId === undefined) this.stoppingWorkflowIds.delete(workflowId);
+    const activeUserId =
+      activeRun?.userId ??
+      activeRunInput?.userId ??
+      (supervisor.activeRunId === undefined ? supervisor.input.userId : undefined);
+    if (userId !== undefined && activeUserId !== userId) {
       return { stopped: false };
     }
     if (userId !== undefined) this.stoppingWorkflowIds.add(workflowId);
@@ -519,9 +531,8 @@ export class ReviewWorkflowEngine {
     if (activeRun?.status === 'running') {
       activeRun.status = 'cancelled';
       activeRun.finishedAt = this.now();
-      await this.persistReviewRun(activeRun);
       activeRun.sandboxId = '';
-      await this.ports.state?.upsertReviewRun(activeRun);
+      await this.persistReviewRun(activeRun);
     }
 
     const cancellationInput =
@@ -642,7 +653,12 @@ export class ReviewWorkflowEngine {
     if (existingPromise !== undefined) {
       const supervisor = await existingPromise;
       supervisor.input = input;
-      if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
+      if (
+        this.stoppingWorkflowIds.has(workflowId) ||
+        this.consumePendingWorkflowStop(workflowId, input.userId)
+      ) {
+        supervisor.status = 'closed';
+      }
       return supervisor;
     }
 
@@ -651,8 +667,28 @@ export class ReviewWorkflowEngine {
     });
     this.supervisorPromises.set(workflowId, supervisorPromise);
     const supervisor = await supervisorPromise;
-    if (this.stoppingWorkflowIds.has(workflowId)) supervisor.status = 'closed';
+    if (
+      this.stoppingWorkflowIds.has(workflowId) ||
+      this.consumePendingWorkflowStop(workflowId, input.userId)
+    ) {
+      supervisor.status = 'closed';
+    }
     return supervisor;
+  }
+
+  private registerPendingWorkflowStop(workflowId: string, userId: number): void {
+    const userStops = this.pendingWorkflowStopsByUser.get(workflowId) ?? new Map<number, number>();
+    userStops.set(userId, this.now().getTime() + pendingWorkflowStopLifetimeMilliseconds);
+    this.pendingWorkflowStopsByUser.set(workflowId, userStops);
+  }
+
+  private consumePendingWorkflowStop(workflowId: string, userId: number): boolean {
+    const userStops = this.pendingWorkflowStopsByUser.get(workflowId);
+    const expiresAt = userStops?.get(userId);
+    if (expiresAt === undefined || userStops === undefined) return false;
+    userStops.delete(userId);
+    if (userStops.size === 0) this.pendingWorkflowStopsByUser.delete(workflowId);
+    return expiresAt >= this.now().getTime();
   }
 
   private async createSupervisor(

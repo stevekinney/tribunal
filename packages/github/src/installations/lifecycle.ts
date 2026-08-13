@@ -6,13 +6,18 @@
  */
 
 import { isWeftFault } from '@lostgradient/weft';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import {
   isWorkflowCancellationReason,
   type GithubServiceContext,
   type WorkflowCancellationResult,
 } from '../context.js';
-import { pullRequestReviewRun, repository, tribunalRun } from '@tribunal/database/schema';
+import {
+  pullRequestReviewRun,
+  repository,
+  reviewIntent,
+  tribunalRun,
+} from '@tribunal/database/schema';
 import { workflowRun, type WorkflowPhase } from '@tribunal/database/schema';
 import { deleteInstallation, getInstallationById, updateInstallationStatus } from './records.js';
 import { markInstallationRepositoryInactive } from '../repositories/service.js';
@@ -341,9 +346,23 @@ export async function cancelWorkflowsForRepositories(
               inArray(tribunalRun.status, ['queued', 'running']),
             ),
           );
+  const claimedIntents =
+    userId === undefined
+      ? []
+      : await context.db
+          .select({ repositoryId: reviewIntent.repositoryId, prNumber: reviewIntent.prNumber })
+          .from(reviewIntent)
+          .where(
+            and(
+              eq(reviewIntent.userId, userId),
+              inArray(reviewIntent.repositoryId, repositoryIds),
+              isNotNull(reviewIntent.claimedAt),
+              isNull(reviewIntent.processedAt),
+            ),
+          );
   const orchestratorIds = [
     ...new Set(
-      activeReviews.map((review) =>
+      [...activeReviews, ...claimedIntents].map((review) =>
         buildPullRequestOrchestratorWorkflowId(review.repositoryId, review.prNumber),
       ),
     ),

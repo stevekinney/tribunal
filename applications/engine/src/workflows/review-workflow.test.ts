@@ -2363,12 +2363,16 @@ describe('ReviewWorkflowEngine', () => {
     const engine = createEngine(ports);
     const runningReview = engine.startPullRequestReview(baseInput);
     await ports.sandbox.waitForEnsure();
+    const duplicateReview = engine.startPullRequestReview(baseInput);
 
     const stopResult = engine.stopWorkflow('review:pr:42:7');
     ports.sandbox.resolveHeldEnsures();
 
     await expect(stopResult).resolves.toEqual({ stopped: true });
     await expect(runningReview).rejects.toThrow(
+      'Cannot start a review for a closed pull request supervisor.',
+    );
+    await expect(duplicateReview).rejects.toThrow(
       'Cannot start a review for a closed pull request supervisor.',
     );
     expect(ports.sandbox.runAgentCalls).toEqual([]);
@@ -2435,6 +2439,20 @@ describe('ReviewWorkflowEngine', () => {
 
     expect(ports.sandbox.stopCalls).toEqual([]);
     expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
+  it('fences claimed user work that has not created its supervisor yet', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.stopWorkflow('review:pr:42:7', 'reviews_paused', baseInput.userId),
+    ).resolves.toEqual({ stopped: true });
+
+    await expect(engine.startPullRequestReview(baseInput)).rejects.toThrow(
+      'Cannot start a review for a closed pull request supervisor.',
+    );
+    expect(ports.sandbox.runAgentCalls).toEqual([]);
   });
 
   it('does not overwrite a completed review outcome when workflow cancellation arrives late', async () => {
