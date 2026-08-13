@@ -37,7 +37,6 @@ export async function upsertActionItems(
       items.map((item) => ({
         pullRequestStateId,
         stableKey: item.stableKey,
-        subject: item.stableKey,
         firstSeenHeadSha: item.firstSeenHeadSha ?? null,
       })),
     )

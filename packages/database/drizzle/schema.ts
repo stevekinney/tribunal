@@ -4630,7 +4630,7 @@ export const pullRequestActionItem = pgTable(
     }),
     pullRequestStateId: integer('pull_request_state_id').notNull(),
     stableKey: text('stable_key').notNull(),
-    subject: text().notNull(),
+    subject: text(),
     description: text(),
     status: actionItemStatus().default('pending').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' })

@@ -26,6 +26,15 @@ describe('schema table configuration', () => {
     expect(tableNames).not.toContain('pull_request_action_item_dependency');
   });
 
+  it('keeps the unused subject column nullable during writer-removal deployment', () => {
+    const subjectColumn = getTableConfig(schema.pullRequestActionItem).columns.find(
+      (column) => column.name === 'subject',
+    );
+
+    expect(subjectColumn).toBeDefined();
+    expect(subjectColumn?.notNull).toBe(false);
+  });
+
   describe.each(tables.map((table) => [getTableName(table), table] as const))(
     '%s',
     (tableName, table) => {

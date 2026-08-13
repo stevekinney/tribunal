@@ -261,7 +261,7 @@ describe('analyzePullRequest full pipeline (real database, faked octokit)', () =
 
     const items = await testDb.db.select().from(pullRequestActionItem);
     expect(items.length).toBe(result.actionItemCount);
-    // The review-comment item carries a sourceUrl, exercising addActionItemSources.
+    // The review-comment item carries source identity, exercising addActionItemSources.
     expect(items.some((item) => item.stableKey.startsWith('review-comment:'))).toBe(true);
     expect(items.some((item) => item.stableKey.startsWith('ci-check-'))).toBe(true);
   });

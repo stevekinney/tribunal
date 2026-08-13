@@ -13,8 +13,8 @@ import { pullRequestState } from './pull-request-state';
  * `review-comment:{threadId}:{commentId}`, `ci-check-{name}`) so repeated
  * analysis cycles reconcile against the same row instead of creating duplicates.
  * `firstSeenHeadSha` is set once and never overwritten so "done since first
- * seen" can be computed; status is derived (thread resolved / check passing /
- * human checkbox) and persisted here for fast read-model queries.
+ * seen" can be computed. Unread payload fields remain temporarily while the
+ * writer removal is deployed before their follow-up schema removal.
  */
 export const pullRequestActionItem = pgTable(
   'pull_request_action_item',
@@ -24,7 +24,7 @@ export const pullRequestActionItem = pgTable(
       .notNull()
       .references(() => pullRequestState.id, { onDelete: 'cascade' }),
     stableKey: text('stable_key').notNull(),
-    subject: text('subject').notNull(),
+    subject: text('subject'),
     description: text('description'),
     status: actionItemStatusEnum('status').notNull().default('pending'),
     firstSeenHeadSha: text('first_seen_head_sha'),
