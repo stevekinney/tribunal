@@ -1,4 +1,4 @@
-import { bigint, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { integer, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * Webhook delivery tracking for idempotency.
@@ -14,12 +14,6 @@ export const githubWebhookDelivery = pgTable(
 
     // Event type (installation, installation_repositories, etc.)
     eventType: text('event_type').notNull(),
-
-    // Processing status
-    processedAt: timestamp('processed_at').notNull().defaultNow(),
-
-    // Optional: store if we need to replay
-    installationId: bigint('installation_id', { mode: 'number' }),
   },
   (table) => [
     // Idempotency key: same delivery + event = skip

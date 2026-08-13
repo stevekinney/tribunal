@@ -232,7 +232,6 @@ describe('GitHub webhook route', () => {
       { db: {}, cache: {} },
       'delivery-1',
       'check_suite',
-      1001,
     );
     expect(invalidateGitHubResourceCacheForEventMock).toHaveBeenCalledWith(
       { db: {}, cache: {} },

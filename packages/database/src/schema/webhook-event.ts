@@ -13,7 +13,6 @@ export const webhookEvent = pgTable(
       .notNull()
       .references(() => repository.id, { onDelete: 'cascade' }),
     installationId: bigint('installation_id', { mode: 'number' }),
-    senderId: bigint('sender_id', { mode: 'number' }),
     senderLogin: text('sender_login'),
     prNumber: integer('pr_number'),
     issueNumber: integer('issue_number'),
@@ -21,12 +20,10 @@ export const webhookEvent = pgTable(
     commitSha: text('commit_sha'),
     githubCreatedAt: timestamp('github_created_at'),
     receivedAt: timestamp('received_at').notNull().defaultNow(),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
     index('webhook_event_repository_type_idx').on(table.repositoryId, table.eventType),
     index('webhook_event_repository_received_idx').on(table.repositoryId, table.receivedAt),
-    index('webhook_event_repository_created_idx').on(table.repositoryId, table.createdAt),
   ],
 );
 

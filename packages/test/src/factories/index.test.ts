@@ -96,24 +96,13 @@ describe('createFactories', () => {
       const delivery = await factories.webhookDelivery.create();
 
       expect(delivery.eventType).toBe('push');
-      expect(delivery.installationId).toBeNull();
+      expect(delivery.deliveryId).toMatch(/^delivery-\d+-\d+$/);
     });
 
-    it('creates a delivery scoped to an event type and installation via createForEvent', async () => {
-      const installation = await factories.githubInstallation.create();
-      const delivery = await factories.webhookDelivery.createForEvent(
-        'pull_request',
-        installation.installationId,
-      );
+    it('creates a delivery scoped to an event type via createForEvent', async () => {
+      const delivery = await factories.webhookDelivery.createForEvent('pull_request');
 
       expect(delivery.eventType).toBe('pull_request');
-      expect(delivery.installationId).toBe(installation.installationId);
-    });
-
-    it('defaults installationId to null when createForEvent omits it', async () => {
-      const delivery = await factories.webhookDelivery.createForEvent('issues');
-
-      expect(delivery.installationId).toBeNull();
     });
   });
 

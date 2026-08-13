@@ -21,7 +21,6 @@ export async function claimWebhookDelivery(
   context: GithubServiceContext,
   deliveryId: string,
   eventType: string,
-  installationId?: number,
 ): Promise<boolean> {
   // Try to insert. If conflict (already exists), no rows returned.
   const inserted = await context.db
@@ -29,7 +28,6 @@ export async function claimWebhookDelivery(
     .values({
       deliveryId,
       eventType,
-      installationId,
     })
     .onConflictDoNothing()
     .returning({ id: githubWebhookDelivery.id });

@@ -37,7 +37,6 @@ function eventData(overrides: Partial<StoreWebhookEventData> = {}): StoreWebhook
     repositoryOwner: 'lostgradient',
     repositoryName: 'tribunal',
     installationId: null,
-    senderId: null,
     senderLogin: null,
     ...overrides,
   };

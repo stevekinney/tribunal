@@ -1,0 +1,1 @@
+-- No-op migration: retain unread webhook metadata physically for N-1 deployments.

@@ -89,7 +89,7 @@ describe('claimWebhookDelivery (idempotent redelivery / single-claim guarantee)'
   it('claims a not-yet-seen delivery', async () => {
     const context = createGithubContext();
 
-    const claimed = await claimWebhookDelivery(context, 'delivery-1', 'pull_request', 42);
+    const claimed = await claimWebhookDelivery(context, 'delivery-1', 'pull_request');
 
     expect(claimed).toBe(true);
 
@@ -100,7 +100,6 @@ describe('claimWebhookDelivery (idempotent redelivery / single-claim guarantee)'
     expect(row).toMatchObject({
       deliveryId: 'delivery-1',
       eventType: 'pull_request',
-      installationId: 42,
     });
   });
 
