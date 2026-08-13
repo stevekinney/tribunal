@@ -1063,12 +1063,8 @@ describe('ReviewWorkflowEngine', () => {
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
-    expect(ports.cost.llmEstimates).toContainEqual(
-      expect.objectContaining({
-        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
-        agentRunId: null,
-        amountUsd: 0,
-      }),
+    expect(ports.cost.releasedReservationKeys).toContain(
+      'llm:arun:run:42:7:aaa111:opened:triage:estimate',
     );
     expect(ports.github.reviews).toHaveLength(0);
   });
@@ -1110,7 +1106,7 @@ describe('ReviewWorkflowEngine', () => {
         idempotencyKey: expect.stringMatching(
           /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
         ),
-        amountUsd: 0.01,
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
     ]);
@@ -1721,12 +1717,8 @@ describe('ReviewWorkflowEngine', () => {
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.runAgentCalls).toHaveLength(0);
-    expect(ports.cost.llmEstimates).toContainEqual(
-      expect.objectContaining({
-        idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
-        agentRunId: null,
-        amountUsd: 0,
-      }),
+    expect(ports.cost.releasedReservationKeys).toContain(
+      'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
     );
     expect(ports.github.reviews).toHaveLength(0);
   });
@@ -1796,7 +1788,7 @@ describe('ReviewWorkflowEngine', () => {
         idempotencyKey: expect.stringMatching(
           /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
         ),
-        amountUsd: 0.01,
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
     ]);
@@ -1820,15 +1812,9 @@ describe('ReviewWorkflowEngine', () => {
 
     await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
     expect(ports.sandbox.runAgentCalls.map((call) => call.agentId)).toEqual(['agent_security']);
-    expect(ports.cost.llmEstimates).toContainEqual(
-      expect.objectContaining({
-        idempotencyKey: expect.stringMatching(
-          /^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u,
-        ),
-        agentRunId: null,
-        amountUsd: 0,
-      }),
-    );
+    expect(ports.cost.releasedReservationKeys).toEqual([
+      expect.stringMatching(/^llm:arun:run:42:7:aaa111:opened:verify:[^:]+:estimate$/u),
+    ]);
     expect(ports.github.reviews).toHaveLength(0);
   });
 

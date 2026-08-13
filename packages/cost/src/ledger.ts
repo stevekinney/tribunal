@@ -266,6 +266,66 @@ async function recordLlmEstimateEvent(
   `);
 }
 
+export async function releaseDailyCapReservation(
+  database: CostDatabase,
+  userId: number,
+  idempotencyKey: string,
+  releasedAt = new Date(),
+): Promise<void> {
+  await database.execute(sql`
+    WITH active_reservation AS (
+      SELECT
+        ${costReservation.id} AS id,
+        ${costReservation.userId} AS user_id,
+        ${costReservation.dayStartedAt} AS day_started_at,
+        ${costReservation.amountUsd} AS amount_usd
+      FROM ${costReservation}
+      WHERE ${costReservation.userId} = ${userId}
+        AND ${costReservation.idempotencyKey} = ${idempotencyKey}
+        AND ${costReservation.releasedAt} IS NULL
+      LIMIT 1
+    ),
+    locked_budget AS (
+      SELECT ${costBudgetDay.userId}, ${costBudgetDay.dayStartedAt}
+      FROM ${costBudgetDay}
+      INNER JOIN active_reservation
+        ON active_reservation.user_id = ${costBudgetDay.userId}
+        AND active_reservation.day_started_at = ${costBudgetDay.dayStartedAt}
+      FOR UPDATE OF ${costBudgetDay}
+    ),
+    released_reservation AS (
+      UPDATE ${costReservation}
+      SET
+        "released_at" = ${releasedAt},
+        "updated_at" = ${releasedAt}
+      FROM active_reservation
+      INNER JOIN locked_budget
+        ON locked_budget.user_id = active_reservation.user_id
+        AND locked_budget.day_started_at = active_reservation.day_started_at
+      WHERE ${costReservation.id} = active_reservation.id
+      RETURNING active_reservation.user_id, active_reservation.day_started_at, active_reservation.amount_usd
+    )
+    UPDATE ${costBudgetDay}
+    SET
+      "reserved_usd" = GREATEST(
+        ${costBudgetDay.reservedUsd} - COALESCE((
+          SELECT SUM(released_reservation.amount_usd)
+          FROM released_reservation
+          WHERE released_reservation.user_id = ${costBudgetDay.userId}
+            AND released_reservation.day_started_at = ${costBudgetDay.dayStartedAt}
+        ), 0),
+        0
+      ),
+      "updated_at" = ${releasedAt}
+    WHERE EXISTS (
+      SELECT 1
+      FROM released_reservation
+      WHERE released_reservation.user_id = ${costBudgetDay.userId}
+        AND released_reservation.day_started_at = ${costBudgetDay.dayStartedAt}
+    )
+  `);
+}
+
 async function recordSandboxEstimateEvent(
   database: CostDatabase,
   values: typeof costEvent.$inferInsert,
@@ -750,6 +810,9 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
   return {
     recordLlmEstimate: async (event) => {
       await recordLlmEstimateEvent(database, event, options.now?.());
+    },
+    releaseDailyCapReservation: async (userId, idempotencyKey) => {
+      await releaseDailyCapReservation(database, userId, idempotencyKey, options.now?.());
     },
     recordSandbox: async (event) => {
       const occurredAt = parseSandboxWindowStartedAt(event.window) ?? options.now?.() ?? new Date();

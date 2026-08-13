@@ -509,6 +509,41 @@ describe('cost ledger', () => {
     expect(Number(budget?.reservedUsd)).toBe(0.01);
   });
 
+  it('releases a reservation without claiming its future estimate idempotency key', async () => {
+    const { user, run } = await createCostFixture();
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '0.02' });
+    const port = createCostPort(testDatabase.db, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    });
+    const idempotencyKey = `llm:${run.id}:estimate`;
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+    await port.releaseDailyCapReservation(user.id, idempotencyKey);
+
+    const reservations = await testDatabase.db.select().from(costReservation);
+    const events = await testDatabase.db.select().from(costEvent);
+    const [budget] = await testDatabase.db.select().from(costBudgetDay);
+    expect(reservations[0]?.releasedAt).toEqual(new Date('2026-06-17T12:00:00.000Z'));
+    expect(events).toHaveLength(0);
+    expect(Number(budget?.reservedUsd)).toBe(0);
+
+    await expect(
+      port.enforceDailyCap(user.id, {
+        idempotencyKey,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+  });
+
   it('extends an active idempotent reservation when a retry is admitted', async () => {
     const { user, run } = await createCostFixture();
     await testDatabase.db

@@ -107,6 +107,7 @@ export interface DailyCapReservationInput {
 
 export interface CostPort {
   recordLlmEstimate(event: LlmEstimateInput): Promise<void>;
+  releaseDailyCapReservation(userId: number, idempotencyKey: string): Promise<void>;
   recordSandbox(event: SandboxCostInput): Promise<void>;
   enforceDailyCap(
     userId: number,

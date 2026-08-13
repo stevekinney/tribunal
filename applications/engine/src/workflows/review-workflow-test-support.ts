@@ -831,6 +831,7 @@ class FakeCostPort implements CostPort {
   readonly reconcileCalls: string[] = [];
   readonly enforceDailyCapCalls: number[] = [];
   readonly reservationCalls: DailyCapReservationInput[] = [];
+  readonly releasedReservationKeys: string[] = [];
   readonly sandboxCostEvents: SandboxCostInput[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private readonly dailyCapReservations = new Map<string, number>();
@@ -861,6 +862,11 @@ class FakeCostPort implements CostPort {
       this.spendTodayEstimateValue = this.options.spendAfterFirstEstimate;
     }
     this.dailyCapReservations.delete(event.idempotencyKey);
+  }
+
+  async releaseDailyCapReservation(_userId: number, idempotencyKey: string): Promise<void> {
+    this.releasedReservationKeys.push(idempotencyKey);
+    this.dailyCapReservations.delete(idempotencyKey);
   }
 
   async recordSandbox(event: SandboxCostInput): Promise<void> {

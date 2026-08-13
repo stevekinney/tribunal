@@ -117,7 +117,7 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
-const VERIFIER_MAX_BUDGET_USD = 0.01;
+const VERIFIER_MAX_BUDGET_USD = 0.05;
 
 export type ReviewRunStatus =
   | 'queued'
@@ -1254,6 +1254,7 @@ export class ReviewWorkflowEngine {
       runToken,
       diffContext,
       sanitizeResult: (result) => sanitizeAgentResultFindings(result, diffContext),
+      reservationIdempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
     });
   }
 
@@ -1315,6 +1316,7 @@ export class ReviewWorkflowEngine {
       runToken,
       diffContext,
       sanitizeResult: (result) => result,
+      reservationIdempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
     });
   }
 
@@ -1355,6 +1357,7 @@ export class ReviewWorkflowEngine {
       runToken,
       diffContext,
       sanitizeResult: (result) => result,
+      reservationIdempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
     });
   }
 
@@ -1518,6 +1521,7 @@ export class ReviewWorkflowEngine {
     runToken: string;
     diffContext: DiffContext;
     sanitizeResult: (result: AgentResult) => AgentResult;
+    reservationIdempotencyKey?: string;
   }): Promise<AgentResult> {
     const {
       supervisor,
@@ -1530,6 +1534,7 @@ export class ReviewWorkflowEngine {
       runToken,
       diffContext,
       sanitizeResult,
+      reservationIdempotencyKey,
     } = input;
     const controller = new AbortController();
     const execution: AgentExecution = { agentRunId, controller, stopReason: 'superseded' };
@@ -1548,7 +1553,14 @@ export class ReviewWorkflowEngine {
       costEstimateUsd: 0,
     };
     this.agentRuns.set(agentRunId, agentRun);
-    await this.persistAgentRun(agentRun);
+    try {
+      await this.persistAgentRun(agentRun);
+    } catch (error) {
+      if (reservationIdempotencyKey !== undefined) {
+        await this.releaseDailyCapReservation(reviewRun, reservationIdempotencyKey);
+      }
+      throw error;
+    }
 
     try {
       const executionAgent: AgentExecutionSpec = { ...agentSpec, agentRunId };
@@ -1637,15 +1649,7 @@ export class ReviewWorkflowEngine {
     reviewRun: ReviewRunRecord,
     idempotencyKey: string,
   ): Promise<void> {
-    await this.ports.cost.recordLlmEstimate({
-      userId: reviewRun.userId,
-      repositoryId: reviewRun.repositoryId,
-      reviewRunId: reviewRun.id,
-      agentRunId: null,
-      agentId: null,
-      amountUsd: 0,
-      idempotencyKey,
-    });
+    await this.ports.cost.releaseDailyCapReservation(reviewRun.userId, idempotencyKey);
   }
 
   private recordAgentEvent(agentRunId: string, event: AgentEvent): void {
