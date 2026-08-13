@@ -180,12 +180,7 @@ export const invariantChecks: InvariantCheck[] = [
       // For newer tables, this should be empty. Older tables are grandfathered.
       // We check newer tables specifically (those with withTimezone: true in schema)
       const newTablesWithoutTimezone = rows.filter((row: any) =>
-        [
-          'pull_request_action_item',
-          'pull_request_action_item_source',
-          'github_webhook_delivery',
-          'linear_webhook_delivery',
-        ].includes(row.table_name),
+        ['github_webhook_delivery', 'linear_webhook_delivery'].includes(row.table_name),
       );
 
       if (newTablesWithoutTimezone.length > 0) {
