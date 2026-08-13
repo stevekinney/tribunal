@@ -48,6 +48,31 @@ describe('schema table configuration', () => {
     ]);
   });
 
+  it('does not map webhook metadata retained only for deployment sequencing', () => {
+    const deliveryColumns = getTableConfig(schema.githubWebhookDelivery).columns.map(
+      (column) => column.name,
+    );
+    const eventColumns = getTableConfig(schema.webhookEvent).columns.map((column) => column.name);
+
+    expect(deliveryColumns).toEqual(['id', 'delivery_id', 'event_type']);
+    expect(eventColumns).toEqual([
+      'id',
+      'event_type',
+      'action',
+      'delivery_id',
+      'payload',
+      'repository_id',
+      'installation_id',
+      'sender_login',
+      'pr_number',
+      'issue_number',
+      'ref',
+      'commit_sha',
+      'github_created_at',
+      'received_at',
+    ]);
+  });
+
   describe.each(tables.map((table) => [getTableName(table), table] as const))(
     '%s',
     (tableName, table) => {

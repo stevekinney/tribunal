@@ -73,7 +73,6 @@ describe('webhook-events server helper', () => {
         payload: overrides.payload ?? JSON.stringify({ ok: true }),
         repositoryId: overrides.repositoryId,
         installationId: null,
-        senderId: null,
         senderLogin: overrides.senderLogin ?? null,
         prNumber: overrides.prNumber,
         issueNumber: overrides.issueNumber,
