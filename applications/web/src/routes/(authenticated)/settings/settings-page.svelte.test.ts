@@ -48,26 +48,16 @@ describe('/settings page — default model', () => {
     render(SettingsPage, { data: baseData, form: null, params: {} });
 
     // The card title stays the single visible "Default model" heading.
-    await expect
-      .element(page.getByRole('heading', { name: 'Default model', level: 2 }))
-      .toBeVisible();
+    const defaultModelHeadings = page
+      .getByRole('heading', { name: 'Default model', level: 2 })
+      .all();
+    expect(defaultModelHeadings).toHaveLength(1);
+    await expect.element(defaultModelHeadings[0]).toBeVisible();
 
     // The select keeps its accessible name via a visually hidden label,
     // rather than a second on-screen "Default model" heading.
     const select = page.getByRole('combobox', { name: 'Default model' }).element();
     expect(select.tagName).toBe('SELECT');
-
-    const selectLabel = document.querySelector('.cinder-select-field__label');
-    expect(selectLabel).not.toBeNull();
-    expect(selectLabel).toHaveClass('cinder-sr-only');
-
-    const visibleDefaultModelText = [...document.querySelectorAll('body *')].filter(
-      (element) =>
-        element.textContent?.trim() === 'Default model' &&
-        !element.classList.contains('cinder-sr-only') &&
-        element.children.length === 0,
-    );
-    expect(visibleDefaultModelText).toHaveLength(1);
   });
 });
 

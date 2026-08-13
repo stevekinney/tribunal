@@ -127,12 +127,10 @@ describe('/webhooks page', () => {
     // page) because `WebhookEventsTable` also renders a neutral-variant
     // event-type Badge per row, which would otherwise pollute the count.
     const [activeGroup, quietGroup] = container.querySelectorAll('.subscribed-events');
-    const activeBadges = [...(activeGroup?.querySelectorAll('[data-cinder-variant]') ?? [])].map(
-      (badge) => badge.textContent?.trim(),
+    const activeBadges = [...(activeGroup?.children ?? [])].map((badge) =>
+      badge.textContent?.trim(),
     );
-    const quietBadges = [...(quietGroup?.querySelectorAll('[data-cinder-variant]') ?? [])].map(
-      (badge) => badge.textContent?.trim(),
-    );
+    const quietBadges = [...(quietGroup?.children ?? [])].map((badge) => badge.textContent?.trim());
     expect(activeBadges).toEqual(['pull_request']);
     expect(quietBadges).toEqual(['push']);
   });
@@ -311,7 +309,7 @@ describe('/webhooks page', () => {
 
     await expect.poll(() => document.getElementById('webhook-event-detail-1')).not.toBeNull();
     const detail = document.getElementById('webhook-event-detail-1');
-    const metadataList = detail?.querySelector('.cinder-description-list');
+    const metadataList = detail?.querySelector('dl');
     expect(metadataList).not.toBeNull();
     const detailText = detail?.textContent ?? '';
     expect(detailText).toContain('Event');

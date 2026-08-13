@@ -110,7 +110,7 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
 
     await expect.poll(() => document.getElementById('webhook-event-detail-1')).not.toBeNull();
     const detail = document.getElementById('webhook-event-detail-1');
-    const metadataList = detail?.querySelector('.cinder-description-list');
+    const metadataList = detail?.querySelector('dl');
     expect(metadataList).not.toBeNull();
     const detailText = detail?.textContent ?? '';
     expect(detailText).toContain('Event');
