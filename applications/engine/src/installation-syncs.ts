@@ -1,4 +1,8 @@
 import { isWeftFault } from '@lostgradient/weft';
+import {
+  isWorkflowCancellationReason,
+  type WorkflowCancellationReason,
+} from '@tribunal/github/context';
 import type { EnqueueInstallationSyncOptions } from '@tribunal/github/sync/types';
 import type { EngineRuntime } from './workflows/bootstrap';
 
@@ -109,17 +113,24 @@ export async function handleWorkflowCancellationRequest(
     return Response.json({ ok: false, error: input.error }, { status: 400 });
   }
 
-  const result = await runtime.cancelWorkflowIds(input.workflowIds);
+  const result = await runtime.cancelWorkflowIds(
+    input.workflowIds,
+    input.cancellationReason,
+    input.userId,
+  );
   return Response.json(
     { ok: result.failed === 0, ...result },
     { status: result.failed === 0 ? 202 : 502 },
   );
 }
 
-async function readWorkflowCancellationInput(
-  request: Request,
-): Promise<
-  | { ok: true; workflowIds: string[] }
+async function readWorkflowCancellationInput(request: Request): Promise<
+  | {
+      ok: true;
+      workflowIds: string[];
+      cancellationReason?: WorkflowCancellationReason;
+      userId?: number;
+    }
   | { ok: false; error: 'invalid_workflow_cancellation_request' }
 > {
   try {
@@ -127,20 +138,43 @@ async function readWorkflowCancellationInput(
     if (!isWorkflowCancellationInput(body)) {
       return { ok: false, error: 'invalid_workflow_cancellation_request' };
     }
-    return { ok: true, workflowIds: body.workflowIds };
+    return {
+      ok: true,
+      workflowIds: body.workflowIds,
+      cancellationReason: body.cancellationReason,
+      userId: body.userId,
+    };
   } catch {
     return { ok: false, error: 'invalid_workflow_cancellation_request' };
   }
 }
 
-function isWorkflowCancellationInput(value: unknown): value is { workflowIds: string[] } {
+function isWorkflowCancellationInput(value: unknown): value is {
+  workflowIds: string[];
+  cancellationReason?: WorkflowCancellationReason;
+  userId?: number;
+} {
   if (value === null || typeof value !== 'object') return false;
-  const candidate = value as { workflowIds?: unknown };
+  const candidate = value as {
+    workflowIds?: unknown;
+    cancellationReason?: unknown;
+    userId?: unknown;
+  };
+  const isPolicyCancellation =
+    candidate.cancellationReason === 'reviews_paused' ||
+    candidate.cancellationReason === 'repository_unwatched';
   return (
     Array.isArray(candidate.workflowIds) &&
     candidate.workflowIds.length > 0 &&
     candidate.workflowIds.every(
       (workflowId) => typeof workflowId === 'string' && workflowId.length > 0,
-    )
+    ) &&
+    (candidate.cancellationReason === undefined ||
+      isWorkflowCancellationReason(candidate.cancellationReason)) &&
+    (candidate.userId === undefined ||
+      (typeof candidate.userId === 'number' &&
+        Number.isInteger(candidate.userId) &&
+        candidate.userId > 0)) &&
+    (!isPolicyCancellation || candidate.userId !== undefined)
   );
 }

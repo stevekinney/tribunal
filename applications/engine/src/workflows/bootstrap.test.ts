@@ -230,7 +230,69 @@ describe('createEngineRuntime', () => {
       failed: 0,
       errors: [],
     });
-    expect(stopReviewWorkflow).toHaveBeenCalledWith('review:pr:42:7');
+    expect(stopReviewWorkflow).toHaveBeenCalledWith('review:pr:42:7', undefined, undefined);
+
+    await runtime.release();
+  });
+
+  it('passes workflow cancellation reasons to active review runtime work', async () => {
+    const longRunningWorkflow = workflow({ name: 'long-running' }).execute(
+      async function* (context) {
+        yield* context.sleep('1m');
+        return { ok: true };
+      },
+    );
+    const stopReviewWorkflow = vi.fn().mockResolvedValue({ stopped: true });
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: { 'long-running': longRunningWorkflow },
+        drain: vi.fn().mockResolvedValue(0),
+        stopReviewWorkflow,
+      },
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await (
+      runtime.engine as {
+        start(
+          workflowName: 'long-running',
+          input: Record<string, never>,
+          options: { id: string; defer: false },
+        ): Promise<unknown>;
+      }
+    ).start('long-running', {}, { id: 'review:pr:42:7', defer: false });
+
+    await expect(
+      runtime.cancelWorkflowIds?.(['review:pr:42:7'], 'reviews_paused', 17),
+    ).resolves.toEqual({
+      cancelled: 1,
+      failed: 0,
+      errors: [],
+    });
+    expect(stopReviewWorkflow).toHaveBeenCalledWith('review:pr:42:7', 'reviews_paused', 17);
+
+    await runtime.release();
+  });
+
+  it('fails user-scoped cancellation when no active review belongs to that user', async () => {
+    const runtime = await createEngineRuntime({
+      allowEphemeralStorageForTests: true,
+      reviewIntentConsumer: {
+        workflows: {},
+        drain: vi.fn().mockResolvedValue(0),
+        stopReviewWorkflow: vi.fn().mockResolvedValue({ stopped: false }),
+      },
+      reviewIntentPollIntervalMs: 0,
+    });
+
+    await expect(
+      runtime.cancelWorkflowIds?.(['review:pr:42:7'], 'reviews_paused', 17),
+    ).resolves.toEqual({
+      cancelled: 0,
+      failed: 1,
+      errors: ['review:pr:42:7: No active review workflow matched the requested user.'],
+    });
 
     await runtime.release();
   });

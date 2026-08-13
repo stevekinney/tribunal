@@ -143,6 +143,23 @@ describe('githubContext', () => {
     expect(mocks.cancelReviewWorkflowsEngine).toHaveBeenCalledWith(['review:pr:42:7']);
   });
 
+  it('forwards policy reason and user ownership to the engine owner', async () => {
+    mocks.cancelReviewWorkflowsEngine.mockResolvedValue({
+      status: 'sent',
+      ok: true,
+      responseStatus: 202,
+    });
+    const cancelWorkflowsById = getCancelWorkflowsById();
+
+    await cancelWorkflowsById(['review:pr:42:7'], 'repository_removed', 17);
+
+    expect(mocks.cancelReviewWorkflowsEngine).toHaveBeenCalledWith(
+      ['review:pr:42:7'],
+      'repository_removed',
+      17,
+    );
+  });
+
   it('reports production workflow cancellation delivery failures', async () => {
     mocks.cancelReviewWorkflowsEngine.mockResolvedValue({
       status: 'sent',

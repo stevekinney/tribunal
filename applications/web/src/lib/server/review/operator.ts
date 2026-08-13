@@ -1,5 +1,5 @@
 import { error, fail } from '@sveltejs/kit';
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   agent,
   agentEvent,
@@ -23,7 +23,11 @@ import {
   effortSchema,
 } from '@tribunal/review-core/schemas';
 import { db } from '$lib/server/database';
-import { postReviewEngineControl } from '$lib/server/review/engine-client';
+import {
+  cancelReviewWorkflowsEngine,
+  parseWorkflowCancellationResult,
+  postReviewEngineControl,
+} from '$lib/server/review/engine-client';
 export { getEffortFallbackNotice } from '$lib/review/operator-ui';
 
 const defaultModelOptions = defaultReviewModelSchema.options;
@@ -31,6 +35,7 @@ const reviewModelOptions = ['inherit', ...defaultModelOptions] as const;
 const reviewEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const waitingForEligibleReviewAgentReason =
   'Review intent is waiting for an eligible review agent.';
+const reviewPolicyCancellationError = 'Active reviews could not be stopped. Please try again.';
 
 export type SurfaceState = 'empty' | 'loading' | 'streaming' | 'success' | 'error' | 'disconnected';
 
@@ -328,6 +333,10 @@ export async function saveRepositoryWatchSettings(
     if (wakeupFailed) {
       return fail(503, { error: 'Review engine wake-up failed. Please try again.' });
     }
+  } else if (
+    !(await cancelActiveReviewWorkflows(userId, 'repository_unwatched', input.repositoryId))
+  ) {
+    return fail(503, { error: reviewPolicyCancellationError });
   }
 
   return { success: true };
@@ -358,7 +367,75 @@ export async function setRepositoryWatched(userId: number, repositoryId: number,
       ),
     );
 
+  if (
+    !watched &&
+    !(await cancelActiveReviewWorkflows(userId, 'repository_unwatched', repositoryId))
+  ) {
+    return fail(503, { error: reviewPolicyCancellationError });
+  }
+
   return { success: true };
+}
+
+async function cancelActiveReviewWorkflows(
+  userId: number,
+  reason: 'reviews_paused' | 'repository_unwatched',
+  repositoryId?: number,
+): Promise<boolean> {
+  const repositoryIntentFilter =
+    repositoryId === undefined ? undefined : eq(reviewIntent.repositoryId, repositoryId);
+  const repositoryRunFilter =
+    repositoryId === undefined ? undefined : eq(pullRequestReviewRun.repositoryId, repositoryId);
+  const [claimedIntents, activeRuns] = await Promise.all([
+    db
+      .select({
+        repositoryId: reviewIntent.repositoryId,
+        prNumber: reviewIntent.prNumber,
+      })
+      .from(reviewIntent)
+      .where(
+        and(
+          eq(reviewIntent.userId, userId),
+          isNotNull(reviewIntent.claimedAt),
+          isNull(reviewIntent.processedAt),
+          repositoryIntentFilter,
+        ),
+      ),
+    db
+      .select({
+        workflowId: tribunalRun.workflowId,
+        repositoryId: pullRequestReviewRun.repositoryId,
+        prNumber: pullRequestReviewRun.prNumber,
+      })
+      .from(tribunalRun)
+      .innerJoin(pullRequestReviewRun, eq(pullRequestReviewRun.runId, tribunalRun.id))
+      .where(
+        and(
+          eq(tribunalRun.userId, userId),
+          inArray(tribunalRun.status, ['queued', 'running']),
+          repositoryRunFilter,
+        ),
+      ),
+  ]);
+  const workflowIds = [
+    ...claimedIntents.map((intent) =>
+      createPullRequestReviewWorkflowId(intent.repositoryId, intent.prNumber),
+    ),
+    ...activeRuns.map(
+      (run) => run.workflowId ?? createPullRequestReviewWorkflowId(run.repositoryId, run.prNumber),
+    ),
+  ];
+  const uniqueWorkflowIds = [...new Set(workflowIds)].sort();
+  if (uniqueWorkflowIds.length === 0) return true;
+
+  const result = await cancelReviewWorkflowsEngine(uniqueWorkflowIds, reason, userId);
+  if (result.status !== 'sent' || !result.ok) return false;
+  const cancellation = parseWorkflowCancellationResult(result.body);
+  return cancellation !== null && cancellation.failed === 0;
+}
+
+function createPullRequestReviewWorkflowId(repositoryId: number, prNumber: number): string {
+  return `review:pr:${repositoryId}:${prNumber}`;
 }
 
 export async function listAgents(userId: number) {
@@ -1118,6 +1195,10 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
       target: userReviewSettings.userId,
       set: { dailyCostCapUsd, defaultModel, reviewsEnabled, updatedAt: new Date() },
     });
+
+  if (!reviewsEnabled && !(await cancelActiveReviewWorkflows(userId, 'reviews_paused'))) {
+    return fail(503, { error: reviewPolicyCancellationError });
+  }
 
   return { success: true };
 }

@@ -22,7 +22,7 @@ import {
   findPostedPullRequestReview,
   postPullRequestReview,
 } from '@tribunal/github/reviews/pull-request-reviews';
-import type { GithubServiceContext } from '@tribunal/github/context';
+import type { GithubServiceContext, WorkflowCancellationReason } from '@tribunal/github/context';
 import {
   createSandboxPort,
   type SandboxAdapter,
@@ -169,8 +169,12 @@ export function createReviewIntentConsumer(
     stopReviewRun(reviewRunId: string) {
       return reviewWorkflowEngine.stopRun(reviewRunId, 'timeout');
     },
-    stopReviewWorkflow(workflowId: string) {
-      return reviewWorkflowEngine.stopWorkflow(workflowId);
+    stopReviewWorkflow(
+      workflowId: string,
+      cancellationReason?: WorkflowCancellationReason,
+      userId?: number,
+    ) {
+      return reviewWorkflowEngine.stopWorkflow(workflowId, cancellationReason, userId);
     },
     stopReviewAgent(reviewRunId: string, agentId: string) {
       return reviewWorkflowEngine.stopAgent(reviewRunId, agentId, 'timeout');

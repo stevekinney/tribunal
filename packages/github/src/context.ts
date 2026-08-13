@@ -28,6 +28,21 @@ export interface WorkflowCancellationResult {
   errors: string[];
 }
 
+export const workflowCancellationReasons = [
+  'repository_removed',
+  'repository_unwatched',
+  'reviews_paused',
+] as const;
+
+export type WorkflowCancellationReason = (typeof workflowCancellationReasons)[number];
+
+export function isWorkflowCancellationReason(value: unknown): value is WorkflowCancellationReason {
+  return (
+    typeof value === 'string' &&
+    workflowCancellationReasons.includes(value as WorkflowCancellationReason)
+  );
+}
+
 export interface GithubServiceContext {
   /** Database query builder (Drizzle ORM). */
   db: Database;
@@ -70,5 +85,9 @@ export interface GithubServiceContext {
    * Production web supplies this through the authenticated engine control
    * endpoint because `WEFT_DATABASE_URL` belongs to tribunal-engine.
    */
-  cancelWorkflowsById?: (workflowIds: string[]) => Promise<WorkflowCancellationResult>;
+  cancelWorkflowsById?: (
+    workflowIds: string[],
+    cancellationReason?: WorkflowCancellationReason,
+    userId?: number,
+  ) => Promise<WorkflowCancellationResult>;
 }

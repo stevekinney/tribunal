@@ -13,7 +13,10 @@ import type {
   EnqueueInstallationSyncOptions,
   EnqueueInstallationSyncResult,
 } from '@tribunal/github/sync/types';
-import type { WorkflowCancellationResult } from '@tribunal/github/context';
+import type {
+  WorkflowCancellationReason,
+  WorkflowCancellationResult,
+} from '@tribunal/github/context';
 import type { EngineHealthDependency } from '../health';
 import type { StopReviewRunResult } from './review-workflow';
 
@@ -45,7 +48,11 @@ export type ReviewIntentConsumer = {
   consumePendingDrain?(): boolean;
   getQueueStatus?(now: Date): Promise<ReviewIntentQueueStatus>;
   reapClosedPullRequestSandboxes?(): Promise<unknown>;
-  stopReviewWorkflow?(workflowId: string): Promise<StopReviewRunResult>;
+  stopReviewWorkflow?(
+    workflowId: string,
+    cancellationReason?: WorkflowCancellationReason,
+    userId?: number,
+  ): Promise<StopReviewRunResult>;
   stopReviewRun?(reviewRunId: string): Promise<StopReviewRunResult>;
   stopReviewAgent?(reviewRunId: string, agentId: string): Promise<StopReviewRunResult>;
 };
@@ -76,7 +83,11 @@ export type EngineRuntime = {
   reapClosedPullRequestSandboxes(): Promise<unknown>;
   hasActiveInstallationSyncs?(): Promise<boolean>;
   cancelInstallationSync?(installationId: number): Promise<void>;
-  cancelWorkflowIds?(workflowIds: string[]): Promise<WorkflowCancellationResult>;
+  cancelWorkflowIds?(
+    workflowIds: string[],
+    cancellationReason?: WorkflowCancellationReason,
+    userId?: number,
+  ): Promise<WorkflowCancellationResult>;
   enqueueInstallationSync?(
     options: EnqueueInstallationSyncOptions,
   ): Promise<EnqueueInstallationSyncResult>;
@@ -162,13 +173,24 @@ export async function createEngineRuntime(
       async cancelInstallationSync(installationId) {
         await engine.cancel(`github:installations:${installationId}:sync`);
       },
-      async cancelWorkflowIds(workflowIds) {
+      async cancelWorkflowIds(workflowIds, cancellationReason, userId) {
         let cancelled = 0;
         let failed = 0;
         const errors: string[] = [];
         for (const workflowId of workflowIds) {
           try {
-            await options.reviewIntentConsumer?.stopReviewWorkflow?.(workflowId);
+            const stopReviewWorkflow = options.reviewIntentConsumer?.stopReviewWorkflow;
+            if (userId !== undefined && stopReviewWorkflow === undefined) {
+              throw new Error('Review workflow cancellation receiver is unavailable.');
+            }
+            const stopResult = await stopReviewWorkflow?.(workflowId, cancellationReason, userId);
+            if (userId !== undefined) {
+              if (stopResult?.stopped !== true) {
+                throw new Error('No active review workflow matched the requested user.');
+              }
+              cancelled++;
+              continue;
+            }
             await engine.cancel(workflowId);
             cancelled++;
           } catch (error) {

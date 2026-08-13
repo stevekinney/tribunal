@@ -8,6 +8,7 @@ import {
   mergeNearDuplicateFindings,
 } from '@tribunal/agents/findings';
 import { sandboxCost } from '@tribunal/cost/pricing';
+import type { WorkflowCancellationReason } from '@tribunal/github/context';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
 import { defaultReviewModelSchema } from '@tribunal/review-core/schemas';
 import type {
@@ -206,6 +207,7 @@ type AgentExecution = {
 
 type SupervisorState = PullRequestSupervisorSnapshot & {
   input: PullRequestReviewInput;
+  activeRunInput?: PullRequestReviewInput;
   checkRunId?: number;
   activeAgents: Map<string, AgentExecution>;
   runPromises: Map<string, Promise<ReviewRunRecord>>;
@@ -494,19 +496,26 @@ export class ReviewWorkflowEngine {
     return { stopped: false };
   }
 
-  async stopWorkflow(workflowId: string): Promise<StopReviewRunResult> {
-    this.stoppingWorkflowIds.add(workflowId);
+  async stopWorkflow(
+    workflowId: string,
+    cancellationReason: WorkflowCancellationReason = 'repository_removed',
+    userId?: number,
+  ): Promise<StopReviewRunResult> {
+    if (userId === undefined) this.stoppingWorkflowIds.add(workflowId);
     const supervisor =
       this.supervisors.get(workflowId) ?? (await this.supervisorPromises.get(workflowId));
-    if (supervisor === undefined) {
-      this.stoppingWorkflowIds.delete(workflowId);
-      return { stopped: false };
-    }
-
-    await this.stopActiveAgents(supervisor, 'pr_closed');
-    const activeRun = supervisor.activeRunId
+    const activeRun = supervisor?.activeRunId
       ? this.reviewRuns.get(supervisor.activeRunId)
       : undefined;
+    const activeRunInput = supervisor?.activeRunInput;
+    const activeUserId = activeRun?.userId ?? activeRunInput?.userId;
+    if (supervisor === undefined || (userId !== undefined && activeUserId !== userId)) {
+      if (userId === undefined) this.stoppingWorkflowIds.delete(workflowId);
+      return { stopped: false };
+    }
+    if (userId !== undefined) this.stoppingWorkflowIds.add(workflowId);
+
+    await this.stopActiveAgents(supervisor, 'pr_closed');
     if (activeRun?.status === 'running') {
       activeRun.status = 'cancelled';
       activeRun.finishedAt = this.now();
@@ -515,20 +524,24 @@ export class ReviewWorkflowEngine {
       await this.ports.state?.upsertReviewRun(activeRun);
     }
 
-    try {
-      await this.updateCheckRun(supervisor.input, supervisor.checkRunId, {
-        status: 'completed',
-        conclusion: 'cancelled',
-        output: {
-          title: 'Tribunal review stopped',
-          summary: 'Repository removed; stopped in-flight review work.',
-        },
-      });
-    } catch (error) {
-      console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
-        workflowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    const cancellationInput =
+      activeRunInput ??
+      (activeRun !== undefined && supervisor.input.userId === activeRun.userId
+        ? supervisor.input
+        : undefined);
+    if (activeRun?.status === 'cancelled' && cancellationInput !== undefined) {
+      try {
+        await this.updateCheckRun(
+          cancellationInput,
+          supervisor.checkRunId,
+          buildCancelledWorkflowCheckRunPatch(cancellationReason),
+        );
+      } catch (error) {
+        console.warn('[review-workflow] Failed to update check run while stopping workflow.', {
+          workflowId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     await this.terminateSandboxOnce(supervisor.sandboxId);
     await Promise.allSettled([...supervisor.runPromises.values()]);
@@ -667,6 +680,7 @@ export class ReviewWorkflowEngine {
       reviewedHeadShas: [],
       status: 'running',
       input,
+      activeRunInput: undefined,
       checkRunId,
       activeAgents: new Map(),
       runPromises: new Map(),
@@ -739,6 +753,7 @@ export class ReviewWorkflowEngine {
     const existingRun = this.reviewRuns.get(runId);
     if (existingRun !== undefined && isReusableReviewRun(existingRun)) return existingRun;
 
+    supervisor.activeRunInput = input;
     const runPromise = this.executeReviewRun(
       supervisor,
       input,
@@ -780,7 +795,10 @@ export class ReviewWorkflowEngine {
         const run = this.reviewRuns.get(runId);
         if (run !== undefined && run.status !== 'running') {
           supervisor.runPromises.delete(runId);
-          if (supervisor.activeRunId === runId) supervisor.activeRunId = undefined;
+          if (supervisor.activeRunId === runId) {
+            supervisor.activeRunId = undefined;
+            supervisor.activeRunInput = undefined;
+          }
         }
       });
     supervisor.runPromises.set(runId, runPromise);
@@ -1758,6 +1776,7 @@ export class ReviewWorkflowEngine {
         .map((run) => run.headSha),
       status: 'running',
       input,
+      activeRunInput: activeRun?.userId === input.userId ? input : undefined,
       checkRunId: usableRun.checkRunId,
       activeAgents: new Map(),
       runPromises: new Map(),
@@ -2009,6 +2028,40 @@ function buildCompletedCheckRunPatch(
       annotations,
     },
   };
+}
+
+function buildCancelledWorkflowCheckRunPatch(
+  cancellationReason: WorkflowCancellationReason,
+): CheckRunPatch {
+  switch (cancellationReason) {
+    case 'reviews_paused':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Reviews paused; stopped in-flight review work.',
+        },
+      };
+    case 'repository_unwatched':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Repository unwatched; stopped in-flight review work.',
+        },
+      };
+    case 'repository_removed':
+      return {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review stopped',
+          summary: 'Repository removed; stopped in-flight review work.',
+        },
+      };
+  }
 }
 
 function deduplicateAgentResultFindings(agentResults: AgentResult[]): AgentResult[] {

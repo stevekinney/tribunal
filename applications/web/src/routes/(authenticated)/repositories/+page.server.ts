@@ -299,7 +299,8 @@ export const actions: Actions = {
     // another tab saves in between, which is the whole reason the form stopped
     // sending its own snapshot.
     if (!watched && !formData.has('ignoreGlobs') && submittedAgentIds.length === 0) {
-      await setRepositoryWatched(user.id, repositoryId, false);
+      const result = await setRepositoryWatched(user.id, repositoryId, false);
+      if ('status' in result) return result;
       // `redirect` throws, so nothing after this runs. The result object is
       // deliberately dropped: this path is only ever reached by the settings
       // page's plain, non-enhanced form, which has no JavaScript to read a

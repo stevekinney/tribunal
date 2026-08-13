@@ -290,6 +290,89 @@ describe('review operator server helpers', () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  it('cancels only the current user review workflows when a shared repository is unwatched', async () => {
+    const { firstOwner, secondOwner } = await seedSharedRepositoryOwnership();
+    await testDb.db.insert(repositoryReviewSettings).values([
+      { userId: firstOwner.id, repositoryId: 9101, watched: true },
+      { userId: secondOwner.id, repositoryId: 9101, watched: true },
+    ]);
+    await insertReviewRun({
+      id: 'run_first_owner',
+      userId: firstOwner.id,
+      repositoryId: 9101,
+      prNumber: 7,
+      headSha: 'first-owner-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+    await insertReviewRun({
+      id: 'run_second_owner',
+      userId: secondOwner.id,
+      repositoryId: 9101,
+      prNumber: 7,
+      headSha: 'second-owner-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(Response.json({ cancelled: 1, failed: 0, errors: [] }, { status: 202 }));
+
+    await expect(
+      withTestDatabase(() => setRepositoryWatched(firstOwner.id, 9101, false)),
+    ).resolves.toEqual({ success: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, request] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      workflowIds: ['review:pr:9101:7'],
+      cancellationReason: 'repository_unwatched',
+      userId: firstOwner.id,
+    });
+    const settingsRows = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9101));
+    expect(settingsRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ userId: firstOwner.id, watched: false }),
+        expect.objectContaining({ userId: secondOwner.id, watched: true }),
+      ]),
+    );
+  });
+
+  it('reports unwatch failure when engine control is not configured', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(repositoryReviewSettings).values({
+      userId: owner.id,
+      repositoryId: 9001,
+      watched: true,
+    });
+    await insertReviewRun({
+      id: 'run_active',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 7,
+      headSha: 'active-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+
+    const result = await withTestDatabase(() => setRepositoryWatched(owner.id, 9001, false));
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+    });
+    const [settings] = await testDb.db
+      .select()
+      .from(repositoryReviewSettings)
+      .where(eq(repositoryReviewSettings.repositoryId, 9001));
+    expect(settings?.watched).toBe(false);
+  });
+
   it('kicks the review engine when repository assignment changes can make waiting intents eligible', async () => {
     const { owner, reviewAgent } = await seedRepositoryOwnership();
     mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
@@ -1595,6 +1678,104 @@ describe('review operator server helpers', () => {
     // fallback-select branch (the row already exists from the upsert above).
     const secondRead = await withTestDatabase(() => getUserReviewSettings(owner.id));
     expect(secondRead[0]).toMatchObject({ defaultModel: 'opus' });
+  });
+
+  it('cancels claimed and active review workflows when global reviews are disabled', async () => {
+    const { owner, otherUser } = await seedRepositoryOwnership();
+    await testDb.db.insert(userReviewSettings).values({ userId: owner.id, reviewsEnabled: true });
+    await testDb.db.insert(reviewIntent).values([
+      {
+        id: 'intent_claimed',
+        deliveryId: 'delivery_claimed',
+        kind: 'start',
+        repositoryId: 9001,
+        userId: owner.id,
+        prNumber: 7,
+        claimedAt: new Date('2026-06-17T12:00:00Z'),
+      },
+      {
+        id: 'intent_other_user',
+        deliveryId: 'delivery_other_user',
+        kind: 'start',
+        repositoryId: 9001,
+        userId: otherUser.id,
+        prNumber: 8,
+        claimedAt: new Date('2026-06-17T12:00:00Z'),
+      },
+    ]);
+    await insertReviewRun({
+      id: 'run_active',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 9,
+      headSha: 'active-sha',
+      trigger: 'opened',
+      status: 'running',
+    });
+    await insertReviewRun({
+      id: 'run_finished',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 10,
+      headSha: 'finished-sha',
+      trigger: 'opened',
+      status: 'posted',
+    });
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(Response.json({ cancelled: 2, failed: 0, errors: [] }, { status: 202 }));
+    const formData = new FormData();
+    formData.set('dailyCostCapUsd', '25');
+    formData.set('defaultModel', 'sonnet');
+
+    await expect(
+      withTestDatabase(() => saveUserReviewSettings(owner.id, formData)),
+    ).resolves.toEqual({ success: true });
+
+    const [, request] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      workflowIds: ['review:pr:9001:7', 'review:pr:9001:9'],
+      cancellationReason: 'reviews_paused',
+      userId: owner.id,
+    });
+    const [settings] = await testDb.db
+      .select()
+      .from(userReviewSettings)
+      .where(eq(userReviewSettings.userId, owner.id));
+    expect(settings?.reviewsEnabled).toBe(false);
+  });
+
+  it('reports a settings failure when review policy cancellation is rejected', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_active',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 7,
+      headSha: 'active-sha',
+      trigger: 'opened',
+      status: 'queued',
+    });
+    mocks.env.TRIBUNAL_ENGINE_URL = 'https://engine.tribunal.test';
+    mocks.env.TRIBUNAL_ENGINE_CONTROL_TOKEN = 'control-token';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json(
+        { cancelled: 0, failed: 1, errors: ['review:pr:9001:7: failed'] },
+        { status: 502 },
+      ),
+    );
+    const formData = new FormData();
+    formData.set('dailyCostCapUsd', '25');
+    formData.set('defaultModel', 'sonnet');
+
+    const result = await withTestDatabase(() => saveUserReviewSettings(owner.id, formData));
+
+    expect(result).toMatchObject({
+      status: 503,
+      data: { error: 'Active reviews could not be stopped. Please try again.' },
+    });
   });
 
   it('exposes the model options, effort options, and effort validator', () => {

@@ -2266,6 +2266,81 @@ describe('ReviewWorkflowEngine', () => {
     });
   });
 
+  it('explains when policy cancellation stops work because reviews were paused', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await expect(engine.stopWorkflow('review:pr:42:7', 'reviews_paused')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Reviews paused; stopped in-flight review work.',
+        },
+      },
+    });
+  });
+
+  it('explains when policy cancellation stops work because the repository was unwatched', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+
+    await expect(engine.stopWorkflow('review:pr:42:7', 'repository_unwatched')).resolves.toEqual({
+      stopped: true,
+    });
+    ports.sandbox.resolveHeldAgents();
+
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
+      patch: {
+        status: 'completed',
+        conclusion: 'cancelled',
+        output: {
+          title: 'Tribunal review cancelled',
+          summary: 'Repository unwatched; stopped in-flight review work.',
+        },
+      },
+    });
+  });
+
+  it('does not cancel another user review for the same repository and pull request', async () => {
+    const ports = createFakePorts({ holdAgentRuns: true });
+    const engine = createEngine(ports);
+    const runningReview = engine.startPullRequestReview(baseInput);
+    await ports.sandbox.waitForRunningAgent();
+    const otherUserReview = engine.startPullRequestReview({
+      ...baseInput,
+      userId: baseInput.userId + 1,
+    });
+    await Promise.resolve();
+
+    await expect(
+      engine.stopWorkflow('review:pr:42:7', 'repository_unwatched', baseInput.userId + 1),
+    ).resolves.toEqual({ stopped: false });
+
+    expect(ports.sandbox.stopCalls).toEqual([]);
+    expect(ports.github.checkRunPatches).toEqual([]);
+    expect(engine.snapshot().reviewRuns.at(-1)).toMatchObject({
+      status: 'running',
+    });
+
+    await engine.stopWorkflow('review:pr:42:7', 'repository_unwatched', baseInput.userId);
+    ports.sandbox.resolveHeldAgents();
+    await expect(runningReview).resolves.toMatchObject({ status: 'cancelled' });
+    await expect(otherUserReview).resolves.toMatchObject({ userId: baseInput.userId });
+  });
+
   it('terminates workflow resources even when the stop check update fails', async () => {
     const ports = createFakePorts({ holdAgentRuns: true, failCheckRunUpdatesRemaining: 1 });
     const engine = createEngine(ports);
@@ -2360,6 +2435,27 @@ describe('ReviewWorkflowEngine', () => {
 
     expect(ports.sandbox.stopCalls).toEqual([]);
     expect(ports.github.checkRunPatches).toEqual([]);
+  });
+
+  it('does not overwrite a completed review outcome when workflow cancellation arrives late', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+    await expect(engine.startPullRequestReview(baseInput)).resolves.toMatchObject({
+      status: 'posted',
+    });
+    const completedPatch = ports.github.checkRunPatches.at(-1);
+    const patchCount = ports.github.checkRunPatches.length;
+
+    await expect(engine.stopWorkflow('review:pr:42:7', 'reviews_paused')).resolves.toEqual({
+      stopped: true,
+    });
+
+    expect(ports.github.checkRunPatches).toHaveLength(patchCount);
+    expect(ports.github.checkRunPatches.at(-1)).toBe(completedPatch);
+    expect(ports.state.reviewRuns.at(-1)).toMatchObject({
+      id: 'run:42:7:aaa111:opened',
+      status: 'posted',
+    });
   });
 
   it('does not overwrite a cancelled run as posted when cancellation races with review posting', async () => {
