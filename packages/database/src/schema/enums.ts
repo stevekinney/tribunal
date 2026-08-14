@@ -17,12 +17,6 @@ export const oauthConnectionStatusEnum = pgEnum('oauth_connection_status', ['act
 // GITHUB ENUMS
 // ============================================================================
 
-/** GitHub account types (from GitHub API) */
-export const githubAccountTypeEnum = pgEnum('github_account_type', ['Organization', 'User']);
-
-/** GitHub App repository selection modes */
-export const repositorySelectionEnum = pgEnum('repository_selection', ['all', 'selected']);
-
 /** GitHub installation status */
 export const githubInstallationStatusEnum = pgEnum('github_installation_status', [
   'active', // Working normally
@@ -100,8 +94,6 @@ export type OAuthProvider = (typeof oauthProviderEnum.enumValues)[number];
 export type OAuthConnectionStatus = (typeof oauthConnectionStatusEnum.enumValues)[number];
 
 // GitHub types
-export type GitHubAccountType = (typeof githubAccountTypeEnum.enumValues)[number];
-export type RepositorySelection = (typeof repositorySelectionEnum.enumValues)[number];
 export type GitHubInstallationStatus = (typeof githubInstallationStatusEnum.enumValues)[number];
 export type SyncStatus = (typeof syncStatusEnum.enumValues)[number];
 

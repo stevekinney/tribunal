@@ -50,7 +50,6 @@ export const draftTriggeredBy = pgEnum('draft_triggered_by', ['initial', 'revisi
 export const errorCategory = pgEnum('error_category', ['retryable', 'correctable', 'terminal']);
 export const flowStatus = pgEnum('flow_status', ['active', 'completed']);
 export const flowType = pgEnum('flow_type', ['ideation']);
-export const githubAccountType = pgEnum('github_account_type', ['Organization', 'User']);
 export const githubInstallationStatus = pgEnum('github_installation_status', [
   'active',
   'suspended',
@@ -158,7 +157,6 @@ export const repositorySandboxSessionStatus = pgEnum('repository_sandbox_session
   'expired',
   'error',
 ]);
-export const repositorySelection = pgEnum('repository_selection', ['all', 'selected']);
 export const resourceType = pgEnum('resource_type', [
   'team',
   'channel',
@@ -391,18 +389,11 @@ export const githubInstallation = pgTable(
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     installationId: bigint('installation_id', { mode: 'number' }).notNull(),
     accountLogin: text('account_login').notNull(),
-    accountType: githubAccountType('account_type').notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     accountId: bigint('account_id', { mode: 'number' }).notNull(),
     accountAvatarUrl: text('account_avatar_url'),
-    repositorySelection: repositorySelection('repository_selection').notNull(),
     status: githubInstallationStatus().default('active').notNull(),
-    statusReason: text('status_reason'),
-    lastSyncedAt: timestamp('last_synced_at', { mode: 'string' }),
-    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
     syncStatus: syncStatus('sync_status').default('idle').notNull(),
-    syncError: text('sync_error'),
   },
   (table) => [
     index('github_installation_status_idx').using(
@@ -604,7 +595,6 @@ export const githubInstallationRepository = pgTable(
     repositoryId: bigint('repository_id', { mode: 'number' }).notNull(),
     isActive: boolean('is_active').default(true).notNull(),
     addedAt: timestamp('added_at', { mode: 'string' }).defaultNow().notNull(),
-    removedAt: timestamp('removed_at', { mode: 'string' }),
   },
   (table) => [
     index('github_installation_repository_installation_idx').using(
