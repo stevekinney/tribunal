@@ -449,6 +449,13 @@
       "when": 1786669053220,
       "tag": "0063_stop-mapping-oauth-workflow-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1786671083251,
+      "tag": "0064_remove-oauth-workflow-metadata",
+      "breakpoints": true
     }
   ]
 }
