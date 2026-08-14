@@ -78,7 +78,7 @@ describe('refreshInstallationRepositories', () => {
   });
 
   it('upserts current repositories and deactivates repositories no longer in the installation', async () => {
-    expect.assertions(8);
+    expect.assertions(6);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -128,17 +128,10 @@ describe('refreshInstallationRepositories', () => {
       .from(githubInstallationRepository)
       .where(eq(githubInstallationRepository.repositoryId, 999));
     expect(removedLinks[0].isActive).toBe(false);
-    expect(removedLinks[0].removedAt).toBeInstanceOf(Date);
-
-    const [installation] = await testContext.db
-      .select()
-      .from(githubInstallation)
-      .where(eq(githubInstallation.installationId, 12345));
-    expect(installation.lastSyncedAt).toBeInstanceOf(Date);
   });
 
   it('skips repository mutations when the sync attempt no longer owns the installation', async () => {
-    expect.assertions(9);
+    expect.assertions(7);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -148,7 +141,6 @@ describe('refreshInstallationRepositories', () => {
       .update(githubInstallation)
       .set({
         syncStatus: 'in_progress',
-        syncError: 'still syncing',
         syncWorkflowExecutionToken: 'current-workflow',
         syncActivityAttemptToken: 'current-attempt',
       })
@@ -193,20 +185,18 @@ describe('refreshInstallationRepositories', () => {
       .from(githubInstallationRepository)
       .where(eq(githubInstallationRepository.repositoryId, 999));
     expect(existingLink.isActive).toBe(true);
-    expect(existingLink.removedAt).toBeNull();
 
     const [installation] = await testContext.db
       .select()
       .from(githubInstallation)
       .where(eq(githubInstallation.installationId, 12345));
     expect(installation.syncStatus).toBe('in_progress');
-    expect(installation.syncError).toBe('still syncing');
     expect(installation.syncWorkflowExecutionToken).toBe('current-workflow');
     expect(installation.syncActivityAttemptToken).toBe('current-attempt');
   });
 
   it('settles a failed interrupted row when sync owner tokens still match', async () => {
-    expect.assertions(6);
+    expect.assertions(5);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -216,7 +206,6 @@ describe('refreshInstallationRepositories', () => {
       .update(githubInstallation)
       .set({
         syncStatus: 'failed',
-        syncError: 'Sync interrupted before completion (cancelled, stopped, or timed out).',
         syncWorkflowExecutionToken: 'workflow-token',
         syncActivityAttemptToken: 'activity-token',
       })
@@ -249,13 +238,12 @@ describe('refreshInstallationRepositories', () => {
       .from(githubInstallation)
       .where(eq(githubInstallation.installationId, 12345));
     expect(installation.syncStatus).toBe('idle');
-    expect(installation.syncError).toBeNull();
     expect(installation.syncWorkflowExecutionToken).toBeNull();
     expect(installation.syncActivityAttemptToken).toBeNull();
   });
 
   it('preserves live durable sync status during tokenless setup refreshes', async () => {
-    expect.assertions(6);
+    expect.assertions(4);
 
     await testContext.factories.githubInstallation.create({
       installationId: 12345,
@@ -265,7 +253,6 @@ describe('refreshInstallationRepositories', () => {
       .update(githubInstallation)
       .set({
         syncStatus: 'in_progress',
-        syncError: 'still syncing',
         syncStartedAt: new Date('2026-06-28T00:00:00.000Z'),
         syncWorkflowExecutionToken: 'workflow-token',
         syncActivityAttemptToken: 'activity-token',
@@ -287,9 +274,7 @@ describe('refreshInstallationRepositories', () => {
       .select()
       .from(githubInstallation)
       .where(eq(githubInstallation.installationId, 12345));
-    expect(installation.lastSyncedAt).toBeNull();
     expect(installation.syncStatus).toBe('in_progress');
-    expect(installation.syncError).toBe('still syncing');
     expect(installation.syncStartedAt).toEqual(new Date('2026-06-28T00:00:00.000Z'));
     expect(installation.syncWorkflowExecutionToken).toBe('workflow-token');
     expect(installation.syncActivityAttemptToken).toBe('activity-token');
@@ -1243,7 +1228,7 @@ describe('markInstallationRepositoryInactive', () => {
     await testContext.reset();
   });
 
-  it('marks an existing link inactive and stamps removedAt', async () => {
+  it('marks an existing link inactive', async () => {
     await testContext.factories.githubInstallation.create({
       installationId: 1000,
       accountLogin: 'acme',
@@ -1267,7 +1252,6 @@ describe('markInstallationRepositoryInactive', () => {
       .from(githubInstallationRepository)
       .where(eq(githubInstallationRepository.repositoryId, 1000));
     expect(link.isActive).toBe(false);
-    expect(link.removedAt).toBeInstanceOf(Date);
   });
 
   it('is a no-op when no matching link row exists', async () => {

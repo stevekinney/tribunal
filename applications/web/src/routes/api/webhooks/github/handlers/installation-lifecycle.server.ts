@@ -59,10 +59,8 @@ export async function handleInstallation(
         await upsertInstallation(githubContext, {
           installationId,
           accountLogin: account.login,
-          accountType: account.type as 'User' | 'Organization',
           accountId: account.id,
           accountAvatarUrl: account.avatar_url ?? null,
-          repositorySelection: payload.installation.repository_selection as 'all' | 'selected',
           preserveExistingAccountMetadata: true,
         });
 

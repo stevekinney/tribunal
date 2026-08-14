@@ -34,7 +34,6 @@ export const githubInstallationRepository = pgTable(
     isActive: boolean('is_active').notNull().default(true),
 
     addedAt: timestamp('added_at').notNull().defaultNow(),
-    removedAt: timestamp('removed_at'),
   },
   (table) => [
     // Each repo can only be linked to one installation once

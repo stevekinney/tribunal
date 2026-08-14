@@ -74,8 +74,6 @@ describe('createFactories', () => {
     it('applies defaults when no overrides are given', async () => {
       const installation = await factories.githubInstallation.create();
 
-      expect(installation.accountType).toBe('Organization');
-      expect(installation.repositorySelection).toBe('all');
       expect(installation.status).toBe('active');
       expect(installation.userId).toBeNull();
     });

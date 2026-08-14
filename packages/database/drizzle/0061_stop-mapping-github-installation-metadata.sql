@@ -1,0 +1,4 @@
+-- Application-schema checkpoint only. Migration 0060 made the two required
+-- metadata columns nullable so this application version can stop naming every
+-- target column while the previous version remains compatible. The physical
+-- columns are intentionally retained until this version is live in production.

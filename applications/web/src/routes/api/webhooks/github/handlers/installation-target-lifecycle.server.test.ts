@@ -48,7 +48,6 @@ describe('handleInstallationTarget', () => {
       installationId: 100,
       accountId: 123,
       accountLogin: 'new-org',
-      accountType: 'Organization',
       accountAvatarUrl: 'https://avatars.example/new-org',
     });
     expect(updateInstallationRepositoryOwnerMetadataMock).toHaveBeenCalledWith(
@@ -106,10 +105,8 @@ describe('handleInstallationTarget', () => {
       expect.objectContaining({
         installationId: 100,
         accountLogin: 'new-org',
-        accountType: 'Organization',
         accountId: 123,
         accountAvatarUrl: null,
-        repositorySelection: 'selected',
       }),
     );
   });

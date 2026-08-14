@@ -9,9 +9,7 @@ import { generateId } from './core';
 export type GitHubInstallationFactoryInput = Partial<{
   installationId: number;
   accountLogin: string;
-  accountType: 'Organization' | 'User';
   accountId: number;
-  repositorySelection: 'all' | 'selected';
   status: 'active' | 'suspended' | 'needs_permissions' | 'error';
   /** Tribunal user the installation is bound to. */
   userId: number;
@@ -36,9 +34,7 @@ export function createGitHubInstallationFactory(db: Database): GitHubInstallatio
         .values({
           installationId: input.installationId ?? 1000000 + id,
           accountLogin: input.accountLogin ?? `test-org-${id}`,
-          accountType: input.accountType ?? 'Organization',
           accountId: input.accountId ?? 2000000 + id,
-          repositorySelection: input.repositorySelection ?? 'all',
           status: input.status ?? 'active',
           userId: input.userId,
         })

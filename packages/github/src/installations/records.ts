@@ -8,23 +8,16 @@
 import { eq } from 'drizzle-orm';
 import {
   githubInstallation,
-  type GitHubAccountType,
   type GitHubInstallation,
   type GitHubInstallationStatus,
-  type RepositorySelection,
 } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../context.js';
-
-// Valid GitHub account types - validate against this to prevent enum errors
-const VALID_ACCOUNT_TYPES: readonly GitHubAccountType[] = ['User', 'Organization'];
 
 export interface UpsertInstallationData {
   installationId: number;
   accountLogin: string;
-  accountType: GitHubAccountType;
   accountId: number;
   accountAvatarUrl?: string | null;
-  repositorySelection: RepositorySelection;
   /** Tribunal user the installation is bound to. Omitted for webhook stub creates. */
   userId?: number;
   /** Keep existing account fields on conflict when a newer lifecycle event may have repaired them. */
@@ -34,7 +27,6 @@ export interface UpsertInstallationData {
 export interface UpdateInstallationAccountMetadataData {
   installationId: number;
   accountLogin: string;
-  accountType: GitHubAccountType;
   accountId: number;
   accountAvatarUrl?: string | null;
 }
@@ -47,20 +39,13 @@ export async function upsertInstallation(
   context: GithubServiceContext,
   data: UpsertInstallationData,
 ): Promise<void> {
-  // Validate account type to prevent enum errors
-  const accountType: GitHubAccountType = VALID_ACCOUNT_TYPES.includes(data.accountType)
-    ? data.accountType
-    : 'Organization'; // Safe default
-
   await context.db
     .insert(githubInstallation)
     .values({
       installationId: data.installationId,
       accountLogin: data.accountLogin,
-      accountType,
       accountId: data.accountId,
       accountAvatarUrl: data.accountAvatarUrl,
-      repositorySelection: data.repositorySelection,
       userId: data.userId,
       status: 'active',
     })
@@ -71,17 +56,13 @@ export async function upsertInstallation(
           ? {}
           : {
               accountLogin: data.accountLogin,
-              accountType,
               accountId: data.accountId,
               accountAvatarUrl: data.accountAvatarUrl,
             }),
-        repositorySelection: data.repositorySelection,
         // Only overwrite the binding when an owner is supplied; webhook
         // stub upserts (no userId) must not clear an existing binding.
         ...(data.userId !== undefined ? { userId: data.userId } : {}),
         status: 'active',
-        statusReason: null,
-        updatedAt: new Date(),
       },
     });
 }
@@ -105,18 +86,12 @@ export async function updateInstallationAccountMetadata(
   context: GithubServiceContext,
   data: UpdateInstallationAccountMetadataData,
 ): Promise<{ updated: boolean }> {
-  const accountType: GitHubAccountType = VALID_ACCOUNT_TYPES.includes(data.accountType)
-    ? data.accountType
-    : 'Organization';
-
   const updated = await context.db
     .update(githubInstallation)
     .set({
       accountLogin: data.accountLogin,
-      accountType,
       accountId: data.accountId,
       accountAvatarUrl: data.accountAvatarUrl ?? null,
-      updatedAt: new Date(),
     })
     .where(eq(githubInstallation.installationId, data.installationId))
     .returning({ id: githubInstallation.id });
@@ -191,14 +166,11 @@ export async function updateInstallationStatus(
   context: GithubServiceContext,
   installationId: number,
   status: GitHubInstallationStatus,
-  reason?: string,
 ): Promise<void> {
   await context.db
     .update(githubInstallation)
     .set({
       status,
-      statusReason: reason ?? null,
-      updatedAt: new Date(),
     })
     .where(eq(githubInstallation.installationId, installationId));
 }

@@ -625,13 +625,12 @@ describe('installation-sync workflow (e2e, real engine)', () => {
     await yieldToPortableEventLoop();
 
     // The finalizer wrote a reconciliation update after cancellation: syncStatus
-    // 'failed' with an interrupt message, and a non-empty conditional WHERE.
+    // 'failed' and a non-empty conditional WHERE.
     const finalizerWrites = dbUpdates.slice(writesBeforeCancel);
     const reconciliation = finalizerWrites.find(
       (write) => (write.set as { syncStatus?: string })?.syncStatus === 'failed',
     );
     expect(reconciliation).toBeDefined();
-    expect((reconciliation?.set as { syncError?: string })?.syncError).toContain('interrupted');
     // The write is CONDITIONAL (the no-clobber guard): a non-empty WHERE clause is
     // passed, not an unconditional update. The DB enforces the actual match; here
     // we assert the guard is present so it cannot be silently dropped.

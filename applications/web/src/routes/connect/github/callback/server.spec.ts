@@ -650,7 +650,7 @@ describe('GET /connect/github/callback', () => {
 
       expect(upsertInstallation).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ accountLogin: 'Bot Account', accountType: 'Bot' }),
+        expect.objectContaining({ accountLogin: 'Bot Account' }),
       );
     });
   });
@@ -695,7 +695,6 @@ describe('GET /connect/github/callback', () => {
         expect.objectContaining({
           installationId: 12345,
           accountLogin: 'test-org',
-          accountType: 'Organization',
           userId: 1,
         }),
       );
