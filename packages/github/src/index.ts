@@ -2,7 +2,6 @@ export {
   createGithubApplication,
   createGithubApplicationSingleton,
 } from './application/application.js';
-export { computeRepositoryUri } from './application/repository-uri.js';
 export {
   DEFAULT_PROJECT_PR_FILTERS,
   type ProjectPullRequestFilters,

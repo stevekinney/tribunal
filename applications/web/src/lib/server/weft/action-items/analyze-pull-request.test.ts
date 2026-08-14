@@ -108,7 +108,6 @@ describe('analyzePullRequest full pipeline (real database, faked octokit)', () =
       id: input.repositoryId,
       owner: input.owner,
       name: input.repository,
-      uri: `https://github.com/${input.owner}/${input.repository}.git`,
       defaultBranch: 'main',
     });
 
@@ -178,7 +177,6 @@ describe('analyzePullRequest full pipeline (real database, faked octokit)', () =
       id: input.repositoryId,
       owner: input.owner,
       name: input.repository,
-      uri: `https://github.com/${input.owner}/${input.repository}.git`,
       defaultBranch: 'main',
     });
 

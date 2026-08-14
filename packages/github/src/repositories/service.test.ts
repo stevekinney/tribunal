@@ -519,22 +519,19 @@ describe('updateInstallationRepositoryOwnerMetadata', () => {
     ).resolves.toEqual({ updated: 1 });
 
     const rows = await testContext.db
-      .select({ id: repository.id, owner: repository.owner, uri: repository.uri })
+      .select({ id: repository.id, owner: repository.owner })
       .from(repository);
     expect(rows).toContainEqual({
       id: 100,
       owner: 'new-org',
-      uri: 'https://github.com/new-org/linked.git',
     });
     expect(rows).toContainEqual({
       id: 101,
       owner: 'old-org',
-      uri: 'https://github.com/old-org/inactive.git',
     });
     expect(rows).toContainEqual({
       id: 102,
       owner: 'old-org',
-      uri: 'https://github.com/old-org/other-installation.git',
     });
   });
 });
@@ -901,7 +898,6 @@ describe('getOrCreateRepository', () => {
     expect(repo.id).toBe(502);
     expect(repo.owner).toBe('acme');
     expect(repo.name).toBe('widgets');
-    expect(repo.uri).toBe('https://github.com/acme/widgets.git');
     expect(repo.installationId).toBe(12345);
   });
 
@@ -970,7 +966,7 @@ describe('updateRepositoryMetadata', () => {
     await testContext.reset();
   });
 
-  it('updates owner, name, uri, and installationId', async () => {
+  it('updates owner, name, and installationId', async () => {
     await testContext.factories.repository.create({
       id: 700,
       owner: 'old-owner',
@@ -984,7 +980,6 @@ describe('updateRepositoryMetadata', () => {
     const [repo] = await testContext.db.select().from(repository).where(eq(repository.id, 700));
     expect(repo.owner).toBe('new-owner');
     expect(repo.name).toBe('new-name');
-    expect(repo.uri).toBe('https://github.com/new-owner/new-name.git');
     expect(repo.installationId).toBe(999);
   });
 });

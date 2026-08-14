@@ -37,7 +37,6 @@ describe('agent deletion history preservation', () => {
       id: 9001,
       owner: 'lost-gradient',
       name: 'tribunal',
-      uri: 'https://github.com/lost-gradient/tribunal.git',
       defaultBranch: 'main',
     });
     await testDatabase.db.insert(agent).values({

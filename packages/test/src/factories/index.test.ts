@@ -105,12 +105,11 @@ describe('createFactories', () => {
   });
 
   describe('repository factory', () => {
-    it('derives owner, name, and uri from the generated id when no overrides are given', async () => {
+    it('derives owner and name from the generated id when no overrides are given', async () => {
       const repository = await factories.repository.create();
 
       expect(repository.owner).toMatch(/^test-owner-\d+$/);
       expect(repository.name).toMatch(/^test-repo-\d+$/);
-      expect(repository.uri).toBe(`https://github.com/${repository.owner}/${repository.name}.git`);
       expect(repository.defaultBranch).toBeNull();
       expect(repository.installationId).toBeNull();
     });
@@ -120,7 +119,6 @@ describe('createFactories', () => {
         id: 555,
         owner: 'tribunal',
         name: 'engine',
-        uri: 'https://github.com/tribunal/engine.git',
         defaultBranch: 'main',
         commit: 'abc123',
       });
@@ -129,7 +127,6 @@ describe('createFactories', () => {
         id: 555,
         owner: 'tribunal',
         name: 'engine',
-        uri: 'https://github.com/tribunal/engine.git',
         defaultBranch: 'main',
         commit: 'abc123',
       });

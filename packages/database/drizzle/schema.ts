@@ -352,10 +352,7 @@ export const repository = pgTable(
     name: text().notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     installationId: bigint('installation_id', { mode: 'number' }),
-    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
     defaultBranch: text('default_branch'),
-    uri: text(),
     commit: text(),
   },
   (table) => [
@@ -368,7 +365,6 @@ export const repository = pgTable(
       table.owner.asc().nullsLast().op('text_ops'),
       table.name.asc().nullsLast().op('text_ops'),
     ),
-    index('repository_uri_idx').using('btree', table.uri.asc().nullsLast().op('text_ops')),
   ],
 );
 

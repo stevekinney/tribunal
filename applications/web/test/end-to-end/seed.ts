@@ -51,7 +51,6 @@ export interface SeedRepositoryOptions {
   owner?: string;
   name?: string;
   installationId?: number | null;
-  uri?: string;
 }
 
 export interface SeededRepository {
@@ -182,7 +181,6 @@ export async function seedRepository(
       id: repositoryId,
       owner,
       name,
-      uri: options.uri ?? `https://github.com/${owner}/${name}.git`,
       installationId: options.installationId ?? 1,
     })
     .returning();
