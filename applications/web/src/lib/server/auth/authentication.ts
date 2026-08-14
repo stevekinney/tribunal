@@ -74,7 +74,6 @@ export async function upsertOAuthConnection(
         expiresAt: data.expiresAt ?? null,
         scope: data.scope ?? null,
         status: 'active',
-        updatedAt: new Date(),
       },
     });
 }
@@ -156,45 +155,6 @@ export function consumeOAuthStateCookie(
   } catch {
     return null;
   }
-}
-
-export function shouldCheckHealth(lastCheckedAt: Date | null): boolean {
-  if (!lastCheckedAt) return true;
-  const hoursSinceCheck = (Date.now() - lastCheckedAt.getTime()) / (1000 * 60 * 60);
-  return hoursSinceCheck > 24;
-}
-
-export async function validateAndUpdateConnectionHealth(
-  userId: number,
-  provider: OAuthProvider,
-  accessToken: string,
-): Promise<boolean> {
-  let isValid = false;
-
-  if (provider === 'github') {
-    try {
-      const response = await fetch('https://api.github.com/user', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'User-Agent': 'tribunal',
-        },
-      });
-      isValid = response.ok;
-    } catch {
-      isValid = false;
-    }
-  }
-
-  await db
-    .update(oauthConnection)
-    .set({
-      status: isValid ? 'active' : 'invalid',
-      lastCheckedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(oauthConnection.userId, userId), eq(oauthConnection.provider, provider)));
-
-  return isValid;
 }
 
 /**

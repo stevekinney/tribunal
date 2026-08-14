@@ -442,6 +442,13 @@
       "when": 1786666785177,
       "tag": "0062_remove-github-installation-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1786669053220,
+      "tag": "0063_stop-mapping-oauth-workflow-metadata",
+      "breakpoints": true
     }
   ]
 }

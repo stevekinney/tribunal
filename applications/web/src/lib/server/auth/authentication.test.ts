@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OAuth2Tokens } from 'arctic';
 
 vi.mock('$env/dynamic/private', () => ({
@@ -16,15 +16,12 @@ const mockWhere = vi.fn();
 const mockOnConflictDoUpdate = vi.fn();
 const mockValues = vi.fn(() => ({ onConflictDoUpdate: mockOnConflictDoUpdate }));
 const mockInsert = vi.fn(() => ({ values: mockValues }));
-const mockSet = vi.fn(() => ({ where: mockWhere }));
-const mockUpdate = vi.fn(() => ({ set: mockSet }));
 const mockDeleteWhere = vi.fn();
 const mockDelete = vi.fn(() => ({ where: mockDeleteWhere }));
 
 vi.mock('$lib/server/database', () => ({
   db: {
     insert: mockInsert,
-    update: mockUpdate,
     delete: mockDelete,
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -64,9 +61,7 @@ const {
   refreshGitHubTokenIfNeeded,
   sanitizeReturnTo,
   setOAuthStateCookie,
-  shouldCheckHealth,
   upsertOAuthConnection,
-  validateAndUpdateConnectionHealth,
 } = await import('./authentication');
 
 describe('authentication GitHub connection helpers', () => {
@@ -75,10 +70,6 @@ describe('authentication GitHub connection helpers', () => {
     mockWhere.mockResolvedValue([]);
     mockOnConflictDoUpdate.mockResolvedValue(undefined);
     mockDeleteWhere.mockResolvedValue({ rowCount: 1 });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
   });
 
   it('returns null when an OAuth connection does not exist', async () => {
@@ -295,50 +286,6 @@ describe('authentication GitHub connection helpers', () => {
 
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockDeleteWhere).toHaveBeenCalledTimes(1);
-    expect.assertions(2);
-  });
-
-  it('never needs a health check when never checked, and needs one after 24 hours', () => {
-    expect(shouldCheckHealth(null)).toBe(true);
-    expect(shouldCheckHealth(new Date(Date.now() - 25 * 60 * 60 * 1000))).toBe(true);
-    expect(shouldCheckHealth(new Date(Date.now() - 1 * 60 * 60 * 1000))).toBe(false);
-    expect.assertions(3);
-  });
-
-  it('marks a GitHub connection active when the token validates against the API', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true } as Response));
-
-    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
-
-    expect(isValid).toBe(true);
-    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'active' }));
-    expect.assertions(2);
-  });
-
-  it('marks a GitHub connection invalid when the API responds not-ok', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false } as Response));
-
-    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
-
-    expect(isValid).toBe(false);
-    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
-    expect.assertions(2);
-  });
-
-  it('marks a GitHub connection invalid when the health-check fetch throws', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
-
-    const isValid = await validateAndUpdateConnectionHealth(1, 'github', 'a-token');
-
-    expect(isValid).toBe(false);
-    expect.assertions(1);
-  });
-
-  it('does not check other providers (isValid stays false, still updates the row)', async () => {
-    const isValid = await validateAndUpdateConnectionHealth(1, 'not-github' as never, 'a-token');
-
-    expect(isValid).toBe(false);
-    expect(mockSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
     expect.assertions(2);
   });
 

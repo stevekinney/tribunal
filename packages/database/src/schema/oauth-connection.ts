@@ -26,12 +26,6 @@ export const oauthConnection = pgTable(
     expiresAt: timestamp('expires_at'),
     scope: text('scope'),
     status: oauthConnectionStatusEnum('status').notNull().default('active'),
-    lastCheckedAt: timestamp('last_checked_at'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
   },
   (table) => [
     // One connection per provider per user

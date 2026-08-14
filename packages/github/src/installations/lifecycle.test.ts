@@ -555,7 +555,6 @@ describe('cancelWorkflowsForRepositories', () => {
     const runsById = new Map(rows.map((run) => [run.id, run]));
     expect(runsById.get(successfulRun.id)).toMatchObject({
       phase: 'cancelled',
-      cancellationReason: 'test',
     });
     expect(runsById.get(failedRun.id)).toMatchObject({ phase: 'executing' });
   });

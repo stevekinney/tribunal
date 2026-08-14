@@ -6,13 +6,11 @@ import {
   agent,
   costBudgetDay,
   costReservation,
-  oauthConnection,
   pullRequestState,
   repository,
   repositoryEventListener,
   repositoryReviewSettings,
   userReviewSettings,
-  workflowRun,
 } from '../index';
 
 /**
@@ -82,29 +80,6 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
     const [updated] = await testDatabase.db.select().from(agent).where(eq(agent.id, created.id));
 
     expect(updated.enabled).toBe(false);
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
-  });
-
-  it('bumps oauthConnection.updatedAt on update', async () => {
-    const factories = createFactories(testDatabase.db);
-    const user = await factories.user.create();
-    const connection = await factories.oauthConnection.create({ userId: user.id });
-    await testDatabase.db
-      .update(oauthConnection)
-      .set({ updatedAt: distantPast })
-      .where(eq(oauthConnection.id, connection.id));
-
-    await testDatabase.db
-      .update(oauthConnection)
-      .set({ status: 'invalid' })
-      .where(eq(oauthConnection.id, connection.id));
-
-    const [updated] = await testDatabase.db
-      .select()
-      .from(oauthConnection)
-      .where(eq(oauthConnection.id, connection.id));
-
-    expect(updated.status).toBe('invalid');
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 
@@ -287,28 +262,6 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
       .where(eq(pullRequestState.id, state.id));
 
     expect(updated.isDraft).toBe(true);
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
-  });
-
-  it('bumps workflowRun.updatedAt on update', async () => {
-    const factories = createFactories(testDatabase.db);
-    const created = await factories.workflowRun.create({ workspaceId: 1 });
-    await testDatabase.db
-      .update(workflowRun)
-      .set({ updatedAt: distantPast })
-      .where(eq(workflowRun.id, created.id));
-
-    await testDatabase.db
-      .update(workflowRun)
-      .set({ phase: 'completed' })
-      .where(eq(workflowRun.id, created.id));
-
-    const [updated] = await testDatabase.db
-      .select()
-      .from(workflowRun)
-      .where(eq(workflowRun.id, created.id));
-
-    expect(updated.phase).toBe('completed');
     expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 });

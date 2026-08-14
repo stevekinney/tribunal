@@ -62,17 +62,9 @@ export const workflowRun = pgTable(
       onDelete: 'set null',
     }),
 
-    // Cancellation tracking
-    cancellationReason: text('cancellation_reason'),
-
     // Timestamps
     startedAt: timestamp('started_at'),
-    completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at')
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
   },
   (table) => [
     // Unique on the Weft workflow id (the validate-invariants suite asserts this).

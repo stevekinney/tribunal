@@ -118,14 +118,13 @@ describe('installation-lifecycle', () => {
 
       await handleInstallationDeleted(context, installation.installationId);
 
-      // Check workflow was cancelled with installation_deleted reason
+      // Check workflow was cancelled
       const [updated] = await testDb.db
         .select()
         .from(workflowRun)
         .where(eq(workflowRun.id, workflow.id));
 
       expect(updated.phase).toBe('cancelled');
-      expect(updated.cancellationReason).toBe('installation_deleted');
     });
   });
 
@@ -165,7 +164,6 @@ describe('installation-lifecycle', () => {
         .where(eq(workflowRun.id, workflow.id));
 
       expect(updated.phase).toBe('cancelled');
-      expect(updated.cancellationReason).toBe('repository_removed');
     });
   });
 
@@ -218,11 +216,10 @@ describe('installation-lifecycle', () => {
         .where(eq(workflowRun.id, completedWorkflow.id));
 
       expect(active.phase).toBe('cancelled');
-      expect(active.cancellationReason).toBe('test_cancellation');
       expect(completed.phase).toBe('completed'); // unchanged
     });
 
-    it('sets cancellation_reason on cancelled workflows', async () => {
+    it('sets the cancelled phase on cancelled workflows', async () => {
       const factories = setupFactories();
       const installation = await factories.githubInstallation.create();
       const repository = await factories.repository.create({
@@ -242,8 +239,7 @@ describe('installation-lifecycle', () => {
         .from(workflowRun)
         .where(eq(workflowRun.id, workflow.id));
 
-      expect(updated.cancellationReason).toBe('custom_reason');
-      expect(updated.completedAt).not.toBeNull();
+      expect(updated.phase).toBe('cancelled');
     });
   });
 });
