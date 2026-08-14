@@ -96,8 +96,8 @@ Follow-ups filed and read back from this audit:
   dead-letter, queue-status, and presentation behavior did not read it.
 - [#254](https://github.com/stevekinney/tribunal/issues/254):
   the unread cost event identity, classification, and agent-run mappings and
-  writers were removed. Their physical columns remain temporarily nullable for
-  the production-safe deployment sequence.
+  writers were removed, followed by their physical columns after the updated
+  application reached production.
 - [#259](https://github.com/stevekinney/tribunal/issues/259):
   claimable listener-delivery query fields were removed after confirming the
   drain re-reads listener and agent state after claiming.
