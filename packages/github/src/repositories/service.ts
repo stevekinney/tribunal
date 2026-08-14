@@ -6,25 +6,8 @@ import {
   githubInstallation,
   githubInstallationRepository,
 } from '@tribunal/database/schema';
-import { computeRepositoryUri } from '@tribunal/github';
 import type { GithubServiceContext } from '../context.js';
 import { getInstallationById } from '../installations/records.js';
-
-export { computeRepositoryUri };
-
-/**
- * Lightweight projection of repository metadata used by workflow services.
- * Contains the fields needed for deterministic ID generation and workflow inputs.
- */
-export interface RepositoryMetadata {
-  id: number;
-  owner: string;
-  name: string;
-  uri: string | null;
-  installationId: number | null;
-  defaultBranch: string | null;
-  commit: string | null;
-}
 
 type InstallationRepository =
   Endpoints['GET /installation/repositories']['response']['data']['repositories'][number];
@@ -33,7 +16,6 @@ type RepositorySyncRow = {
   id: number;
   owner: string;
   name: string;
-  uri: string;
   defaultBranch: string;
 };
 
@@ -309,7 +291,6 @@ export async function getOrCreateRepository(
       id,
       owner,
       name,
-      uri: computeRepositoryUri(owner, name),
       installationId,
     })
     .onConflictDoUpdate({
@@ -317,7 +298,6 @@ export async function getOrCreateRepository(
       set: {
         owner,
         name,
-        uri: computeRepositoryUri(owner, name),
         installationId,
       },
     })
@@ -377,8 +357,6 @@ export async function refreshInstallationRepositories(
   }
 
   const activeRepositoryIds = new Set<number>();
-  const now = new Date();
-
   if (repositories.length > 0) {
     const repositoryRows = repositories.map((gitHubRepository) => {
       const owner = gitHubRepository.owner.login;
@@ -389,13 +367,12 @@ export async function refreshInstallationRepositories(
         id: repositoryId,
         owner,
         name: gitHubRepository.name,
-        uri: computeRepositoryUri(owner, gitHubRepository.name),
         defaultBranch: gitHubRepository.default_branch,
       };
     });
 
     for (const repositoryBatch of chunkArray(repositoryRows, REPOSITORY_SYNC_BATCH_SIZE)) {
-      await upsertRepositoryBatch(context, installationId, options, repositoryBatch, now);
+      await upsertRepositoryBatch(context, installationId, options, repositoryBatch);
       await upsertInstallationRepositoryBatch(context, installationId, options, repositoryBatch);
     }
   }
@@ -478,8 +455,6 @@ export async function updateInstallationRepositoryOwnerMetadata(
     .update(repository)
     .set({
       owner: nextOwner,
-      uri: sql`concat('https://github.com/', cast(${nextOwner} as text), '/', ${repository.name}, '.git')`,
-      updatedAt: new Date(),
     })
     .where(
       and(
@@ -504,31 +479,28 @@ async function upsertRepositoryBatch(
   installationId: number,
   options: RefreshInstallationRepositoriesOptions,
   repositoryRows: RepositorySyncRow[],
-  now: Date,
 ) {
   const ownershipSql = buildInstallationOwnershipSql(installationId, options);
   const repositoryValuesSql = sql.join(
     repositoryRows.map(
       (gitHubRepository) =>
-        sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.uri}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint, ${now}::timestamp)`,
+        sql`(${gitHubRepository.id}::bigint, ${gitHubRepository.owner}::text, ${gitHubRepository.name}::text, ${gitHubRepository.defaultBranch}::text, ${installationId}::bigint)`,
     ),
     sql`, `,
   );
   const repositoryResult = await context.db.execute(sql`
       INSERT INTO ${repository}
-        ("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+        ("id", "owner", "name", "default_branch", "installation_id")
       SELECT *
       FROM (
         VALUES ${repositoryValuesSql}
-      ) AS incoming("id", "owner", "name", "uri", "default_branch", "installation_id", "updated_at")
+      ) AS incoming("id", "owner", "name", "default_branch", "installation_id")
       WHERE ${ownershipSql}
       ON CONFLICT ("id") DO UPDATE SET
         "owner" = excluded."owner",
         "name" = excluded."name",
-        "uri" = excluded."uri",
         "default_branch" = excluded."default_branch",
-        "installation_id" = excluded."installation_id",
-        "updated_at" = excluded."updated_at"
+        "installation_id" = excluded."installation_id"
       WHERE ${ownershipSql}
       RETURNING "id"
     `);
@@ -678,9 +650,7 @@ export async function updateRepositoryMetadata(
     .set({
       owner,
       name,
-      uri: computeRepositoryUri(owner, name),
       installationId,
-      updatedAt: new Date(),
     })
     .where(eq(repository.id, id));
 }
@@ -714,7 +684,6 @@ export async function updateRepositoryDefaultBranch(
     .set({
       defaultBranch,
       commit: null,
-      updatedAt: new Date(),
     })
     .where(eq(repository.id, id));
 }
@@ -732,7 +701,6 @@ export async function updateRepositoryCommit(
     .update(repository)
     .set({
       commit,
-      updatedAt: new Date(),
     })
     .where(eq(repository.id, id));
 }

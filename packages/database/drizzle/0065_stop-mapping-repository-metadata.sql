@@ -1,0 +1,4 @@
+-- Application-schema checkpoint only. This version stops reading and writing
+-- the three unread repository metadata columns while retaining them physically
+-- for the previous production version. A later migration will drop the columns
+-- after this application change has been verified in production.

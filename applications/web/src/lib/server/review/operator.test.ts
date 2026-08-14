@@ -131,7 +131,6 @@ describe('review operator server helpers', () => {
       id: 9001,
       owner: 'lost-gradient',
       name: 'tribunal',
-      uri: 'https://github.com/lost-gradient/tribunal.git',
       defaultBranch: 'main',
     });
     await testDb.db.insert(githubInstallation).values({
@@ -174,7 +173,6 @@ describe('review operator server helpers', () => {
       id: 9101,
       owner: 'lost-gradient',
       name: 'shared-tribunal',
-      uri: 'https://github.com/lost-gradient/shared-tribunal.git',
       defaultBranch: 'main',
     });
     await testDb.db.insert(githubInstallation).values([

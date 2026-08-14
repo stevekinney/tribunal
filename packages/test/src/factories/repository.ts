@@ -10,7 +10,6 @@ export type RepositoryFactoryInput = Partial<{
   id: number;
   owner: string;
   name: string;
-  uri: string;
   defaultBranch: string;
   commit: string;
   installationId: number | null;
@@ -34,7 +33,6 @@ export function createRepositoryFactory(db: Database): RepositoryFactory {
           id,
           owner,
           name,
-          uri: input.uri ?? `https://github.com/${owner}/${name}.git`,
           defaultBranch: input.defaultBranch ?? null,
           commit: input.commit ?? null,
           installationId: input.installationId ?? null,

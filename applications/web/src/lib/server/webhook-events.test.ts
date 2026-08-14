@@ -45,7 +45,6 @@ describe('webhook-events server helper', () => {
         id: overrides.id,
         owner: overrides.owner,
         name: overrides.name,
-        uri: `https://github.com/${overrides.owner}/${overrides.name}.git`,
       })
       .returning();
     return repo;

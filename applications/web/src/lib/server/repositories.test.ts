@@ -142,7 +142,6 @@ describe('getRepositoriesForUser', () => {
         id: 98765,
         owner: 'test-org',
         name: 'test-repo',
-        uri: 'https://github.com/test-org/test-repo.git',
         installationId: installation.installationId,
       })
       .returning();
@@ -418,14 +417,12 @@ describe('getRepositoriesForUser', () => {
         id: 1001,
         owner: 'test-org',
         name: 'b-repo',
-        uri: 'https://github.com/test-org/b-repo.git',
         installationId: 12345,
       },
       {
         id: 1002,
         owner: 'test-org',
         name: 'a-repo',
-        uri: 'https://github.com/test-org/a-repo.git',
         installationId: 12345,
       },
     ]);
@@ -466,14 +463,12 @@ describe('getRepositoriesForUser', () => {
         id: 3001,
         owner: 'dup-org',
         name: 'dup-repo',
-        uri: 'https://github.com/dup-org/dup-repo-1.git',
         installationId: 12345,
       },
       {
         id: 3002,
         owner: 'dup-org',
         name: 'dup-repo',
-        uri: 'https://github.com/dup-org/dup-repo-2.git',
         installationId: 12345,
       },
     ]);
@@ -513,14 +508,12 @@ describe('getRepositoriesForUser', () => {
         id: 5001,
         owner: 'zzz-owner',
         name: 'repo',
-        uri: 'https://github.com/zzz-owner/repo.git',
         installationId: 12345,
       },
       {
         id: 5002,
         owner: 'aaa-owner',
         name: 'repo',
-        uri: 'https://github.com/aaa-owner/repo.git',
         installationId: 12345,
       },
     ]);
@@ -560,14 +553,12 @@ describe('getRepositoriesForUser', () => {
         id: 2001,
         owner: 'zzz-org',
         name: 'zeta',
-        uri: 'https://github.com/zzz-org/zeta.git',
         installationId: 55555,
       },
       {
         id: 2002,
         owner: 'zzz-org',
         name: 'alpha',
-        uri: 'https://github.com/zzz-org/alpha.git',
         installationId: 55555,
       },
     ]);
@@ -624,14 +615,12 @@ describe('getRepositoriesForUser', () => {
         id: 4001,
         owner: 'dup-org',
         name: 'dup-repo',
-        uri: 'https://github.com/dup-org/dup-repo-1.git',
         installationId: 66661,
       },
       {
         id: 4002,
         owner: 'dup-org',
         name: 'dup-repo',
-        uri: 'https://github.com/dup-org/dup-repo-2.git',
         installationId: 66662,
       },
     ]);
@@ -686,14 +675,12 @@ describe('getRepositoriesForUser', () => {
         id: 6001,
         owner: 'zzz-owner',
         name: 'repo',
-        uri: 'https://github.com/zzz-owner/repo.git',
         installationId: 77771,
       },
       {
         id: 6002,
         owner: 'aaa-owner',
         name: 'repo',
-        uri: 'https://github.com/aaa-owner/repo.git',
         installationId: 77772,
       },
     ]);

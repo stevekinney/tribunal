@@ -7,7 +7,6 @@ import {
   costBudgetDay,
   costReservation,
   pullRequestState,
-  repository,
   repositoryEventListener,
   repositoryReviewSettings,
   userReviewSettings,
@@ -36,28 +35,6 @@ describe('schema $onUpdate auto-bumped timestamps', () => {
   beforeEach(async () => {
     await testDatabase.reset();
     resetIdCounter();
-  });
-
-  it('bumps repository.updatedAt on update', async () => {
-    const factories = createFactories(testDatabase.db);
-    const repo = await factories.repository.create();
-    await testDatabase.db
-      .update(repository)
-      .set({ updatedAt: distantPast })
-      .where(eq(repository.id, repo.id));
-
-    await testDatabase.db
-      .update(repository)
-      .set({ defaultBranch: 'develop' })
-      .where(eq(repository.id, repo.id));
-
-    const [updated] = await testDatabase.db
-      .select()
-      .from(repository)
-      .where(eq(repository.id, repo.id));
-
-    expect(updated.defaultBranch).toBe('develop');
-    expect(updated.updatedAt.getTime()).toBeGreaterThan(distantPast.getTime());
   });
 
   it('bumps agent.updatedAt on update', async () => {

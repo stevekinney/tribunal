@@ -89,23 +89,6 @@ describe('repository mutation functions', () => {
 
       expect(updated.commit).toBe('new-sha-222');
     });
-
-    it('updates the updatedAt timestamp', async () => {
-      const repositoryFactory = createRepositoryFactory(testDb.db);
-      const repo = await repositoryFactory.create();
-      const originalUpdatedAt = repo.updatedAt;
-
-      // Small delay to ensure timestamp differs
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      await updateRepositoryCommit(getContext(), repo.id, 'new-sha');
-
-      const [updated] = await testDb.db
-        .select({ updatedAt: repository.updatedAt })
-        .from(repository)
-        .where(eq(repository.id, repo.id));
-
-      expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(originalUpdatedAt.getTime());
-    });
   });
 
   describe('updateRepositoryDefaultBranch', () => {
