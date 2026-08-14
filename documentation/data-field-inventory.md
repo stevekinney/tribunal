@@ -96,8 +96,8 @@ Follow-ups filed and read back from this audit:
   dead-letter, queue-status, and presentation behavior did not read it.
 - [#254](https://github.com/stevekinney/tribunal/issues/254):
   the unread cost event identity, classification, and agent-run mappings and
-  writers were removed. Their physical columns remain temporarily nullable for
-  the production-safe deployment sequence.
+  writers were removed, followed by their physical columns after the updated
+  application reached production.
 - [#259](https://github.com/stevekinney/tribunal/issues/259):
   claimable listener-delivery query fields were removed after confirming the
   drain re-reads listener and agent state after claiming.
@@ -145,9 +145,9 @@ Follow-ups filed and read back from this audit:
 
 ### Costs
 
-| Table        | decision                                                                                                  | display                                                                                                            | observability                   | test-only | none | Evidence                                                                                                                                                                                                                                                                                                                                                                |
-| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------- | --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cost_event` | `userId`, `source`, `repositoryId`, `reviewRunId`, `agentId`, `amountUsd`, `occurredAt`, `idempotencyKey` | `source`, `repositoryId`, `agentId`, `amountUsd`, `occurredAt`, `meta.cacheReadTokens`, `meta.cacheCreationTokens` | `reviewRunId`, `idempotencyKey` | none      | none | `packages/cost/src/ledger.ts`, `packages/database/src/queries/review-costs.ts`, `applications/web/src/lib/server/review/operator.ts`, `applications/web/src/routes/(authenticated)/costs/+page.svelte`; #254 removes unread `id`, `kind`, and `agentRunId` mappings and writers before physically dropping the columns after the application change reaches production. |
+| Table        | decision                                                                                                  | display                                                                                                            | observability                   | test-only | none | Evidence                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------- | --------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cost_event` | `userId`, `source`, `repositoryId`, `reviewRunId`, `agentId`, `amountUsd`, `occurredAt`, `idempotencyKey` | `source`, `repositoryId`, `agentId`, `amountUsd`, `occurredAt`, `meta.cacheReadTokens`, `meta.cacheCreationTokens` | `reviewRunId`, `idempotencyKey` | none      | none | `packages/cost/src/ledger.ts`, `packages/database/src/queries/review-costs.ts`, `applications/web/src/lib/server/review/operator.ts`, `applications/web/src/routes/(authenticated)/costs/+page.svelte`; #254 removed the unread `id`, `kind`, and `agentRunId` mappings and writers, then physically dropped their columns after the application change reached production. |
 
 ### Webhooks And Event Listeners
 
