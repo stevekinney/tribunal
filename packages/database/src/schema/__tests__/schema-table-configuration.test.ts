@@ -155,6 +155,18 @@ describe('schema table configuration', () => {
       expect(relationDefinitions.length).toBeGreaterThan(0);
     });
 
+    it('does not expose the retired cost event to agent run relation', () => {
+      const agentRunRelations = schema.agentRunRelations.config(
+        createTableRelationsHelpers(schema.agentRunRelations.table),
+      );
+      const costEventRelations = schema.costEventRelations.config(
+        createTableRelationsHelpers(schema.costEventRelations.table),
+      );
+
+      expect(agentRunRelations).not.toHaveProperty('costEvents');
+      expect(costEventRelations).not.toHaveProperty('agentRun');
+    });
+
     it.each(relationDefinitions)(
       '%s builds without throwing and yields named relations',
       (_key, relationDefinition) => {

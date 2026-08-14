@@ -85,7 +85,7 @@ async function countLlmEvents() {
   return testDatabase.db
     .select()
     .from(costEvent)
-    .where(eq(costEvent.kind, 'llm'))
+    .where(sql`${costEvent.idempotencyKey} LIKE 'llm:%'`)
     .then((rows) => rows.length);
 }
 
@@ -141,7 +141,6 @@ describe('cost ledger', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      kind: 'sandbox',
       source: 'estimate',
       reviewRunId: review.id,
       repositoryId: repository.id,
@@ -176,7 +175,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.4,
       idempotencyKey: `llm:${run.id}:direct-estimate`,
@@ -185,7 +183,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.8,
       idempotencyKey: `llm:${run.id}:estimate`,
@@ -210,30 +207,24 @@ describe('cost ledger', () => {
   });
 
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
-    const { user, review, reviewer, run } = await createCostFixture();
+    const { user, review, reviewer } = await createCostFixture();
     await testDatabase.db
       .insert(userReviewSettings)
       .values({ userId: user.id, dailyCostCapUsd: '2.00' });
     await testDatabase.db.insert(costEvent).values([
       {
-        id: 'cost_estimate',
         userId: user.id,
-        kind: 'llm',
         source: 'estimate',
         reviewRunId: review.id,
-        agentRunId: run.id,
         agentId: reviewer.id,
         amountUsd: '2.00',
         idempotencyKey: 'llm:estimate',
         occurredAt: new Date('2026-06-17T08:00:00.000Z'),
       },
       {
-        id: 'cost_reconciled',
         userId: user.id,
-        kind: 'llm',
         source: 'reconciled',
         reviewRunId: review.id,
-        agentRunId: run.id,
         agentId: reviewer.id,
         amountUsd: '999.00',
         idempotencyKey: 'llm:reconciled',
@@ -252,7 +243,6 @@ describe('cost ledger', () => {
         userId: user.id,
         repositoryId: review.repositoryId,
         reviewRunId: review.id,
-        agentRunId: run.id,
         agentId: reviewer.id,
         amountUsd: 0.5,
         idempotencyKey: 'llm:blocked:estimate',
@@ -273,7 +263,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.8,
       idempotencyKey: `llm:${run.id}:estimate`,
@@ -327,17 +316,14 @@ describe('cost ledger', () => {
   });
 
   it('reports a blocked daily cap through the review-core cost port', async () => {
-    const { user, review, reviewer, run } = await createCostFixture();
+    const { user, review, reviewer } = await createCostFixture();
     await testDatabase.db
       .insert(userReviewSettings)
       .values({ userId: user.id, dailyCostCapUsd: '1.00' });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_estimate',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: '1.00',
       idempotencyKey: 'llm:estimate',
@@ -363,7 +349,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.01,
       idempotencyKey: `llm:${run.id}:estimate`,
@@ -459,7 +444,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.01,
       idempotencyKey: allowedReservation.idempotencyKey,
@@ -587,9 +571,7 @@ describe('cost ledger', () => {
       .insert(userReviewSettings)
       .values({ userId: user.id, dailyCostCapUsd: '0.03' });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_existing_full_remaining_retry_spend',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       amountUsd: '0.02',
       idempotencyKey: 'llm:existing-full-remaining-retry-spend',
@@ -683,9 +665,7 @@ describe('cost ledger', () => {
     };
     await port.enforceDailyCap(user.id, reservation);
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_retry_resize_spend',
       userId: user.id,
-      kind: 'sandbox',
       source: 'estimate',
       amountUsd: '0.02',
       idempotencyKey: 'sandbox:retry-resize-spend',
@@ -792,9 +772,7 @@ describe('cost ledger', () => {
       .insert(userReviewSettings)
       .values({ userId: user.id, dailyCostCapUsd: '0.03' });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_existing_estimate',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       amountUsd: '0.02',
       idempotencyKey: 'llm:existing-estimate',
@@ -827,12 +805,9 @@ describe('cost ledger', () => {
       .insert(userReviewSettings)
       .values({ userId: user.id, dailyCostCapUsd: '0.01' });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_utc_day_estimate',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: '0.01',
       idempotencyKey: 'llm:utc-day-estimate',
@@ -871,12 +846,9 @@ describe('cost ledger', () => {
       reservedUsd: '0',
     });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_after_cached_budget',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: '0.02',
       idempotencyKey: 'llm:after-cached-budget',
@@ -927,12 +899,9 @@ describe('cost ledger', () => {
       updatedAt: new Date('2026-06-16T12:00:00.000Z'),
     });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_today_exhausted',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: '0.01',
       idempotencyKey: 'llm:today-exhausted',
@@ -982,7 +951,6 @@ describe('cost ledger', () => {
       userId: user.id,
       repositoryId: repository.id,
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: 0.05,
       idempotencyKey,
@@ -1002,14 +970,11 @@ describe('cost ledger', () => {
   });
 
   it('uses the configured default daily cap when review settings do not exist', async () => {
-    const { user, review, reviewer, run } = await createCostFixture();
+    const { user, review, reviewer } = await createCostFixture();
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_estimate',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       reviewRunId: review.id,
-      agentRunId: run.id,
       agentId: reviewer.id,
       amountUsd: '3.00',
       idempotencyKey: 'llm:default-cap-estimate',

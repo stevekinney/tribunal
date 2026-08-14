@@ -89,12 +89,9 @@ describe('agent deletion history preservation', () => {
       detail: { text: 'historical event' },
     });
     await testDatabase.db.insert(costEvent).values({
-      id: 'cost_1',
       userId: owner.id,
-      kind: 'llm',
       repositoryId: 9001,
       reviewRunId: 'run_1',
-      agentRunId: 'agent_run_1',
       agentId: 'agent_security',
       amountUsd: '0.01',
       idempotencyKey: 'cost_1',
@@ -116,7 +113,7 @@ describe('agent deletion history preservation', () => {
 
     const [preservedCostEvent] = await testDatabase.db.select().from(costEvent);
     expect(preservedCostEvent).toMatchObject({
-      agentRunId: 'agent_run_1',
+      idempotencyKey: 'cost_1',
       agentId: null,
     });
   });

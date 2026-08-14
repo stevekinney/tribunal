@@ -470,6 +470,13 @@
       "when": 1786675302372,
       "tag": "0066_remove-repository-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1786677188156,
+      "tag": "0067_stop-mapping-cost-event-fields",
+      "breakpoints": true
     }
   ]
 }

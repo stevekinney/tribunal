@@ -1790,7 +1790,6 @@ export class ReviewWorkflowEngine {
       userId: reviewRun.userId,
       repositoryId: reviewRun.repositoryId,
       reviewRunId: reviewRun.id,
-      agentRunId,
       agentId: agentIdForPersistence,
       amountUsd: result.costEstimateUsd,
       idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),

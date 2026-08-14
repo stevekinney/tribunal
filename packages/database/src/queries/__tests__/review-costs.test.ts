@@ -119,88 +119,64 @@ async function createReviewFixture() {
     trigger: 'synchronize',
     status: 'posted',
   });
-  const firstAgentRun = await testDatabase.db
-    .insert(agentRun)
-    .values({
-      id: 'arun_1',
-      userId: user.id,
-      runId: firstRun.id,
-      agentId: firstAgent.id,
-      status: 'succeeded',
-    })
-    .returning()
-    .then(([row]) => row);
-  const secondAgentRun = await testDatabase.db
-    .insert(agentRun)
-    .values({
-      id: 'arun_2',
-      userId: user.id,
-      runId: firstRun.id,
-      agentId: secondAgent.id,
-      status: 'succeeded',
-    })
-    .returning()
-    .then(([row]) => row);
-  const thirdAgentRun = await testDatabase.db
-    .insert(agentRun)
-    .values({
-      id: 'arun_3',
-      userId: user.id,
-      runId: secondRun.id,
-      agentId: firstAgent.id,
-      status: 'succeeded',
-    })
-    .returning()
-    .then(([row]) => row);
+  await testDatabase.db.insert(agentRun).values({
+    id: 'arun_1',
+    userId: user.id,
+    runId: firstRun.id,
+    agentId: firstAgent.id,
+    status: 'succeeded',
+  });
+  await testDatabase.db.insert(agentRun).values({
+    id: 'arun_2',
+    userId: user.id,
+    runId: firstRun.id,
+    agentId: secondAgent.id,
+    status: 'succeeded',
+  });
+  await testDatabase.db.insert(agentRun).values({
+    id: 'arun_3',
+    userId: user.id,
+    runId: secondRun.id,
+    agentId: firstAgent.id,
+    status: 'succeeded',
+  });
 
   await testDatabase.db.insert(costEvent).values([
     {
-      id: 'cost_1',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       repositoryId: repository.id,
       reviewRunId: firstRun.id,
-      agentRunId: firstAgentRun.id,
       agentId: firstAgent.id,
       amountUsd: '1.25',
       idempotencyKey: 'llm:arun_1:estimate',
       occurredAt: new Date('2026-06-17T10:00:00.000Z'),
     },
     {
-      id: 'cost_2',
       userId: user.id,
-      kind: 'llm',
       source: 'estimate',
       repositoryId: repository.id,
       reviewRunId: firstRun.id,
-      agentRunId: secondAgentRun.id,
       agentId: secondAgent.id,
       amountUsd: '0.75',
       idempotencyKey: 'llm:arun_2:estimate',
       occurredAt: new Date('2026-06-17T11:00:00.000Z'),
     },
     {
-      id: 'cost_3',
       userId: user.id,
-      kind: 'sandbox',
       source: 'estimate',
       repositoryId: secondaryRepository.id,
       reviewRunId: secondRun.id,
-      agentRunId: thirdAgentRun.id,
       agentId: firstAgent.id,
       amountUsd: '2.00',
       idempotencyKey: 'sandbox:sbx_1:window_1',
       occurredAt: new Date('2026-06-17T12:00:00.000Z'),
     },
     {
-      id: 'cost_4',
       userId: user.id,
-      kind: 'llm',
       source: 'reconciled',
       repositoryId: repository.id,
       reviewRunId: firstRun.id,
-      agentRunId: firstAgentRun.id,
       agentId: firstAgent.id,
       amountUsd: '1.10',
       idempotencyKey: 'llm:arun_1:reconciled',
@@ -375,9 +351,7 @@ describe('review contract schema', () => {
     await testDatabase.db
       .insert(costEvent)
       .values({
-        id: 'cost_duplicate',
         userId: user.id,
-        kind: 'llm',
         source: 'estimate',
         repositoryId: repository.id,
         agentId: firstAgent.id,
@@ -392,7 +366,7 @@ describe('review contract schema', () => {
       .where(eq(costEvent.idempotencyKey, 'llm:arun_1:estimate'));
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].id).toBe('cost_1');
+    expect(Number(rows[0]?.amountUsd)).toBe(1.25);
   });
 
   it('writes settings, findings, and agent events through the schema contract', async () => {
@@ -514,40 +488,30 @@ describe('review cost rollups', () => {
       trigger: 'opened',
       status: 'posted',
     });
-    const otherAgentRun = await testDatabase.db
-      .insert(agentRun)
-      .values({
-        id: 'arun_other',
-        userId: otherUser.id,
-        runId: otherRun.id,
-        agentId: otherAgent.id,
-        status: 'succeeded',
-      })
-      .returning()
-      .then(([row]) => row);
+    await testDatabase.db.insert(agentRun).values({
+      id: 'arun_other',
+      userId: otherUser.id,
+      runId: otherRun.id,
+      agentId: otherAgent.id,
+      status: 'succeeded',
+    });
 
     await testDatabase.db.insert(costEvent).values([
       {
-        id: 'cost_other_estimate',
         userId: otherUser.id,
-        kind: 'llm',
         source: 'estimate',
         repositoryId: repository.id,
         reviewRunId: otherRun.id,
-        agentRunId: otherAgentRun.id,
         agentId: otherAgent.id,
         amountUsd: '8.00',
         idempotencyKey: 'llm:arun_other:estimate',
         occurredAt: new Date('2026-06-17T14:00:00.000Z'),
       },
       {
-        id: 'cost_other_reconciled',
         userId: otherUser.id,
-        kind: 'llm',
         source: 'reconciled',
         repositoryId: repository.id,
         reviewRunId: otherRun.id,
-        agentRunId: otherAgentRun.id,
         agentId: otherAgent.id,
         amountUsd: '7.00',
         idempotencyKey: 'llm:arun_other:reconciled',

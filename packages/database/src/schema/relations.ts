@@ -194,7 +194,6 @@ export const agentRunRelations = relations(agentRun, ({ one, many }) => ({
   agent: one(agent, { fields: [agentRun.agentId], references: [agent.id] }),
   findings: many(finding),
   events: many(agentEvent),
-  costEvents: many(costEvent),
 }));
 
 export const findingRelations = relations(finding, ({ one }) => ({
@@ -219,6 +218,5 @@ export const costEventRelations = relations(costEvent, ({ one }) => ({
   user: one(user, { fields: [costEvent.userId], references: [user.id] }),
   repository: one(repository, { fields: [costEvent.repositoryId], references: [repository.id] }),
   run: one(tribunalRun, { fields: [costEvent.reviewRunId], references: [tribunalRun.id] }),
-  agentRun: one(agentRun, { fields: [costEvent.agentRunId], references: [agentRun.id] }),
   agent: one(agent, { fields: [costEvent.agentId], references: [agent.id] }),
 }));

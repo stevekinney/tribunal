@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
-import { getTableName, isTable, sql as rawSql } from 'drizzle-orm';
+import { getTableColumns, getTableName, isTable, sql as rawSql } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../schema';
 
@@ -60,6 +60,19 @@ export const EXPECTED_TABLES = Array.from(
   }
   return 0;
 });
+
+export const TABLES_WITH_MAPPED_ID_COLUMNS = schemaTables
+  .filter((table) => Object.values(getTableColumns(table)).some((column) => column.name === 'id'))
+  .map((table) => getTableName(table))
+  .sort((left, right) => {
+    if (left < right) {
+      return -1;
+    }
+    if (left > right) {
+      return 1;
+    }
+    return 0;
+  });
 
 /**
  * Critical invariant checks for schema validation
@@ -195,7 +208,7 @@ export const invariantChecks: InvariantCheck[] = [
     },
   },
 
-  // 5. ID and timestamp columns are NOT NULL
+  // 5. Mapped ID and timestamp columns are NOT NULL
   {
     name: 'required_columns_not_null',
     severity: 'error',
@@ -208,7 +221,11 @@ export const invariantChecks: InvariantCheck[] = [
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND (
-          (column_name = 'id' AND is_nullable = 'YES')
+          (
+            column_name = 'id'
+            AND table_name IN (${TABLES_WITH_MAPPED_ID_COLUMNS.map((table) => `'${table}'`).join(', ')})
+            AND is_nullable = 'YES'
+          )
           OR (column_name = 'created_at' AND is_nullable = 'YES')
           OR (column_name = 'updated_at' AND is_nullable = 'YES')
         )

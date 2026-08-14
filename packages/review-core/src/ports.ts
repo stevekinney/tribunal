@@ -79,7 +79,6 @@ export interface LlmEstimateInput {
   userId: number;
   repositoryId: number;
   reviewRunId: string;
-  agentRunId: string | null;
   /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
   agentId: string | null;
   amountUsd: number;
