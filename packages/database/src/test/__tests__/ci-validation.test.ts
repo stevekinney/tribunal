@@ -239,4 +239,18 @@ describe('CI workflow validation', () => {
       }
     });
   });
+
+  describe('cost event removal migration guards', () => {
+    it('schema-qualifies every destructive statement to public', async () => {
+      const migration = await readRepositoryFile(
+        'packages/database/drizzle/0068_remove-cost-event-fields.sql',
+      );
+      const statements = migration.trim().split('\n');
+
+      expect(statements).toHaveLength(7);
+      for (const statement of statements) {
+        expect(statement).toContain('"public".');
+      }
+    });
+  });
 });
