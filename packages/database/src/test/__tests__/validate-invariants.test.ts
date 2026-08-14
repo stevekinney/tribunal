@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { invariantChecks, EXPECTED_TABLES } from '../validate-invariants';
+import {
+  invariantChecks,
+  EXPECTED_TABLES,
+  TABLES_WITH_MAPPED_ID_COLUMNS,
+} from '../validate-invariants';
 import type { InvariantCheck } from '../validate-invariants';
 import {
   createMockTableRows,
@@ -66,6 +70,13 @@ describe('validate-invariants', () => {
         return 0;
       });
       expect(EXPECTED_TABLES).toEqual(sorted);
+    });
+  });
+
+  describe('TABLES_WITH_MAPPED_ID_COLUMNS', () => {
+    it('includes current mapped identifiers and excludes retired physical columns', () => {
+      expect(TABLES_WITH_MAPPED_ID_COLUMNS).toContain('user');
+      expect(TABLES_WITH_MAPPED_ID_COLUMNS).not.toContain('cost_event');
     });
   });
 

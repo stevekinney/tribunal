@@ -44,7 +44,7 @@ Framework for validating critical database invariants.
 2. All foreign key columns have indexes (project convention)
 3. Migration count > 0 in drizzle_migrations table
 4. Timestamp columns use `timestamp with time zone` (newer tables)
-5. ID/timestamp columns are NOT NULL
+5. Mapped ID/timestamp columns are NOT NULL
 6. UNIQUE constraints exist where expected
 7. Text over varchar preference (warning level)
 
