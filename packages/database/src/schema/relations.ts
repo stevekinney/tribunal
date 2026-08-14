@@ -194,7 +194,6 @@ export const agentRunRelations = relations(agentRun, ({ one, many }) => ({
   agent: one(agent, { fields: [agentRun.agentId], references: [agent.id] }),
   findings: many(finding),
   events: many(agentEvent),
-  costEvents: many(costEvent),
 }));
 
 export const findingRelations = relations(finding, ({ one }) => ({
