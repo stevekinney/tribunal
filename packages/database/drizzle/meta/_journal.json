@@ -463,6 +463,13 @@
       "when": 1786672807782,
       "tag": "0065_stop-mapping-repository-metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1786675302372,
+      "tag": "0066_remove-repository-metadata",
+      "breakpoints": true
     }
   ]
 }
