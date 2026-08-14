@@ -40,7 +40,7 @@ export type RecordSandboxInput = {
   occurredAt?: Date;
 };
 
-function createCostEventId(): string {
+function createCostReservationId(): string {
   return `cost_${randomUUID()}`;
 }
 
@@ -145,26 +145,20 @@ async function recordLlmEstimateEvent(
     ),
     inserted_event AS (
       INSERT INTO ${costEvent} (
-        "id",
         "user_id",
-        "kind",
         "source",
         "repository_id",
         "review_run_id",
-        "agent_run_id",
         "agent_id",
         "amount_usd",
         "occurred_at",
         "idempotency_key"
       )
       SELECT
-        ${createCostEventId()},
         ${event.userId},
-        'llm',
         'estimate',
         ${event.repositoryId},
         ${event.reviewRunId},
-        ${event.agentRunId},
         ${event.agentId},
         ${amountUsd}::numeric,
         ${eventOccurredAt},
@@ -348,9 +342,7 @@ async function recordSandboxEstimateEvent(
     ),
     inserted_event AS (
       INSERT INTO ${costEvent} (
-        "id",
         "user_id",
-        "kind",
         "source",
         "repository_id",
         "review_run_id",
@@ -360,9 +352,7 @@ async function recordSandboxEstimateEvent(
         "idempotency_key"
       )
       SELECT
-        ${values.id},
         ${values.userId},
-        'sandbox',
         'estimate',
         ${values.repositoryId},
         ${values.reviewRunId},
@@ -430,9 +420,7 @@ export async function recordSandbox(
   await recordSandboxEstimateEvent(
     database,
     {
-      id: createCostEventId(),
       userId: input.userId,
-      kind: 'sandbox',
       source: 'estimate',
       repositoryId: input.repositoryId,
       reviewRunId: input.reviewRunId,
@@ -688,7 +676,7 @@ async function reserveDailyCap(
           "updated_at"
         )
         SELECT
-          ${createCostEventId()},
+          ${createCostReservationId()},
           ${userId},
           (SELECT day_started_at FROM budget_day),
           ${reservation.idempotencyKey},
@@ -820,9 +808,7 @@ export function createCostPort(database: CostDatabase, options: CreateCostPortOp
       await recordSandboxEstimateEvent(
         database,
         {
-          id: createCostEventId(),
           userId: event.userId,
-          kind: 'sandbox',
           source: 'estimate',
           repositoryId: event.repositoryId,
           reviewRunId: event.reviewRunId,

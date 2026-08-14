@@ -352,13 +352,10 @@ export async function seedOperatorData(
   await db
     .insert(costEvent)
     .values({
-      id: `cost-e2e-${reviewRunId}`,
       userId: options.userId,
-      kind: 'llm',
       source: 'estimate',
       repositoryId: options.repositoryId,
       reviewRunId,
-      agentRunId,
       agentId,
       amountUsd: '0.42',
       meta: { cacheReadTokens: 200, cacheCreationTokens: 50 },
@@ -485,13 +482,10 @@ export async function applyFakeReviewLifecycleEvent(
       await db
         .insert(costEvent)
         .values({
-          id: `cost-e2e-${deliveryId}`,
           userId: input.userId,
-          kind: 'llm',
           source: 'estimate',
           repositoryId: input.repositoryId,
           reviewRunId: runId,
-          agentRunId,
           agentId,
           amountUsd: '0.31',
           meta: { deliveryId },

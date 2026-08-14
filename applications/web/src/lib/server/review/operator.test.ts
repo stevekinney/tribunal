@@ -2794,26 +2794,20 @@ describe('review operator server helpers', () => {
     ]);
     await testDb.db.insert(costEvent).values([
       {
-        id: 'cost_1',
         userId: owner.id,
-        kind: 'llm',
         source: 'estimate',
         repositoryId: 9001,
         reviewRunId: 'run_cost',
-        agentRunId: 'agent_run_cost',
         agentId: reviewAgent.id,
         amountUsd: '1.25',
         idempotencyKey: 'cost_1',
         meta: { cacheReadTokens: 20, cacheCreationTokens: 10 },
       },
       {
-        id: 'cost_2',
         userId: owner.id,
-        kind: 'llm',
         source: 'estimate',
         repositoryId: 9001,
         reviewRunId: 'run_cost_2',
-        agentRunId: 'agent_run_cost_2',
         agentId: 'agent_performance',
         amountUsd: '2.5',
         idempotencyKey: 'cost_2',
