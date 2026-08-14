@@ -15,9 +15,7 @@ export type WorkflowRunFactoryInput = Partial<{
   triggeredByUserId: number | null;
   phase: WorkflowPhase;
   errorMessage: string | null;
-  cancellationReason: string | null;
   startedAt: Date | null;
-  completedAt: Date | null;
 }>;
 
 export interface WorkflowRunFactory {
@@ -47,9 +45,7 @@ export function createWorkflowRunFactory(db: Database): WorkflowRunFactory {
           triggeredByUserId: input.triggeredByUserId ?? null,
           phase: input.phase ?? 'pending',
           errorMessage: input.errorMessage ?? null,
-          cancellationReason: input.cancellationReason ?? null,
           startedAt: input.startedAt ?? null,
-          completedAt: input.completedAt ?? null,
         })
         .returning();
       return createdWorkflowRun;

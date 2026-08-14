@@ -328,9 +328,6 @@ export const oauthConnection = pgTable(
     expiresAt: timestamp('expires_at', { mode: 'string' }),
     scope: text(),
     status: oauthStatus().default('active'),
-    lastCheckedAt: timestamp('last_checked_at', { mode: 'string' }),
-    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
   },
   (table) => [
     uniqueIndex('oauth_connection_user_provider_idx').using(
@@ -1953,9 +1950,7 @@ export const workflowRun = pgTable(
     errorMessage: text('error_message'),
     errorCategory: errorCategory('error_category'),
     startedAt: timestamp('started_at', { mode: 'string' }),
-    completedAt: timestamp('completed_at', { mode: 'string' }),
     createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
     errorCode: text('error_code'),
     retryOfWorkflowId: text('retry_of_workflow_id'),
     commits: jsonb(),
@@ -1966,7 +1961,6 @@ export const workflowRun = pgTable(
     triggerActorId: bigint('trigger_actor_id', { mode: 'number' }),
     triggerActorLogin: text('trigger_actor_login'),
     triggeredByUserId: integer('triggered_by_user_id'),
-    cancellationReason: text('cancellation_reason'),
     orchestratorWorkflowId: text('orchestrator_workflow_id'),
     triggerId: integer('trigger_id'),
   },

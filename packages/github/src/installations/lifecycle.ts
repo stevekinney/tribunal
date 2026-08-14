@@ -302,7 +302,7 @@ export async function cancelWorkflowsForRepositories(
       ),
     );
 
-  const runResult = await cancelWorkflows(context, activeWorkflows, reason);
+  const runResult = await cancelWorkflows(context, activeWorkflows);
 
   // Review workflow ids are shared by repository and pull request, so only
   // derive ids from active runs owned by the installation's Tribunal user.
@@ -383,7 +383,6 @@ export async function cancelWorkflowsForRepositories(
 async function cancelWorkflows(
   context: GithubServiceContext,
   workflows: { id: string; workflowId: string; phase: WorkflowPhase }[],
-  reason: string,
 ): Promise<CancellationResult> {
   if (workflows.length === 0) {
     return { cancelled: 0, failed: 0, errors: [] };
@@ -450,9 +449,6 @@ async function cancelWorkflows(
         .update(workflowRun)
         .set({
           phase: 'cancelled',
-          cancellationReason: reason,
-          completedAt: new Date(),
-          updatedAt: new Date(),
         })
         .where(
           and(eq(workflowRun.id, workflow.id), inArray(workflowRun.phase, CANCELLABLE_PHASES)),

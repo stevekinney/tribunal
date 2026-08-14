@@ -749,7 +749,6 @@ export async function markGitHubTokenInvalid(userId: number): Promise<void> {
       .update(oauthConnection)
       .set({
         status: 'invalid',
-        updatedAt: new Date(),
       })
       .where(eq(oauthConnection.userId, userId));
   } catch (e) {
@@ -772,7 +771,6 @@ export async function markGitHubTokensInvalidByProviderUserId(
       .update(oauthConnection)
       .set({
         status: 'invalid',
-        updatedAt: new Date(),
       })
       .where(
         and(
