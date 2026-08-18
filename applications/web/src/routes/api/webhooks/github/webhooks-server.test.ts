@@ -163,6 +163,7 @@ describe('POST /api/webhooks/github', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -192,6 +193,30 @@ describe('POST /api/webhooks/github', () => {
       undefined,
       undefined,
       { excludeIds: expect.any(Set) },
+    );
+  });
+
+  it('schedules a new drain turn after a full bounded turn, carrying attempted delivery ids', async () => {
+    vi.useFakeTimers();
+    mockDrainEventListenerDeliveries
+      .mockResolvedValueOnce({ attemptedDeliveryIds: [41, 42], hasMore: true })
+      .mockResolvedValueOnce({ attemptedDeliveryIds: [], hasMore: false });
+
+    await POST(
+      createPostEvent(
+        { action: 'opened', installation: { id: 1 }, repository: { id: 2 } },
+        { 'x-github-event': 'pull_request' },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockDrainEventListenerDeliveries).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      2,
+      undefined,
+      undefined,
+      { excludeIds: new Set([41, 42]) },
     );
   });
 
