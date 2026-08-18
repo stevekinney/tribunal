@@ -28,9 +28,8 @@ export default defineConfig({
       // gate the way lib/** logic is. This mirrors the documented
       // `src/test/**` exclusion in packages/database/vitest.configuration.ts,
       // which excludes that package's equivalent live-infrastructure tooling
-      // for the same reason. Coverage for these top-level CLIs (~2,900 lines)
-      // is tracked as a follow-up in stevekinney/tribunal#179 rather than
-      // silently included in or excluded from this gate's scope.
+      // for the same reason. These entrypoints are verified by their owning integration and operational
+      // gates; the deterministic helpers they share remain covered under lib/**.
       include: ['lib/**/*.ts'],
       exclude: ['lib/**/*.test.ts'],
       thresholds: {
