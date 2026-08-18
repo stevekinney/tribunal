@@ -128,7 +128,7 @@ describe('WebhookEventsTable payload loading', () => {
   });
 
   it('shows the retry state for an invalid successful response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{')));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ nope: true })));
     renderTable();
 
     await page.getByRole('button', { name: /Show details/ }).click();
