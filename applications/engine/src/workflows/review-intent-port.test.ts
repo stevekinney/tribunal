@@ -1271,8 +1271,10 @@ describe('createDatabaseReviewIntentPort', () => {
     });
   });
 
-  it('omits eligible-agent waits from queue status so persistent configuration gaps do not pin idle engines', async () => {
-    const { user, repository } = await createReviewIntentFixture();
+  it('counts expired eligible-agent waits without treating fresh waits as runnable work', async () => {
+    const { user, repository } = await createReviewIntentFixture({
+      createdAt: new Date('2026-06-16T11:59:59.999Z'),
+    });
     await testDatabase.db.insert(agent).values({
       id: 'agent_disabled',
       userId: user.id,
@@ -1299,7 +1301,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 0,
       deferredCount: 0,
       claimedCount: 0,
-      expiredCount: 0,
+      expiredCount: 1,
     });
   });
 

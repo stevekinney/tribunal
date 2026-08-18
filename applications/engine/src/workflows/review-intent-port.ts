@@ -168,7 +168,8 @@ export async function getReviewIntentQueueStatus(
         ${reviewIntent.id} AS "id",
         ${reviewIntent.claimedAt} AS "claimedAt",
         ${reviewIntent.createdAt} AS "createdAt",
-        ${reviewIntent.nextAttemptAt} AS "nextAttemptAt"
+        ${reviewIntent.nextAttemptAt} AS "nextAttemptAt",
+        ${reviewIntent.lastError} AS "lastError"
       FROM ${reviewIntent}
       INNER JOIN ${repositoryReviewSettings}
         ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
@@ -185,10 +186,6 @@ export async function getReviewIntentQueueStatus(
         ON ${userReviewSettings.userId} = ${reviewIntent.userId}
       WHERE ${reviewIntent.processedAt} IS NULL
         AND ${reviewIntent.deadLetteredAt} IS NULL
-        AND (
-          ${reviewIntent.lastError} IS NULL
-          OR ${reviewIntent.lastError} IS DISTINCT FROM ${waitingForEligibleReviewAgentReason}
-        )
         AND ${repositoryReviewSettings.watched} = true
         AND ${userReviewSettings.reviewsEnabled} = true
         AND ${githubInstallation.status} = 'active'
@@ -198,11 +195,13 @@ export async function getReviewIntentQueueStatus(
         WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
           AND "createdAt" >= ${reviewIntentAgeCutoff}
           AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${now})
+          AND ("lastError" IS NULL OR "lastError" IS DISTINCT FROM ${waitingForEligibleReviewAgentReason})
       )::int AS "readyCount",
       COUNT(*) FILTER (
         WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
           AND "createdAt" >= ${reviewIntentAgeCutoff}
           AND "nextAttemptAt" > ${now}
+          AND ("lastError" IS NULL OR "lastError" IS DISTINCT FROM ${waitingForEligibleReviewAgentReason})
       )::int AS "deferredCount",
       COUNT(*) FILTER (
         WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
@@ -212,6 +211,7 @@ export async function getReviewIntentQueueStatus(
         WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
           AND "createdAt" >= ${reviewIntentAgeCutoff}
           AND "nextAttemptAt" > ${now}
+          AND ("lastError" IS NULL OR "lastError" IS DISTINCT FROM ${waitingForEligibleReviewAgentReason})
       ) AS "nextAttemptAt",
       COUNT(*) FILTER (
         WHERE "claimedAt" IS NOT NULL AND "claimedAt" >= ${staleClaimCutoff}

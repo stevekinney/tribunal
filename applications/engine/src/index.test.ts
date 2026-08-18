@@ -1532,6 +1532,38 @@ describe('createReviewIntentKickScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('releases after idle when process reviews are disabled despite a visible ready backlog', async () => {
+    vi.useFakeTimers();
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const release = vi.fn().mockResolvedValue(undefined);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents,
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 1,
+          deferredCount: 0,
+          claimedCount: 0,
+          expiredCount: 0,
+        }),
+        release,
+      },
+      {
+        idleShutdownSeconds: 1,
+        reviewsEnabled: false,
+        exit: vi.fn(),
+        logger: { error: vi.fn(), log: vi.fn() },
+      },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('keeps a stale idle release from winning after background work is accepted', async () => {
     vi.useFakeTimers();
     const staleQueueStatus = createDeferred<{
