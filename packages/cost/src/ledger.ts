@@ -524,8 +524,8 @@ async function reserveDailyCap(
     remainingUsd: string | number | null;
   }>(
     await database.execute(sql`
-      WITH cap AS (
-        SELECT GREATEST(0, LEAST(COALESCE(
+      WITH configured_cap AS (
+        SELECT COALESCE(
           (
             SELECT ${userReviewSettings.dailyCostCapUsd}
             FROM ${userReviewSettings}
@@ -533,7 +533,14 @@ async function reserveDailyCap(
             LIMIT 1
           ),
           ${numericText(defaultDailyCostCapUsd)}::numeric
-        ), ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric)) AS cap_usd
+        ) AS cap_usd
+      ),
+      cap AS (
+        SELECT CASE
+          WHEN cap_usd = 'NaN'::numeric THEN 0
+          ELSE GREATEST(0, LEAST(cap_usd, ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric))
+        END AS cap_usd
+        FROM configured_cap
       ),
       budget_day AS (
         SELECT ${dayStartedAtSql(now)} AS day_started_at

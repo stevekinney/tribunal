@@ -1011,6 +1011,19 @@ describe('cost ledger', () => {
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       }),
     ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
+
+    await testDatabase.db
+      .update(userReviewSettings)
+      .set({ dailyCostCapUsd: 'NaN' })
+      .where(eq(userReviewSettings.userId, user.id));
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:stored-non-finite-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
   });
 
   it('treats invalid configured daily cost caps as zero', async () => {
