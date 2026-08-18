@@ -40,15 +40,7 @@ export interface WebhookEventFilters {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 
-/**
- * A stored webhook event shaped for display, including a non-throwing parse
- * of its JSON payload.
- *
- * Row shaping (including payload parsing) happens here — the layer this
- * module owns — rather than in the route or the Svelte page, so both the
- * global and repository-scoped pages get identical, tested behavior for
- * malformed payloads.
- */
+/** A stored webhook event shaped for list display. */
 export interface WebhookEventRow {
   id: number;
   eventType: string;
@@ -65,12 +57,6 @@ export interface WebhookEventRow {
   commitSha: string | null;
   receivedAt: string;
   githubCreatedAt: string | null;
-  /** Raw stored payload text, always available for copy/debugging. */
-  rawPayload: string;
-  /** Parsed payload, or `null` when parsing failed. */
-  payload: unknown | null;
-  /** True when `payload` is `null` because the stored text was not valid JSON. */
-  payloadParseError: boolean;
   /** Event listener match/dispatch progress for this event. */
   listenerProgress: WebhookEventListenerProgress;
 }
@@ -145,16 +131,17 @@ export function summarizeListenerProgress(
   return { status, hasError };
 }
 
-/**
- * Parse a stored webhook payload without ever throwing. Isolated here so
- * malformed payloads (which should not happen, but are not guaranteed by the
- * database) cannot fail a page load.
- */
-function parseWebhookPayload(rawPayload: string): { payload: unknown | null; parseError: boolean } {
+export interface WebhookEventPayload {
+  payload: unknown;
+  parseError: boolean;
+}
+
+/** Parse stored payload text without letting malformed JSON fail the request. */
+function parseWebhookPayload(rawPayload: string): WebhookEventPayload {
   try {
     return { payload: JSON.parse(rawPayload), parseError: false };
   } catch {
-    return { payload: null, parseError: true };
+    return { payload: rawPayload, parseError: true };
   }
 }
 
@@ -164,7 +151,6 @@ function toRow(
     eventType: string;
     action: string | null;
     deliveryId: string | null;
-    payload: string;
     repositoryId: number;
     repositoryOwner: string;
     repositoryName: string;
@@ -179,7 +165,6 @@ function toRow(
   },
   matches: WebhookEventListenerMatch[],
 ): WebhookEventRow {
-  const { payload, parseError } = parseWebhookPayload(row.payload);
   const { status, hasError } = summarizeListenerProgress(matches);
   return {
     id: row.id,
@@ -197,9 +182,6 @@ function toRow(
     commitSha: row.commitSha,
     receivedAt: row.receivedAt.toISOString(),
     githubCreatedAt: row.githubCreatedAt ? row.githubCreatedAt.toISOString() : null,
-    rawPayload: row.payload,
-    payload,
-    payloadParseError: parseError,
     listenerProgress: {
       receivedOnly: matches.length === 0,
       matchCount: matches.length,
@@ -209,6 +191,31 @@ function toRow(
       matches,
     },
   };
+}
+
+/**
+ * Load one stored payload only when its event is in the caller's authorized
+ * repository set. Missing and unauthorized events are intentionally
+ * indistinguishable to callers.
+ */
+export async function getWebhookEventPayload(
+  authorizedRepositoryIds: number[],
+  eventId: number,
+): Promise<WebhookEventPayload | null> {
+  if (authorizedRepositoryIds.length === 0) return null;
+
+  const [row] = await db
+    .select({ payload: webhookEvent.payload })
+    .from(webhookEvent)
+    .where(
+      and(
+        eq(webhookEvent.id, eventId),
+        inArray(webhookEvent.repositoryId, authorizedRepositoryIds),
+      ),
+    )
+    .limit(1);
+
+  return row ? parseWebhookPayload(row.payload) : null;
 }
 
 /**
@@ -387,7 +394,6 @@ export async function listWebhookEvents(
       eventType: webhookEvent.eventType,
       action: webhookEvent.action,
       deliveryId: webhookEvent.deliveryId,
-      payload: webhookEvent.payload,
       repositoryId: webhookEvent.repositoryId,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,

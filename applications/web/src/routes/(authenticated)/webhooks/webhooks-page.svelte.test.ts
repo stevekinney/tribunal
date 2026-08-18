@@ -29,9 +29,6 @@ function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow 
     commitSha: null,
     receivedAt: '2026-01-01T00:00:00.000Z',
     githubCreatedAt: null,
-    rawPayload: '{"ok":true}',
-    payload: { ok: true },
-    payloadParseError: false,
     listenerProgress: {
       receivedOnly: true,
       matchCount: 0,
@@ -326,56 +323,6 @@ describe('/webhooks page', () => {
     expect(detailText).toContain('Received');
     expect(detailText).toContain('Delivery ID');
     expect(detailText).toContain('delivery-1');
-  });
-
-  it('renders valid payloads with the Cinder payload inspector label', async () => {
-    render(WebhooksPage, {
-      data: createData({
-        events: [
-          createEvent({
-            payload: {
-              repository: {
-                owner: {
-                  login: 'acme',
-                },
-              },
-            },
-            rawPayload: '{"repository":{"owner":{"login":"acme"}}}',
-          }),
-        ],
-      }),
-    });
-
-    await page.getByRole('button', { name: /Show details/ }).click();
-
-    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
-    await expect
-      .element(page.getByRole('button', { name: 'Copy Webhook payload' }))
-      .toBeInTheDocument();
-    await expect.element(page.getByText('repository:', { exact: true })).toBeInTheDocument();
-    await expect.element(page.getByText('"acme"')).not.toBeInTheDocument();
-  });
-
-  it('renders raw invalid payloads through the Cinder payload inspector', async () => {
-    render(WebhooksPage, {
-      data: createData({
-        events: [
-          createEvent({
-            payload: null,
-            rawPayload: 'not valid json {{{',
-            payloadParseError: true,
-          }),
-        ],
-      }),
-    });
-
-    await page.getByRole('button', { name: /Show details/ }).click();
-
-    await expect
-      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
-      .toBeInTheDocument();
-    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
-    await expect.element(page.getByText('not valid json {{{', { exact: true })).toBeInTheDocument();
   });
 
   it('shows a matched listener and its status badge, without a link to its run', async () => {

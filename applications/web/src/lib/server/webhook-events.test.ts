@@ -13,6 +13,7 @@ import {
 } from '@tribunal/database/schema';
 import {
   getObservedEventTypeActionMap,
+  getWebhookEventPayload,
   getWebhookEventFilterOptions,
   listWebhookEvents,
   parseWebhookEventFilters,
@@ -254,7 +255,7 @@ describe('webhook-events server helper', () => {
       });
     });
 
-    it('parses valid JSON payloads without throwing', async () => {
+    it('does not return stored payload data in a list row', async () => {
       const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
 
       await withTestDatabase(async () => {
@@ -266,26 +267,30 @@ describe('webhook-events server helper', () => {
 
         const result = await listWebhookEvents([repo.id], 0);
 
-        expect(result.events[0]?.payload).toEqual({ ref: 'refs/heads/main' });
-        expect(result.events[0]?.payloadParseError).toBe(false);
+        expect(result.events[0]).not.toHaveProperty('payload');
+        expect(result.events[0]).not.toHaveProperty('rawPayload');
+        expect(result.events[0]).not.toHaveProperty('payloadParseError');
       });
     });
 
-    it('handles invalid JSON payloads without throwing the page load', async () => {
+    it('does not serialize a payload sentinel from a full 50-row page', async () => {
       const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+      const payloadSentinel = 'webhook-payload-must-not-be-listed';
 
       await withTestDatabase(async () => {
-        await createWebhookEvent({
-          repositoryId: repo.id,
-          eventType: 'push',
-          payload: 'not valid json {{{',
-        });
+        for (let index = 0; index < 50; index += 1) {
+          await createWebhookEvent({
+            repositoryId: repo.id,
+            eventType: 'push',
+            deliveryId: `delivery-${index}`,
+            payload: index === 0 ? JSON.stringify({ payloadSentinel }) : JSON.stringify({ index }),
+          });
+        }
 
         const result = await listWebhookEvents([repo.id], 0);
 
-        expect(result.events[0]?.payload).toBeNull();
-        expect(result.events[0]?.payloadParseError).toBe(true);
-        expect(result.events[0]?.rawPayload).toBe('not valid json {{{');
+        expect(result.events).toHaveLength(50);
+        expect(JSON.stringify(result.events)).not.toContain(payloadSentinel);
       });
     });
 
@@ -300,6 +305,50 @@ describe('webhook-events server helper', () => {
         expect(result.events[0]).toMatchObject({
           repositoryOwner: 'acme',
           repositoryName: 'repo',
+        });
+      });
+    });
+  });
+
+  describe('getWebhookEventPayload', () => {
+    it('returns parsed JSON only for an event in the authorized repository set', async () => {
+      const allowed = await createRepository({ id: 1, owner: 'acme', name: 'allowed' });
+      const forbidden = await createRepository({ id: 2, owner: 'acme', name: 'forbidden' });
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({
+          repositoryId: allowed.id,
+          eventType: 'push',
+          payload: JSON.stringify({ sentinel: 'payload-only' }),
+        });
+        const inaccessibleEvent = await createWebhookEvent({
+          repositoryId: forbidden.id,
+          eventType: 'push',
+        });
+
+        await expect(getWebhookEventPayload([allowed.id], event.id)).resolves.toEqual({
+          payload: { sentinel: 'payload-only' },
+          parseError: false,
+        });
+        await expect(
+          getWebhookEventPayload([allowed.id], inaccessibleEvent.id),
+        ).resolves.toBeNull();
+      });
+    });
+
+    it('returns malformed raw payload text with a parse error', async () => {
+      const repo = await createRepository({ id: 1, owner: 'acme', name: 'repo' });
+
+      await withTestDatabase(async () => {
+        const event = await createWebhookEvent({
+          repositoryId: repo.id,
+          eventType: 'push',
+          payload: 'not valid json {{{',
+        });
+
+        await expect(getWebhookEventPayload([repo.id], event.id)).resolves.toEqual({
+          payload: 'not valid json {{{',
+          parseError: true,
         });
       });
     });
