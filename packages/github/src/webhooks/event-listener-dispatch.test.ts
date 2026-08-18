@@ -265,7 +265,7 @@ describe('drainEventListenerDeliveries', () => {
   });
 
   it('reconciles a retry after a partial write without erroring or duplicating: the run/agent_run rows from a crashed first attempt already exist and are simply left in place', async () => {
-    const { repository, pending, testAgent } = await createFixture();
+    const { repository, pending, testAgent, listener } = await createFixture();
     const context = createGithubContext(testContext);
 
     // Simulate a first dispatch attempt that inserted the parent run and
@@ -291,6 +291,10 @@ describe('drainEventListenerDeliveries', () => {
       role: 'specialist',
       status: 'queued',
     });
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 

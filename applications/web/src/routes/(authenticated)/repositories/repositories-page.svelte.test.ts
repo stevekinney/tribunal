@@ -997,7 +997,7 @@ describe('/repositories page', () => {
     await expect.element(combobox).toHaveValue('other-org/widgets');
   });
 
-  it('does not call update() and keeps the combobox filled when the add-repository action fails', async () => {
+  it('applies a failed action result without clearing the combobox', async () => {
     render(RepositoriesPage, {
       data: {
         ...baseData,
@@ -1021,7 +1021,8 @@ describe('/repositories page', () => {
     await addButton.click();
     enhancedFormTesting.submissions[0]?.resolveResult();
 
-    await expect.poll(() => enhancedFormTesting.submissions[0]?.updateCalled).toBe(false);
+    await expect.poll(() => enhancedFormTesting.submissions[0]?.updateCalled).toBe(true);
+    enhancedFormTesting.submissions[0]?.resolveUpdate();
     await expect.element(combobox).toHaveValue('other-org/widgets');
     await expect.element(addButton).not.toBeDisabled();
   });

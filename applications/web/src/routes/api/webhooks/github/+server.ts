@@ -219,11 +219,38 @@ export const POST: RequestHandler = async (event) => {
   if (
     repositoryId &&
     eventType &&
-    isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID) &&
-    !(await hasCandidateEventListenerForRepositoryEventType(githubContext, repositoryId, eventType))
+    isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)
   ) {
-    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
-    return json({ ok: true, ignored: true });
+    let hasCandidate: boolean;
+    try {
+      hasCandidate = await hasCandidateEventListenerForRepositoryEventType(
+        githubContext,
+        repositoryId,
+        eventType,
+      );
+    } catch (lookupError) {
+      const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      if (!claimReleased) {
+        console.error(
+          '[webhook] Failed to release delivery claim after listener candidate lookup:',
+          {
+            deliveryId,
+            eventType,
+            lookupError,
+          },
+        );
+      }
+      throw lookupError;
+    }
+
+    if (!hasCandidate) {
+      await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+      // This event did not create a delivery, but it is still the next
+      // repository webhook after an interrupted drain and can advance older
+      // pending work for other listener event types.
+      scheduleDrain();
+      return json({ ok: true, ignored: true });
+    }
   }
 
   // 4. Store event if it has a repository, then match enabled event listeners

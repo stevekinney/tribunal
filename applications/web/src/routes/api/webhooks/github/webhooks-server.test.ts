@@ -238,7 +238,7 @@ describe('POST /api/webhooks/github', () => {
     );
   });
 
-  it('does not store or drain an ignored check event when no listener can match its type', async () => {
+  it('does not store or match an ignored check event when no listener can match its type', async () => {
     mockHasCandidateEventListenerForRepositoryEventType.mockResolvedValue(false);
 
     const response = await POST(
@@ -256,7 +256,7 @@ describe('POST /api/webhooks/github', () => {
     );
     expect(mockStoreWebhookEvent).not.toHaveBeenCalled();
     expect(mockMatchAndPersistEventListenerDeliveries).not.toHaveBeenCalled();
-    expect(mockDrainEventListenerDeliveries).not.toHaveBeenCalled();
+    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledTimes(1);
     expect(webhookUtils.invalidateGitHubResourceCacheForEvent).toHaveBeenCalledTimes(1);
   });
 
@@ -273,6 +273,33 @@ describe('POST /api/webhooks/github', () => {
         ),
       ),
     ).rejects.toThrow('database unavailable');
+    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'check_run',
+    );
+  });
+
+  it('reports a failed claim release after an ignored-check candidate lookup failure', async () => {
+    mockHasCandidateEventListenerForRepositoryEventType.mockRejectedValue(
+      new Error('database unavailable'),
+    );
+    mockReleaseWebhookDeliveryClaim.mockResolvedValue(false);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      POST(
+        createPostEvent(
+          { action: 'created', installation: { id: 1 }, repository: { id: 2 } },
+          { 'x-github-event': 'check_run' },
+        ),
+      ),
+    ).rejects.toThrow('database unavailable');
+
+    expect(consoleError).toHaveBeenCalledWith(
+      '[webhook] Failed to release delivery claim after listener candidate lookup:',
+      expect.objectContaining({ deliveryId: 'delivery-1', eventType: 'check_run' }),
+    );
   });
 
   it('returns ok without dispatching when deliveryId or eventType is missing', async () => {

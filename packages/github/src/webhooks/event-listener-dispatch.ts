@@ -232,7 +232,17 @@ async function dispatchClaimedDelivery(
     .where(eq(webhookEvent.id, delivery.webhookEventId))
     .limit(1);
   if (!event) throw new Error(`Webhook event for delivery ${deliveryId} no longer exists`);
-  if (!eventListenerMatchesEvent(listener, event)) {
+
+  const runId = `run:webhook:${deliveryId}`;
+  const [existingRun] = await context.db
+    .select({ id: tribunalRun.id })
+    .from(tribunalRun)
+    .where(eq(tribunalRun.id, runId))
+    .limit(1);
+  // A run created by a partially completed prior attempt is already bound to
+  // this delivery. Finish its deterministic child writes even if the listener
+  // has since changed; only fresh dispatches are governed by current config.
+  if (!existingRun && !eventListenerMatchesEvent(listener, event)) {
     throw new EventListenerNoLongerMatchesError(
       'Event listener configuration no longer matches the webhook event.',
     );
@@ -259,8 +269,6 @@ async function dispatchClaimedDelivery(
     repository: repositoryRow,
     event,
   });
-
-  const runId = `run:webhook:${deliveryId}`;
 
   await context.db
     .insert(tribunalRun)
