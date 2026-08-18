@@ -257,6 +257,11 @@ describe('POST /api/webhooks/github', () => {
       2,
       'check_suite',
     );
+    expect(mockClaimWebhookDelivery).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'check_suite',
+    );
     expect(mockStoreWebhookEvent).not.toHaveBeenCalled();
     expect(mockMatchAndPersistEventListenerDeliveries).not.toHaveBeenCalled();
     expect(mockDrainEventListenerDeliveries).toHaveBeenCalledTimes(1);

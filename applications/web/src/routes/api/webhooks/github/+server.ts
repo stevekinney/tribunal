@@ -206,25 +206,17 @@ export const POST: RequestHandler = async (event) => {
     void runDrainTurn(new Set());
   };
 
+  let hasCandidateListener: boolean | undefined;
   if (
     repositoryId &&
     eventType &&
     isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)
   ) {
-    const hasCandidate = await hasCandidateEventListenerForRepositoryEventType(
+    hasCandidateListener = await hasCandidateEventListenerForRepositoryEventType(
       githubContext,
       repositoryId,
       eventType,
     );
-
-    if (!hasCandidate) {
-      await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
-      // This event did not create a delivery, but it is still the next
-      // repository webhook after an interrupted drain and can advance older
-      // pending work for other listener event types.
-      scheduleDrain();
-      return json({ ok: true, ignored: true });
-    }
   }
 
   if (deliveryId && eventType) {
@@ -235,6 +227,15 @@ export const POST: RequestHandler = async (event) => {
       scheduleDrain();
       return json({ ok: true, message: 'Already processed' });
     }
+  }
+
+  if (hasCandidateListener === false && eventType) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    // This event did not create a delivery, but it is still the next
+    // repository webhook after an interrupted drain and can advance older
+    // pending work for other listener event types.
+    scheduleDrain();
+    return json({ ok: true, ignored: true });
   }
 
   // 4. Store event if it has a repository, then match enabled event listeners
