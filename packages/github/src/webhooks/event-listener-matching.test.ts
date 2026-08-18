@@ -11,6 +11,7 @@ import {
 import type { GithubServiceContext } from '../context.js';
 import {
   eventListenerMatchesEvent,
+  hasCandidateEventListenerForRepositoryEventType,
   matchAndPersistEventListenerDeliveries,
 } from './event-listener-matching.js';
 
@@ -165,6 +166,18 @@ describe('matchAndPersistEventListenerDeliveries', () => {
 
     return { user, repository, agentRow: agentRow!, listener };
   }
+
+  it('reports whether an enabled listener exists for a repository event type', async () => {
+    const { repository } = await createFixture();
+    const context = createGithubContext();
+
+    await expect(
+      hasCandidateEventListenerForRepositoryEventType(context, repository.id, 'issues'),
+    ).resolves.toBe(true);
+    await expect(
+      hasCandidateEventListenerForRepositoryEventType(context, repository.id, 'push'),
+    ).resolves.toBe(false);
+  });
 
   it('persists a pending delivery for every matched, enabled listener', async () => {
     const { repository, listener } = await createFixture();
