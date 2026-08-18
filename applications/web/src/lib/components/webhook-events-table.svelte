@@ -49,7 +49,6 @@
   async function loadPayload(id: number) {
     if (payloads.has(id)) return;
 
-    payloadErrors.delete(id);
     const request = fetch(`/api/webhook-events/${id}/payload`)
       .then(async (response) => {
         if (!response.ok) throw new Error('Unable to load webhook payload.');
@@ -63,10 +62,12 @@
         ) {
           throw new Error('Unable to load webhook payload.');
         }
+        const payloadResponse = body as Record<string, unknown>;
+        payloadErrors.delete(id);
         payloads.set(id, {
           status: 'loaded',
-          payload: body.payload,
-          parseError: body.parseError,
+          payload: payloadResponse.payload,
+          parseError: payloadResponse.parseError as boolean,
         });
       })
       .catch(() => {
@@ -249,7 +250,7 @@
                     {/if}
                   </div>
 
-                  {#if payload?.status === 'loading'}
+                  {#if payload?.status === 'loading' && !payloadError}
                     <p role="status">Loading webhook payload…</p>
                   {:else if payload?.status === 'loaded'}
                     <PayloadInspector
@@ -260,7 +261,14 @@
                   {:else if payloadError}
                     <Alert variant="danger">
                       {payloadError}
-                      <Button size="xs" onclick={() => void loadPayload(event.id)}>Retry</Button>
+                      <Button
+                        size="xs"
+                        disabled={payload?.status === 'loading'}
+                        aria-busy={payload?.status === 'loading'}
+                        onclick={() => void loadPayload(event.id)}
+                      >
+                        Retry
+                      </Button>
                     </Alert>
                   {/if}
                 </div>

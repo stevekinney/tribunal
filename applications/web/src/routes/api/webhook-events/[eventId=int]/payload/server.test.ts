@@ -75,6 +75,7 @@ describe('GET /api/webhook-events/[eventId=int]/payload', () => {
 
     const parsed = await get('1', { id: 7 });
     await expect(parsed.json()).resolves.toEqual({ payload: { ok: true }, parseError: false });
+    expect(parsed.headers.get('cache-control')).toBe('no-store');
     const malformed = await get('2', { id: 7 });
     await expect(malformed.json()).resolves.toEqual({ payload: 'not json', parseError: true });
   });

@@ -12,10 +12,11 @@ service-to-service calls.
 
 ## Endpoints
 
-| Endpoint               | Method | Description                                       |
-| ---------------------- | ------ | ------------------------------------------------- |
-| `/api/webhooks/github` | POST   | Receive and process GitHub App webhook deliveries |
-| `/api/webhooks/github` | GET    | List registered webhooks for the configured App   |
+| Endpoint                               | Method | Description                                       |
+| -------------------------------------- | ------ | ------------------------------------------------- |
+| `/api/webhooks/github`                 | POST   | Receive and process GitHub App webhook deliveries |
+| `/api/webhooks/github`                 | GET    | List registered webhooks for the configured App   |
+| `/api/webhook-events/:eventId/payload` | GET    | Load one authorized stored webhook payload        |
 
 ### Private Engine Control Endpoints
 
@@ -99,6 +100,23 @@ List the webhooks registered for the configured GitHub App.
 | 401    | No authenticated user session       |
 | 400    | GitHub App is not configured        |
 | 502    | Failed to fetch registered webhooks |
+
+## GET `/api/webhook-events/:eventId/payload`
+
+Load the payload for one stored webhook event after the operator expands it in the webhook events table. The response uses `Cache-Control: no-store` because payloads can contain sensitive GitHub data.
+
+**Auth:** User session. The endpoint resolves the caller's current GitHub-authorized repository set before reading the event.
+
+**Handler:** `applications/web/src/routes/api/webhook-events/[eventId=int]/payload/+server.ts`.
+
+**Response codes:**
+
+| Status | Meaning                                                                                                                          |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| 200    | `{ payload, parseError }`; `parseError` is `true` when the stored payload is malformed JSON and `payload` is then its raw string |
+| 401    | No authenticated user session or GitHub connection                                                                               |
+| 404    | Invalid, missing, or unauthorized event; these cases are intentionally indistinguishable                                         |
+| 503    | Tribunal could not verify current repository access                                                                              |
 
 ## POST `/installation-syncs`
 

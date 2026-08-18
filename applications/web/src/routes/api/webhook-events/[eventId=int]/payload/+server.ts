@@ -27,5 +27,5 @@ export const GET: RequestHandler = async ({ locals, params }) => {
   );
   if (!payload) return json(notFound, { status: 404 });
 
-  return json(payload);
+  return json(payload, { headers: { 'cache-control': 'no-store' } });
 };
