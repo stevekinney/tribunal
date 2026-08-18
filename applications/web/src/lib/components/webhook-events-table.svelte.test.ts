@@ -126,4 +126,13 @@ describe('WebhookEventsTable payload loading', () => {
     await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('shows the retry state for an invalid successful response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{')));
+    renderTable();
+
+    await page.getByRole('button', { name: /Show details/ }).click();
+
+    await expect.element(page.getByText('Unable to load webhook payload.')).toBeInTheDocument();
+  });
 });
