@@ -44,6 +44,12 @@ const config: UserConfig & { test: InlineConfig } = {
     alias: {
       // Bypass Rollup's commonjs--resolver for this subpath export (see comment above)
       'github-webhook-schemas/registry': webhookRegistryPath,
+      // Browser tests do not build workspace packages first, so resolve this
+      // browser-safe shared constant directly from its source module.
+      '@tribunal/review-core/review-cost-limits': resolve(
+        repositoryRoot,
+        'packages/review-core/src/review-cost-limits.ts',
+      ),
     },
   },
   ssr: {
