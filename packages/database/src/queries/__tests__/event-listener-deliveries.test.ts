@@ -2,7 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
 import { eq } from '../../operators';
-import { agent, eventListenerDelivery, tribunalRun, webhookEvent } from '../../schema';
+import {
+  agent,
+  eventListenerDelivery,
+  repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
+} from '../../schema';
 import { createEventListener } from '../event-listeners';
 import {
   MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
@@ -221,6 +227,8 @@ describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed',
       testDatabase.db,
       pending.id,
       claimed!.attemptCount,
+      listener.id,
+      listener.updatedAt,
     );
 
     const [row] = await testDatabase.db
@@ -252,7 +260,43 @@ describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed',
     });
 
     await expect(
-      markEventListenerDeliveryNoLongerMatching(testDatabase.db, pending.id, claimed!.attemptCount),
+      markEventListenerDeliveryNoLongerMatching(
+        testDatabase.db,
+        pending.id,
+        claimed!.attemptCount,
+        listener.id,
+        listener.updatedAt,
+      ),
+    ).resolves.toBeNull();
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row?.status).toBe('running');
+  });
+
+  it('does not terminally fail a delivery after its listener configuration changes', async () => {
+    const { listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+    await testDatabase.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    await expect(
+      markEventListenerDeliveryNoLongerMatching(
+        testDatabase.db,
+        pending.id,
+        claimed!.attemptCount,
+        listener.id,
+        listener.updatedAt,
+      ),
     ).resolves.toBeNull();
 
     const [row] = await testDatabase.db

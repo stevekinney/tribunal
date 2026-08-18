@@ -360,6 +360,8 @@ export async function markEventListenerDeliveryNoLongerMatching(
   database: Database,
   deliveryId: number,
   expectedAttemptCount: number,
+  listenerId: string,
+  expectedListenerUpdatedAt: Date,
 ): Promise<EventListenerDelivery | null> {
   const [row] = await database
     .update(eventListenerDelivery)
@@ -377,6 +379,11 @@ export async function markEventListenerDeliveryNoLongerMatching(
         sql`NOT EXISTS (
           SELECT 1 FROM ${tribunalRun}
           WHERE ${tribunalRun.id} = ${sql`'run:webhook:' || ${deliveryId}`}
+        )`,
+        sql`EXISTS (
+          SELECT 1 FROM ${repositoryEventListener}
+          WHERE ${repositoryEventListener.id} = ${listenerId}
+            AND ${repositoryEventListener.updatedAt} = ${expectedListenerUpdatedAt}
         )`,
       ),
     )

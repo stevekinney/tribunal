@@ -73,7 +73,14 @@ export interface DrainEventListenerDeliveriesResult {
  * it is an expected outcome of a race, not an error condition.
  */
 class EventListenerDisabledError extends Error {}
-class EventListenerNoLongerMatchesError extends Error {}
+class EventListenerNoLongerMatchesError extends Error {
+  constructor(
+    readonly listenerId: string,
+    readonly listenerUpdatedAt: Date,
+  ) {
+    super('Event listener configuration no longer matches the webhook event.');
+  }
+}
 class EventListenerClaimLostError extends Error {}
 
 export async function drainEventListenerDeliveries(
@@ -149,23 +156,44 @@ export async function drainEventListenerDeliveries(
             context.db,
             claimed.id,
             claimed.attemptCount,
+            error.listenerId,
+            error.listenerUpdatedAt,
           );
           if (marked) {
             result.skippedNoLongerMatching += 1;
           } else {
-            const runId = await dispatchClaimedDelivery(
-              context,
-              claimed.id,
-              candidate.listenerId,
-              claimed.attemptCount,
-            );
-            await markEventListenerDeliverySucceeded(
-              context.db,
-              claimed.id,
-              runId,
-              claimed.attemptCount,
-            );
-            result.dispatched += 1;
+            try {
+              const runId = await dispatchClaimedDelivery(
+                context,
+                claimed.id,
+                candidate.listenerId,
+                claimed.attemptCount,
+              );
+              await markEventListenerDeliverySucceeded(
+                context.db,
+                claimed.id,
+                runId,
+                claimed.attemptCount,
+              );
+              result.dispatched += 1;
+            } catch (fallbackError) {
+              if (
+                fallbackError instanceof EventListenerNoLongerMatchesError ||
+                fallbackError instanceof EventListenerClaimLostError
+              ) {
+                continue;
+              }
+              const fallbackMessage =
+                fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+              await markEventListenerDeliveryFailed(context.db, claimed.id, fallbackMessage, {
+                expectedAttemptCount: claimed.attemptCount,
+              });
+              if (fallbackError instanceof EventListenerDisabledError) {
+                result.skippedDisabled += 1;
+              } else {
+                result.failed += 1;
+              }
+            }
           }
         } else if (error instanceof EventListenerClaimLostError) {
           continue;
@@ -268,9 +296,7 @@ async function dispatchClaimedDelivery(
   // this delivery. Finish its deterministic child writes even if the listener
   // has since changed; only fresh dispatches are governed by current config.
   if (!existingRun && !eventListenerMatchesEvent(listener, event)) {
-    throw new EventListenerNoLongerMatchesError(
-      'Event listener configuration no longer matches the webhook event.',
-    );
+    throw new EventListenerNoLongerMatchesError(listener.id, listener.updatedAt);
   }
 
   const repositoryRow = await getRepositoryById(context, listener.repositoryId);
