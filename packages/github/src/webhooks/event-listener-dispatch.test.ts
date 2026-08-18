@@ -481,6 +481,52 @@ describe('drainEventListenerDeliveries', () => {
     expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
   });
 
+  it('terminally fails a listener that changes to another nonmatching configuration', async () => {
+    const { repository, listener } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/release' }) })
+        .where(eq(repositoryEventListener.id, listener.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, skippedNoLongerMatching: 1, failed: 0 });
+  });
+
+  it('continues when the fallback dispatch loses its claim', async () => {
+    const { repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ filtersJson: '{}' })
+        .where(eq(repositoryEventListener.id, listener.id));
+      await testContext.db
+        .update(eventListenerDelivery)
+        .set({ status: 'failed', finishedAt: new Date() })
+        .where(eq(eventListenerDelivery.id, pending.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 0 });
+  });
+
   it('deleting the agent preserves the listener delivery history without dispatching it', async () => {
     const { repository, testAgent, pending, user } = await createFixture();
     await testContext.db.delete(agent).where(eq(agent.id, testAgent.id));
