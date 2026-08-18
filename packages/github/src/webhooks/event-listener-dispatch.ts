@@ -177,10 +177,20 @@ export async function drainEventListenerDeliveries(
               );
               result.dispatched += 1;
             } catch (fallbackError) {
-              if (
-                fallbackError instanceof EventListenerNoLongerMatchesError ||
-                fallbackError instanceof EventListenerClaimLostError
-              ) {
+              if (fallbackError instanceof EventListenerNoLongerMatchesError) {
+                const markedAfterRetry = await markEventListenerDeliveryNoLongerMatching(
+                  context.db,
+                  claimed.id,
+                  claimed.attemptCount,
+                  fallbackError.listenerId,
+                  fallbackError.listenerUpdatedAt,
+                );
+                if (markedAfterRetry) {
+                  result.skippedNoLongerMatching += 1;
+                }
+                continue;
+              }
+              if (fallbackError instanceof EventListenerClaimLostError) {
                 continue;
               }
               const fallbackMessage =
@@ -341,6 +351,11 @@ async function dispatchClaimedDelivery(
         ${eventListenerDelivery.id} = ${deliveryId}
         AND ${eventListenerDelivery.status} = 'running'
         AND ${eventListenerDelivery.attemptCount} = ${expectedAttemptCount}
+        AND EXISTS (
+          SELECT 1 FROM ${repositoryEventListener}
+          WHERE ${repositoryEventListener.id} = ${listener.id}
+            AND ${repositoryEventListener.updatedAt} = ${listener.updatedAt}
+        )
       ON CONFLICT DO NOTHING
     `);
 
