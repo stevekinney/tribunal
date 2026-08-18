@@ -410,7 +410,8 @@ describe('cost ledger PostgreSQL reservation concurrency', () => {
       [user.id],
     );
 
-    const decision = await createCostPort(drizzle(adminClient, { schema }) as CostPortDatabase, {
+    const database = drizzle(adminClient, { schema }) as unknown as CostPortDatabase;
+    const decision = await createCostPort(database, {
       now: () => new Date('2026-06-17T12:00:00.000Z'),
     }).enforceDailyCap(user.id, {
       idempotencyKey: 'llm:postgres:infinite-cap-estimate',
