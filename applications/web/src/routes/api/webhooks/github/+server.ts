@@ -206,44 +206,16 @@ export const POST: RequestHandler = async (event) => {
     void runDrainTurn(new Set());
   };
 
-  if (deliveryId && eventType) {
-    const claimed = await claimWebhookDelivery(githubContext, deliveryId, eventType);
-
-    if (!claimed) {
-      console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
-      scheduleDrain();
-      return json({ ok: true, message: 'Already processed' });
-    }
-  }
-
   if (
     repositoryId &&
     eventType &&
     isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID)
   ) {
-    let hasCandidate: boolean;
-    try {
-      hasCandidate = await hasCandidateEventListenerForRepositoryEventType(
-        githubContext,
-        repositoryId,
-        eventType,
-      );
-    } catch (lookupError) {
-      const claimReleased = deliveryId
-        ? await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType)
-        : false;
-      if (!claimReleased) {
-        console.error(
-          '[webhook] Failed to release delivery claim after listener candidate lookup:',
-          {
-            deliveryId,
-            eventType,
-            lookupError,
-          },
-        );
-      }
-      throw lookupError;
-    }
+    const hasCandidate = await hasCandidateEventListenerForRepositoryEventType(
+      githubContext,
+      repositoryId,
+      eventType,
+    );
 
     if (!hasCandidate) {
       await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
@@ -252,6 +224,16 @@ export const POST: RequestHandler = async (event) => {
       // pending work for other listener event types.
       scheduleDrain();
       return json({ ok: true, ignored: true });
+    }
+  }
+
+  if (deliveryId && eventType) {
+    const claimed = await claimWebhookDelivery(githubContext, deliveryId, eventType);
+
+    if (!claimed) {
+      console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
+      scheduleDrain();
+      return json({ ok: true, message: 'Already processed' });
     }
   }
 

@@ -263,7 +263,7 @@ describe('POST /api/webhooks/github', () => {
     expect(webhookUtils.invalidateGitHubResourceCacheForEvent).toHaveBeenCalledTimes(1);
   });
 
-  it('lets GitHub retry when the ignored-check listener candidate lookup fails', async () => {
+  it('lets GitHub retry before claiming when the ignored-check listener candidate lookup fails', async () => {
     mockHasCandidateEventListenerForRepositoryEventType.mockRejectedValue(
       new Error('database unavailable'),
     );
@@ -276,33 +276,7 @@ describe('POST /api/webhooks/github', () => {
         ),
       ),
     ).rejects.toThrow('database unavailable');
-    expect(mockReleaseWebhookDeliveryClaim).toHaveBeenCalledWith(
-      expect.anything(),
-      'delivery-1',
-      'check_run',
-    );
-  });
-
-  it('reports a failed claim release after an ignored-check candidate lookup failure', async () => {
-    mockHasCandidateEventListenerForRepositoryEventType.mockRejectedValue(
-      new Error('database unavailable'),
-    );
-    mockReleaseWebhookDeliveryClaim.mockResolvedValue(false);
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    await expect(
-      POST(
-        createPostEvent(
-          { action: 'created', installation: { id: 1 }, repository: { id: 2 } },
-          { 'x-github-event': 'check_run' },
-        ),
-      ),
-    ).rejects.toThrow('database unavailable');
-
-    expect(consoleError).toHaveBeenCalledWith(
-      '[webhook] Failed to release delivery claim after listener candidate lookup:',
-      expect.objectContaining({ deliveryId: 'delivery-1', eventType: 'check_run' }),
-    );
+    expect(mockClaimWebhookDelivery).not.toHaveBeenCalled();
   });
 
   it('returns ok without dispatching when deliveryId or eventType is missing', async () => {
