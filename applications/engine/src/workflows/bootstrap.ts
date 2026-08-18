@@ -38,6 +38,7 @@ export type ReviewIntentQueueStatus = {
   readyCount: number;
   deferredCount: number;
   claimedCount: number;
+  expiredCount: number;
   nextAttemptAt?: Date;
 };
 
@@ -153,7 +154,7 @@ export async function createEngineRuntime(
       getReviewIntentQueueStatus(now: Date) {
         return (
           options.reviewIntentConsumer?.getQueueStatus?.(now) ??
-          Promise.resolve({ readyCount: 0, deferredCount: 0, claimedCount: 0 })
+          Promise.resolve({ readyCount: 0, deferredCount: 0, claimedCount: 0, expiredCount: 0 })
         );
       },
       reapClosedPullRequestSandboxes() {

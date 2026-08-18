@@ -137,6 +137,70 @@ describe('createEngineServerOptions', () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: 'unauthorized' });
   });
 
+  it('returns authenticated review intent queue status with an ISO retry time', async () => {
+    const getReviewIntentQueueStatus = vi.fn().mockResolvedValue({
+      readyCount: 1,
+      deferredCount: 2,
+      claimedCount: 3,
+      expiredCount: 4,
+      nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
+    });
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus,
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(
+      new Request('http://engine.test/review-intents/status', {
+        headers: { authorization: 'Bearer control-token' },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      readyCount: 1,
+      deferredCount: 2,
+      claimedCount: 3,
+      expiredCount: 4,
+      nextAttemptAt: '2026-06-17T12:05:00.000Z',
+    });
+    expect(getReviewIntentQueueStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unauthenticated review intent queue status requests', async () => {
+    const getReviewIntentQueueStatus = vi.fn();
+    const server = createEngineServerOptions(
+      3001,
+      {
+        engine: {},
+        healthDependencies: () => [],
+        drainReviewIntents: async () => 0,
+        getReviewIntentQueueStatus,
+        reapClosedPullRequestSandboxes: async () => [],
+        stopReviewRun: async () => ({ stopped: false }),
+        stopReviewAgent: async () => ({ stopped: false }),
+        release: async () => {},
+      },
+      'control-token',
+    );
+
+    const response = await server.fetch(new Request('http://engine.test/review-intents/status'));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'unauthorized' });
+    expect(getReviewIntentQueueStatus).not.toHaveBeenCalled();
+  });
+
   it('starts an authenticated review intent kick without awaiting the drain', async () => {
     const drain = createDeferred<number>();
     const drainReviewIntents = vi.fn().mockReturnValue(drain.promise);
@@ -1465,6 +1529,38 @@ describe('createReviewIntentKickScheduler', () => {
       accepted: false,
       reason: 'released',
     });
+    vi.useRealTimers();
+  });
+
+  it('releases after idle when process reviews are disabled despite a visible ready backlog', async () => {
+    vi.useFakeTimers();
+    const drainReviewIntents = vi.fn().mockResolvedValue(0);
+    const release = vi.fn().mockResolvedValue(undefined);
+    const scheduler = createReviewIntentKickScheduler(
+      {
+        drainReviewIntents,
+        getReviewIntentQueueStatus: vi.fn().mockResolvedValue({
+          readyCount: 1,
+          deferredCount: 0,
+          claimedCount: 0,
+          expiredCount: 0,
+        }),
+        release,
+      },
+      {
+        idleShutdownSeconds: 1,
+        reviewsEnabled: false,
+        exit: vi.fn(),
+        logger: { error: vi.fn(), log: vi.fn() },
+      },
+    );
+
+    scheduler.kick();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(drainReviewIntents).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 

@@ -157,6 +157,7 @@ if (import.meta.main) {
   let activeWorkflowCancellationRequests = 0;
   const reviewIntentKickScheduler = createReviewIntentKickScheduler(runtime, {
     idleShutdownSeconds: environment.ENGINE_IDLE_SHUTDOWN_SECONDS,
+    reviewsEnabled: environment.REVIEWS_ENABLED,
     isBackgroundWorkActive: () =>
       activeSandboxReaperRuns > 0 || activeWorkflowCancellationRequests > 0,
   });
@@ -368,6 +369,21 @@ export function createEngineServerOptions(
         const processed = await runtime.drainReviewIntents();
         return Response.json({ ok: true, processed });
       }
+      if (url.pathname === '/review-intents/status' && request.method === 'GET') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const queueStatus = await runtime.getReviewIntentQueueStatus(new Date());
+        return Response.json({
+          readyCount: queueStatus.readyCount,
+          deferredCount: queueStatus.deferredCount,
+          claimedCount: queueStatus.claimedCount,
+          expiredCount: queueStatus.expiredCount,
+          ...(queueStatus.nextAttemptAt === undefined
+            ? {}
+            : { nextAttemptAt: queueStatus.nextAttemptAt.toISOString() }),
+        });
+      }
       if (url.pathname === '/review-intents/kick' && request.method === 'POST') {
         if (!hasValidControlToken(request, controlToken)) {
           return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
@@ -465,6 +481,7 @@ export type BackgroundWorkAcceptanceResult =
 export type ReviewIntentKickSchedulerOptions = {
   idleShutdownSeconds?: number;
   drainLimit?: number;
+  reviewsEnabled?: boolean;
   now?: () => Date;
   exit?: (code: number) => void;
   logger?: Pick<typeof console, 'error' | 'log'>;
@@ -490,6 +507,7 @@ export function createReviewIntentKickScheduler(
   const isBackgroundWorkActive = options.isBackgroundWorkActive ?? (() => false);
   const idleShutdownMs =
     options.idleShutdownSeconds === undefined ? undefined : options.idleShutdownSeconds * 1_000;
+  const reviewsEnabled = options.reviewsEnabled ?? true;
   const boundedDrainContinuationDelayMs = 1_000;
 
   let activeDrain: Promise<void> | undefined;
@@ -592,6 +610,23 @@ export function createReviewIntentKickScheduler(
       activeDrain !== undefined || drainGeneration !== observedDrainGeneration;
 
     try {
+      if (!reviewsEnabled) {
+        const queueStatus = await runtime.getReviewIntentQueueStatus(now());
+        if (hasNewDrainActivity()) return;
+        const hasActiveInstallationSyncs = (await runtime.hasActiveInstallationSyncs?.()) === true;
+        if (hasNewDrainActivity()) return;
+        if (hasClaimedWork(queueStatus) || isBackgroundWorkActive() || hasActiveInstallationSyncs) {
+          scheduleConfiguredIdleShutdown();
+          return;
+        }
+
+        released = true;
+        await runtime.release();
+        logger.log('[engine] idle shutdown complete');
+        exit(0);
+        return;
+      }
+
       const processed = await runtime.drainReviewIntents(drainLimit);
       if (hasNewDrainActivity()) return;
       if (processed > 0) {
@@ -601,11 +636,11 @@ export function createReviewIntentKickScheduler(
 
       const queueStatus = await runtime.getReviewIntentQueueStatus(now());
       if (hasNewDrainActivity()) return;
-      if (queueStatus.readyCount > 0) {
+      if (reviewsEnabled && queueStatus.readyCount > 0) {
         startDrain();
         return;
       }
-      if (hasDeferredWork(queueStatus)) {
+      if (reviewsEnabled && hasDeferredWork(queueStatus)) {
         scheduleIdleShutdownCheck(getDeferredDelay(queueStatus));
         return;
       }

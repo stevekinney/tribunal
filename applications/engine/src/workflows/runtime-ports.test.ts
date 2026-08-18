@@ -208,6 +208,7 @@ describe('runtime review intent consumer wiring', () => {
       readyCount: 1,
       deferredCount: 0,
       claimedCount: 0,
+      expiredCount: 0,
     });
   });
 
