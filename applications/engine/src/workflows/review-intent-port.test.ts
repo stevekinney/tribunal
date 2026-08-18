@@ -674,6 +674,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 1,
       deferredCount: 1,
       claimedCount: 0,
+      expiredCount: 0,
       nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
     });
   });
@@ -691,21 +692,105 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 0,
       deferredCount: 0,
       claimedCount: 1,
+      expiredCount: 0,
     });
   });
 
-  it('reports an empty queue when reviews are globally disabled', async () => {
-    await createReviewIntentFixture();
+  it('reports fresh eligible work and expired rows when reviews are globally disabled', async () => {
+    const now = new Date('2026-06-17T12:00:00.000Z');
+    const { user, repository } = await createReviewIntentFixture({ createdAt: now });
+    await testDatabase.db.insert(reviewIntent).values([
+      {
+        id: 'intent_deferred',
+        deliveryId: 'delivery_deferred',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 8,
+        nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
+        createdAt: now,
+      },
+      {
+        id: 'intent_claimed',
+        deliveryId: 'delivery_claimed',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 9,
+        claimedAt: new Date('2026-06-17T11:59:00.000Z'),
+        createdAt: new Date('2026-06-16T11:59:59.999Z'),
+      },
+      {
+        id: 'intent_expired',
+        deliveryId: 'delivery_expired',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 10,
+        createdAt: new Date('2026-06-16T11:59:59.999Z'),
+      },
+    ]);
 
     await expect(
-      getReviewIntentQueueStatus(testDatabase.db, new Date('2026-06-17T12:00:00.000Z'), {
-        reviewsEnabled: false,
-      }),
+      getReviewIntentQueueStatus(testDatabase.db, now, { reviewsEnabled: false }),
     ).resolves.toEqual({
-      readyCount: 0,
-      deferredCount: 0,
-      claimedCount: 0,
+      readyCount: 1,
+      deferredCount: 1,
+      claimedCount: 1,
+      expiredCount: 1,
+      nextAttemptAt: new Date('2026-06-17T12:05:00.000Z'),
     });
+  });
+
+  it('claims fresh and exactly-24-hour-old intents but never expired intents', async () => {
+    const now = new Date('2026-06-17T12:00:00.000Z');
+    const { user, repository } = await createReviewIntentFixture({
+      createdAt: new Date('2026-06-16T12:00:00.000Z'),
+    });
+    await testDatabase.db.insert(agent).values({
+      id: 'agent_security',
+      userId: user.id,
+      slug: 'security-review',
+      description: 'Reviews security changes.',
+      body: 'Find security problems.',
+      model: 'claude-sonnet-4-6',
+    });
+    await testDatabase.db.insert(repositoryAgent).values({
+      userId: user.id,
+      repositoryId: repository.id,
+      agentId: 'agent_security',
+    });
+    await testDatabase.db.insert(reviewIntent).values([
+      {
+        id: 'intent_expired',
+        deliveryId: 'delivery_expired',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 7,
+        createdAt: new Date('2026-06-16T11:59:59.999Z'),
+      },
+      {
+        id: 'intent_fresh',
+        deliveryId: 'delivery_fresh',
+        kind: 'start',
+        repositoryId: repository.id,
+        userId: user.id,
+        prNumber: 7,
+        createdAt: new Date('2026-06-17T11:59:59.999Z'),
+      },
+    ]);
+    const port = createDatabaseReviewIntentPort(testDatabase.db);
+
+    await expect(port.claimNextReviewIntent(now)).resolves.toMatchObject({ id: 'intent_1' });
+    await port.markReviewIntentProcessed('intent_1', now, now);
+    await expect(port.claimNextReviewIntent(now)).resolves.toMatchObject({ id: 'intent_fresh' });
+    const [expiredIntent] = await testDatabase.db
+      .select({ claimedAt: reviewIntent.claimedAt })
+      .from(reviewIntent)
+      .where(eq(reviewIntent.id, 'intent_expired'));
+
+    expect(expiredIntent?.claimedAt).toBeNull();
   });
 
   it('normalizes raw queue status count shapes from database drivers', async () => {
@@ -716,7 +801,15 @@ describe('createDatabaseReviewIntentPort', () => {
       getReviewIntentQueueStatus(
         {
           execute: async () => ({
-            rows: [{ readyCount: '2', deferredCount: 1n, claimedCount: '3', nextAttemptAt }],
+            rows: [
+              {
+                readyCount: '2',
+                deferredCount: 1n,
+                claimedCount: '3',
+                expiredCount: '4',
+                nextAttemptAt,
+              },
+            ],
           }),
         } as never,
         now,
@@ -725,6 +818,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 2,
       deferredCount: 1,
       claimedCount: 3,
+      expiredCount: 4,
       nextAttemptAt: new Date(nextAttemptAt),
     });
 
@@ -739,6 +833,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 0,
       deferredCount: 0,
       claimedCount: 0,
+      expiredCount: 0,
     });
 
     await expect(
@@ -750,6 +845,7 @@ describe('createDatabaseReviewIntentPort', () => {
                 readyCount: 'not-a-count',
                 deferredCount: Number.NaN,
                 claimedCount: 'Infinity',
+                expiredCount: 'Infinity',
               },
             ],
           }),
@@ -760,6 +856,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 0,
       deferredCount: 0,
       claimedCount: 0,
+      expiredCount: 0,
     });
   });
 
@@ -1202,6 +1299,7 @@ describe('createDatabaseReviewIntentPort', () => {
       readyCount: 0,
       deferredCount: 0,
       claimedCount: 0,
+      expiredCount: 0,
     });
   });
 
@@ -1564,6 +1662,7 @@ async function createReviewIntentFixture(
     checkRunId?: number;
     checkConclusionMode?: 'advisory' | 'gating';
     defaultModel?: string;
+    createdAt?: Date;
   } = {},
 ) {
   const factories = createFactories(testDatabase.db);
@@ -1613,6 +1712,7 @@ async function createReviewIntentFixture(
     prNumber: 7,
     headSha: null,
     checkRunId: options.checkRunId ?? null,
+    ...(options.createdAt === undefined ? {} : { createdAt: options.createdAt }),
   });
 
   return { user, installation, repository };

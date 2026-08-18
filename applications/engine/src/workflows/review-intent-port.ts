@@ -20,6 +20,7 @@ type ReviewIntentDatabase = Pick<Database, 'execute' | 'select' | 'update'>;
 const maxReviewIntentFailures = 5;
 const defaultMaxSkippedReviewIntentsPerClaim = 25;
 const backoffMinutesByFailureCount = [1, 2, 4, 8] as const;
+export const REVIEW_INTENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const waitingForEligibleReviewAgentReason =
   'Review intent is waiting for an eligible review agent.';
 
@@ -53,6 +54,7 @@ export type ReviewIntentQueueStatus = {
   readyCount: number;
   deferredCount: number;
   claimedCount: number;
+  expiredCount: number;
   nextAttemptAt?: Date;
 };
 
@@ -156,66 +158,72 @@ export function createDatabaseReviewIntentPort(
 export async function getReviewIntentQueueStatus(
   database: ReviewIntentDatabase,
   now: Date,
-  options: ReviewIntentPortOptions = {},
+  _options: ReviewIntentPortOptions = {},
 ): Promise<ReviewIntentQueueStatus> {
-  if (options.reviewsEnabled === false) {
-    return { readyCount: 0, deferredCount: 0, claimedCount: 0 };
-  }
-
   const staleClaimCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  const reviewIntentAgeCutoff = new Date(now.getTime() - REVIEW_INTENT_MAX_AGE_MS);
   const result = await database.execute(sql`
+    WITH eligible_intents AS (
+      SELECT
+        ${reviewIntent.id} AS "id",
+        ${reviewIntent.claimedAt} AS "claimedAt",
+        ${reviewIntent.createdAt} AS "createdAt",
+        ${reviewIntent.nextAttemptAt} AS "nextAttemptAt"
+      FROM ${reviewIntent}
+      INNER JOIN ${repositoryReviewSettings}
+        ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
+        AND ${repositoryReviewSettings.userId} = ${reviewIntent.userId}
+      INNER JOIN ${repository}
+        ON ${repository.id} = ${reviewIntent.repositoryId}
+      INNER JOIN ${githubInstallationRepository}
+        ON ${githubInstallationRepository.repositoryId} = ${repository.id}
+        AND ${githubInstallationRepository.isActive} = true
+      INNER JOIN ${githubInstallation}
+        ON ${githubInstallation.installationId} = ${githubInstallationRepository.installationId}
+        AND ${githubInstallation.userId} = ${reviewIntent.userId}
+      INNER JOIN ${userReviewSettings}
+        ON ${userReviewSettings.userId} = ${reviewIntent.userId}
+      WHERE ${reviewIntent.processedAt} IS NULL
+        AND ${reviewIntent.deadLetteredAt} IS NULL
+        AND (
+          ${reviewIntent.lastError} IS NULL
+          OR ${reviewIntent.lastError} IS DISTINCT FROM ${waitingForEligibleReviewAgentReason}
+        )
+        AND ${repositoryReviewSettings.watched} = true
+        AND ${userReviewSettings.reviewsEnabled} = true
+        AND ${githubInstallation.status} = 'active'
+    )
     SELECT
       COUNT(*) FILTER (
-        WHERE ${reviewIntent.nextAttemptAt} IS NULL
-          OR ${reviewIntent.nextAttemptAt} <= ${now}
+        WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
+          AND "createdAt" >= ${reviewIntentAgeCutoff}
+          AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${now})
       )::int AS "readyCount",
       COUNT(*) FILTER (
-        WHERE ${reviewIntent.nextAttemptAt} > ${now}
+        WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
+          AND "createdAt" >= ${reviewIntentAgeCutoff}
+          AND "nextAttemptAt" > ${now}
       )::int AS "deferredCount",
-      MIN(${reviewIntent.nextAttemptAt}) FILTER (
-        WHERE ${reviewIntent.nextAttemptAt} > ${now}
+      COUNT(*) FILTER (
+        WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
+          AND "createdAt" < ${reviewIntentAgeCutoff}
+      )::int AS "expiredCount",
+      MIN("nextAttemptAt") FILTER (
+        WHERE ("claimedAt" IS NULL OR "claimedAt" < ${staleClaimCutoff})
+          AND "createdAt" >= ${reviewIntentAgeCutoff}
+          AND "nextAttemptAt" > ${now}
       ) AS "nextAttemptAt",
-      (
-        SELECT COUNT(*)::int
-        FROM ${reviewIntent}
-        WHERE ${reviewIntent.processedAt} IS NULL
-          AND ${reviewIntent.deadLetteredAt} IS NULL
-          AND ${reviewIntent.claimedAt} IS NOT NULL
-          AND ${reviewIntent.claimedAt} >= ${staleClaimCutoff}
-      ) AS "claimedCount"
-    FROM ${reviewIntent}
-    INNER JOIN ${repositoryReviewSettings}
-      ON ${repositoryReviewSettings.repositoryId} = ${reviewIntent.repositoryId}
-      AND ${repositoryReviewSettings.userId} = ${reviewIntent.userId}
-    INNER JOIN ${repository}
-      ON ${repository.id} = ${reviewIntent.repositoryId}
-    INNER JOIN ${githubInstallationRepository}
-      ON ${githubInstallationRepository.repositoryId} = ${repository.id}
-      AND ${githubInstallationRepository.isActive} = true
-    INNER JOIN ${githubInstallation}
-      ON ${githubInstallation.installationId} = ${githubInstallationRepository.installationId}
-      AND ${githubInstallation.userId} = ${reviewIntent.userId}
-    INNER JOIN ${userReviewSettings}
-      ON ${userReviewSettings.userId} = ${reviewIntent.userId}
-    WHERE ${reviewIntent.processedAt} IS NULL
-      AND (
-        ${reviewIntent.claimedAt} IS NULL
-        OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
-      )
-      AND ${reviewIntent.deadLetteredAt} IS NULL
-      AND (
-        ${reviewIntent.lastError} IS NULL
-        OR ${reviewIntent.lastError} IS DISTINCT FROM ${waitingForEligibleReviewAgentReason}
-      )
-      AND ${repositoryReviewSettings.watched} = true
-      AND ${userReviewSettings.reviewsEnabled} = true
-      AND ${githubInstallation.status} = 'active'
+      COUNT(*) FILTER (
+        WHERE "claimedAt" IS NOT NULL AND "claimedAt" >= ${staleClaimCutoff}
+      )::int AS "claimedCount"
+    FROM eligible_intents
   `);
 
   const row = getRows<{
     readyCount: number | string | bigint | null;
     deferredCount: number | string | bigint | null;
     claimedCount: number | string | bigint | null;
+    expiredCount: number | string | bigint | null;
     nextAttemptAt: Date | string | null;
   }>(result)[0];
 
@@ -223,6 +231,7 @@ export async function getReviewIntentQueueStatus(
     readyCount: toCount(row?.readyCount),
     deferredCount: toCount(row?.deferredCount),
     claimedCount: toCount(row?.claimedCount),
+    expiredCount: toCount(row?.expiredCount),
     ...(row?.nextAttemptAt === null || row?.nextAttemptAt === undefined
       ? {}
       : { nextAttemptAt: toDate(row.nextAttemptAt) }),
@@ -234,6 +243,7 @@ async function claimNextIntentRow(
   now: Date,
 ): Promise<ClaimedReviewIntentRow | null> {
   const staleClaimCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+  const reviewIntentAgeCutoff = new Date(now.getTime() - REVIEW_INTENT_MAX_AGE_MS);
   const result = await database.execute(sql`
     WITH next_intent AS (
       SELECT ${reviewIntent.id}
@@ -257,6 +267,7 @@ async function claimNextIntentRow(
           OR ${reviewIntent.claimedAt} < ${staleClaimCutoff}
         )
         AND ${reviewIntent.deadLetteredAt} IS NULL
+        AND ${reviewIntent.createdAt} >= ${reviewIntentAgeCutoff}
         AND (
           ${reviewIntent.nextAttemptAt} IS NULL
           OR ${reviewIntent.nextAttemptAt} <= ${now}

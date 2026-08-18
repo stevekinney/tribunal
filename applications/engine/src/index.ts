@@ -368,6 +368,21 @@ export function createEngineServerOptions(
         const processed = await runtime.drainReviewIntents();
         return Response.json({ ok: true, processed });
       }
+      if (url.pathname === '/review-intents/status' && request.method === 'GET') {
+        if (!hasValidControlToken(request, controlToken)) {
+          return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+        }
+        const queueStatus = await runtime.getReviewIntentQueueStatus(new Date());
+        return Response.json({
+          readyCount: queueStatus.readyCount,
+          deferredCount: queueStatus.deferredCount,
+          claimedCount: queueStatus.claimedCount,
+          expiredCount: queueStatus.expiredCount,
+          ...(queueStatus.nextAttemptAt === undefined
+            ? {}
+            : { nextAttemptAt: queueStatus.nextAttemptAt.toISOString() }),
+        });
+      }
       if (url.pathname === '/review-intents/kick' && request.method === 'POST') {
         if (!hasValidControlToken(request, controlToken)) {
           return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
