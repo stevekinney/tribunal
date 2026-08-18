@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { Card } from '@lostgradient/cinder/card';
   import { Table } from '@lostgradient/cinder/table';
   import { Button } from '@lostgradient/cinder/button';
@@ -31,13 +31,51 @@
   } = $props();
 
   const expandedIds = new SvelteSet<number>();
+  type PayloadState =
+    | { status: 'loading'; request: Promise<void> }
+    | { status: 'loaded'; payload: unknown; parseError: boolean };
+  const payloads = new SvelteMap<number, PayloadState>();
+  const payloadErrors = new SvelteMap<number, string>();
 
   function toggle(id: number) {
     if (expandedIds.has(id)) {
       expandedIds.delete(id);
     } else {
       expandedIds.add(id);
+      void loadPayload(id);
     }
+  }
+
+  async function loadPayload(id: number) {
+    if (payloads.has(id)) return;
+
+    payloadErrors.delete(id);
+    const request = fetch(`/api/webhook-events/${id}/payload`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to load webhook payload.');
+        const body: unknown = await response.json();
+        if (
+          typeof body !== 'object' ||
+          body === null ||
+          !('payload' in body) ||
+          !('parseError' in body) ||
+          typeof body.parseError !== 'boolean'
+        ) {
+          throw new Error('Unable to load webhook payload.');
+        }
+        payloads.set(id, {
+          status: 'loaded',
+          payload: body.payload,
+          parseError: body.parseError,
+        });
+      })
+      .catch(() => {
+        payloads.delete(id);
+        payloadErrors.set(id, 'Unable to load webhook payload.');
+      });
+
+    payloads.set(id, { status: 'loading', request });
+    await request;
   }
 
   /** Compact, non-inferred rendering of the related GitHub object for a row. */
@@ -146,6 +184,8 @@
             </Table.Cell>
           </Table.Row>
           {#if expanded}
+            {@const payload = payloads.get(event.id)}
+            {@const payloadError = payloadErrors.get(event.id)}
             <Table.Row>
               <td colspan={columnCount} class="detail-cell">
                 <div id={`webhook-event-detail-${event.id}`} class="detail-panel">
@@ -209,11 +249,20 @@
                     {/if}
                   </div>
 
-                  <PayloadInspector
-                    value={event.payloadParseError ? event.rawPayload : event.payload}
-                    label="Webhook payload"
-                    parse={JSON.parse}
-                  />
+                  {#if payload?.status === 'loading'}
+                    <p role="status">Loading webhook payload…</p>
+                  {:else if payload?.status === 'loaded'}
+                    <PayloadInspector
+                      value={payload.payload}
+                      label="Webhook payload"
+                      parse={JSON.parse}
+                    />
+                  {:else if payloadError}
+                    <Alert variant="danger">
+                      {payloadError}
+                      <Button size="xs" onclick={() => void loadPayload(event.id)}>Retry</Button>
+                    </Alert>
+                  {/if}
                 </div>
               </td>
             </Table.Row>

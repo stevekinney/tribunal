@@ -37,9 +37,6 @@ function createEvent(overrides: Partial<WebhookEventRow> = {}): WebhookEventRow 
     commitSha: 'abc1234def',
     receivedAt: '2026-01-01T00:00:00.000Z',
     githubCreatedAt: null,
-    rawPayload: 'not valid json {{{',
-    payload: null,
-    payloadParseError: true,
     listenerProgress: {
       receivedOnly: true,
       matchCount: 0,
@@ -103,7 +100,7 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
     await expect.element(page.getByText('No webhook events received')).toBeInTheDocument();
   });
 
-  it('shows a raw-fallback warning for invalid JSON payloads when expanded', async () => {
+  it('shows event details when expanded', async () => {
     render(RepositoryWebhooksPage, { data: createData() });
 
     await page.getByRole('button', { name: /Show details/ }).click();
@@ -128,11 +125,6 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
     expect(detailText).toContain('Received');
     expect(detailText).toContain('Delivery ID');
     expect(detailText).toContain('delivery-1');
-    await expect
-      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
-      .toBeInTheDocument();
-    await expect.element(page.getByText('Webhook payload')).toBeInTheDocument();
-    await expect.element(page.getByText('not valid json {{{', { exact: true })).toBeInTheDocument();
   });
 
   it('collapses an expanded row back down when Hide details is clicked', async () => {
@@ -152,9 +144,6 @@ describe('/repositories/[repositoryId]/webhooks page', () => {
     await expect
       .element(page.getByRole('button', { name: /Show details/ }).first())
       .toBeInTheDocument();
-    await expect
-      .element(page.getByRole('alert').getByText('Parse error:', { exact: false }))
-      .not.toBeInTheDocument();
   });
 
   it('shows the related issue number when a webhook event references an issue', async () => {
