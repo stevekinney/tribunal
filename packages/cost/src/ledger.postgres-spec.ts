@@ -395,4 +395,29 @@ describe('cost ledger PostgreSQL reservation concurrency', () => {
       await Promise.all([locker.end(), sandboxClient.end()]);
     }
   });
+
+  it('fails closed for an infinite stored daily cap', async () => {
+    await adminClient.query(
+      'TRUNCATE "cost_reservation", "cost_budget_day", "user_review_settings", "user" RESTART IDENTITY CASCADE',
+    );
+    const {
+      rows: [user],
+    } = await adminClient.query<{ id: number }>(
+      `INSERT INTO "user" ("username", "email") VALUES ('postgres-infinite-cap-user', 'postgres-infinite-cap@example.test') RETURNING "id"`,
+    );
+    await adminClient.query(
+      `INSERT INTO "user_review_settings" ("user_id", "daily_cost_cap_usd") VALUES ($1, 'Infinity')`,
+      [user.id],
+    );
+
+    const decision = await createCostPort(drizzle(adminClient, { schema }) as CostPortDatabase, {
+      now: () => new Date('2026-06-17T12:00:00.000Z'),
+    }).enforceDailyCap(user.id, {
+      idempotencyKey: 'llm:postgres:infinite-cap-estimate',
+      amountUsd: 0.01,
+      expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+    });
+
+    expect(decision).toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+  });
 });

@@ -537,7 +537,7 @@ async function reserveDailyCap(
       ),
       cap AS (
         SELECT CASE
-          WHEN cap_usd = 'NaN'::numeric THEN 0
+          WHEN cap_usd::text IN ('NaN', 'Infinity', '-Infinity') THEN 0
           ELSE GREATEST(0, LEAST(cap_usd, ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric))
         END AS cap_usd
         FROM configured_cap
