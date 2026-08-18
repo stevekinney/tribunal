@@ -22,6 +22,7 @@ import {
   defaultReviewModelSchema,
   effortSchema,
 } from '@tribunal/review-core/schemas';
+import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core';
 import { db } from '$lib/server/database';
 import {
   cancelReviewWorkflowsEngine,
@@ -1215,9 +1216,22 @@ export async function getUserReviewSettings(userId: number) {
     .onConflictDoNothing()
     .returning();
 
-  if (inserted.length > 0) return inserted;
+  if (inserted.length > 0) {
+    return inserted.map((settings) => ({
+      ...settings,
+      dailyCostCapUsd: String(Math.min(Number(settings.dailyCostCapUsd), MAX_DAILY_COST_CAP_USD)),
+    }));
+  }
 
-  return db.select().from(userReviewSettings).where(eq(userReviewSettings.userId, userId)).limit(1);
+  const settings = await db
+    .select()
+    .from(userReviewSettings)
+    .where(eq(userReviewSettings.userId, userId))
+    .limit(1);
+  return settings.map((setting) => ({
+    ...setting,
+    dailyCostCapUsd: String(Math.min(Number(setting.dailyCostCapUsd), MAX_DAILY_COST_CAP_USD)),
+  }));
 }
 
 export async function saveUserReviewSettings(userId: number, formData: FormData) {
@@ -1225,8 +1239,12 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
   const defaultModel = String(formData.get('defaultModel') ?? '').trim();
   const reviewsEnabled = formData.get('reviewsEnabled') === 'on';
 
-  if (Number(dailyCostCapUsd) < 0 || !Number.isFinite(Number(dailyCostCapUsd))) {
-    return fail(400, { error: 'Daily cost cap must be zero or greater.' });
+  if (
+    Number(dailyCostCapUsd) < 0 ||
+    !Number.isFinite(Number(dailyCostCapUsd)) ||
+    Number(dailyCostCapUsd) > MAX_DAILY_COST_CAP_USD
+  ) {
+    return fail(400, { error: 'Daily cost cap must be between $0 and $25.' });
   }
 
   if (!defaultReviewModelSchema.safeParse(defaultModel).success) {

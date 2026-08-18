@@ -79,6 +79,7 @@
             name="dailyCostCapUsd"
             bind:value={dailyCostCapUsd}
             min={0}
+            max={25}
             step={0.01}
             required
             label="Daily cost cap in US dollars"

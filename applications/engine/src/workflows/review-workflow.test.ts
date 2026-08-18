@@ -1044,6 +1044,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.reservationCalls).toEqual([
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
     ]);
@@ -1051,6 +1052,35 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.checkRunPatches.at(-1)).toMatchObject({
       patch: { status: 'completed', conclusion: 'neutral' },
     });
+  });
+
+  it('uses fixed triage, specialist, and verifier budgets for reservations and sandbox input', async () => {
+    const ports = createFakePorts();
+    const engine = createEngine(ports);
+
+    await expect(
+      engine.startPullRequestReview({
+        ...baseInput,
+        agents: [{ ...reviewAgent, maxBudgetUsd: 100 }],
+      }),
+    ).resolves.toMatchObject({ status: 'posted' });
+
+    expect(ports.cost.reservationCalls).toEqual([
+      expect.objectContaining({ amountUsd: 0.05 }),
+      expect.objectContaining({ amountUsd: 1 }),
+      expect.objectContaining({ amountUsd: 0.05 }),
+    ]);
+    expect(ports.sandbox.systemAgentCalls.find((agent) => agent.role === 'triage')).toMatchObject({
+      maxBudgetUsd: 0.05,
+    });
+    expect(ports.sandbox.runAgentCalls).toEqual([
+      expect.objectContaining({ agentId: 'agent_security', maxBudgetUsd: 1 }),
+    ]);
+    expect(ports.sandbox.systemAgentCalls.find((agent) => agent.role === 'verifier')).toMatchObject(
+      {
+        maxBudgetUsd: 0.05,
+      },
+    );
   });
 
   it('honors cancellation after a triage reservation wait', async () => {
@@ -1099,10 +1129,12 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.reservationCalls).toEqual([
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        amountUsd: 1,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {
@@ -1690,7 +1722,7 @@ describe('ReviewWorkflowEngine', () => {
   });
 
   it('stops dispatching agents when the daily cap is reached mid-run', async () => {
-    const ports = createFakePorts({ spendTodayEstimate: 9.99, spendAfterFirstEstimate: 10 });
+    const ports = createFakePorts({ spendTodayEstimate: 8.95, spendAfterFirstEstimate: 10 });
     const engine = createEngine(ports);
 
     await expect(
@@ -1744,7 +1776,7 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.github.reviews).toHaveLength(0);
   });
 
-  it('blocks a specialist when remaining budget is below its configured maximum', async () => {
+  it('uses the specialist circuit breaker instead of an incoming configured maximum', async () => {
     const ports = createFakePorts({ spendTodayEstimate: 9.95 });
     const engine = createEngine(ports);
 
@@ -1758,11 +1790,12 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.reservationCalls).toEqual([
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
-        amountUsd: 0.1,
+        amountUsd: 1,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
     ]);
@@ -1781,10 +1814,12 @@ describe('ReviewWorkflowEngine', () => {
     expect(ports.cost.reservationCalls).toEqual([
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:triage:estimate',
+        amountUsd: 0.05,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {
         idempotencyKey: 'llm:arun:run:42:7:aaa111:opened:agent_security:estimate',
+        amountUsd: 1,
         expiresAt: new Date('2026-06-17T13:00:00.000Z'),
       },
       {

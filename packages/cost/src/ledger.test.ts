@@ -988,6 +988,31 @@ describe('cost ledger', () => {
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
+  it('clamps stored and configured daily cost caps to $25 before enforcing reservations', async () => {
+    const { user, run } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:default-clamped-cap-estimate`,
+        amountUsd: 25.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
+
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '100000' });
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:stored-clamped-cap-estimate`,
+        amountUsd: 25.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
+  });
+
   it('rejects invalid daily cap reservation inputs before touching the ledger', async () => {
     const { user } = await createCostFixture();
     const now = new Date('2026-06-17T12:00:00.000Z');

@@ -75,6 +75,17 @@ describe('/settings page — default model', () => {
   });
 });
 
+describe('/settings page — daily cost cap', () => {
+  afterEach(() => cleanup());
+
+  it('sets the $25 daily maximum on the cost cap input', () => {
+    render(SettingsPage, { data: baseData, form: null, params: {} });
+
+    const input = page.getByRole('spinbutton', { name: 'Daily cost cap in US dollars' });
+    expect(input).toHaveAttribute('max', '25');
+  });
+});
+
 describe('/settings page — kill switch danger zone', () => {
   afterEach(() => cleanup());
 
