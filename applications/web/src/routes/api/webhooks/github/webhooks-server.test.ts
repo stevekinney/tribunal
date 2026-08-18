@@ -53,7 +53,15 @@ const mockClaimWebhookDelivery = vi.hoisted(() => vi.fn(async () => true));
 const mockReleaseWebhookDeliveryClaim = vi.hoisted(() => vi.fn(async () => true));
 const mockStoreWebhookEvent = vi.hoisted(() => vi.fn(async () => ({ id: 1 })));
 const mockMatchAndPersistEventListenerDeliveries = vi.hoisted(() => vi.fn(async () => {}));
-const mockDrainEventListenerDeliveries = vi.hoisted(() => vi.fn(async () => {}));
+const mockHasCandidateEventListenerForRepositoryEventType = vi.hoisted(() =>
+  vi.fn(async () => true),
+);
+const mockDrainEventListenerDeliveries = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ attemptedDeliveryIds: number[]; hasMore: boolean }> => ({
+    attemptedDeliveryIds: [],
+    hasMore: false,
+  })),
+);
 const mockGetRegisteredWebhooks = vi.hoisted(() =>
   vi.fn(async (): Promise<{ webhooks: Array<{ id: number }> }> => ({ webhooks: [] })),
 );
@@ -68,6 +76,8 @@ vi.mock('@tribunal/github/webhooks/webhook-events', () => ({
   storeWebhookEvent: mockStoreWebhookEvent,
 }));
 vi.mock('@tribunal/github/webhooks/event-listener-matching', () => ({
+  hasCandidateEventListenerForRepositoryEventType:
+    mockHasCandidateEventListenerForRepositoryEventType,
   matchAndPersistEventListenerDeliveries: mockMatchAndPersistEventListenerDeliveries,
 }));
 vi.mock('@tribunal/github/webhooks/event-listener-dispatch', () => ({
@@ -148,9 +158,15 @@ describe('POST /api/webhooks/github', () => {
     mockReleaseWebhookDeliveryClaim.mockResolvedValue(true);
     mockStoreWebhookEvent.mockResolvedValue({ id: 1 });
     mockMatchAndPersistEventListenerDeliveries.mockResolvedValue(undefined);
+    mockHasCandidateEventListenerForRepositoryEventType.mockResolvedValue(true);
+    mockDrainEventListenerDeliveries.mockResolvedValue({
+      attemptedDeliveryIds: [],
+      hasMore: false,
+    });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -174,6 +190,37 @@ describe('POST /api/webhooks/github', () => {
 
     expect(await response.json()).toEqual({ ok: true, message: 'Already processed' });
     expect(handlers.handlePullRequestEvent).not.toHaveBeenCalled();
+    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledWith(
+      expect.anything(),
+      2,
+      undefined,
+      undefined,
+      { excludeIds: expect.any(Set) },
+    );
+  });
+
+  it('schedules a new drain turn after a full bounded turn, carrying attempted delivery ids', async () => {
+    vi.useFakeTimers();
+    mockDrainEventListenerDeliveries
+      .mockResolvedValueOnce({ attemptedDeliveryIds: [41, 42], hasMore: true })
+      .mockResolvedValueOnce({ attemptedDeliveryIds: [], hasMore: false });
+
+    await POST(
+      createPostEvent(
+        { action: 'opened', installation: { id: 1 }, repository: { id: 2 } },
+        { 'x-github-event': 'pull_request' },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mockDrainEventListenerDeliveries).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      2,
+      undefined,
+      undefined,
+      { excludeIds: new Set([41, 42]) },
+    );
   });
 
   it('ignores a pre-database check_run event (not completed, not a rerun trigger) and still drains listeners', async () => {
@@ -185,7 +232,56 @@ describe('POST /api/webhooks/github', () => {
     );
 
     expect(await response.json()).toEqual({ ok: true, ignored: true });
-    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledWith(expect.anything(), 2);
+    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledWith(
+      expect.anything(),
+      2,
+      undefined,
+      undefined,
+      { excludeIds: expect.any(Set) },
+    );
+  });
+
+  it('does not store or match an ignored check event when no listener can match its type', async () => {
+    mockHasCandidateEventListenerForRepositoryEventType.mockResolvedValue(false);
+
+    const response = await POST(
+      createPostEvent(
+        { action: 'requested', installation: { id: 1 }, repository: { id: 2 } },
+        { 'x-github-event': 'check_suite' },
+      ),
+    );
+
+    expect(await response.json()).toEqual({ ok: true, ignored: true });
+    expect(mockHasCandidateEventListenerForRepositoryEventType).toHaveBeenCalledWith(
+      expect.anything(),
+      2,
+      'check_suite',
+    );
+    expect(mockClaimWebhookDelivery).toHaveBeenCalledWith(
+      expect.anything(),
+      'delivery-1',
+      'check_suite',
+    );
+    expect(mockStoreWebhookEvent).not.toHaveBeenCalled();
+    expect(mockMatchAndPersistEventListenerDeliveries).not.toHaveBeenCalled();
+    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledTimes(1);
+    expect(webhookUtils.invalidateGitHubResourceCacheForEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets GitHub retry before claiming when the ignored-check listener candidate lookup fails', async () => {
+    mockHasCandidateEventListenerForRepositoryEventType.mockRejectedValue(
+      new Error('database unavailable'),
+    );
+
+    await expect(
+      POST(
+        createPostEvent(
+          { action: 'created', installation: { id: 1 }, repository: { id: 2 } },
+          { 'x-github-event': 'check_run' },
+        ),
+      ),
+    ).rejects.toThrow('database unavailable');
+    expect(mockClaimWebhookDelivery).not.toHaveBeenCalled();
   });
 
   it('returns ok without dispatching when deliveryId or eventType is missing', async () => {
@@ -211,7 +307,13 @@ describe('POST /api/webhooks/github', () => {
     expect(webhookUtils.handleRepositoryMetadataEvents).toHaveBeenCalledTimes(1);
     expect(webhookUtils.invalidateGitHubAccessCacheForEvent).toHaveBeenCalledTimes(1);
     expect(webhookUtils.dispatchPRStateTracking).toHaveBeenCalledTimes(1);
-    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledWith(expect.anything(), 2);
+    expect(mockDrainEventListenerDeliveries).toHaveBeenCalledWith(
+      expect.anything(),
+      2,
+      undefined,
+      undefined,
+      { excludeIds: expect.any(Set) },
+    );
     expect(await response.json()).toEqual({ ok: true });
   });
 

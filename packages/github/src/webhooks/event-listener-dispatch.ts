@@ -20,12 +20,13 @@
  * the existing `dispatchPRStateTracking` fire-and-forget call is used, so a
  * slow or failing drain can never block or fail the webhook HTTP response.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   claimEventListenerDelivery,
   isEventListenerOwnerInstallationActive,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
+  markEventListenerDeliveryNoLongerMatching,
   markEventListenerDeliverySucceeded,
 } from '@tribunal/database/queries';
 import {
@@ -40,6 +41,7 @@ import {
 import { getRepositoryById } from '../repositories/service.js';
 import type { GithubServiceContext } from '../context.js';
 import { buildEventListenerPrompt } from './event-listener-prompt.js';
+import { eventListenerMatchesEvent } from './event-listener-matching.js';
 
 /** Bounds how many deliveries a single drain round will attempt. */
 export const DEFAULT_EVENT_LISTENER_DRAIN_LIMIT = 10;
@@ -56,9 +58,12 @@ export const DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS = 5;
 
 export interface DrainEventListenerDeliveriesResult {
   attempted: number;
+  attemptedDeliveryIds: number[];
   dispatched: number;
   skippedDisabled: number;
+  skippedNoLongerMatching: number;
   failed: number;
+  hasMore: boolean;
 }
 
 /**
@@ -68,18 +73,31 @@ export interface DrainEventListenerDeliveriesResult {
  * it is an expected outcome of a race, not an error condition.
  */
 class EventListenerDisabledError extends Error {}
+class EventListenerNoLongerMatchesError extends Error {
+  constructor(
+    readonly listenerId: string,
+    readonly listenerUpdatedAt: Date,
+  ) {
+    super('Event listener configuration no longer matches the webhook event.');
+  }
+}
+class EventListenerClaimLostError extends Error {}
 
 export async function drainEventListenerDeliveries(
   context: GithubServiceContext,
   repositoryId: number,
   limit: number = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT,
   maxRounds: number = DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS,
+  options: { excludeIds?: Iterable<number> } = {},
 ): Promise<DrainEventListenerDeliveriesResult> {
   const result: DrainEventListenerDeliveriesResult = {
     attempted: 0,
+    attemptedDeliveryIds: [],
     dispatched: 0,
     skippedDisabled: 0,
+    skippedNoLongerMatching: 0,
     failed: 0,
+    hasMore: false,
   };
 
   // Rows this call has already attempted. A failed dispatch moves a
@@ -98,7 +116,7 @@ export async function drainEventListenerDeliveries(
   // though genuinely-unattempted rows exist beyond that page. That would
   // trip both the "short page means drained" check below and the top-level
   // "zero candidates" check, stalling the drain while backlog remains.
-  const attemptedDeliveryIds = new Set<number>();
+  const attemptedDeliveryIds = new Set<number>(options.excludeIds);
 
   for (let round = 0; round < maxRounds; round += 1) {
     const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit, {
@@ -112,12 +130,18 @@ export async function drainEventListenerDeliveries(
 
       attemptedDeliveryIds.add(claimed.id);
       result.attempted += 1;
+      result.attemptedDeliveryIds.push(claimed.id);
 
       try {
         // dispatchClaimedDelivery re-reads listener/agent state itself rather
         // than trusting `candidate`, which was read before this claim and may
         // be stale by the time we get here.
-        const runId = await dispatchClaimedDelivery(context, claimed.id, candidate.listenerId);
+        const runId = await dispatchClaimedDelivery(
+          context,
+          claimed.id,
+          candidate.listenerId,
+          claimed.attemptCount,
+        );
         await markEventListenerDeliverySucceeded(
           context.db,
           claimed.id,
@@ -127,12 +151,70 @@ export async function drainEventListenerDeliveries(
         result.dispatched += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
-          expectedAttemptCount: claimed.attemptCount,
-        });
+        if (error instanceof EventListenerNoLongerMatchesError) {
+          const marked = await markEventListenerDeliveryNoLongerMatching(
+            context.db,
+            claimed.id,
+            claimed.attemptCount,
+            error.listenerId,
+            error.listenerUpdatedAt,
+          );
+          if (marked) {
+            result.skippedNoLongerMatching += 1;
+          } else {
+            try {
+              const runId = await dispatchClaimedDelivery(
+                context,
+                claimed.id,
+                candidate.listenerId,
+                claimed.attemptCount,
+              );
+              await markEventListenerDeliverySucceeded(
+                context.db,
+                claimed.id,
+                runId,
+                claimed.attemptCount,
+              );
+              result.dispatched += 1;
+            } catch (fallbackError) {
+              if (fallbackError instanceof EventListenerNoLongerMatchesError) {
+                const markedAfterRetry = await markEventListenerDeliveryNoLongerMatching(
+                  context.db,
+                  claimed.id,
+                  claimed.attemptCount,
+                  fallbackError.listenerId,
+                  fallbackError.listenerUpdatedAt,
+                );
+                if (markedAfterRetry) {
+                  result.skippedNoLongerMatching += 1;
+                }
+                continue;
+              }
+              if (fallbackError instanceof EventListenerClaimLostError) {
+                continue;
+              }
+              const fallbackMessage =
+                fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+              await markEventListenerDeliveryFailed(context.db, claimed.id, fallbackMessage, {
+                expectedAttemptCount: claimed.attemptCount,
+              });
+              if (fallbackError instanceof EventListenerDisabledError) {
+                result.skippedDisabled += 1;
+              } else {
+                result.failed += 1;
+              }
+            }
+          }
+        } else if (error instanceof EventListenerClaimLostError) {
+          continue;
+        } else {
+          await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
+            expectedAttemptCount: claimed.attemptCount,
+          });
+        }
         if (error instanceof EventListenerDisabledError) {
           result.skippedDisabled += 1;
-        } else {
+        } else if (!(error instanceof EventListenerNoLongerMatchesError)) {
           result.failed += 1;
         }
       }
@@ -142,6 +224,7 @@ export async function drainEventListenerDeliveries(
     // drained for now -- stop instead of spending another round-trip that
     // would just find zero rows.
     if (candidates.length < limit) break;
+    if (round === maxRounds - 1) result.hasMore = true;
   }
 
   return result;
@@ -172,6 +255,7 @@ async function dispatchClaimedDelivery(
   context: GithubServiceContext,
   deliveryId: number,
   listenerId: string,
+  expectedAttemptCount: number,
 ): Promise<string> {
   const [listener] = await context.db
     .select()
@@ -212,6 +296,19 @@ async function dispatchClaimedDelivery(
     .limit(1);
   if (!event) throw new Error(`Webhook event for delivery ${deliveryId} no longer exists`);
 
+  const runId = `run:webhook:${deliveryId}`;
+  const [existingRun] = await context.db
+    .select({ id: tribunalRun.id })
+    .from(tribunalRun)
+    .where(eq(tribunalRun.id, runId))
+    .limit(1);
+  // A run created by a partially completed prior attempt is already bound to
+  // this delivery. Finish its deterministic child writes even if the listener
+  // has since changed; only fresh dispatches are governed by current config.
+  if (!existingRun && !eventListenerMatchesEvent(listener, event)) {
+    throw new EventListenerNoLongerMatchesError(listener.id, listener.updatedAt);
+  }
+
   const repositoryRow = await getRepositoryById(context, listener.repositoryId);
   if (!repositoryRow) throw new Error(`Repository ${listener.repositoryId} no longer exists`);
 
@@ -234,18 +331,45 @@ async function dispatchClaimedDelivery(
     event,
   });
 
-  const runId = `run:webhook:${deliveryId}`;
+  if (!existingRun) {
+    await context.db.execute(sql`
+      INSERT INTO ${tribunalRun} (
+        id,
+        user_id,
+        repository_id,
+        run_kind,
+        status
+      )
+      SELECT
+        ${runId},
+        ${listener.userId},
+        ${listener.repositoryId},
+        'webhook_event_handler',
+        'queued'
+      FROM ${eventListenerDelivery}
+      WHERE
+        ${eventListenerDelivery.id} = ${deliveryId}
+        AND ${eventListenerDelivery.status} = 'running'
+        AND ${eventListenerDelivery.attemptCount} = ${expectedAttemptCount}
+        AND EXISTS (
+          SELECT 1 FROM ${repositoryEventListener}
+          WHERE ${repositoryEventListener.id} = ${listener.id}
+            AND ${repositoryEventListener.updatedAt} = ${listener.updatedAt}
+        )
+      ON CONFLICT DO NOTHING
+    `);
 
-  await context.db
-    .insert(tribunalRun)
-    .values({
-      id: runId,
-      userId: listener.userId,
-      repositoryId: listener.repositoryId,
-      runKind: 'webhook_event_handler',
-      status: 'queued',
-    })
-    .onConflictDoNothing();
+    const [runAfterClaimFence] = await context.db
+      .select({ id: tribunalRun.id })
+      .from(tribunalRun)
+      .where(eq(tribunalRun.id, runId))
+      .limit(1);
+    if (!runAfterClaimFence) {
+      throw new EventListenerClaimLostError(
+        'Event listener delivery claim was superseded before run creation.',
+      );
+    }
+  }
 
   await context.db
     .insert(webhookEventHandlerRun)

@@ -264,6 +264,10 @@
         class="add-repository-form"
         use:enhance={() => {
           return async ({ update, result }) => {
+            if (result.type === 'failure') {
+              await update({ reset: false, invalidateAll: false });
+              return;
+            }
             if (result.type === 'error') {
               return;
             }

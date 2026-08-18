@@ -11,6 +11,7 @@ const storeWebhookEventMock = vi.fn();
 const validateRequestMock = vi.fn();
 const verifySignatureMock = vi.fn();
 const matchAndPersistEventListenerDeliveriesMock = vi.fn();
+const hasCandidateEventListenerForRepositoryEventTypeMock = vi.fn();
 const drainEventListenerDeliveriesMock = vi.fn();
 
 vi.mock('$env/dynamic/private', () => ({
@@ -44,6 +45,8 @@ vi.mock('@tribunal/github/webhooks/webhook-events', () => ({
 }));
 
 vi.mock('@tribunal/github/webhooks/event-listener-matching', () => ({
+  hasCandidateEventListenerForRepositoryEventType:
+    hasCandidateEventListenerForRepositoryEventTypeMock,
   matchAndPersistEventListenerDeliveries: matchAndPersistEventListenerDeliveriesMock,
 }));
 
@@ -164,11 +167,15 @@ describe('GitHub webhook route', () => {
     handlePullRequestEventMock.mockResolvedValue(undefined);
     releaseWebhookDeliveryClaimMock.mockResolvedValue(true);
     matchAndPersistEventListenerDeliveriesMock.mockResolvedValue([]);
+    hasCandidateEventListenerForRepositoryEventTypeMock.mockResolvedValue(true);
     drainEventListenerDeliveriesMock.mockResolvedValue({
       attempted: 0,
+      attemptedDeliveryIds: [],
       dispatched: 0,
       skippedDisabled: 0,
+      skippedNoLongerMatching: 0,
       failed: 0,
+      hasMore: false,
     });
   });
 
@@ -249,7 +256,13 @@ describe('GitHub webhook route', () => {
     expect(matchAndPersistEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
     // ...and any matched delivery must still be drained before the ignored
     // response is returned, not stranded until an unrelated webhook arrives.
-    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      42,
+      undefined,
+      undefined,
+      { excludeIds: expect.any(Set) },
+    );
     expect(handlePullRequestEventMock).not.toHaveBeenCalled();
     expect(dispatchPullRequestStateMock).not.toHaveBeenCalled();
   });
@@ -351,7 +364,13 @@ describe('GitHub webhook route', () => {
     // this asserts the drain that must follow them even though this request
     // exits via error(500, ...) before reaching the success-path drain call.
     expect(drainEventListenerDeliveriesMock).toHaveBeenCalledTimes(1);
-    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith({ db: {}, cache: {} }, 42);
+    expect(drainEventListenerDeliveriesMock).toHaveBeenCalledWith(
+      { db: {}, cache: {} },
+      42,
+      undefined,
+      undefined,
+      { excludeIds: expect.any(Set) },
+    );
   });
 
   it('retries a transient storeWebhookEvent failure in-process so listener matching is not silently skipped', async () => {

@@ -253,6 +253,29 @@ describe('extractEventFields (push)', () => {
 });
 
 describe('extractEventFields (check_run / check_suite)', () => {
+  for (const eventType of ['check_run', 'check_suite'] as const) {
+    it(`extracts prNumber from exactly one pull request on ${eventType}`, () => {
+      const fields = extractEventFields(eventType, {
+        action: 'created',
+        [eventType]: { head_sha: 'sha-one', pull_requests: [{ number: 7 }] },
+      } as unknown as WebhookPayload);
+
+      expect(fields).toMatchObject({ commitSha: 'sha-one', prNumber: 7 });
+    });
+
+    it(`leaves prNumber unset for missing, malformed, or ambiguous ${eventType} pull requests`, () => {
+      for (const pullRequests of [undefined, [], [{ number: 0 }], [{ number: 7 }, { number: 8 }]]) {
+        const fields = extractEventFields(eventType, {
+          action: 'created',
+          [eventType]: { head_sha: 'sha-many', pull_requests: pullRequests },
+        } as unknown as WebhookPayload);
+
+        expect(fields).toMatchObject({ commitSha: 'sha-many' });
+        expect(fields.prNumber).toBeUndefined();
+      }
+    });
+  }
+
   it('extracts commitSha for check_run.completed events (typed guard branch)', () => {
     const data = createCheckRunCompletedEvent({
       check_run: { head_sha: 'sha-run-1' },

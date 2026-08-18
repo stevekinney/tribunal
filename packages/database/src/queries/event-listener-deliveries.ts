@@ -17,6 +17,7 @@ import {
 } from '../schema/event-listener-delivery';
 import { repositoryEventListener } from '../schema/repository-event-listener';
 import { agent } from '../schema/agent';
+import { tribunalRun } from '../schema/tribunal-run';
 
 /** Retries cap at this many attempts, after which a delivery is abandoned. */
 export const MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS = 5;
@@ -343,6 +344,47 @@ export async function markEventListenerDeliveryFailed(
         options?.expectedAttemptCount === undefined
           ? undefined
           : eq(eventListenerDelivery.attemptCount, options.expectedAttemptCount),
+      ),
+    )
+    .returning();
+
+  return row ?? null;
+}
+
+/**
+ * Terminally fail a claimed delivery when its listener no longer matches the
+ * persisted event. This is a configuration race, not a transient execution
+ * failure, so it must never consume retries or become claimable again.
+ */
+export async function markEventListenerDeliveryNoLongerMatching(
+  database: Database,
+  deliveryId: number,
+  expectedAttemptCount: number,
+  listenerId: string,
+  expectedListenerUpdatedAt: Date,
+): Promise<EventListenerDelivery | null> {
+  const [row] = await database
+    .update(eventListenerDelivery)
+    .set({
+      status: 'failed',
+      runId: null,
+      finishedAt: new Date(),
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    })
+    .where(
+      and(
+        eq(eventListenerDelivery.id, deliveryId),
+        eq(eventListenerDelivery.status, 'running'),
+        eq(eventListenerDelivery.attemptCount, expectedAttemptCount),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${tribunalRun}
+          WHERE ${tribunalRun.id} = ${sql`'run:webhook:' || ${deliveryId}`}
+        )`,
+        sql`EXISTS (
+          SELECT 1 FROM ${repositoryEventListener}
+          WHERE ${repositoryEventListener.id} = ${listenerId}
+            AND ${repositoryEventListener.updatedAt} = ${expectedListenerUpdatedAt}
+        )`,
       ),
     )
     .returning();

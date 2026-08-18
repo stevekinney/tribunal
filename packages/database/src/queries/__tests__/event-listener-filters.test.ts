@@ -89,6 +89,13 @@ describe('parseEventListenerFilters', () => {
     expect(parseEventListenerFilters(JSON.stringify({ branch: 'main', ref: 'ok' }))).toBeNull();
   });
 
+  it('fails closed when an unknown stored key is null or undefined', () => {
+    expect(parseEventListenerFilters(JSON.stringify({ expression: null }))).toBeNull();
+    expect(
+      parseEventListenerFilters(JSON.stringify({ anotherUnknown: null, ref: 'refs/heads/main' })),
+    ).toBeNull();
+  });
+
   it('fails closed when a supported key holds a mistyped value', () => {
     expect(parseEventListenerFilters(JSON.stringify({ prNumber: 'nope' }))).toBeNull();
     expect(parseEventListenerFilters(JSON.stringify({ ref: 123 }))).toBeNull();

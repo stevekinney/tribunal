@@ -51,6 +51,25 @@ export function eventListenerMatchesEvent(
 }
 
 /**
+ * Reports whether this repository has any enabled listener that can be a
+ * candidate for an event type. This deliberately does not evaluate actions
+ * or filters: the webhook route only uses it to decide whether otherwise
+ * ignored check events need durable storage; exact matching remains below.
+ */
+export async function hasCandidateEventListenerForRepositoryEventType(
+  context: GithubServiceContext,
+  repositoryId: number,
+  eventType: string,
+): Promise<boolean> {
+  const listeners = await listEnabledListenersForRepositoryEventType(
+    context.db,
+    repositoryId,
+    eventType,
+  );
+  return listeners.length > 0;
+}
+
+/**
  * Match enabled listeners for `event`'s repository against `event`, and
  * insert `pending` `event_listener_delivery` rows for every match. Returns
  * only the deliveries newly inserted -- a redelivered webhook re-matching

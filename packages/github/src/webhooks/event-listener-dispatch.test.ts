@@ -118,6 +118,64 @@ async function createFixture() {
   return { user, repository, testAgent, listener, event, pending };
 }
 
+function databaseBeforeMismatchTransition(callback: () => Promise<void>) {
+  let eventListenerDeliveryUpdateCount = 0;
+  return new Proxy(testContext.db, {
+    get(target, property, receiver) {
+      if (property !== 'update') return Reflect.get(target, property, receiver);
+      return (...args: unknown[]) => {
+        const updateBuilder = Reflect.apply(target.update, target, args);
+        if (args[0] !== eventListenerDelivery || ++eventListenerDeliveryUpdateCount !== 2) {
+          return updateBuilder;
+        }
+        return new Proxy(updateBuilder, {
+          get(builder, builderProperty, builderReceiver) {
+            if (builderProperty !== 'set') {
+              return Reflect.get(builder, builderProperty, builderReceiver);
+            }
+            return (...setArguments: unknown[]) => {
+              const whereBuilder = Reflect.apply(
+                Reflect.get(builder, 'set'),
+                builder,
+                setArguments,
+              );
+              return new Proxy(whereBuilder, {
+                get(where, whereProperty, whereReceiver) {
+                  if (whereProperty !== 'where') {
+                    return Reflect.get(where, whereProperty, whereReceiver);
+                  }
+                  return (...whereArguments: unknown[]) => {
+                    const returningBuilder = Reflect.apply(
+                      Reflect.get(where, 'where'),
+                      where,
+                      whereArguments,
+                    );
+                    return new Proxy(returningBuilder, {
+                      get(returning, returningProperty, returningReceiver) {
+                        if (returningProperty !== 'returning') {
+                          return Reflect.get(returning, returningProperty, returningReceiver);
+                        }
+                        return async (...returningArguments: unknown[]) => {
+                          await callback();
+                          return Reflect.apply(
+                            Reflect.get(returning, 'returning'),
+                            returning,
+                            returningArguments,
+                          );
+                        };
+                      },
+                    });
+                  };
+                },
+              });
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
 describe('drainEventListenerDeliveries', () => {
   it('dispatches a pending delivery: creates a queued tribunal_run, webhook_event_handler_run, and agent_run', async () => {
     const { repository, listener, event, testAgent, pending } = await createFixture();
@@ -125,7 +183,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -164,7 +222,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
 
     const result = await drainEventListenerDeliveries(context, repository.id, 0);
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
   });
 
   it('defaults the drain limit when not provided', async () => {
@@ -179,7 +237,7 @@ describe('drainEventListenerDeliveries', () => {
     expect(first.dispatched).toBe(1);
 
     const second = await drainEventListenerDeliveries(context, repository.id);
-    expect(second).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(second).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
   });
 
   it('marks the delivery failed/retryable and skips dispatch when the listener was disabled between matching and drain', async () => {
@@ -190,7 +248,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -210,7 +268,263 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+  });
+
+  it('terminally fails a delivery when the listener no longer matches its persisted event', async () => {
+    const { repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    const result = await drainEventListenerDeliveries(
+      createGithubContext(testContext),
+      repository.id,
+    );
+
+    expect(result).toMatchObject({
+      attempted: 1,
+      dispatched: 0,
+      skippedNoLongerMatching: 1,
+      failed: 0,
+    });
+    const [delivery] = await testContext.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(delivery).toMatchObject({
+      status: 'failed',
+      runId: null,
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    });
+  });
+
+  it('does not create a run when a stale claimant loses its claim before the fenced insert', async () => {
+    const { repository, pending } = await createFixture();
+    let fencedInsert = true;
+    const database = new Proxy(testContext.db, {
+      get(target, property, receiver) {
+        if (property !== 'execute') return Reflect.get(target, property, receiver);
+        return async (...args: unknown[]) => {
+          if (fencedInsert) {
+            fencedInsert = false;
+            await testContext.db
+              .update(eventListenerDelivery)
+              .set({ status: 'failed', finishedAt: new Date() })
+              .where(eq(eventListenerDelivery.id, pending.id));
+          }
+          return Reflect.apply(target.execute, target, args);
+        };
+      },
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 0 });
+    expect(await testContext.db.select().from(tribunalRun)).toEqual([]);
+  });
+
+  it('reconciles a deterministic run inserted by a stale claimant during mismatch resolution', async () => {
+    const { user, repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    let eventListenerDeliveryUpdateCount = 0;
+    let insertDuringMismatchResolution = true;
+    const database = new Proxy(testContext.db, {
+      get(target, property, receiver) {
+        if (property !== 'update') return Reflect.get(target, property, receiver);
+        return (...args: unknown[]) => {
+          const updateBuilder = Reflect.apply(target.update, target, args);
+          if (args[0] !== eventListenerDelivery || ++eventListenerDeliveryUpdateCount !== 2) {
+            return updateBuilder;
+          }
+          return new Proxy(updateBuilder, {
+            get(builder, builderProperty, builderReceiver) {
+              if (builderProperty !== 'set') {
+                return Reflect.get(builder, builderProperty, builderReceiver);
+              }
+              return (...setArguments: unknown[]) => {
+                const whereBuilder = Reflect.apply(
+                  Reflect.get(builder, 'set'),
+                  builder,
+                  setArguments,
+                );
+                return new Proxy(whereBuilder, {
+                  get(where, whereProperty, whereReceiver) {
+                    if (whereProperty !== 'where') {
+                      return Reflect.get(where, whereProperty, whereReceiver);
+                    }
+                    return (...whereArguments: unknown[]) => {
+                      const returningBuilder = Reflect.apply(
+                        Reflect.get(where, 'where'),
+                        where,
+                        whereArguments,
+                      );
+                      return new Proxy(returningBuilder, {
+                        get(returning, returningProperty, returningReceiver) {
+                          if (returningProperty !== 'returning') {
+                            return Reflect.get(returning, returningProperty, returningReceiver);
+                          }
+                          return async (...returningArguments: unknown[]) => {
+                            if (insertDuringMismatchResolution) {
+                              insertDuringMismatchResolution = false;
+                              await testContext.db.insert(tribunalRun).values({
+                                id: `run:webhook:${pending.id}`,
+                                userId: user.id,
+                                repositoryId: repository.id,
+                                runKind: 'webhook_event_handler',
+                                status: 'queued',
+                              });
+                            }
+                            return Reflect.apply(
+                              Reflect.get(returning, 'returning'),
+                              returning,
+                              returningArguments,
+                            );
+                          };
+                        },
+                      });
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedNoLongerMatching: 0 });
+    expect(insertDuringMismatchResolution).toBe(false);
+  });
+
+  it('continues when the mismatch transition loses its delivery claim', async () => {
+    const { repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(eventListenerDelivery)
+        .set({ status: 'failed', finishedAt: new Date() })
+        .where(eq(eventListenerDelivery.id, pending.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 0 });
+  });
+
+  it('records a fallback dispatch failure after a listener becomes matching again', async () => {
+    const { repository, listener } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const databaseAfterListenerChange = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ filtersJson: '{}' })
+        .where(eq(repositoryEventListener.id, listener.id));
+    });
+    const database = new Proxy(databaseAfterListenerChange, {
+      get(target, property, receiver) {
+        if (property !== 'execute') return Reflect.get(target, property, receiver);
+        return async () => {
+          throw new Error('database connection lost');
+        };
+      },
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 1 });
+  });
+
+  it('records a disabled listener that changes during mismatch resolution', async () => {
+    const { repository, listener } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ enabled: false })
+        .where(eq(repositoryEventListener.id, listener.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+  });
+
+  it('terminally fails a listener that changes to another nonmatching configuration', async () => {
+    const { repository, listener } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/release' }) })
+        .where(eq(repositoryEventListener.id, listener.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, skippedNoLongerMatching: 1, failed: 0 });
+  });
+
+  it('continues when the fallback dispatch loses its claim', async () => {
+    const { repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+    const database = databaseBeforeMismatchTransition(async () => {
+      await testContext.db
+        .update(repositoryEventListener)
+        .set({ filtersJson: '{}' })
+        .where(eq(repositoryEventListener.id, listener.id));
+      await testContext.db
+        .update(eventListenerDelivery)
+        .set({ status: 'failed', finishedAt: new Date() })
+        .where(eq(eventListenerDelivery.id, pending.id));
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 0 });
   });
 
   it('deleting the agent preserves the listener delivery history without dispatching it', async () => {
@@ -220,7 +534,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
 
     const [remainingDelivery] = await testContext.db.select().from(eventListenerDelivery);
     expect(remainingDelivery).toMatchObject({
@@ -236,7 +550,7 @@ describe('drainEventListenerDeliveries', () => {
   });
 
   it('reconciles a retry after a partial write without erroring or duplicating: the run/agent_run rows from a crashed first attempt already exist and are simply left in place', async () => {
-    const { repository, pending, testAgent } = await createFixture();
+    const { repository, pending, testAgent, listener } = await createFixture();
     const context = createGithubContext(testContext);
 
     // Simulate a first dispatch attempt that inserted the parent run and
@@ -262,10 +576,14 @@ describe('drainEventListenerDeliveries', () => {
       role: 'specialist',
       status: 'queued',
     });
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const runs = await testContext.db.select().from(tribunalRun);
     expect(runs).toHaveLength(1);
@@ -344,6 +662,33 @@ describe('drainEventListenerDeliveries', () => {
       .from(eventListenerDelivery)
       .where(eq(eventListenerDelivery.status, 'pending'));
     expect(remainingPending).toHaveLength(0);
+  });
+
+  it('reports continuation state after the default 50-attempt cap and lets the next turn finish only new work', async () => {
+    const { repository, listener } = await createFixture();
+    const context = createGithubContext(testContext);
+    const totalCount = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT * 5 + 1;
+    for (let i = 0; i < totalCount - 1; i += 1) {
+      const extraEvent = await insertWebhookEvent({ repositoryId: repository.id });
+      await insertPendingEventListenerDeliveries(testContext.db, [listener.id], extraEvent.id);
+    }
+
+    const first = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(first).toMatchObject({ attempted: 50, dispatched: 50, hasMore: true });
+    expect(first.attemptedDeliveryIds).toHaveLength(50);
+
+    const second = await drainEventListenerDeliveries(
+      context,
+      repository.id,
+      undefined,
+      undefined,
+      {
+        excludeIds: first.attemptedDeliveryIds,
+      },
+    );
+    expect(second).toMatchObject({ attempted: 1, dispatched: 1, hasMore: false });
+    expect(second.attemptedDeliveryIds).toHaveLength(1);
   });
 
   it('a multi-round drain never attempts the same delivery more than once, even when failures make it re-claimable within the same call', async () => {
@@ -429,7 +774,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -452,7 +797,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -510,7 +855,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the delivery row vanishes just after claim', async () => {
@@ -523,7 +868,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the webhook event row vanishes just after claim', async () => {
@@ -533,7 +878,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the agent row vanishes just after claim', async () => {
@@ -543,7 +888,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it("marks the delivery skippedDisabled when the listener owner's installation access is no longer active", async () => {
@@ -556,7 +901,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
     });
 
     it('marks the delivery failed (generic, non-disabled error) when a non-EventListenerDisabledError is thrown mid-dispatch', async () => {
@@ -569,7 +914,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the repository row for the listener no longer exists', async () => {
@@ -582,7 +927,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
   });
 });

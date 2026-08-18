@@ -2,7 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createFactories, resetIdCounter } from '@tribunal/test/factories';
 import { eq } from '../../operators';
-import { agent, eventListenerDelivery, tribunalRun, webhookEvent } from '../../schema';
+import {
+  agent,
+  eventListenerDelivery,
+  repositoryEventListener,
+  tribunalRun,
+  webhookEvent,
+} from '../../schema';
 import { createEventListener } from '../event-listeners';
 import {
   MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS,
@@ -11,6 +17,7 @@ import {
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
+  markEventListenerDeliveryNoLongerMatching,
   markEventListenerDeliverySucceeded,
 } from '../event-listener-deliveries';
 
@@ -207,6 +214,98 @@ describe('claimEventListenerDelivery', () => {
 });
 
 describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed', () => {
+  it('terminally fails a matching-race delivery without making it claimable again', async () => {
+    const { listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+
+    await markEventListenerDeliveryNoLongerMatching(
+      testDatabase.db,
+      pending.id,
+      claimed!.attemptCount,
+      listener.id,
+      listener.updatedAt,
+    );
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row).toMatchObject({
+      status: 'failed',
+      runId: null,
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    });
+    expect(
+      await listClaimableEventListenerDeliveries(testDatabase.db, listener.repositoryId, 10),
+    ).toEqual([]);
+  });
+
+  it('does not terminally fail a delivery once its deterministic webhook run exists', async () => {
+    const { user, repository, listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+    await insertTribunalRun({
+      id: `run:webhook:${pending.id}`,
+      userId: user.id,
+      repositoryId: repository.id,
+    });
+
+    await expect(
+      markEventListenerDeliveryNoLongerMatching(
+        testDatabase.db,
+        pending.id,
+        claimed!.attemptCount,
+        listener.id,
+        listener.updatedAt,
+      ),
+    ).resolves.toBeNull();
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row?.status).toBe('running');
+  });
+
+  it('does not terminally fail a delivery after its listener configuration changes', async () => {
+    const { listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+    await testDatabase.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    await expect(
+      markEventListenerDeliveryNoLongerMatching(
+        testDatabase.db,
+        pending.id,
+        claimed!.attemptCount,
+        listener.id,
+        listener.updatedAt,
+      ),
+    ).resolves.toBeNull();
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row?.status).toBe('running');
+  });
+
   it('marks a claimed delivery succeeded with the run id attached', async () => {
     const { user, repository, listener, event } = await createFixture();
     const [pending] = await insertPendingEventListenerDeliveries(
