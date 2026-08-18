@@ -17,6 +17,7 @@ import {
 } from '../schema/event-listener-delivery';
 import { repositoryEventListener } from '../schema/repository-event-listener';
 import { agent } from '../schema/agent';
+import { tribunalRun } from '../schema/tribunal-run';
 
 /** Retries cap at this many attempts, after which a delivery is abandoned. */
 export const MAX_EVENT_LISTENER_DELIVERY_ATTEMPTS = 5;
@@ -373,6 +374,10 @@ export async function markEventListenerDeliveryNoLongerMatching(
         eq(eventListenerDelivery.id, deliveryId),
         eq(eventListenerDelivery.status, 'running'),
         eq(eventListenerDelivery.attemptCount, expectedAttemptCount),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${tribunalRun}
+          WHERE ${tribunalRun.id} = ${sql`'run:webhook:' || ${deliveryId}`}
+        )`,
       ),
     )
     .returning();

@@ -237,6 +237,31 @@ describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed',
     ).toEqual([]);
   });
 
+  it('does not terminally fail a delivery once its deterministic webhook run exists', async () => {
+    const { user, repository, listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+    await insertTribunalRun({
+      id: `run:webhook:${pending.id}`,
+      userId: user.id,
+      repositoryId: repository.id,
+    });
+
+    await expect(
+      markEventListenerDeliveryNoLongerMatching(testDatabase.db, pending.id, claimed!.attemptCount),
+    ).resolves.toBeNull();
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row?.status).toBe('running');
+  });
+
   it('marks a claimed delivery succeeded with the run id attached', async () => {
     const { user, repository, listener, event } = await createFixture();
     const [pending] = await insertPendingEventListenerDeliveries(

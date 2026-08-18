@@ -20,7 +20,7 @@
  * the existing `dispatchPRStateTracking` fire-and-forget call is used, so a
  * slow or failing drain can never block or fail the webhook HTTP response.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   claimEventListenerDelivery,
   isEventListenerOwnerInstallationActive,
@@ -74,6 +74,7 @@ export interface DrainEventListenerDeliveriesResult {
  */
 class EventListenerDisabledError extends Error {}
 class EventListenerNoLongerMatchesError extends Error {}
+class EventListenerClaimLostError extends Error {}
 
 export async function drainEventListenerDeliveries(
   context: GithubServiceContext,
@@ -128,7 +129,12 @@ export async function drainEventListenerDeliveries(
         // dispatchClaimedDelivery re-reads listener/agent state itself rather
         // than trusting `candidate`, which was read before this claim and may
         // be stale by the time we get here.
-        const runId = await dispatchClaimedDelivery(context, claimed.id, candidate.listenerId);
+        const runId = await dispatchClaimedDelivery(
+          context,
+          claimed.id,
+          candidate.listenerId,
+          claimed.attemptCount,
+        );
         await markEventListenerDeliverySucceeded(
           context.db,
           claimed.id,
@@ -139,12 +145,30 @@ export async function drainEventListenerDeliveries(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (error instanceof EventListenerNoLongerMatchesError) {
-          await markEventListenerDeliveryNoLongerMatching(
+          const marked = await markEventListenerDeliveryNoLongerMatching(
             context.db,
             claimed.id,
             claimed.attemptCount,
           );
-          result.skippedNoLongerMatching += 1;
+          if (marked) {
+            result.skippedNoLongerMatching += 1;
+          } else {
+            const runId = await dispatchClaimedDelivery(
+              context,
+              claimed.id,
+              candidate.listenerId,
+              claimed.attemptCount,
+            );
+            await markEventListenerDeliverySucceeded(
+              context.db,
+              claimed.id,
+              runId,
+              claimed.attemptCount,
+            );
+            result.dispatched += 1;
+          }
+        } else if (error instanceof EventListenerClaimLostError) {
+          continue;
         } else {
           await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
             expectedAttemptCount: claimed.attemptCount,
@@ -193,6 +217,7 @@ async function dispatchClaimedDelivery(
   context: GithubServiceContext,
   deliveryId: number,
   listenerId: string,
+  expectedAttemptCount: number,
 ): Promise<string> {
   const [listener] = await context.db
     .select()
@@ -270,16 +295,40 @@ async function dispatchClaimedDelivery(
     event,
   });
 
-  await context.db
-    .insert(tribunalRun)
-    .values({
-      id: runId,
-      userId: listener.userId,
-      repositoryId: listener.repositoryId,
-      runKind: 'webhook_event_handler',
-      status: 'queued',
-    })
-    .onConflictDoNothing();
+  if (!existingRun) {
+    await context.db.execute(sql`
+      INSERT INTO ${tribunalRun} (
+        id,
+        user_id,
+        repository_id,
+        run_kind,
+        status
+      )
+      SELECT
+        ${runId},
+        ${listener.userId},
+        ${listener.repositoryId},
+        'webhook_event_handler',
+        'queued'
+      FROM ${eventListenerDelivery}
+      WHERE
+        ${eventListenerDelivery.id} = ${deliveryId}
+        AND ${eventListenerDelivery.status} = 'running'
+        AND ${eventListenerDelivery.attemptCount} = ${expectedAttemptCount}
+      ON CONFLICT DO NOTHING
+    `);
+
+    const [runAfterClaimFence] = await context.db
+      .select({ id: tribunalRun.id })
+      .from(tribunalRun)
+      .where(eq(tribunalRun.id, runId))
+      .limit(1);
+    if (!runAfterClaimFence) {
+      throw new EventListenerClaimLostError(
+        'Event listener delivery claim was superseded before run creation.',
+      );
+    }
+  }
 
   await context.db
     .insert(webhookEventHandlerRun)

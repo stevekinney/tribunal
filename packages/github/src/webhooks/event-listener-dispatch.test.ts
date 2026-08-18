@@ -242,6 +242,116 @@ describe('drainEventListenerDeliveries', () => {
     });
   });
 
+  it('does not create a run when a stale claimant loses its claim before the fenced insert', async () => {
+    const { repository, pending } = await createFixture();
+    let fencedInsert = true;
+    const database = new Proxy(testContext.db, {
+      get(target, property, receiver) {
+        if (property !== 'execute') return Reflect.get(target, property, receiver);
+        return async (...args: unknown[]) => {
+          if (fencedInsert) {
+            fencedInsert = false;
+            await testContext.db
+              .update(eventListenerDelivery)
+              .set({ status: 'failed', finishedAt: new Date() })
+              .where(eq(eventListenerDelivery.id, pending.id));
+          }
+          return Reflect.apply(target.execute, target, args);
+        };
+      },
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, failed: 0 });
+    expect(await testContext.db.select().from(tribunalRun)).toEqual([]);
+  });
+
+  it('reconciles a deterministic run inserted by a stale claimant during mismatch resolution', async () => {
+    const { user, repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    let eventListenerDeliveryUpdateCount = 0;
+    let insertDuringMismatchResolution = true;
+    const database = new Proxy(testContext.db, {
+      get(target, property, receiver) {
+        if (property !== 'update') return Reflect.get(target, property, receiver);
+        return (...args: unknown[]) => {
+          const updateBuilder = Reflect.apply(target.update, target, args);
+          if (args[0] !== eventListenerDelivery || ++eventListenerDeliveryUpdateCount !== 2) {
+            return updateBuilder;
+          }
+          return new Proxy(updateBuilder, {
+            get(builder, builderProperty, builderReceiver) {
+              if (builderProperty !== 'set') {
+                return Reflect.get(builder, builderProperty, builderReceiver);
+              }
+              return (...setArguments: unknown[]) => {
+                const whereBuilder = Reflect.apply(
+                  Reflect.get(builder, 'set'),
+                  builder,
+                  setArguments,
+                );
+                return new Proxy(whereBuilder, {
+                  get(where, whereProperty, whereReceiver) {
+                    if (whereProperty !== 'where') {
+                      return Reflect.get(where, whereProperty, whereReceiver);
+                    }
+                    return (...whereArguments: unknown[]) => {
+                      const returningBuilder = Reflect.apply(
+                        Reflect.get(where, 'where'),
+                        where,
+                        whereArguments,
+                      );
+                      return new Proxy(returningBuilder, {
+                        get(returning, returningProperty, returningReceiver) {
+                          if (returningProperty !== 'returning') {
+                            return Reflect.get(returning, returningProperty, returningReceiver);
+                          }
+                          return async (...returningArguments: unknown[]) => {
+                            if (insertDuringMismatchResolution) {
+                              insertDuringMismatchResolution = false;
+                              await testContext.db.insert(tribunalRun).values({
+                                id: `run:webhook:${pending.id}`,
+                                userId: user.id,
+                                repositoryId: repository.id,
+                                runKind: 'webhook_event_handler',
+                                status: 'queued',
+                              });
+                            }
+                            return Reflect.apply(
+                              Reflect.get(returning, 'returning'),
+                              returning,
+                              returningArguments,
+                            );
+                          };
+                        },
+                      });
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
+
+    const result = await drainEventListenerDeliveries(
+      { ...createGithubContext(testContext), db: database },
+      repository.id,
+    );
+
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedNoLongerMatching: 0 });
+    expect(insertDuringMismatchResolution).toBe(false);
+  });
+
   it('deleting the agent preserves the listener delivery history without dispatching it', async () => {
     const { repository, testAgent, pending, user } = await createFixture();
     await testContext.db.delete(agent).where(eq(agent.id, testAgent.id));
