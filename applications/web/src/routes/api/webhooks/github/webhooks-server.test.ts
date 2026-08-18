@@ -57,7 +57,10 @@ const mockHasCandidateEventListenerForRepositoryEventType = vi.hoisted(() =>
   vi.fn(async () => true),
 );
 const mockDrainEventListenerDeliveries = vi.hoisted(() =>
-  vi.fn(async () => ({ attemptedDeliveryIds: [], hasMore: false })),
+  vi.fn(async (): Promise<{ attemptedDeliveryIds: number[]; hasMore: boolean }> => ({
+    attemptedDeliveryIds: [],
+    hasMore: false,
+  })),
 );
 const mockGetRegisteredWebhooks = vi.hoisted(() =>
   vi.fn(async (): Promise<{ webhooks: Array<{ id: number }> }> => ({ webhooks: [] })),

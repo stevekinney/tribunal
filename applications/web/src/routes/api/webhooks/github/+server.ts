@@ -229,7 +229,9 @@ export const POST: RequestHandler = async (event) => {
         eventType,
       );
     } catch (lookupError) {
-      const claimReleased = await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType);
+      const claimReleased = deliveryId
+        ? await releaseWebhookDeliveryClaim(githubContext, deliveryId, eventType)
+        : false;
       if (!claimReleased) {
         console.error(
           '[webhook] Failed to release delivery claim after listener candidate lookup:',
