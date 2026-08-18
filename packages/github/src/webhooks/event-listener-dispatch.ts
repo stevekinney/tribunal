@@ -26,6 +26,7 @@ import {
   isEventListenerOwnerInstallationActive,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
+  markEventListenerDeliveryNoLongerMatching,
   markEventListenerDeliverySucceeded,
 } from '@tribunal/database/queries';
 import {
@@ -40,6 +41,7 @@ import {
 import { getRepositoryById } from '../repositories/service.js';
 import type { GithubServiceContext } from '../context.js';
 import { buildEventListenerPrompt } from './event-listener-prompt.js';
+import { eventListenerMatchesEvent } from './event-listener-matching.js';
 
 /** Bounds how many deliveries a single drain round will attempt. */
 export const DEFAULT_EVENT_LISTENER_DRAIN_LIMIT = 10;
@@ -56,9 +58,12 @@ export const DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS = 5;
 
 export interface DrainEventListenerDeliveriesResult {
   attempted: number;
+  attemptedDeliveryIds: number[];
   dispatched: number;
   skippedDisabled: number;
+  skippedNoLongerMatching: number;
   failed: number;
+  hasMore: boolean;
 }
 
 /**
@@ -68,18 +73,23 @@ export interface DrainEventListenerDeliveriesResult {
  * it is an expected outcome of a race, not an error condition.
  */
 class EventListenerDisabledError extends Error {}
+class EventListenerNoLongerMatchesError extends Error {}
 
 export async function drainEventListenerDeliveries(
   context: GithubServiceContext,
   repositoryId: number,
   limit: number = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT,
   maxRounds: number = DEFAULT_EVENT_LISTENER_DRAIN_MAX_ROUNDS,
+  options: { excludeIds?: Iterable<number> } = {},
 ): Promise<DrainEventListenerDeliveriesResult> {
   const result: DrainEventListenerDeliveriesResult = {
     attempted: 0,
+    attemptedDeliveryIds: [],
     dispatched: 0,
     skippedDisabled: 0,
+    skippedNoLongerMatching: 0,
     failed: 0,
+    hasMore: false,
   };
 
   // Rows this call has already attempted. A failed dispatch moves a
@@ -98,7 +108,7 @@ export async function drainEventListenerDeliveries(
   // though genuinely-unattempted rows exist beyond that page. That would
   // trip both the "short page means drained" check below and the top-level
   // "zero candidates" check, stalling the drain while backlog remains.
-  const attemptedDeliveryIds = new Set<number>();
+  const attemptedDeliveryIds = new Set<number>(options.excludeIds);
 
   for (let round = 0; round < maxRounds; round += 1) {
     const candidates = await listClaimableEventListenerDeliveries(context.db, repositoryId, limit, {
@@ -112,6 +122,7 @@ export async function drainEventListenerDeliveries(
 
       attemptedDeliveryIds.add(claimed.id);
       result.attempted += 1;
+      result.attemptedDeliveryIds.push(claimed.id);
 
       try {
         // dispatchClaimedDelivery re-reads listener/agent state itself rather
@@ -127,12 +138,21 @@ export async function drainEventListenerDeliveries(
         result.dispatched += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
-          expectedAttemptCount: claimed.attemptCount,
-        });
+        if (error instanceof EventListenerNoLongerMatchesError) {
+          await markEventListenerDeliveryNoLongerMatching(
+            context.db,
+            claimed.id,
+            claimed.attemptCount,
+          );
+          result.skippedNoLongerMatching += 1;
+        } else {
+          await markEventListenerDeliveryFailed(context.db, claimed.id, message, {
+            expectedAttemptCount: claimed.attemptCount,
+          });
+        }
         if (error instanceof EventListenerDisabledError) {
           result.skippedDisabled += 1;
-        } else {
+        } else if (!(error instanceof EventListenerNoLongerMatchesError)) {
           result.failed += 1;
         }
       }
@@ -142,6 +162,7 @@ export async function drainEventListenerDeliveries(
     // drained for now -- stop instead of spending another round-trip that
     // would just find zero rows.
     if (candidates.length < limit) break;
+    if (round === maxRounds - 1) result.hasMore = true;
   }
 
   return result;
@@ -211,6 +232,11 @@ async function dispatchClaimedDelivery(
     .where(eq(webhookEvent.id, delivery.webhookEventId))
     .limit(1);
   if (!event) throw new Error(`Webhook event for delivery ${deliveryId} no longer exists`);
+  if (!eventListenerMatchesEvent(listener, event)) {
+    throw new EventListenerNoLongerMatchesError(
+      'Event listener configuration no longer matches the webhook event.',
+    );
+  }
 
   const repositoryRow = await getRepositoryById(context, listener.repositoryId);
   if (!repositoryRow) throw new Error(`Repository ${listener.repositoryId} no longer exists`);

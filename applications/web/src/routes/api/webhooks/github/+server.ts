@@ -2,7 +2,10 @@ import { json, error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { ValidationError } from '@tribunal/github/error-taxonomy';
 import { storeWebhookEvent } from '@tribunal/github/webhooks/webhook-events';
-import { matchAndPersistEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-matching';
+import {
+  hasCandidateEventListenerForRepositoryEventType,
+  matchAndPersistEventListenerDeliveries,
+} from '@tribunal/github/webhooks/event-listener-matching';
 import { drainEventListenerDeliveries } from '@tribunal/github/webhooks/event-listener-dispatch';
 import { githubContext } from '$lib/server/github-context';
 import type { RequestHandler } from './$types';
@@ -169,27 +172,59 @@ export const POST: RequestHandler = async (event) => {
     (eventType === 'installation_repositories' && (action === 'added' || action === 'removed')) ||
     (eventType === 'installation_target' && action === 'renamed');
 
+  // Fire-and-forget, bounded drain of pending event listener deliveries for
+  // this repository. A full bounded turn schedules a later macrotask turn,
+  // carrying every delivery it already attempted so retryable failures cannot
+  // exhaust their retry budget while unrelated backlog remains.
+  const scheduleDrain = () => {
+    if (!repositoryId) return;
+
+    const runDrainTurn = async (attemptedDeliveryIds: Set<number>) => {
+      try {
+        const result = await drainEventListenerDeliveries(
+          githubContext,
+          repositoryId,
+          undefined,
+          undefined,
+          {
+            excludeIds: attemptedDeliveryIds,
+          },
+        );
+        for (const deliveryId of result.attemptedDeliveryIds) {
+          attemptedDeliveryIds.add(deliveryId);
+        }
+        if (result.hasMore) {
+          setTimeout(() => {
+            void runDrainTurn(attemptedDeliveryIds);
+          }, 0);
+        }
+      } catch (error) {
+        console.error('[webhook] Event listener delivery drain failed:', error);
+      }
+    };
+
+    void runDrainTurn(new Set());
+  };
+
   if (deliveryId && eventType) {
     const claimed = await claimWebhookDelivery(githubContext, deliveryId, eventType);
 
     if (!claimed) {
       console.log(`Skipping duplicate webhook: ${eventType} / ${deliveryId}`);
+      scheduleDrain();
       return json({ ok: true, message: 'Already processed' });
     }
   }
 
-  // Fire-and-forget, bounded drain of pending event listener deliveries for
-  // this repository. Defined once and called from every exit path that may
-  // have left newly-matched `pending` deliveries behind: the pre-database
-  // ignore return below, a review-engine dispatch failure before the 500
-  // response, and the normal success path. Never awaited -- a slow or
-  // failing drain must never block or fail the webhook HTTP response.
-  const scheduleDrain = () => {
-    if (!repositoryId) return;
-    void drainEventListenerDeliveries(githubContext, repositoryId).catch((e) => {
-      console.error('[webhook] Event listener delivery drain failed:', e);
-    });
-  };
+  if (
+    repositoryId &&
+    eventType &&
+    isPreDatabaseIgnoredWebhook(eventType, action, data, env.GITHUB_APP_ID) &&
+    !(await hasCandidateEventListenerForRepositoryEventType(githubContext, repositoryId, eventType))
+  ) {
+    await invalidateGitHubResourceCacheForEvent(githubContext, eventType, action, data);
+    return json({ ok: true, ignored: true });
+  }
 
   // 4. Store event if it has a repository, then match enabled event listeners
   // against it. Matching only inserts `pending` `event_listener_delivery`

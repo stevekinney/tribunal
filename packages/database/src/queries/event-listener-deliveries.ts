@@ -349,3 +349,33 @@ export async function markEventListenerDeliveryFailed(
 
   return row ?? null;
 }
+
+/**
+ * Terminally fail a claimed delivery when its listener no longer matches the
+ * persisted event. This is a configuration race, not a transient execution
+ * failure, so it must never consume retries or become claimable again.
+ */
+export async function markEventListenerDeliveryNoLongerMatching(
+  database: Database,
+  deliveryId: number,
+  expectedAttemptCount: number,
+): Promise<EventListenerDelivery | null> {
+  const [row] = await database
+    .update(eventListenerDelivery)
+    .set({
+      status: 'failed',
+      runId: null,
+      finishedAt: new Date(),
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    })
+    .where(
+      and(
+        eq(eventListenerDelivery.id, deliveryId),
+        eq(eventListenerDelivery.status, 'running'),
+        eq(eventListenerDelivery.attemptCount, expectedAttemptCount),
+      ),
+    )
+    .returning();
+
+  return row ?? null;
+}

@@ -35,7 +35,7 @@ const enhancedFormTesting = vi.hoisted(() => {
       resolveUpdate: () => void;
       updateCalled: boolean;
     }>,
-    nextResultType: 'success' as 'success' | 'error',
+    nextResultType: 'success' as 'success' | 'failure' | 'error',
     createDeferred,
     reset() {
       this.submissions.length = 0;
@@ -61,6 +61,7 @@ vi.mock('$app/forms', () => ({
           formElement: HTMLFormElement;
           result:
             | { type: 'success'; status: 200; data: Record<string, never> }
+            | { type: 'failure'; status: 400; data: { error: string } }
             | { type: 'error'; status?: number; error: unknown };
           update: () => Promise<void>;
         }) => Promise<void>),
@@ -96,10 +97,31 @@ vi.mock('$app/forms', () => ({
       void deferredResult.promise
         .then(() => {
           if (typeof resultHandler !== 'function') return;
-          const result =
+          const result:
+            | {
+                type: 'success';
+                status: 200;
+                data: Record<string, never>;
+              }
+            | {
+                type: 'failure';
+                status: 400;
+                data: { error: string };
+              }
+            | {
+                type: 'error';
+                status: 500;
+                error: Error;
+              } =
             resultType === 'error'
               ? ({ type: 'error', status: 500, error: new Error('boom') } as const)
-              : ({ type: 'success', status: 200, data: {} } as const);
+              : resultType === 'failure'
+                ? ({
+                    type: 'failure',
+                    status: 400,
+                    data: { error: 'Could not add repository.' },
+                  } as const)
+                : ({ type: 'success', status: 200, data: {} } as const);
           return resultHandler({
             action,
             formData,
@@ -973,6 +995,35 @@ describe('/repositories page', () => {
 
     await expect.poll(() => enhancedFormTesting.submissions[0]?.updateCalled).toBe(false);
     await expect.element(combobox).toHaveValue('other-org/widgets');
+  });
+
+  it('does not call update() and keeps the combobox filled when the add-repository action fails', async () => {
+    render(RepositoriesPage, {
+      data: {
+        ...baseData,
+        installations: [
+          { installationId: 12345, accountLogin: 'test-org', accountAvatarUrl: null },
+        ],
+        summary: Promise.resolve(okSummaryForOne),
+        addableRepositories: [makeAddable({ id: 202, owner: 'other-org', name: 'widgets' })],
+      },
+      form: null,
+      params: {},
+    });
+
+    const combobox = page.getByRole('combobox', { name: 'Add repository' });
+    const addButton = page.getByRole('button', { name: 'Add' });
+
+    await combobox.fill('other-org/widgets');
+    await page.getByRole('option', { name: /other-org\/widgets/ }).click();
+
+    enhancedFormTesting.nextResultType = 'failure';
+    await addButton.click();
+    enhancedFormTesting.submissions[0]?.resolveResult();
+
+    await expect.poll(() => enhancedFormTesting.submissions[0]?.updateCalled).toBe(false);
+    await expect.element(combobox).toHaveValue('other-org/widgets');
+    await expect.element(addButton).not.toBeDisabled();
   });
 
   it('shows a "No results" message when no repository matches the typed text', async () => {

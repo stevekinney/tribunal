@@ -11,6 +11,7 @@ import {
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
+  markEventListenerDeliveryNoLongerMatching,
   markEventListenerDeliverySucceeded,
 } from '../event-listener-deliveries';
 
@@ -207,6 +208,35 @@ describe('claimEventListenerDelivery', () => {
 });
 
 describe('markEventListenerDeliverySucceeded / markEventListenerDeliveryFailed', () => {
+  it('terminally fails a matching-race delivery without making it claimable again', async () => {
+    const { listener, event } = await createFixture();
+    const [pending] = await insertPendingEventListenerDeliveries(
+      testDatabase.db,
+      [listener.id],
+      event.id,
+    );
+    const claimed = await claimEventListenerDelivery(testDatabase.db, pending.id);
+
+    await markEventListenerDeliveryNoLongerMatching(
+      testDatabase.db,
+      pending.id,
+      claimed!.attemptCount,
+    );
+
+    const [row] = await testDatabase.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(row).toMatchObject({
+      status: 'failed',
+      runId: null,
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    });
+    expect(
+      await listClaimableEventListenerDeliveries(testDatabase.db, listener.repositoryId, 10),
+    ).toEqual([]);
+  });
+
   it('marks a claimed delivery succeeded with the run id attached', async () => {
     const { user, repository, listener, event } = await createFixture();
     const [pending] = await insertPendingEventListenerDeliveries(

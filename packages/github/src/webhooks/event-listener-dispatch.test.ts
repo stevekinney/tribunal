@@ -125,7 +125,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -164,7 +164,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
 
     const result = await drainEventListenerDeliveries(context, repository.id, 0);
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
   });
 
   it('defaults the drain limit when not provided', async () => {
@@ -179,7 +179,7 @@ describe('drainEventListenerDeliveries', () => {
     expect(first.dispatched).toBe(1);
 
     const second = await drainEventListenerDeliveries(context, repository.id);
-    expect(second).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(second).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
   });
 
   it('marks the delivery failed/retryable and skips dispatch when the listener was disabled between matching and drain', async () => {
@@ -190,7 +190,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -210,7 +210,36 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+  });
+
+  it('terminally fails a delivery when the listener no longer matches its persisted event', async () => {
+    const { repository, listener, pending } = await createFixture();
+    await testContext.db
+      .update(repositoryEventListener)
+      .set({ filtersJson: JSON.stringify({ ref: 'refs/heads/main' }) })
+      .where(eq(repositoryEventListener.id, listener.id));
+
+    const result = await drainEventListenerDeliveries(
+      createGithubContext(testContext),
+      repository.id,
+    );
+
+    expect(result).toMatchObject({
+      attempted: 1,
+      dispatched: 0,
+      skippedNoLongerMatching: 1,
+      failed: 0,
+    });
+    const [delivery] = await testContext.db
+      .select()
+      .from(eventListenerDelivery)
+      .where(eq(eventListenerDelivery.id, pending.id));
+    expect(delivery).toMatchObject({
+      status: 'failed',
+      runId: null,
+      lastError: 'Event listener configuration no longer matches the webhook event.',
+    });
   });
 
   it('deleting the agent preserves the listener delivery history without dispatching it', async () => {
@@ -220,7 +249,7 @@ describe('drainEventListenerDeliveries', () => {
     const context = createGithubContext(testContext);
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
 
     const [remainingDelivery] = await testContext.db.select().from(eventListenerDelivery);
     expect(remainingDelivery).toMatchObject({
@@ -265,7 +294,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const runs = await testContext.db.select().from(tribunalRun);
     expect(runs).toHaveLength(1);
@@ -344,6 +373,33 @@ describe('drainEventListenerDeliveries', () => {
       .from(eventListenerDelivery)
       .where(eq(eventListenerDelivery.status, 'pending'));
     expect(remainingPending).toHaveLength(0);
+  });
+
+  it('reports continuation state after the default 50-attempt cap and lets the next turn finish only new work', async () => {
+    const { repository, listener } = await createFixture();
+    const context = createGithubContext(testContext);
+    const totalCount = DEFAULT_EVENT_LISTENER_DRAIN_LIMIT * 5 + 1;
+    for (let i = 0; i < totalCount - 1; i += 1) {
+      const extraEvent = await insertWebhookEvent({ repositoryId: repository.id });
+      await insertPendingEventListenerDeliveries(testContext.db, [listener.id], extraEvent.id);
+    }
+
+    const first = await drainEventListenerDeliveries(context, repository.id);
+
+    expect(first).toMatchObject({ attempted: 50, dispatched: 50, hasMore: true });
+    expect(first.attemptedDeliveryIds).toHaveLength(50);
+
+    const second = await drainEventListenerDeliveries(
+      context,
+      repository.id,
+      undefined,
+      undefined,
+      {
+        excludeIds: first.attemptedDeliveryIds,
+      },
+    );
+    expect(second).toMatchObject({ attempted: 1, dispatched: 1, hasMore: false });
+    expect(second.attemptedDeliveryIds).toHaveLength(1);
   });
 
   it('a multi-round drain never attempts the same delivery more than once, even when failures make it re-claimable within the same call', async () => {
@@ -429,7 +485,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, dispatched: 1, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -452,7 +508,7 @@ describe('drainEventListenerDeliveries', () => {
 
     const result = await drainEventListenerDeliveries(context, repository.id);
 
-    expect(result).toEqual({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
+    expect(result).toMatchObject({ attempted: 0, dispatched: 0, skippedDisabled: 0, failed: 0 });
 
     const [deliveryRow] = await testContext.db
       .select()
@@ -510,7 +566,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the delivery row vanishes just after claim', async () => {
@@ -523,7 +579,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the webhook event row vanishes just after claim', async () => {
@@ -533,7 +589,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the agent row vanishes just after claim', async () => {
@@ -543,7 +599,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it("marks the delivery skippedDisabled when the listener owner's installation access is no longer active", async () => {
@@ -556,7 +612,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 1, failed: 0 });
     });
 
     it('marks the delivery failed (generic, non-disabled error) when a non-EventListenerDisabledError is thrown mid-dispatch', async () => {
@@ -569,7 +625,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
 
     it('marks the delivery failed when the repository row for the listener no longer exists', async () => {
@@ -582,7 +638,7 @@ describe('drainEventListenerDeliveries', () => {
 
       const result = await drainEventListenerDeliveries(context, repository.id);
 
-      expect(result).toEqual({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
+      expect(result).toMatchObject({ attempted: 1, dispatched: 0, skippedDisabled: 0, failed: 1 });
     });
   });
 });

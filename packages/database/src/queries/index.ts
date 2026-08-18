@@ -30,6 +30,7 @@ export {
   insertPendingEventListenerDeliveries,
   listClaimableEventListenerDeliveries,
   markEventListenerDeliveryFailed,
+  markEventListenerDeliveryNoLongerMatching,
   markEventListenerDeliverySucceeded,
   type ClaimableEventListenerDelivery,
   type EventListenerDisplayStatus,

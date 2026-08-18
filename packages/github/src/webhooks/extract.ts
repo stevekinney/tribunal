@@ -15,6 +15,14 @@ import {
 import type { StoreWebhookEventData } from './webhook-events.js';
 import type { WebhookPayload } from './types.js';
 
+function extractSinglePullRequestNumber(value: unknown): number | undefined {
+  if (!Array.isArray(value) || value.length !== 1) return undefined;
+  const number = value[0]?.number;
+  return typeof number === 'number' && Number.isSafeInteger(number) && number > 0
+    ? number
+    : undefined;
+}
+
 /**
  * Extract event-specific fields from a webhook payload for storage.
  * Uses shape-based extraction since the payload is already signature-verified.
@@ -121,10 +129,13 @@ export function extractEventFields(
     case 'check_run': {
       if (isCheckRunCompletedEvent(data)) {
         fields.commitSha = data.check_run.head_sha;
+        fields.prNumber = extractSinglePullRequestNumber(data.check_run.pull_requests);
       } else {
-        const checkRun = data.check_run as { head_sha: string } | undefined;
+        const checkRun = data.check_run as
+          { head_sha: string; pull_requests?: unknown } | undefined;
         if (checkRun) {
           fields.commitSha = checkRun.head_sha;
+          fields.prNumber = extractSinglePullRequestNumber(checkRun.pull_requests);
         }
       }
       break;
@@ -132,10 +143,13 @@ export function extractEventFields(
     case 'check_suite': {
       if (isCheckSuiteCompletedEvent(data)) {
         fields.commitSha = data.check_suite.head_sha;
+        fields.prNumber = extractSinglePullRequestNumber(data.check_suite.pull_requests);
       } else {
-        const checkSuite = data.check_suite as { head_sha: string } | undefined;
+        const checkSuite = data.check_suite as
+          { head_sha: string; pull_requests?: unknown } | undefined;
         if (checkSuite) {
           fields.commitSha = checkSuite.head_sha;
+          fields.prNumber = extractSinglePullRequestNumber(checkSuite.pull_requests);
         }
       }
       break;
