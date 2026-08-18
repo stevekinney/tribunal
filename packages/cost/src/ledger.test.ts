@@ -1013,6 +1013,27 @@ describe('cost ledger', () => {
     ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
   });
 
+  it('treats invalid configured daily cost caps as zero', async () => {
+    const { user, run } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, -5, {
+        idempotencyKey: `llm:${run.id}:negative-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, Number.NaN, {
+        idempotencyKey: `llm:${run.id}:non-finite-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+  });
+
   it('rejects invalid daily cap reservation inputs before touching the ledger', async () => {
     const { user } = await createCostFixture();
     const now = new Date('2026-06-17T12:00:00.000Z');

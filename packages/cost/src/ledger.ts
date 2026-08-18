@@ -14,7 +14,7 @@ import type {
   DailyCapReservationInput,
   LlmEstimateInput,
 } from '@tribunal/review-core/ports';
-import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core';
+import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core/review-cost-limits';
 import {
   CURRENT_PRICING_VERSION,
   sandboxCost,
@@ -54,7 +54,9 @@ function toNumber(value: string | number | null | undefined): number {
 }
 
 function clampDailyCostCap(value: string | number | null | undefined): number {
-  return Math.min(MAX_DAILY_COST_CAP_USD, Math.max(0, toNumber(value)));
+  const capUsd = toNumber(value);
+  if (!Number.isFinite(capUsd)) return 0;
+  return Math.min(MAX_DAILY_COST_CAP_USD, Math.max(0, capUsd));
 }
 
 function getRows<T>(result: unknown): T[] {
@@ -476,12 +478,13 @@ export async function enforceDailyCap(
   defaultDailyCostCapUsd = 25,
   reservation?: DailyCapReservationInput,
 ): Promise<LedgerDailyCapDecision> {
+  const effectiveDefaultDailyCostCapUsd = clampDailyCostCap(defaultDailyCostCapUsd);
   if (reservation !== undefined) {
-    return reserveDailyCap(database, userId, now, defaultDailyCostCapUsd, reservation);
+    return reserveDailyCap(database, userId, now, effectiveDefaultDailyCostCapUsd, reservation);
   }
 
   const [capUsd, spendUsd] = await Promise.all([
-    readDailyCostCap(database, userId, defaultDailyCostCapUsd),
+    readDailyCostCap(database, userId, effectiveDefaultDailyCostCapUsd),
     readSpendTodayEstimate(database as Database, userId, now),
   ]);
 
@@ -522,7 +525,7 @@ async function reserveDailyCap(
   }>(
     await database.execute(sql`
       WITH cap AS (
-        SELECT LEAST(COALESCE(
+        SELECT GREATEST(0, LEAST(COALESCE(
           (
             SELECT ${userReviewSettings.dailyCostCapUsd}
             FROM ${userReviewSettings}
@@ -530,7 +533,7 @@ async function reserveDailyCap(
             LIMIT 1
           ),
           ${numericText(defaultDailyCostCapUsd)}::numeric
-        ), ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric) AS cap_usd
+        ), ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric)) AS cap_usd
       ),
       budget_day AS (
         SELECT ${dayStartedAtSql(now)} AS day_started_at

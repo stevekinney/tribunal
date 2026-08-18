@@ -1763,6 +1763,15 @@ describe('review operator server helpers', () => {
     expect(settings[0]).toMatchObject({ dailyCostCapUsd: '25' });
   });
 
+  it('normalizes non-finite stored daily cost caps before returning settings to the web UI', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(userReviewSettings).values({ userId: owner.id, dailyCostCapUsd: 'NaN' });
+
+    await expect(withTestDatabase(() => getUserReviewSettings(owner.id))).resolves.toMatchObject([
+      { dailyCostCapUsd: '0' },
+    ]);
+  });
+
   it('cancels claimed and active review workflows when global reviews are disabled', async () => {
     const { owner, otherUser } = await seedRepositoryOwnership();
     await testDb.db.insert(userReviewSettings).values({ userId: owner.id, reviewsEnabled: true });

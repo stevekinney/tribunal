@@ -10,6 +10,7 @@
   import { Toggle } from '@lostgradient/cinder/toggle';
   import OctagonAlert from 'lucide-svelte/icons/octagon-alert';
   import Save from 'lucide-svelte/icons/save';
+  import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core/review-cost-limits';
   import { untrack } from 'svelte';
   import type { PageProps } from './$types';
 
@@ -79,7 +80,7 @@
             name="dailyCostCapUsd"
             bind:value={dailyCostCapUsd}
             min={0}
-            max={25}
+            max={MAX_DAILY_COST_CAP_USD}
             step={0.01}
             required
             label="Daily cost cap in US dollars"

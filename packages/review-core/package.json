@@ -24,6 +24,11 @@
       "import": "./dist/redaction.js",
       "default": "./dist/redaction.js"
     },
+    "./review-cost-limits": {
+      "types": "./dist/review-cost-limits.d.ts",
+      "import": "./dist/review-cost-limits.js",
+      "default": "./dist/review-cost-limits.js"
+    },
     "./tokens": {
       "types": "./dist/tokens.d.ts",
       "import": "./dist/tokens.js",

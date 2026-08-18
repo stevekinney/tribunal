@@ -78,11 +78,11 @@ describe('/settings page — default model', () => {
 describe('/settings page — daily cost cap', () => {
   afterEach(() => cleanup());
 
-  it('sets the $25 daily maximum on the cost cap input', () => {
+  it('sets the $25 daily maximum on the cost cap input', async () => {
     render(SettingsPage, { data: baseData, form: null, params: {} });
 
     const input = page.getByRole('spinbutton', { name: 'Daily cost cap in US dollars' });
-    expect(input).toHaveAttribute('max', '25');
+    await expect.element(input).toHaveAttribute('max', '25');
   });
 });
 

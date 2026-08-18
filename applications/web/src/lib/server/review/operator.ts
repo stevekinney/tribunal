@@ -22,7 +22,7 @@ import {
   defaultReviewModelSchema,
   effortSchema,
 } from '@tribunal/review-core/schemas';
-import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core';
+import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core/review-cost-limits';
 import { db } from '$lib/server/database';
 import {
   cancelReviewWorkflowsEngine,
@@ -37,6 +37,12 @@ const reviewEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const waitingForEligibleReviewAgentReason =
   'Review intent is waiting for an eligible review agent.';
 const reviewPolicyCancellationError = 'Active reviews could not be stopped. Please try again.';
+
+function clampDailyCostCap(value: string | number): string {
+  const dailyCostCapUsd = Number(value);
+  if (!Number.isFinite(dailyCostCapUsd)) return '0';
+  return String(Math.min(MAX_DAILY_COST_CAP_USD, Math.max(0, dailyCostCapUsd)));
+}
 
 export type SurfaceState = 'empty' | 'loading' | 'streaming' | 'success' | 'error' | 'disconnected';
 
@@ -1219,7 +1225,7 @@ export async function getUserReviewSettings(userId: number) {
   if (inserted.length > 0) {
     return inserted.map((settings) => ({
       ...settings,
-      dailyCostCapUsd: String(Math.min(Number(settings.dailyCostCapUsd), MAX_DAILY_COST_CAP_USD)),
+      dailyCostCapUsd: clampDailyCostCap(settings.dailyCostCapUsd),
     }));
   }
 
@@ -1230,7 +1236,7 @@ export async function getUserReviewSettings(userId: number) {
     .limit(1);
   return settings.map((setting) => ({
     ...setting,
-    dailyCostCapUsd: String(Math.min(Number(setting.dailyCostCapUsd), MAX_DAILY_COST_CAP_USD)),
+    dailyCostCapUsd: clampDailyCostCap(setting.dailyCostCapUsd),
   }));
 }
 
@@ -1244,7 +1250,9 @@ export async function saveUserReviewSettings(userId: number, formData: FormData)
     !Number.isFinite(Number(dailyCostCapUsd)) ||
     Number(dailyCostCapUsd) > MAX_DAILY_COST_CAP_USD
   ) {
-    return fail(400, { error: 'Daily cost cap must be between $0 and $25.' });
+    return fail(400, {
+      error: `Daily cost cap must be between $0 and $${MAX_DAILY_COST_CAP_USD}.`,
+    });
   }
 
   if (!defaultReviewModelSchema.safeParse(defaultModel).success) {
