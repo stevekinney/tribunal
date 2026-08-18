@@ -179,8 +179,8 @@ proxy_origin="${PRODUCTION_PROXY_ORIGIN:-https://tribunal-proxy.fly.dev}"
 curl -fsS "${proxy_origin%/}/health"
 curl -fsS https://<web-domain>/health
 flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.flycast/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
-status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
-test "$status" = "401" || test "$status" = "403"
+http_status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
+test "$http_status" = "401" || test "$http_status" = "403"
 bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
 flyctl machines list --app tribunal-engine
 flyctl ips list --app tribunal-engine

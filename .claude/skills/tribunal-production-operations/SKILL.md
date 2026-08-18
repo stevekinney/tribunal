@@ -162,8 +162,8 @@ bun run deploy:status
 curl -fsS https://tribunal-proxy.fly.dev/health
 curl -fsS https://<web-domain>/health
 flyctl ssh console -a tribunal-web -C 'bun -e "const response = await fetch(\"http://tribunal-engine.internal:3001/health\"); console.log(await response.text()); process.exit(response.ok ? 0 : 1)"'
-status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
-test "$status" = "401" || test "$status" = "403"
+http_status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' https://tribunal-proxy.fly.dev/github/api.github.com/repos/lostgradient/tribunal/pulls/1)"
+test "$http_status" = "401" || test "$http_status" = "403"
 bun run --cwd applications/web test:unit:server -- --run test/load/review-engine-load-harness.test.ts
 flyctl machines list --app tribunal-engine
 flyctl ips list --app tribunal-engine

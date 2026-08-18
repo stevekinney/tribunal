@@ -375,8 +375,8 @@ Unauthorized proxy request:
 
 ```sh
 proxy_origin="${PRODUCTION_PROXY_ORIGIN:-https://tribunal-proxy.fly.dev}"
-status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
-test "$status" = "401" -o "$status" = "403"
+http_status="$(curl -sS -o /tmp/tribunal-proxy-unauthorized.json -w '%{http_code}' "${proxy_origin%/}/github/api.github.com/repos/lostgradient/tribunal/pulls/1")"
+test "$http_status" = "401" -o "$http_status" = "403"
 ```
 
 Fake-only review-engine load gate:
