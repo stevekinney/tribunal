@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { cleanup, render } from 'vitest-browser-svelte';
+import { render } from 'vitest-browser-svelte';
 import EventListenerForm from './event-listener-form.svelte';
 
 const agents = [{ id: 'agent_1', slug: 'triage-agent', enabled: true }];
@@ -11,8 +11,6 @@ const actionsByEventType = {
 };
 
 describe('event-listener-form', () => {
-  afterEach(() => cleanup());
-
   it('resets the selected action when the event type changes', async () => {
     render(EventListenerForm, {
       mode: 'new',

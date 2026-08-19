@@ -14,6 +14,7 @@ import type {
   DailyCapReservationInput,
   LlmEstimateInput,
 } from '@tribunal/review-core/ports';
+import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core/review-cost-limits';
 import {
   CURRENT_PRICING_VERSION,
   sandboxCost,
@@ -50,6 +51,12 @@ function numericText(value: number): string {
 
 function toNumber(value: string | number | null | undefined): number {
   return Number(value ?? 0);
+}
+
+function clampDailyCostCap(value: string | number | null | undefined): number {
+  const capUsd = toNumber(value);
+  if (!Number.isFinite(capUsd)) return 0;
+  return Math.min(MAX_DAILY_COST_CAP_USD, Math.max(0, capUsd));
 }
 
 function getRows<T>(result: unknown): T[] {
@@ -458,7 +465,7 @@ async function readDailyCostCap(
     .from(userReviewSettings)
     .where(eq(userReviewSettings.userId, userId));
 
-  return toNumber(settings?.dailyCostCapUsd ?? defaultDailyCostCapUsd);
+  return clampDailyCostCap(settings?.dailyCostCapUsd ?? defaultDailyCostCapUsd);
 }
 
 /**
@@ -471,12 +478,13 @@ export async function enforceDailyCap(
   defaultDailyCostCapUsd = 25,
   reservation?: DailyCapReservationInput,
 ): Promise<LedgerDailyCapDecision> {
+  const effectiveDefaultDailyCostCapUsd = clampDailyCostCap(defaultDailyCostCapUsd);
   if (reservation !== undefined) {
-    return reserveDailyCap(database, userId, now, defaultDailyCostCapUsd, reservation);
+    return reserveDailyCap(database, userId, now, effectiveDefaultDailyCostCapUsd, reservation);
   }
 
   const [capUsd, spendUsd] = await Promise.all([
-    readDailyCostCap(database, userId, defaultDailyCostCapUsd),
+    readDailyCostCap(database, userId, effectiveDefaultDailyCostCapUsd),
     readSpendTodayEstimate(database as Database, userId, now),
   ]);
 
@@ -516,7 +524,7 @@ async function reserveDailyCap(
     remainingUsd: string | number | null;
   }>(
     await database.execute(sql`
-      WITH cap AS (
+      WITH configured_cap AS (
         SELECT COALESCE(
           (
             SELECT ${userReviewSettings.dailyCostCapUsd}
@@ -526,6 +534,13 @@ async function reserveDailyCap(
           ),
           ${numericText(defaultDailyCostCapUsd)}::numeric
         ) AS cap_usd
+      ),
+      cap AS (
+        SELECT CASE
+          WHEN cap_usd::text IN ('NaN', 'Infinity', '-Infinity') THEN 0
+          ELSE GREATEST(0, LEAST(cap_usd, ${numericText(MAX_DAILY_COST_CAP_USD)}::numeric))
+        END AS cap_usd
+        FROM configured_cap
       ),
       budget_day AS (
         SELECT ${dayStartedAtSql(now)} AS day_started_at
@@ -744,7 +759,7 @@ async function reserveDailyCap(
     `),
   );
 
-  const capUsd = toNumber(row?.capUsd ?? defaultDailyCostCapUsd);
+  const capUsd = clampDailyCostCap(row?.capUsd ?? defaultDailyCostCapUsd);
   const spendUsd = toNumber(row?.spendUsd ?? 0);
   const allowed = row?.allowed === true || row?.allowed === 'true';
   if (!allowed) {

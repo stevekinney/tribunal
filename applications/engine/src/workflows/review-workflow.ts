@@ -10,6 +10,11 @@ import {
 import { sandboxCost } from '@tribunal/cost/pricing';
 import type { WorkflowCancellationReason } from '@tribunal/github/context';
 import { redactRuntimeRecord } from '@tribunal/review-core/redaction';
+import {
+  SPECIALIST_MAX_BUDGET_USD,
+  TRIAGE_MAX_BUDGET_USD,
+  VERIFIER_MAX_BUDGET_USD,
+} from '@tribunal/review-core';
 import { defaultReviewModelSchema } from '@tribunal/review-core/schemas';
 import type {
   AgentEvent,
@@ -125,7 +130,6 @@ export type ReviewWorkflowConfiguration = {
 };
 
 const SANDBOX_RESOURCES = { cpus: 2, memoryMb: 4096, storageMb: 20_480 };
-const VERIFIER_MAX_BUDGET_USD = 0.05;
 const REVIEW_CANCELLATION_PENDING_ERROR = 'Review cancellation is pending external teardown.';
 
 function createWorkflowStopKey(workflowId: string, userId?: number): string {
@@ -1054,6 +1058,7 @@ export class ReviewWorkflowEngine {
     const enabledAgents = input.agents.filter((agent) => agent.enabled);
     const triageCapDecision = await this.ports.cost.enforceDailyCap(input.userId, {
       idempotencyKey: createLlmEstimateIdempotencyKey(createTriageAgentRunId(reviewRun.id)),
+      amountUsd: TRIAGE_MAX_BUDGET_USD,
       expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
     });
     if (isStoppedReviewRun(reviewRun)) {
@@ -1347,9 +1352,10 @@ export class ReviewWorkflowEngine {
       }
 
       const agentRunId = createAgentRunId(reviewRun.id, agent);
+      const effectiveAgent: AgentSpec = { ...agent, maxBudgetUsd: SPECIALIST_MAX_BUDGET_USD };
       const dailyCapDecision = await this.ports.cost.enforceDailyCap(reviewRun.userId, {
         idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
-        ...(agent.maxBudgetUsd === undefined ? {} : { amountUsd: agent.maxBudgetUsd }),
+        amountUsd: effectiveAgent.maxBudgetUsd,
         expiresAt: new Date(this.now().getTime() + this.configuration.runTokenTtlSeconds * 1000),
       });
       if (isStoppedReviewRun(reviewRun)) {
@@ -1369,7 +1375,7 @@ export class ReviewWorkflowEngine {
         await this.runAgentReview(
           supervisor,
           reviewRun,
-          agent,
+          effectiveAgent,
           runToken,
           diffContext,
           defaultModel,
@@ -1454,6 +1460,7 @@ export class ReviewWorkflowEngine {
       model: 'haiku',
       effort: 'low',
       enabled: true,
+      maxBudgetUsd: TRIAGE_MAX_BUDGET_USD,
       role: 'triage',
       availableAgentSlugs,
     };

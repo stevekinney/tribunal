@@ -1687,7 +1687,7 @@ describe('review operator server helpers', () => {
     });
   });
 
-  it('rejects a negative or non-numeric daily cost cap for user review settings', async () => {
+  it('rejects daily cost caps outside the fixed zero-to-25 range', async () => {
     const { owner } = await seedRepositoryOwnership();
 
     const negative = new FormData();
@@ -1697,7 +1697,7 @@ describe('review operator server helpers', () => {
       withTestDatabase(() => saveUserReviewSettings(owner.id, negative)),
     ).resolves.toMatchObject({
       status: 400,
-      data: { error: 'Daily cost cap must be zero or greater.' },
+      data: { error: 'Daily cost cap must be between $0 and $25.' },
     });
 
     const notANumber = new FormData();
@@ -1707,7 +1707,17 @@ describe('review operator server helpers', () => {
       withTestDatabase(() => saveUserReviewSettings(owner.id, notANumber)),
     ).resolves.toMatchObject({
       status: 400,
-      data: { error: 'Daily cost cap must be zero or greater.' },
+      data: { error: 'Daily cost cap must be between $0 and $25.' },
+    });
+
+    const overMaximum = new FormData();
+    overMaximum.set('dailyCostCapUsd', '25.01');
+    overMaximum.set('defaultModel', 'sonnet');
+    await expect(
+      withTestDatabase(() => saveUserReviewSettings(owner.id, overMaximum)),
+    ).resolves.toMatchObject({
+      status: 400,
+      data: { error: 'Daily cost cap must be between $0 and $25.' },
     });
   });
 
@@ -1719,7 +1729,7 @@ describe('review operator server helpers', () => {
     expect(initial[0]).toMatchObject({ userId: owner.id });
 
     const formData = new FormData();
-    formData.set('dailyCostCapUsd', '15');
+    formData.set('dailyCostCapUsd', '25');
     formData.set('defaultModel', 'opus');
     formData.set('reviewsEnabled', 'on');
 
@@ -1731,7 +1741,7 @@ describe('review operator server helpers', () => {
       .from(userReviewSettings)
       .where(eq(userReviewSettings.userId, owner.id));
     expect(settingsRow).toMatchObject({
-      dailyCostCapUsd: '15',
+      dailyCostCapUsd: '25',
       defaultModel: 'opus',
       reviewsEnabled: true,
     });
@@ -1740,6 +1750,26 @@ describe('review operator server helpers', () => {
     // fallback-select branch (the row already exists from the upsert above).
     const secondRead = await withTestDatabase(() => getUserReviewSettings(owner.id));
     expect(secondRead[0]).toMatchObject({ defaultModel: 'opus' });
+  });
+
+  it('clamps a previously stored daily cost cap before returning settings to the web UI', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db
+      .insert(userReviewSettings)
+      .values({ userId: owner.id, dailyCostCapUsd: '100000' });
+
+    const settings = await withTestDatabase(() => getUserReviewSettings(owner.id));
+
+    expect(settings[0]).toMatchObject({ dailyCostCapUsd: '25' });
+  });
+
+  it('normalizes non-finite stored daily cost caps before returning settings to the web UI', async () => {
+    const { owner } = await seedRepositoryOwnership();
+    await testDb.db.insert(userReviewSettings).values({ userId: owner.id, dailyCostCapUsd: 'NaN' });
+
+    await expect(withTestDatabase(() => getUserReviewSettings(owner.id))).resolves.toMatchObject([
+      { dailyCostCapUsd: '0' },
+    ]);
   });
 
   it('cancels claimed and active review workflows when global reviews are disabled', async () => {

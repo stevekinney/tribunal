@@ -988,6 +988,78 @@ describe('cost ledger', () => {
     await expect(port.enforceDailyCap(user.id)).resolves.toEqual({ allowed: false });
   });
 
+  it('clamps stored and configured daily cost caps to $25 before enforcing reservations', async () => {
+    const { user, run } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:default-clamped-cap-estimate`,
+        amountUsd: 25.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
+
+    await testDatabase.db
+      .insert(userReviewSettings)
+      .values({ userId: user.id, dailyCostCapUsd: '100000' });
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:stored-clamped-cap-estimate`,
+        amountUsd: 25.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 25, remainingUsd: 25 });
+
+    await testDatabase.db
+      .update(userReviewSettings)
+      .set({ dailyCostCapUsd: 'NaN' })
+      .where(eq(userReviewSettings.userId, user.id));
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:stored-non-finite-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+
+    await testDatabase.db
+      .update(userReviewSettings)
+      .set({ dailyCostCapUsd: 'Infinity' })
+      .where(eq(userReviewSettings.userId, user.id));
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, 100000, {
+        idempotencyKey: `llm:${run.id}:stored-infinite-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+  });
+
+  it('treats invalid configured daily cost caps as zero', async () => {
+    const { user, run } = await createCostFixture();
+    const now = new Date('2026-06-17T12:00:00.000Z');
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, -5, {
+        idempotencyKey: `llm:${run.id}:negative-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+
+    await expect(
+      enforceDailyCap(testDatabase.db, user.id, now, Number.NaN, {
+        idempotencyKey: `llm:${run.id}:non-finite-cap-estimate`,
+        amountUsd: 0.01,
+        expiresAt: new Date('2026-06-17T13:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ allowed: false, capUsd: 0, remainingUsd: 0 });
+  });
+
   it('rejects invalid daily cap reservation inputs before touching the ledger', async () => {
     const { user } = await createCostFixture();
     const now = new Date('2026-06-17T12:00:00.000Z');

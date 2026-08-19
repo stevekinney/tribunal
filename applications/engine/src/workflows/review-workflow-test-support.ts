@@ -630,7 +630,9 @@ class FakeSandboxPort implements SandboxPort {
     runToken: string;
     model: string;
     effort: string | undefined;
+    maxBudgetUsd: number | undefined;
   }> = [];
+  readonly systemAgentCalls: AgentSpec[] = [];
   readonly stopCalls: string[] = [];
   readonly terminateCalls: string[] = [];
 
@@ -705,6 +707,7 @@ class FakeSandboxPort implements SandboxPort {
     // they let specialist findings through unchanged so existing specialist
     // scenarios don't have to know about the pipeline stages around them.
     if (agent.role === 'triage') {
+      this.systemAgentCalls.push(agent);
       return createSystemRoleAgentResult(agent, {
         triage: {
           skip: this.options.triageSkip !== undefined && this.options.triageSkip !== false,
@@ -714,6 +717,7 @@ class FakeSandboxPort implements SandboxPort {
       });
     }
     if (agent.role === 'verifier') {
+      this.systemAgentCalls.push(agent);
       this.verifierCalls += 1;
       this.runningVerifierResolver?.();
       this.concurrentVerifiers += 1;
@@ -741,6 +745,7 @@ class FakeSandboxPort implements SandboxPort {
       runToken,
       model: agent.model,
       effort: agent.effort,
+      maxBudgetUsd: agent.maxBudgetUsd,
     });
     this.runningAgents += 1;
     onEvent({
