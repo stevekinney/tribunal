@@ -71,7 +71,7 @@
     "test:coverage": "vitest run -c vitest.configuration.ts --coverage"
   },
   "dependencies": {
-    "@lostgradient/weft": "0.18.0",
+    "@lostgradient/weft": "0.20.0",
     "@octokit/types": "^17.0.0",
     "@octokit/webhooks": "^14.2.0",
     "@tribunal/database": "workspace:*",
