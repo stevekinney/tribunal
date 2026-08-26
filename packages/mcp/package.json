@@ -1,0 +1,38 @@
+{
+  "name": "@tribunal/mcp",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./logger": "./src/logger.ts",
+    "./env": "./src/env.ts",
+    "./environment-schema": "./src/environment-schema.ts",
+    "./testing": "./src/testing/index.ts",
+    "./metrics": "./src/metrics.ts"
+  },
+  "scripts": {
+    "test": "vitest run --config vitest.configuration.ts",
+    "test:conformance": "MCP_CONFORMANCE_PORT=3137 bun run src/conformance-server.ts",
+    "check": "tsc --noEmit",
+    "lint": "oxlint . && eslint .",
+    "format": "prettier --write --ignore-path ../../.prettierignore .",
+    "format:check": "prettier --check --ignore-path ../../.prettierignore .",
+    "test:coverage": "vitest run --config vitest.configuration.ts --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "pino": "^10.3.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@tribunal/typescript": "workspace:*",
+    "@types/node": "^26.2.0",
+    "pino-pretty": "^13.1.3",
+    "vitest": "4.0.16"
+  }
+}
