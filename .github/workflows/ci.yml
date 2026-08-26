@@ -58,6 +58,17 @@ jobs:
         run: bun run validate:turbo
       - name: Validate skill wiring
         run: bun run --cwd scripts validate:skills
+      # .github/** is inside no Turborepo workspace, so these root-level
+      # workflow-security gates (TRI-28) run directly rather than through
+      # `bunx turbo run`. See .github/scripts/workflow-policy.ts.
+      - name: Audit workflow security policy
+        run: bun run audit:workflows
+      - name: Workflow authorization tests
+        run: bun run test:workflow-authorization
+      - name: Workflow prompt-injection tests
+        run: bun run test:workflow-prompt-injection
+      - name: Production migration gate tests
+        run: bun run test:production-migration-gate
       - name: Lint
         run: bunx turbo run lint ${{ github.event_name == 'pull_request' && '--affected' || '' }}
         env:
