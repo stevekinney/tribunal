@@ -29,7 +29,7 @@ the TOML and run `flyctl deploy . --config deployment/fly/engine.toml` to
 flip it. Flipping the flag is a redeploy, not a runtime toggle—there is no
 admin panel or database row involved. The value is read once at process start (`parseEngineEnvironment`) and threaded through to where it is actually enforced, and the precise layer matters because it is the precedent `MCP_ENABLED` should follow.
 
-The enforcement is **not** in the scheduler. `createReviewIntentKickScheduler` still calls `runtime.drainReviewIntents()` when the flag is false — its own disabled-scheduler test asserts that call happens. The effective gate is one layer down: `applications/engine/src/index.ts:160` passes `reviewsEnabled: environment.REVIEWS_ENABLED` into `createDatabaseReviewIntentPort`, and `claimNextReviewIntent` returns `null` outright when `options.reviewsEnabled === false` (`applications/engine/src/workflows/review-intent-port.ts:67-68`). The drain loop still runs; it simply never gets an intent to work on.
+The enforcement is **not** in the scheduler. `createReviewIntentKickScheduler` still calls `runtime.drainReviewIntents()` when the flag is false — its own disabled-scheduler test asserts that call happens. The effective gate is one layer down: `applications/engine/src/index.ts` passes `reviewsEnabled: environment.REVIEWS_ENABLED` into `createDatabaseReviewIntentPort`, and that port's `claimNextReviewIntent` returns `null` outright when `options.reviewsEnabled === false` (`applications/engine/src/workflows/review-intent-port.ts`). The drain loop still runs; it simply never gets an intent to work on.
 
 The lesson to carry to `MCP_ENABLED` is that the flag is enforced at the point where the privileged thing is _acquired_, not at the outer loop that looks like the entry point. An outer-layer check that leaves the inner acquisition ungated is the shape this codebase has already shipped.
 
@@ -72,14 +72,22 @@ human approves the flip.
 
 These are the gates. An earlier draft of this document pointed at the Disabling and Alerting sections as though they contained launch gates; they do not — they describe when to turn the surface off and which alerts to wire. Making nonexistent gates the sole prerequisite for `MCP_ENABLED = "true"` would let an operator expose the surface without ever proving the flag is wired, which is the exact failure this document exists to prevent.
 
-Each of these is binary and must be run against the deployed production host with `MCP_ENABLED = "false"`, then **re-run after flipping it to `"true"`**, the way the existing live-review procedure does:
+Each is binary and runs against the deployed production host. They are **not** all run in the same state — an earlier draft said to re-run every check after flipping the flag, which is impossible, because the dark checks pass only while the surface is off. The states are separate and ordered.
 
-1. **The surface is fully dark while the flag is false.** Every one of `/mcp`, the OAuth authorize, token, refresh, revoke, and registration endpoints, and both discovery metadata documents returns the disabled response, not a 200 and not a stack trace. Enumerate the paths from the route table rather than from memory; a path nobody remembered to gate is the whole risk.
-2. **The gate is at the acquisition point, not an outer layer.** A test asserts the flag is read where the mounted handler is acquired, and fails if that read is removed. This is criterion 1's structural counterpart, and it exists because the `REVIEWS_ENABLED` precedent shows the outer loop still running while the inner acquisition is what actually gates.
+**Stage one, with `MCP_ENABLED = "false"`.**
+
+1. **The surface is fully dark.** Every one of `/mcp`, the OAuth authorize, token, refresh, revoke, and registration endpoints, and both discovery metadata documents returns the disabled response — not a 200, not a stack trace. Enumerate the paths from the route table rather than from memory; a path nobody remembered to gate is the whole risk. Record the expected status per route so stage three has something exact to compare against.
+2. **The gate is at the acquisition point, not an outer layer.** A test asserts the flag is read where the mounted handler is acquired, and fails if that read is removed. This is check 1's structural counterpart, and it exists because the `REVIEWS_ENABLED` precedent shows the outer loop still running while the inner acquisition is what actually gates. This one is environment-independent and can run in CI.
 3. **The refresh-replay notification reaches its sink.** Emit a synthetic replay event and confirm it arrives where a human sees it. An alert wired to nothing is indistinguishable from an alert that never fired, and this is the one alert this release depends on.
-4. **The disable path works, end to end, before it is needed.** Exercise the durable override from the Disabling section against production and confirm the surface goes dark. A kill switch first exercised during an incident is an untested code path in the worst conditions.
 
-Gates 1 and 2 belong to whichever issue implements the flag. Gates 3 and 4 belong to TRI-60. None of them is satisfied by a merged pull request.
+**Stage two: exercise the disable path before it is needed.** Flip the flag on, confirm the surface responds, then disable it using the durable override from the Disabling section and confirm every route from check 1 returns to its dark response. Then re-enable deliberately. A kill switch first exercised during an incident is an untested code path in the worst possible conditions, and this is the only opportunity to run it without one.
+
+**Stage three, with `MCP_ENABLED = "true"`.**
+
+4. **The surface serves what it should.** `/mcp` responds to an authenticated request, both discovery documents return their metadata, and the OAuth endpoints return their real responses rather than the disabled one. This is the positive counterpart to check 1 and needs its own expected status per route.
+5. **Nothing that should stay closed opened.** Unauthenticated and under-scoped requests still fail, and `conformance:read` is still unobtainable. Enabling the surface must not be the moment an authorization check quietly stops applying.
+
+Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3 and 5 and the stage-two exercise belong to TRI-60. None is satisfied by a merged pull request.
 
 `REVIEWS_ENABLED`'s open-by-default schema value only stays safe because a
 human has to remember the TOML also says `false`—the two declarations can
@@ -187,7 +195,14 @@ So the disable procedure needs a durable, config-only override that an automated
 
 The obvious candidate is a Fly secret shadowing the `[env]` value, since secrets are set out of band and are not rewritten by a deploy. That must be _confirmed_ — that a secret genuinely takes precedence over the same key in `[env]` in `web.toml`, and that a subsequent `flyctl deploy` does not clear it — before anyone relies on it in an incident. An unverified kill switch is worse than a documented manual one, because it will be trusted at the exact moment it matters.
 
-Until that is confirmed, the honest fallback is release rollback, which is durable by construction: it changes the deployed release, and the auto-deploy on `main` cannot silently reverse it without a new merge.
+Calling release rollback the durable fallback was wrong, and it is worth being precise about why, because the same automation defeats it. `deploy-production.yml` redeploys web from the committed TOML on every successful push to `main`. A rolled-back release is therefore replaced by a new one carrying `MCP_ENABLED = "true"` at the next ordinary merge — the same reversal, just triggered by someone else's unrelated pull request rather than by the operator's own deploy.
+
+**Neither mechanism above is durable on its own, because both fight the automation instead of accounting for it.** A disable is durable only when the committed state agrees with it. The procedure is therefore two steps, and the second is not optional:
+
+1. **Stop the bleeding out of band.** Apply the config-only override, whatever TRI-60 confirms it to be, to take the surface down now without waiting on CI.
+2. **Land the flag change on `main`.** Set `MCP_ENABLED = "false"` in `deployment/fly/web.toml` and merge it. This is what makes the disable survive: the next automatic deploy now redeploys the _disabled_ state, so the automation reinforces the decision instead of reversing it.
+
+Step 1 without step 2 is a timer counting down to the next merge, with nothing announcing when it expires. If step 2 cannot be merged promptly, the automation itself must be paused, and the procedure should say so explicitly rather than leaving an operator to discover the reversal from a production incident.
 
 ### Binary condition
 
@@ -202,7 +217,18 @@ concretely, any of:
   audience-checked bearer token, or
 - any request receiving `resources/subscribe` or `subscriptions/listen`
   events scoped to a different authenticated user than the one who made
-  the request.
+  the request, or
+- any `subscriptions/listen` delivery made without the scope
+  `resources/read` requires, **even when the recipient is the correct
+  user**.
+
+That last condition needs stating separately because the other three do not
+reach it. A caller holding an audience-valid token for its own account, but
+lacking the required scope, is neither unauthenticated nor receiving another
+user's events — so a delivery to it would satisfy every other condition here
+while still being the exact scope-enforcement bypass the orchestration
+document's invariant list names as a confirmed defect in the donor. Same user,
+wrong scope, still a boundary failure.
 
 This deliberately mirrors the donor RUNBOOK's own framing for refresh
 replay ("this should be rare-to-never in legitimate traffic; a single
