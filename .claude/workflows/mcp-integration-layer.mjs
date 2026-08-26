@@ -31,6 +31,15 @@ export const meta = {
 // so omitting it costs nothing.
 // ---------------------------------------------------------------------------
 
+// Branch names are interpolated directly into the shell commands the agent is
+// told to run, so the contract restricts them to characters that cannot change
+// a command's structure. `git check-ref-format` accepts far more than this —
+// `feature/foo;echo` is a valid ref name — and a ref containing `;`, `$`, or a
+// backtick would be parsed as multiple shell operations rather than one
+// argument. Narrowing the contract is simpler and safer than quoting every
+// interpolation site correctly and hoping none is added later unquoted.
+const SHELL_SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 const VALID_MODES = ['implement', 'decide'];
 const VALID_MODELS = ['opus', 'sonnet', 'haiku'];
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -47,6 +56,11 @@ function validateIssues(rawIssues) {
       if (typeof issue[field] !== 'string' || issue[field].length === 0) {
         problems.push(`${where}: missing or empty "${field}"`);
       }
+    }
+    if (typeof issue.branch === 'string' && issue.branch.length > 0 && !SHELL_SAFE_BRANCH.test(issue.branch)) {
+      problems.push(
+        `${where}: branch "${issue.branch}" is not shell-safe. It is interpolated into shell commands, so it must match ${SHELL_SAFE_BRANCH}.`,
+      );
     }
     if (!VALID_MODES.includes(issue.mode)) {
       problems.push(`${where}: mode must be one of ${VALID_MODES.join(', ')} (got ${JSON.stringify(issue.mode)})`);
@@ -185,8 +199,28 @@ const VERDICT_SCHEMA = {
   },
 };
 
-const rawIssues = (args && args.issues) || [];
-if (!rawIssues.length) {
+// Known limitation: there is no per-agent deadline. A stage that never resolves
+// because of a model, network, or tool hang leaves `await pipeline(...)` waiting
+// indefinitely, and the layer returns no verdicts at all. This is not fixable
+// from inside the script — `agent()` exposes no timeout option, and the script
+// sandbox has no clock (`Date.now()` throws by design, so resume stays
+// deterministic), so there is nothing to build a deadline out of. The mitigation
+// is external: the run is visible in `/workflows` and can be ended with
+// TaskStop, after which the orchestrator re-dispatches. Stated here so a reader
+// does not assume the rework path covers a hang; it covers a failure, which is
+// a different thing.
+const rawIssues = args && args.issues;
+
+if (rawIssues !== undefined && rawIssues !== null && !Array.isArray(rawIssues)) {
+  // Without this branch a malformed value fails in two different silent ways:
+  // an object or number lacks `length` and reads as "nothing to do", while a
+  // non-empty string reaches validateIssues and throws on `.forEach`.
+  const problem = `args.issues must be an array of issue descriptors, got ${typeof rawIssues}.`;
+  log(`Refusing to start: ${problem}`);
+  return { ready: [], rework: [], all: [], invalid: [problem] };
+}
+
+if (!rawIssues || rawIssues.length === 0) {
   log('No issues passed in args.issues — nothing to do.');
   return { ready: [], rework: [], all: [], invalid: [] };
 }
