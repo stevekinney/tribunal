@@ -14,7 +14,7 @@ Linear is the source of truth for what to do. This document is the source of tru
 
 **Protokit is a read-only donor.** It is a standalone Bun MCP server template whose MCP and OAuth implementation is being copied into this repository. It does not change: never commit to it, never open a pull request against it.
 
-**Its availability is an open prerequisite.** The reference checkout is `~/Developer/protokit` on the author's machine, and it carries uncommitted local modifications. That makes every port issue unexecutable on a fresh checkout, a hosted agent, or CI. Before the port issues (TRI-27 onward) can run anywhere else, the donor must be pinned to something reproducible: an immutable repository and revision, or the required material vendored into this repository. Resolve that before starting TRI-27, and record the pinned revision here.
+**Its availability is an open prerequisite.** The reference checkout is `~/Developer/protokit` on the author's machine, and it carries uncommitted local modifications. That makes every port issue unexecutable on a fresh checkout, a hosted agent, or CI. Before the port issues (TRI-27 onward) can run anywhere else, the donor must be pinned to something reproducible: an immutable repository and revision, or the required material vendored into this repository. Tracked as **TRI-67**, which natively blocks TRI-27. Record the pinned revision here once decided.
 
 A `repo:protokit` label exists in Linear and is applied to nothing. If that ever changes, note that Protokit has no owning Linear team and routing must be decided first.
 
