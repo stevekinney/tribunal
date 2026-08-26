@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { loadWorkflow } from '../scripts/workflow-policy';
+import { loadWorkflow, splitConditionIntoOrBranches } from '../scripts/workflow-policy';
 
 /**
  * Structural invariants for `deploy-production.yml`'s production migration
@@ -38,13 +38,36 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(deploy.if ?? '').not.toMatch(/always\(\)/);
   });
 
+  /**
+   * TRI-28 B8: the previous version of this test checked five independent
+   * substrings with `toMatch`. Prepending `github.actor == 'someone' ||` to
+   * the real condition keeps all five matching (every substring is still
+   * present somewhere in the string) while allowing deploys triggered by
+   * that actor regardless of CI success or branch -- a genuine
+   * authorization bypass the old test could not see. This instead parses
+   * the condition into its top-level `||` branches (each a SET of `&&`
+   * clauses) via `splitConditionIntoOrBranches` and requires the result to
+   * be EXACTLY the two recognized branches, no more and no fewer -- so an
+   * extra disjunct changes the branch count and fails the `toHaveLength`
+   * check before the individual branch checks even run.
+   */
   test('the deploy job only runs for a successful CI run on main, or an explicit main-branch dispatch', () => {
-    const condition = deploy.if ?? '';
-    expect(condition).toMatch(/github\.event_name == 'workflow_dispatch'/);
-    expect(condition).toMatch(/github\.ref == 'refs\/heads\/main'/);
-    expect(condition).toMatch(/github\.event_name == 'workflow_run'/);
-    expect(condition).toMatch(/github\.event\.workflow_run\.conclusion == 'success'/);
-    expect(condition).toMatch(/github\.event\.workflow_run\.head_branch == 'main'/);
+    const branches = splitConditionIntoOrBranches(deploy.if ?? '');
+
+    const dispatchOnMainBranch = new Set([
+      "github.event_name == 'workflow_dispatch'",
+      "github.ref == 'refs/heads/main'",
+    ]);
+    const successfulMainPushBranch = new Set([
+      "github.event_name == 'workflow_run'",
+      "github.event.workflow_run.conclusion == 'success'",
+      "github.event.workflow_run.event == 'push'",
+      "github.event.workflow_run.head_branch == 'main'",
+    ]);
+
+    expect(branches, 'exactly two top-level || branches, no extra disjunct').toHaveLength(2);
+    expect(branches).toContainEqual(dispatchOnMainBranch);
+    expect(branches).toContainEqual(successfulMainPushBranch);
   });
 
   test('the workflow_run checkout path pins to the exact commit that triggered the run, not a re-resolved main', () => {
@@ -73,6 +96,23 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(migrateStep?.env?.DATABASE_URL).toBe('${{ secrets.MIGRATION_DATABASE_URL }}');
   });
 
+  /**
+   * TRI-28 B9: the previous version only checked the migrate step's
+   * command and env, so `continue-on-error: true` or a skippable `if:`
+   * would let the Fly deploy steps proceed after a FAILED migration
+   * without failing the gate. `undefined` is asserted explicitly (rather
+   * than `.not.toBe(true)`) because `continue-on-error` accepts a
+   * `${{ ... }}` expression string in real YAML, and a boolean-only check
+   * would let a truthy expression string slip past.
+   */
+  test('the migration step is unconditional and cannot continue past its own failure', () => {
+    const steps = deploy.steps ?? [];
+    const migrateStep = steps.find((step) => step.run === 'bun run db:migrate');
+    expect(migrateStep).toBeDefined();
+    expect(migrateStep?.if).toBeUndefined();
+    expect(migrateStep?.['continue-on-error']).toBeUndefined();
+  });
+
   test('migrations run before any Fly deploy step (deploy-then-migrate cannot happen)', () => {
     const steps = deploy.steps ?? [];
     const migrateIndex = steps.findIndex((step) => step.run === 'bun run db:migrate');
@@ -84,6 +124,15 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(firstFlyDeployIndex).toBeGreaterThan(migrateIndex);
   });
 
+  /**
+   * TRI-28 B10: `scaleIndex > deployIndex` passes even if the scale step
+   * moves arbitrarily far after its deploy step -- including after another
+   * service's deploy step -- potentially leaving a drifted multi-machine
+   * engine running while a later step's failure aborts the run before its
+   * OWN scale step executes. Requiring direct adjacency
+   * (`scaleIndex === deployIndex + 1`) is what the description ("scaled to
+   * a singleton IMMEDIATELY after its own deploy step") actually claims.
+   */
   test('every Fly-managed service is scaled to a singleton immediately after its own deploy step', () => {
     const steps = deploy.steps ?? [];
     for (const service of ['proxy', 'engine', 'web']) {
@@ -94,7 +143,9 @@ describe('deploy-production.yml: production migration gate', () => {
         (step) => step.run === `flyctl scale count 1 --yes --app tribunal-${service}`,
       );
       expect(deployIndex, `${service} deploy step`).toBeGreaterThanOrEqual(0);
-      expect(scaleIndex, `${service} scale step`).toBeGreaterThan(deployIndex);
+      expect(scaleIndex, `${service} scale step must directly follow its deploy step`).toBe(
+        deployIndex + 1,
+      );
     }
   });
 

@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import {
+  ciWiringViolations,
   isAuthorizationGated,
-  isUntrustedTriggered,
   jobGrantsWrite,
   jobUsesSecrets,
   loadAllWorkflows,
-  loadWorkflow,
   triggerEvents,
+  untrustedPrivilegedUngatedJobs,
   type Workflow,
 } from '../scripts/workflow-policy';
 
@@ -18,37 +18,62 @@ import {
  * have — `claude.yml`, `claude-code-review.yml`), this sweeps every
  * workflow actually present under `.github/workflows/` and asserts the
  * invariant generically: a privileged job on an untrusted trigger is either
- * gated behind a read-only, secret-free authorization job, or the test
- * fails and names it.
+ * gated behind a read-only, secret-free authorization job, exempted by a
+ * narrow, documented exception, or the test fails and names it.
  *
- * As of writing, `grep -rn "pull_request_target" .github/workflows/`
- * returns no matches, so this currently holds vacuously across all three
- * Tribunal workflows (`ci.yml`, `deploy-production.yml`,
- * `neon-pull-request-branches.yml`) — see the pull request body for the
- * full survey. This test exists to catch the first workflow that
- * introduces `pull_request_target` (or another untrusted trigger) without
- * an authorization gate.
+ * TRI-28 B1/B13: this NO LONGER holds vacuously. `workflow_run` joined
+ * `UNTRUSTED_EVENTS`, and `deploy-production.yml` triggers on it, so its
+ * `deploy` job (which references secrets directly) is a genuine,
+ * non-vacuous subject of this sweep. It passes not because nothing needs
+ * checking, but because it carries a narrow, documented exemption (see
+ * `UNTRUSTED_TRIGGER_EXEMPTIONS` in `workflow-policy.ts`) backed by
+ * `production-migration-gate.test.ts`'s structural validation of its `if:`
+ * shape. `ci.yml` and `neon-pull-request-branches.yml` remain vacuous (no
+ * privileged job on any untrusted trigger). This test exists to catch the
+ * next workflow that introduces an untrusted trigger without either an
+ * authorization gate or an exemption.
  */
 describe('every workflow: untrusted-content triggers cannot reach privileged jobs ungated', () => {
   for (const { fileName, workflow } of loadAllWorkflows()) {
     test(`${fileName}: privileged jobs on untrusted triggers are authorization-gated`, () => {
-      if (!isUntrustedTriggered(workflow)) {
-        // Nothing to check: this workflow never runs with base-repo
-        // secrets against attacker-controlled content.
-        return;
-      }
-
-      const ungated = Object.entries(workflow.jobs).filter(([jobName, job]) => {
-        const privileged = jobGrantsWrite(job) || jobUsesSecrets(job);
-        return privileged && !isAuthorizationGated(workflow, jobName);
-      });
+      const ungated = untrustedPrivilegedUngatedJobs(fileName, workflow);
 
       expect(
-        ungated.map(([jobName]) => jobName),
-        `${fileName} triggers on ${triggerEvents(workflow).join(', ')}; every privileged job must be gated by needs: <authorize-job>.outputs.<x> == 'true'`,
+        ungated,
+        `${fileName} triggers on ${triggerEvents(workflow).join(', ')}; every privileged job must be gated by needs: <authorize-job>.outputs.<x> == 'true', or carry a narrow documented exemption`,
       ).toEqual([]);
     });
   }
+});
+
+/**
+ * TRI-28 B1: the `(deploy-production.yml, deploy)` exemption in
+ * `workflow-policy.ts` must be narrow -- keyed on the exact file AND job
+ * name, not on shape alone. A different file or a different job with the
+ * identical privileged-on-untrusted-trigger shape must still be flagged.
+ */
+describe('untrustedPrivilegedUngatedJobs: the untrusted-trigger exemption is narrow', () => {
+  test('the same job name in a different file is NOT exempt', () => {
+    const workflow: Workflow = {
+      on: { workflow_run: { workflows: ['CI'] } },
+      permissions: { contents: 'read' },
+      jobs: { deploy: { env: { TOKEN: '${{ secrets.SOMETHING }}' } } },
+    };
+    expect(untrustedPrivilegedUngatedJobs('a-different-workflow.yml', workflow)).toEqual([
+      'deploy',
+    ]);
+  });
+
+  test('a different job name in deploy-production.yml is NOT exempt', () => {
+    const workflow: Workflow = {
+      on: { workflow_run: { workflows: ['CI'] } },
+      permissions: { contents: 'read' },
+      jobs: { 'some-other-job': { env: { TOKEN: '${{ secrets.SOMETHING }}' } } },
+    };
+    expect(untrustedPrivilegedUngatedJobs('deploy-production.yml', workflow)).toEqual([
+      'some-other-job',
+    ]);
+  });
 });
 
 describe('every workflow: least-privilege scaffolding', () => {
@@ -60,31 +85,16 @@ describe('every workflow: least-privilege scaffolding', () => {
 });
 
 /**
- * Regression test: `audit:workflows`, `test:workflow-authorization`,
- * `test:workflow-prompt-injection`, and `test:production-migration-gate`
- * are root-level `bun run` commands (root `.github/tests` is not a
- * Turborepo workspace, so `bun turbo test` never reaches them). Asserted
- * here, rather than only in the workflow YAML, so removing a step from
- * `ci.yml` fails a test instead of silently un-wiring the gate again.
+ * TRI-28 B11: `ciWiringViolations` (the invariant that all four root
+ * workflow-security commands stay wired into ci.yml) now lives in
+ * `workflow-policy.ts` and runs as part of `audit:workflows` itself,
+ * precisely so it does not stop enforcing if THIS suite's own step is
+ * removed from `ci.yml`. This is ordinary unit coverage of that function's
+ * correctness against the real file -- not the enforcement mechanism.
  */
-describe('ci.yml: root workflow-security gates are wired into CI', () => {
-  const { workflow } = loadWorkflow('ci.yml');
-
-  test('the lint-format job runs every root workflow-security gate', () => {
-    const job = workflow.jobs['lint-format'];
-    expect(job).toBeDefined();
-    const runCommands = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
-
-    for (const command of [
-      'bun run audit:workflows',
-      'bun run test:workflow-authorization',
-      'bun run test:workflow-prompt-injection',
-      'bun run test:production-migration-gate',
-    ]) {
-      expect(runCommands, `expected "${command}" to run in ci.yml's lint-format job`).toContain(
-        command,
-      );
-    }
+describe('ciWiringViolations: the real ci.yml has every root security gate wired in', () => {
+  test('reports no violations against the real ci.yml', () => {
+    expect(ciWiringViolations()).toEqual([]);
   });
 });
 
@@ -92,8 +102,9 @@ describe('ci.yml: root workflow-security gates are wired into CI', () => {
  * Inline-fixture regressions for `isAuthorizationGated`, independent of
  * which real workflow files exist. These pin the exact bypasses the check
  * must reject: a negated comparison, a job outside its own `needs:` chain,
- * a bare reference with no equality check, and disjunctive gates with an
- * alternate truth path.
+ * a bare reference with no equality check, disjunctive gates with an
+ * alternate truth path, and (TRI-28 B7) a cosmetic gate that satisfies
+ * every structural check while authorizing everybody or nobody.
  */
 function privilegedJob(
   overrides: Partial<Workflow['jobs'][string]> = {},
@@ -105,8 +116,19 @@ function privilegedJob(
   };
 }
 
+// A real authorize job: read-only, no secrets, and its output is actually
+// derived from `author_association` -- a concrete GitHub-provided trust
+// signal, not a value the job invents or an attacker supplies.
 function readOnlyJob(): Workflow['jobs'][string] {
-  return { permissions: { contents: 'read' }, 'timeout-minutes': 5 };
+  return {
+    permissions: { contents: 'read' },
+    'timeout-minutes': 5,
+    steps: [
+      {
+        run: 'echo "authorized=${{ contains(fromJson(\'["OWNER","MEMBER","COLLABORATOR"]\'), github.event.comment.author_association) }}" >> "$GITHUB_OUTPUT"',
+      },
+    ],
+  };
 }
 
 describe('isAuthorizationGated: requires a positive condition naming an actual needs: dependency', () => {
@@ -214,11 +236,134 @@ describe('isAuthorizationGated: requires a positive condition naming an actual n
 });
 
 /**
- * Regression test: `jobUsesSecrets()` must also detect a secret exposed
- * only through the job-level `env:` block, not only `job.secrets` or
- * step-level `with`/`env`/`run`. A job that leaks a secret only through
- * job-level `env:` would otherwise be misclassified as unprivileged and
- * pass `isAuthorizationGated()` checks without ever needing a gate.
+ * TRI-28 B7: a job whose `if:` structurally matches
+ * `needs.<job>.outputs.<x> == 'true'`, against an upstream job that holds
+ * no write permissions and no secrets, still is not authorization-gated
+ * unless that upstream job implements a recognizable authorization check.
+ */
+describe('isAuthorizationGated: rejects a cosmetic gate (TRI-28 B7)', () => {
+  test('rejects an authorize job that writes a hardcoded `true` output with no check at all', () => {
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [{ run: 'echo "authorized=true" >> "$GITHUB_OUTPUT"' }],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+  });
+
+  test('rejects an authorize job whose output is derived from attacker-controlled event text', () => {
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              run: 'echo "authorized=${{ contains(github.event.issue.title, \'approved\') }}" >> "$GITHUB_OUTPUT"',
+            },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+  });
+
+  test('accepts an authorize job that compares `github.actor` against an allowlist with `contains()`', () => {
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              run: 'echo "authorized=${{ contains(fromJson(\'[\\"alice\\",\\"bob\\"]\'), github.actor) }}" >> "$GITHUB_OUTPUT"',
+            },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
+  });
+
+  test('accepts delegation to a standardized reusable authorization workflow via `uses:`', () => {
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          uses: './.github/workflows/authorize.yml',
+          permissions: { contents: 'read' },
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
+  });
+});
+
+/**
+ * TRI-28 B2: `jobGrantsWrite` must compute the EFFECTIVE permissions of a
+ * job (`job.permissions ?? workflow.permissions`), not just its own
+ * job-level block. A job with no job-level `permissions:` inherits the
+ * workflow-level grant; previously this was invisible to the audit.
+ */
+describe('jobGrantsWrite: inherits workflow-level permissions (TRI-28 B2)', () => {
+  test('a job with no job-level permissions inherits a privileged workflow-level grant', () => {
+    const workflow: Workflow = {
+      permissions: { contents: 'write' },
+      jobs: { act: {} },
+    };
+    expect(jobGrantsWrite(workflow.jobs.act, workflow)).toBe(true);
+  });
+
+  test('a job-level permissions block overrides, rather than merges with, the workflow-level grant', () => {
+    const workflow: Workflow = {
+      permissions: { contents: 'write' },
+      jobs: { act: { permissions: { contents: 'read' } } },
+    };
+    expect(jobGrantsWrite(workflow.jobs.act, workflow)).toBe(false);
+  });
+
+  test('no permissions anywhere (job or workflow) is not a write grant', () => {
+    const workflow: Workflow = { jobs: { act: {} } };
+    expect(jobGrantsWrite(workflow.jobs.act, workflow)).toBe(false);
+  });
+
+  test('end-to-end: an untrusted-triggered job with only an inherited write grant and no secrets is flagged', () => {
+    // The exact false-negative construct from TRI-28 B2: on: issue_comment,
+    // a privileged top-level `permissions:`, and a job with no job-level
+    // permissions block and no literal `secrets.*` reference.
+    const workflow: Workflow = {
+      on: 'issue_comment',
+      permissions: { contents: 'write' },
+      jobs: { act: {} },
+    };
+    expect(untrustedPrivilegedUngatedJobs('fixture-b2.yml', workflow)).toEqual(['act']);
+  });
+});
+
+/**
+ * TRI-28 B3: `jobUsesSecrets()` must detect a secret exposed through
+ * bracket-form access (`secrets['NAME']`), the ambient `github.token`, and
+ * a workflow-level `env:` block — not only `job.secrets`, dot-form
+ * `secrets.NAME`, or job/step-level `with`/`env`/`run`.
  */
 describe('jobUsesSecrets: job-level env detection', () => {
   test('detects a secret referenced only in the job-level `env:` block', () => {
@@ -237,5 +382,39 @@ describe('jobUsesSecrets: job-level env detection', () => {
         steps: [{ run: 'echo hello' }],
       }),
     ).toBe(false);
+  });
+});
+
+describe('jobUsesSecrets: bracket-form access, github.token, and workflow-level env (TRI-28 B3)', () => {
+  test('detects bracket-form secret access: `secrets["DEPLOY_TOKEN"]`', () => {
+    expect(
+      jobUsesSecrets({
+        steps: [{ run: 'echo "${{ secrets[\'DEPLOY_TOKEN\'] }}"' }],
+      }),
+    ).toBe(true);
+  });
+
+  test('detects the ambient `github.token`', () => {
+    expect(
+      jobUsesSecrets({
+        steps: [{ env: { GH_TOKEN: '${{ github.token }}' }, run: 'gh api /repos' }],
+      }),
+    ).toBe(true);
+  });
+
+  test('detects a secret named only in the workflow-level `env:` block, not the job', () => {
+    const workflow: Workflow = {
+      env: { TURBO_TOKEN: '${{ secrets.TURBO_TOKEN }}' },
+      jobs: { build: { steps: [{ run: 'bunx turbo build' }] } },
+    };
+    expect(jobUsesSecrets(workflow.jobs.build, workflow)).toBe(true);
+  });
+
+  test('does not flag a job with no secrets anywhere, including no workflow-level env secret', () => {
+    const workflow: Workflow = {
+      env: { NODE_ENV: 'production' },
+      jobs: { build: { steps: [{ run: 'bunx turbo build' }] } },
+    };
+    expect(jobUsesSecrets(workflow.jobs.build, workflow)).toBe(false);
   });
 });
