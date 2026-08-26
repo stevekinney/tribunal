@@ -14,7 +14,19 @@ Linear is the source of truth for what to do. This document is the source of tru
 
 **Protokit is a read-only donor.** It is a standalone Bun MCP server template whose MCP and OAuth implementation is being copied into this repository. It does not change: never commit to it, never open a pull request against it.
 
-**Its availability is an open prerequisite.** The reference checkout is `~/Developer/protokit` on the author's machine, and it carries uncommitted local modifications. That makes every port issue unexecutable on a fresh checkout, a hosted agent, or CI. Before the port issues (TRI-27 onward) can run anywhere else, the donor must be pinned to something reproducible: an immutable repository and revision, or the required material vendored into this repository. Tracked as **TRI-67**, which natively blocks TRI-27. Record the pinned revision here once decided.
+**Its availability is settled.** TRI-67 chose option (a), pin an immutable revision. The donor is pinned to `6eb354e43ecc48efdac8abe59daea82dcdab88fd` on [`stevekinney/protokit`](https://github.com/stevekinney/protokit), reachable on `origin/main`. Use that revision for every port issue; do not read the author's working tree.
+
+**The premise that made TRI-67 hard is gone, and should not be relitigated.** When this project was scoped, `~/Developer/protokit` carried roughly 85 uncommitted local modifications. That is what made the prerequisite real: no fresh checkout, hosted agent, or CI run could execute the port issues, and the audit that produced this project had read the working tree rather than any commit. That working tree has since been committed and pushed. `a67383b` added the embedding seams and `6eb354e4` replaced `@t3-oss/env-core` with `@lostgradient/environmentalist`, and the checkout is now clean at exactly `origin/HEAD`. Every file TRI-67 named as dirty — `oauth-routes.ts`, `mcp-handler.ts`, `redis-client.ts`, `google-authentication.ts`, and the `env.ts` modules — is committed at the pinned revision.
+
+Verified from a clean clone rather than reasoned about:
+
+```
+git clone https://github.com/stevekinney/protokit.git && git checkout 6eb354e4   # exit 0
+```
+
+**Option (c) was not taken, and nothing here forecloses it.** Publishing the reusable engine as a package both repositories consume remains available later, but it is materially different work with a different owner: it would give Protokit an owning Linear team it currently lacks and turn TRI-27 from a port into a dependency addition. Option (a) is reversible, so that call can be made on its merits rather than as a prerequisite to unblocking the port tier.
+
+**Line references in TRI issue bodies are indicative, not exact.** Locate cited code by symbol name, not line number. Spot-checked at the pinned revision: `packages/mcp/src/env.ts:37-54` is an exact match, landing on the production refusal of `LOG_CONTENT_DIAGNOSTICS_UNTIL` that TRI-44 criterion 8 describes; `applications/web/src/routes/oauth-routes.ts:1204` lands inside `revokeOauthRefreshTokenFamily`, the right subject for TRI-38's refresh and revoke work; `applications/web/src/lib/production-startup-requirements.ts:462-469` lands on the Google credential production requirement, inside TRI-57's module though on content this project deletes by decision. One does not resolve: `applications/web/src/env.ts:37-54` now lands on Railway replica-identifier resolution, because `6eb354e4` rewrote 123 lines of that file.
 
 A `repo:protokit` label exists in Linear and is applied to nothing. If that ever changes, note that Protokit has no owning Linear team and routing must be decided first.
 
