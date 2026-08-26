@@ -1,6 +1,8 @@
 ---
 paths:
   - applications/web/src/lib/server/database/**
+  - applications/web/src/lib/server/review/**
+  - packages/mcp/src/**
 ---
 
 # Database patterns
