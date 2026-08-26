@@ -1,13 +1,11 @@
 ---
 paths:
-  - src/lib/server/github/**
-  - src/routes/api/webhooks/**
+  - applications/web/src/lib/server/github/**
+  - applications/web/src/lib/server/github-context.ts
+  - applications/web/src/routes/api/webhooks/**
+  - applications/web/src/routes/login/**
+  - applications/web/src/routes/connect/github/**
   - packages/github/src/webhooks/**
-  - src/routes/api/webhooks/**
-  - src/routes/login/**
-  - src/routes/connect/github/**
-  - src/lib/server/github/**
-  - src/lib/server/github-context.ts
   - .github/workflows/**
 ---
 

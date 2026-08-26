@@ -12,7 +12,9 @@ Linear is the source of truth for what to do. This document is the source of tru
 
 **This repository is where all work happens.** Every one of the 43 issues is labeled `repo:tribunal`.
 
-**`~/Developer/protokit` is a read-only donor.** It is a standalone Bun MCP server template whose MCP and OAuth implementation is being copied into this repository. It does not change: never commit to it, never open a pull request against it. It carries uncommitted local modifications that predate this work and are not yours to resolve. Add it to the session as an additional read-only directory.
+**Protokit is a read-only donor.** It is a standalone Bun MCP server template whose MCP and OAuth implementation is being copied into this repository. It does not change: never commit to it, never open a pull request against it.
+
+**Its availability is an open prerequisite.** The reference checkout is `~/Developer/protokit` on the author's machine, and it carries uncommitted local modifications. That makes every port issue unexecutable on a fresh checkout, a hosted agent, or CI. Before the port issues (TRI-27 onward) can run anywhere else, the donor must be pinned to something reproducible: an immutable repository and revision, or the required material vendored into this repository. Resolve that before starting TRI-27, and record the pinned revision here.
 
 A `repo:protokit` label exists in Linear and is applied to nothing. If that ever changes, note that Protokit has no owning Linear team and routing must be decided first.
 
@@ -55,7 +57,7 @@ Never use `--no-verify`, `HUSKY=0`, or `CI=1` to get past a hook. Never raise a 
 Each exists because something specific broke in Protokit. Porting the code without the invariant silently regresses it, and none is obvious from reading the code.
 
 - **`SKIP_ENV_VALIDATION` is banned outright** (TRI-44). Bypassing the Zod schema also bypasses its `.default()` values — that produced `undefined` window seconds → `NaN` → the literal string `"NaN"` → Redis's Lua `tonumber` parsing it as a float into `ZREMRANGEBYSCORE`, 500ing every rate-limited route.
-- **`NODE_ENV` has no default and is read in bracket-literal form** (TRI-44). Bun's bundler constant-folds `process.env.NODE_ENV` in dot-access form at build time. A Dockerfile setting `ENV NODE_ENV=production` in the builder stage welded `"production"` into every shipped bundle, making every fail-closed runtime check vacuous. This repository builds with `bun build --target bun`.
+- **`NODE_ENV` has no default, and build-time inlining must be checked against the real artifact** (TRI-44). In Protokit, Bun's bundler constant-folded `process.env.NODE_ENV` in dot-access form, so a Dockerfile setting `ENV NODE_ENV=production` in the builder stage welded `"production"` into every shipped bundle and made every fail-closed runtime check vacuous. The bundlers differ here: `applications/web` builds with `svelte-kit sync && vite build`, while `applications/engine` and `applications/proxy` use `bun build --target bun`. Since the MCP server mounts inside `applications/web`, TRI-44 must verify the invariant against the **Vite/SvelteKit production artifact** that actually serves `/mcp`, not against a Bun-bundled one. Do not assume either bundler's inlining behavior; establish it empirically for the artifact under test.
 - **Never `z.coerce.boolean()` on a security-relevant flag** (TRI-44). `Boolean("false")` is `true`, so setting a flag to `"false"` silently enabled it.
 - **Production refuses `NODE_TLS_REJECT_UNAUTHORIZED=0`** (TRI-44). It defeats every certificate check process-wide.
 - **`sslmode=verify-full`, never `require`** (TRI-44). `require` encrypts without verifying the certificate; `verify-ca` skips hostname verification.

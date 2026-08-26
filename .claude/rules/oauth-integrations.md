@@ -1,13 +1,13 @@
 ---
 paths:
-  - src/routes/connect/**
+  - applications/web/src/routes/connect/**
 ---
 
 # GitHub connect flow patterns
 
 Before editing paths in this rule, load `$github-integration-rules` and apply its constraints.
 
-Scope: the two connect flows under `src/routes/connect/github/`. The GitHub App **installation** flow (`connect/github`, `connect/github/callback`) binds an installation to a user. The GitHub OAuth **account** flow (`connect/github/account`, `connect/github/account/callback`) stores per-user API tokens in `oauth_connection`.
+Scope: the two connect flows under `applications/web/src/routes/connect/github/`. The GitHub App **installation** flow (`connect/github`, `connect/github/callback`) binds an installation to a user. The GitHub OAuth **account** flow (`connect/github/account`, `connect/github/account/callback`) stores per-user API tokens in `oauth_connection`.
 
 Sign-in itself is Neon Auth and is not covered here. For session handling, `returnTo` sanitization, and the Neon Auth bridge, see `authentication.md`.
 
