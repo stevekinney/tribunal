@@ -1,8 +1,6 @@
 ---
 paths:
   - .github/workflows/**
-  - deployment/**
-  - scripts/deploy.ts
 ---
 
 # GitHub Actions workflow rules

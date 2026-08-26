@@ -1,10 +1,8 @@
 ---
 paths:
   - applications/web/src/routes/connect/**
-  - applications/web/src/routes/oauth/**
   - applications/web/src/lib/server/auth/**
   - applications/web/src/hooks.server.ts
-  - packages/mcp/src/**
 ---
 
 # GitHub connect flow patterns
