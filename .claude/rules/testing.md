@@ -3,13 +3,12 @@ paths:
   - src/**/*.test.ts
   - src/**/*.svelte.test.ts
   - src/**/*.spec.ts
-  - src/**/*.svelte.spec.ts
+  - src/**/*.svelte.test.ts
   - test/**
   - test/end-to-end/**
-  - documentation/examples/**
   - playwright.config.*
-  - vitest.config*.*
-  - vitest.setup.*
+  - "**/vitest.config*.*"
+  - "**/vitest.configuration*.*"
 ---
 
 # Testing

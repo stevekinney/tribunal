@@ -1,7 +1,7 @@
 ---
 paths:
   - src/lib/server/database/**
-  - src/lib/server/db/**
+  - packages/database/**
   - packages/database/drizzle.config.ts
 ---
 

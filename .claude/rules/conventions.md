@@ -1,7 +1,6 @@
 ---
 paths:
   - src/**
-  - workers/**
   - scripts/**
   - test/**
   - documentation/**
