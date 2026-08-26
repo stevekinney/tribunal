@@ -18,7 +18,11 @@ This is already decided by the locked project decision ("Identity: Neon Auth wit
 
 **One ordering requirement for TRI-31, and it is a requirement rather than an open question.** The MCP mount runs through `createApplicationMount()`, which is inserted into `hooks.server.ts`'s `sequence()`. If it is placed _before_ `authHandle`, an intercepted `/oauth/authorize` request can be answered by the mount without ever invoking the downstream `resolve`, so `authHandle` never runs and `event.locals.user` is never populated. The consent page would then be handling an unauthenticated request, or would need its own second validation path — the duplicate JWT validator this project's locked decisions rule out.
 
-So: **`authHandle` must run before `createApplicationMount()` in the `sequence()`, and the mounted handlers must consume the locals it populates rather than validating a token themselves.** Both halves need a test — one asserting the ordering, one asserting a mounted consent request sees `event.locals.user` — because the ordering is a single line in `hooks.server.ts` that a later edit can silently invert with no other symptom.
+So: **the mount must come after every identity-populating handle in the `sequence()`, not merely after `authHandle`, and the mounted handlers must consume the locals those handles populate rather than validating a token themselves.**
+
+"After `authHandle`" is not sufficient, and the reason is concrete. The current sequence is `correlationHandle, e2eHandle, respondWithJsonForApiEndpoints, authHandle, devAuthBypassHandle` — and `devAuthBypassHandle` is what populates the synthetic user when `DEV_AUTH_BYPASS=1`. A mount inserted directly after `authHandle` would short-circuit before the bypass runs, leaving `/oauth/authorize` unauthenticated in exactly the preview environment the bypass exists to serve. The rule is therefore positional relative to the _last_ identity handle, and it must be restated if another is ever added.
+
+Three things need a test: the mount follows every identity-populating handle, a mounted consent request sees `event.locals.user`, and the same holds under `DEV_AUTH_BYPASS=1`. The ordering is a single line in `hooks.server.ts` that a later edit can silently invert with no other symptom.
 
 Calling this a mechanical detail, as an earlier draft did, was wrong: the issue scopes itself to how this GET identifies its user, and hook ordering decides whether it identifies one at all.
 
@@ -131,7 +135,7 @@ Two properties Protokit's design provides are not fully preserved, and both are 
 Checked directly, not assumed: Tribunal's web application has no `SESSION_SIGNING_SECRET`, no same-purpose secret under a different name, and no existing `_PREVIOUS`-style rotation-overlap mechanism for any secret. The two signing/encryption secrets that do exist serve unrelated purposes and do not collide:
 
 - `ENCRYPTION_KEY`—AES key used by `applications/web/src/lib/server/encryption.ts` to encrypt OAuth connection tokens at rest (GitHub access/refresh tokens in `oauthConnection`), and separately by `packages/github/src/reviews/read-tokens.ts`. Encryption, not signing; no rotation-overlap variable.
-- `PROXY_SIGNING_KEY`—HMAC key used by `applications/proxy` to sign and verify capability tokens for sandbox egress requests. A different application entirely, unrelated to browser sessions or OAuth consent.
+- `PROXY_SIGNING_KEY`—HMAC key for the capability tokens that authorize sandbox egress. Unrelated to browser sessions or OAuth consent, but not confined to one application either: `applications/engine` **signs** with it when minting each run's capability token, and `applications/proxy` **verifies** with it. It is a shared engine-to-proxy trust boundary, so it must be provisioned and rotated across both applications together — updating only one side immediately invalidates every token the other produced.
 
 ### One near-identical name already occupies the configuration surface
 

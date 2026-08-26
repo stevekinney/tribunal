@@ -1,5 +1,11 @@
 ---
 paths:
+  - applications/web/src/hooks.server.ts
+  - applications/web/src/lib/server/auth/**
+  - applications/web/src/lib/auth/**
+  - applications/web/src/routes/login/**
+  - applications/web/src/routes/logout/**
+  - applications/web/src/routes/onboarding/**
   - src/routes/login/**
   - src/routes/onboarding/**
   - src/routes/logout/**
