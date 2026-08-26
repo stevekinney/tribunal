@@ -29,7 +29,9 @@ the TOML and run `flyctl deploy . --config deployment/fly/engine.toml` to
 flip it. Flipping the flag is a redeploy, not a runtime toggle—there is no
 admin panel or database row involved. The value is read once at process start (`parseEngineEnvironment`) and threaded through to where it is actually enforced, and the precise layer matters because it is the precedent `MCP_ENABLED` should follow.
 
-The enforcement is **not** in the scheduler. `createReviewIntentKickScheduler` still calls `runtime.drainReviewIntents()` when the flag is false — its own disabled-scheduler test asserts that call happens. The effective gate is one layer down: `applications/engine/src/index.ts` passes `reviewsEnabled: environment.REVIEWS_ENABLED` into `createDatabaseReviewIntentPort`, and that port's `claimNextReviewIntent` returns `null` outright when `options.reviewsEnabled === false` (`applications/engine/src/workflows/review-intent-port.ts`). The drain loop still runs; it simply never gets an intent to work on.
+The enforcement is **not** in the scheduler. `createReviewIntentKickScheduler` still calls `runtime.drainReviewIntents()` when the flag is false — its own disabled-scheduler test asserts that call happens. The effective gate is one layer down: `applications/engine/src/index.ts` passes `reviewsEnabled` into `createReviewIntentKickScheduler` — the scheduler, which is not the gate. The gate is wired separately: `createReviewIntentConsumer` in `applications/engine/src/workflows/runtime-ports.ts` parses `REVIEWS_ENABLED` **independently**, with its own `parseBooleanFlag` call, and passes the result to `createDatabaseReviewIntentPort`, whose `claimNextReviewIntent` returns `null` outright when `options.reviewsEnabled === false`.
+
+Note what that means: `REVIEWS_ENABLED` is read and parsed in **two separate places**, for two different consumers, with no shared derivation. That is worth carrying to `MCP_ENABLED` as a warning rather than a pattern — two independent parses of one flag is exactly how the two ends drift apart. The drain loop still runs; it simply never gets an intent to work on.
 
 The lesson to carry to `MCP_ENABLED` is that the flag is enforced at the point where the privileged thing is _acquired_, not at the outer loop that looks like the entry point. An outer-layer check that leaves the inner acquisition ungated is the shape this codebase has already shipped.
 
@@ -80,14 +82,20 @@ Each is binary and runs against the deployed production host. They are **not** a
 2. **The gate is at the acquisition point, not an outer layer.** A test asserts the flag is read where the mounted handler is acquired, and fails if that read is removed. This is check 1's structural counterpart, and it exists because the `REVIEWS_ENABLED` precedent shows the outer loop still running while the inner acquisition is what actually gates. This one is environment-independent and can run in CI.
 3. **The refresh-replay notification reaches its sink.** Emit a synthetic replay event and confirm it arrives where a human sees it. An alert wired to nothing is indistinguishable from an alert that never fired, and this is the one alert this release depends on.
 
-**Stage two: exercise the disable path before it is needed.** Flip the flag on, confirm the surface responds, then disable it using the durable override from the Disabling section and confirm every route from check 1 returns to its dark response. Then re-enable deliberately. A kill switch first exercised during an incident is an untested code path in the worst possible conditions, and this is the only opportunity to run it without one.
+**Stage two: a temporary enabled window, used to run every enabled-state check and to exercise the disable path.** The surface must not be left publicly enabled before its authorization checks have passed, so this window ends with the surface off again, and the final enable happens only after every check below and human approval have succeeded.
 
-**Stage three, with `MCP_ENABLED = "true"`.**
+Flip the flag on, then run all of:
 
-4. **The surface serves what it should.** `/mcp` responds to an authenticated request, both discovery documents return their metadata, and the OAuth endpoints return their real responses rather than the disabled one. This is the positive counterpart to check 1 and needs its own expected status per route.
-5. **Nothing that should stay closed opened.** Unauthenticated and under-scoped requests still fail, and `conformance:read` is still unobtainable. Enabling the surface must not be the moment an authorization check quietly stops applying.
+4. **The surface serves what it should.** `/mcp` responds to an authenticated request, both discovery documents return their metadata, and the OAuth endpoints return their real responses rather than the disabled one. The positive counterpart to check 1, with its own expected status per route.
+5. **Nothing that should stay closed opened.** Unauthenticated and under-scoped requests still fail, and `conformance:read` remains unobtainable. Enabling must not be the moment an authorization check quietly stops applying.
+6. **Refresh-token reuse is rejected.** Exchange a refresh token, then replay the old one, and require rejection with no second access token minted. This check exists because the Alerting section establishes that a defect which silently _accepts_ reuse may emit no `refresh_replay` event at all — so without an active probe, every other gate here can pass while the deployment already meets the rollback condition. Nothing else on this list would notice.
+7. **Cross-user subscription isolation holds.** With two separate fully-scoped users subscribed, confirm each receives only its own events. The shared `McpHttpHandler` failure the invariant list records is invisible to every other check here, and a cross-user delivery is an immediate rollback condition further down this document — it must not be discovered in production.
 
-Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3 and 5 and the stage-two exercise belong to TRI-60. None is satisfied by a merged pull request.
+Then **disable the surface using the durable override** from the Disabling section, and confirm every route from check 1 returns to its dark response. A kill switch first exercised during an incident is an untested code path in the worst possible conditions, and this window is the only opportunity to run it without one.
+
+**Stage three: enable for real,** after checks 4 through 7 have passed and a human has approved. Re-run check 4 once to confirm the final state serves.
+
+Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3, 5, 6, 7 and the stage-two disable exercise belong to TRI-60. None is satisfied by a merged pull request.
 
 `REVIEWS_ENABLED`'s open-by-default schema value only stays safe because a
 human has to remember the TOML also says `false`—the two declarations can
@@ -202,12 +210,18 @@ Calling release rollback the durable fallback was wrong, and it is worth being p
 1. **Stop the bleeding out of band.** Apply the config-only override, whatever TRI-60 confirms it to be, to take the surface down now without waiting on CI.
 2. **Land the flag change on `main`.** Set `MCP_ENABLED = "false"` in `deployment/fly/web.toml` and merge it. This is what makes the disable survive: the next automatic deploy now redeploys the _disabled_ state, so the automation reinforces the decision instead of reversing it.
 
+**This two-step procedure assumes the flag actually covers the surface. When it does not, it makes things worse, and that is the case release rollback exists for.** If `/mcp` was disabled precisely because the gate turned out not to cover every mounted route, then committing `MCP_ENABLED = "false"` does nothing for the uncovered routes — and the next automatic deploy replaces the safe pre-MCP release with the vulnerable build carrying an inert flag. The disable would appear to be holding while the exposure returned.
+
+In that branch the flag is not the remedy. Either revert the mount itself so the vulnerable build is not what gets deployed, or pause the production deploy workflow until the surface is genuinely fixed. Decide which branch you are in before choosing: **is the flag failing to be applied, or failing to cover?** The first is a durability problem and the two steps above solve it; the second is a code problem and no configuration value will.
+
 Step 1 without step 2 is a timer counting down to the next merge, with nothing announcing when it expires. If step 2 cannot be merged promptly, the automation itself must be paused, and the procedure should say so explicitly rather than leaving an operator to discover the reversal from a production incident.
 
 ### Binary condition
 
-Recommendation: disable `/mcp` (flag flip first, escalate to release
-rollback if the flag path does not resolve it) on any single confirmed
+Recommendation: disable `/mcp` — **using the config-only override first**,
+not the TOML flag flip, then landing the committed change and escalating to
+release rollback if the flag path does not resolve it, exactly as the
+Disabling section sequences it — on any single confirmed
 occurrence of an authentication or authorization boundary failure,
 concretely, any of:
 
@@ -259,6 +273,8 @@ access than "the person deploying." Nothing in the current codebase or
 documentation defines that narrower boundary today.
 
 ## Alerting
+
+Every claim below about Protokit's RUNBOOK conditions, event names, and source locations is read from the pinned donor revision `6eb354e43ecc48efdac8abe59daea82dcdab88fd` on [`stevekinney/protokit`](https://github.com/stevekinney/protokit), fixed by TRI-67. Verify against that revision rather than any local checkout, and locate cited code by symbol rather than line number — the same commit rewrote parts of the donor's environment modules.
 
 ### The five conditions, and Tribunal's current alerting surface
 
@@ -342,8 +358,20 @@ topic.
 ### Sink
 
 Recommendation: a new, minimal outbound notification, scoped to exactly
-this one alert. Concretely, a Slack incoming webhook fired only when a
-`refresh_replay` event is logged, carrying nothing beyond the token family
+this one alert, and **deduplicated per token family**.
+
+The deduplication is not a nicety. The Binary condition section removed the
+service-wide outage vector by refusing to let one replay event disable `/mcp`,
+but forwarding every event to a chat channel leaves the same client-controlled
+lever pointed at the humans instead of the service: an authorized client can
+resubmit one already-rotated token in a loop and flood the channel, which ends
+with the alert muted and the next real replay unseen. Notify on the **first**
+occurrence per token family, suppress or rate-limit the rest, and keep
+recording every occurrence in structured logs so the count survives for
+investigation.
+
+Concretely, a Slack incoming webhook fired on the first
+`refresh_replay` event per family, carrying nothing beyond the token family
 id already permitted in that log line, no prompt or tool content. This is
 the only sink this document can name concretely: it does not depend on
 verifying a piece of existing infrastructure this codebase does not have,
