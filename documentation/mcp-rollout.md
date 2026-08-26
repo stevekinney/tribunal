@@ -27,11 +27,11 @@ the same rule in prose: reviews stay off until every item under "Health
 Gates Before Live Reviews" passes, and only then does an operator hand-edit
 the TOML and run `flyctl deploy . --config deployment/fly/engine.toml` to
 flip it. Flipping the flag is a redeploy, not a runtime toggle—there is no
-admin panel or database row involved. The value is read once at process
-start (`parseEngineEnvironment`) and threaded through to the one place it
-is enforced: `createReviewIntentKickScheduler`'s drain loop in
-`applications/engine/src/index.ts`, which never claims queued review
-intents while `reviewsEnabled` is false.
+admin panel or database row involved. The value is read once at process start (`parseEngineEnvironment`) and threaded through to where it is actually enforced, and the precise layer matters because it is the precedent `MCP_ENABLED` should follow.
+
+The enforcement is **not** in the scheduler. `createReviewIntentKickScheduler` still calls `runtime.drainReviewIntents()` when the flag is false — its own disabled-scheduler test asserts that call happens. The effective gate is one layer down: `applications/engine/src/index.ts:160` passes `reviewsEnabled: environment.REVIEWS_ENABLED` into `createDatabaseReviewIntentPort`, and `claimNextReviewIntent` returns `null` outright when `options.reviewsEnabled === false` (`applications/engine/src/workflows/review-intent-port.ts:67-68`). The drain loop still runs; it simply never gets an intent to work on.
+
+The lesson to carry to `MCP_ENABLED` is that the flag is enforced at the point where the privileged thing is _acquired_, not at the outer loop that looks like the entry point. An outer-layer check that leaves the inner acquisition ungated is the shape this codebase has already shipped.
 
 Two more flags in the same schema follow the same shape with the safer
 default baked into the schema itself, not just the TOML:
@@ -65,9 +65,21 @@ Mirror the mechanism, depart on the default. Name the flag `MCP_ENABLED`,
 defaulting to `false` in the schema. Ship `deployment/fly/web.toml` with
 `MCP_ENABLED = "false"` from the first deploy that includes the mounted
 surface, the same committed non-secret `[env]` value `REVIEWS_ENABLED`
-already uses, flipped to `"true"` only after the launch gates in the
-Disabling `/mcp` in production and Alerting sections below are satisfied
-and a human approves the flip.
+already uses, flipped to `"true"` only after the gates below pass and a
+human approves the flip.
+
+### Pre-enable gates
+
+These are the gates. An earlier draft of this document pointed at the Disabling and Alerting sections as though they contained launch gates; they do not — they describe when to turn the surface off and which alerts to wire. Making nonexistent gates the sole prerequisite for `MCP_ENABLED = "true"` would let an operator expose the surface without ever proving the flag is wired, which is the exact failure this document exists to prevent.
+
+Each of these is binary and must be run against the deployed production host with `MCP_ENABLED = "false"`, then **re-run after flipping it to `"true"`**, the way the existing live-review procedure does:
+
+1. **The surface is fully dark while the flag is false.** Every one of `/mcp`, the OAuth authorize, token, refresh, revoke, and registration endpoints, and both discovery metadata documents returns the disabled response, not a 200 and not a stack trace. Enumerate the paths from the route table rather than from memory; a path nobody remembered to gate is the whole risk.
+2. **The gate is at the acquisition point, not an outer layer.** A test asserts the flag is read where the mounted handler is acquired, and fails if that read is removed. This is criterion 1's structural counterpart, and it exists because the `REVIEWS_ENABLED` precedent shows the outer loop still running while the inner acquisition is what actually gates.
+3. **The refresh-replay notification reaches its sink.** Emit a synthetic replay event and confirm it arrives where a human sees it. An alert wired to nothing is indistinguishable from an alert that never fired, and this is the one alert this release depends on.
+4. **The disable path works, end to end, before it is needed.** Exercise the durable override from the Disabling section against production and confirm the surface goes dark. A kill switch first exercised during an incident is an untested code path in the worst conditions.
+
+Gates 1 and 2 belong to whichever issue implements the flag. Gates 3 and 4 belong to TRI-60. None of them is satisfied by a merged pull request.
 
 `REVIEWS_ENABLED`'s open-by-default schema value only stays safe because a
 human has to remember the TOML also says `false`—the two declarations can
@@ -160,6 +172,23 @@ Two disable mechanisms exist once `MCP_ENABLED` ships, at different layers:
   would not be trustworthy, and the only safe move is reverting to a build
   that never mounted the surface at all.
 
+### The flag flip as written is not durable, and that is a defect in this procedure
+
+Two facts about how this repository deploys make the TOML edit above unsafe to rely on during an incident, and both were verified rather than assumed:
+
+- `flyctl deploy . --config deployment/fly/web.toml` builds from the repository root, as `scripts/deploy.ts` documents. An operator whose checkout differs from production therefore ships that checkout alongside the flag change. The mechanism intended to change one value can change the running code.
+- `.github/workflows/deploy-production.yml` triggers on `workflow_run` of CI on `main` with `conclusion == 'success'`. **Every successful main build redeploys production automatically.** If the flag edit is local-only, the next merge to `main` silently redeploys committed `MCP_ENABLED = "true"` and reopens the surface, with no operator action and no signal that it happened.
+
+So the disable procedure needs a durable, config-only override that an automated deploy cannot undo. This document does not settle which mechanism, because the candidate needs verifying against Fly's actual precedence rules and TRI-60 owns production configuration. **What it does require is that the mechanism satisfy three properties, and that TRI-60 not consider itself finished until one does:**
+
+1. It changes configuration only, never the running image.
+2. It survives an automatic redeploy triggered by a subsequent merge to `main`.
+3. Turning it back on is a deliberate act, not a side effect of the next deploy.
+
+The obvious candidate is a Fly secret shadowing the `[env]` value, since secrets are set out of band and are not rewritten by a deploy. That must be _confirmed_ — that a secret genuinely takes precedence over the same key in `[env]` in `web.toml`, and that a subsequent `flyctl deploy` does not clear it — before anyone relies on it in an incident. An unverified kill switch is worse than a documented manual one, because it will be trusted at the exact moment it matters.
+
+Until that is confirmed, the honest fallback is release rollback, which is durable by construction: it changes the deployed release, and the auto-deploy on `main` cannot silently reverse it without a new merge.
+
 ### Binary condition
 
 Recommendation: disable `/mcp` (flag flip first, escalate to release
@@ -247,14 +276,16 @@ The five conditions from the issue, evaluated:
 
 Wire refresh-token replay for this release. Defer the other four.
 
-Refresh replay is the one condition that needs no rate aggregation,
-dashboard, or pre-existing baseline; a single structured log line is both
-sufficient signal and, per the Binary condition section above, already the
-recommended trigger for disabling `/mcp` outright. Wiring it once serves
-both purposes: the alert and the rollback trigger are the same detection
-mechanism, so there is no separate alerting investment beyond routing that
-one log event somewhere a human sees it before the next request pattern
-makes the decision for them.
+Refresh replay is the one condition that needs no rate aggregation, dashboard, or pre-existing baseline: a single structured log line is sufficient signal, and it needs no investment beyond routing that one event somewhere a human sees it.
+
+**But the alert and the rollback trigger are not the same event, and conflating them is a mistake.** A correctly implemented rotation flow _detects and rejects_ reuse before emitting `refresh_replay`, so that log line is evidence of a **rejected** attempt — which is the control working, not failing. The Binary condition section is deliberately narrower: it requires a token **accepted** a second time.
+
+Two things follow, and both matter:
+
+- **Do not make one `refresh_replay` line disable `/mcp`.** Any authorized client could then provoke a service-wide outage by deliberately replaying its own rotated token. That is a denial-of-service vector handed to every client.
+- **Do not treat the absence of `refresh_replay` as evidence of health.** The defect that actually meets the rollback condition — a flow that silently _accepts_ reuse — may emit no replay event at all, precisely because nothing detected it.
+
+So: alert on rejected replay attempts, because a burst of them is a real signal worth a human's attention. Require separate evidence that acceptance occurred before triggering rollback. Whatever detects acceptance is a different check from the one that emits this log line, and TRI-38 owns building it.
 
 The remaining four are deferred with distinct reasons, not one blanket
 "later":
