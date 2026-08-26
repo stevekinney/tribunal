@@ -16,13 +16,24 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(deploy).toBeDefined();
   });
 
+  /**
+   * TRI-28 C7: the previous version only checked `concurrency.group` was
+   * truthy. Changing it to a per-run value like
+   * `production-${{ github.run_id }}` keeps that check passing -- the group
+   * is still a non-empty string and cancellation is still disabled -- while
+   * every run gets its own, distinct concurrency group, so production runs
+   * stop being serialized at all: concurrent migrations and interleaved
+   * service deploys against the same environment become possible. This
+   * asserts the known stable group value, not merely that some value is
+   * present.
+   */
   test('runs are serialized with a concurrency group that never cancels an in-flight migration', () => {
     const concurrency = workflow.concurrency as {
       group?: string;
       'cancel-in-progress'?: boolean;
     };
     expect(concurrency).toBeDefined();
-    expect(concurrency.group).toBeTruthy();
+    expect(concurrency.group).toBe('production-deploy');
     expect(concurrency['cancel-in-progress']).toBe(false);
   });
 
@@ -87,6 +98,54 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(verifyStep).toBeDefined();
     expect(verifyStep?.run ?? '').toMatch(/origin\/main/);
     expect(verifyStep?.run ?? '').toMatch(/exit 1/);
+  });
+
+  /**
+   * TRI-28 C6: the previous version of this test inspected only two
+   * substrings of the verify step's own script. Moving the step after a
+   * Fly deployment or the migration, giving it `continue-on-error: true`,
+   * or flipping its `if:` to skip `workflow_run` executions all left those
+   * two substring checks passing while defeating the gate -- a queued older
+   * successful main run could then migrate and deploy stale code. This
+   * asserts the step precedes EVERY Fly deploy step AND the migration step
+   * (migrating with a stale, pre-verified commit is exactly as bad as
+   * deploying one), and that it retains the exact fail-closed execution
+   * controls that make it a real pre-deploy gate rather than merely present
+   * text: it must run precisely on `workflow_run` executions (never be
+   * flipped to skip them) and must not be allowed to continue past its own
+   * failure.
+   */
+  test('the current-main verification step precedes every deploy step and cannot be skipped or softened', () => {
+    const steps = deploy.steps ?? [];
+    const verifyIndex = steps.findIndex(
+      (step) => step.name === 'Verify deploy commit is current main',
+    );
+    const migrateIndex = steps.findIndex((step) => step.run === 'bun run db:migrate');
+    const flyDeployIndices = steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => (step.run ?? '').includes('flyctl deploy'))
+      .map(({ index }) => index);
+
+    expect(verifyIndex).toBeGreaterThanOrEqual(0);
+    expect(migrateIndex).toBeGreaterThanOrEqual(0);
+    expect(flyDeployIndices.length).toBeGreaterThan(0);
+
+    expect(verifyIndex, 'verify step must precede the migration step').toBeLessThan(migrateIndex);
+    for (const flyDeployIndex of flyDeployIndices) {
+      expect(verifyIndex, 'verify step must precede every Fly deploy step').toBeLessThan(
+        flyDeployIndex,
+      );
+    }
+
+    const verifyStep = steps[verifyIndex];
+    expect(
+      verifyStep?.if,
+      'the verify step must run precisely on workflow_run executions, never be flipped to skip them',
+    ).toBe("github.event_name == 'workflow_run'");
+    expect(
+      verifyStep?.['continue-on-error'],
+      'the verify step must remain fail-closed',
+    ).toBeUndefined();
   });
 
   test('migrations run against a secret-sourced database URL, never a hardcoded connection string', () => {

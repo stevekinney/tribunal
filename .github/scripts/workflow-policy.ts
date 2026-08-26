@@ -53,6 +53,7 @@ export interface WorkflowStep {
   name?: string;
   uses?: string;
   run?: string;
+  shell?: string;
   with?: Record<string, unknown>;
   env?: Record<string, unknown>;
   if?: string;
@@ -71,6 +72,11 @@ export interface WorkflowJob {
   env?: Record<string, unknown>;
   uses?: string;
   steps?: WorkflowStep[];
+  // Left loose (rather than a fully-typed `container.env`/`container.credentials`
+  // shape) so `jobUsesSecrets` below can stringify whatever expression-bearing
+  // fields either object actually carries in a real workflow (TRI-28 C3).
+  container?: Record<string, unknown>;
+  services?: Record<string, unknown>;
 }
 
 export interface Workflow {
@@ -158,13 +164,20 @@ const SECRET_REFERENCE_PATTERN = /\bsecrets(?:\.\w+|\[)|\bgithub\.token\b/;
  * call). `secrets: inherit` counts as "uses secrets": it hands the invoked
  * reusable workflow every repository secret, which is a strictly BROADER
  * exposure than naming one explicitly, so excluding it would under-count
- * privilege rather than correctly narrow it (TRI-28 B4).
+ * privilege rather than correctly narrow it (TRI-28 B4). Also scans the
+ * job's `container:` (its `env:` and `credentials:`) and every entry under
+ * `services:` -- a secret handed to a job's container or a service
+ * container is available inside the job's run environment exactly like a
+ * step-level secret, and was previously invisible to this check entirely
+ * (TRI-28 C3).
  */
 export function jobUsesSecrets(job: WorkflowJob, workflow?: Workflow): boolean {
   if (job.secrets) return true;
   const haystacks: string[] = [];
   if (workflow?.env) haystacks.push(JSON.stringify(workflow.env));
   if (job.env) haystacks.push(JSON.stringify(job.env));
+  if (job.container) haystacks.push(JSON.stringify(job.container));
+  if (job.services) haystacks.push(JSON.stringify(job.services));
   for (const step of job.steps ?? []) {
     if (step.with) haystacks.push(JSON.stringify(step.with));
     if (step.env) haystacks.push(JSON.stringify(step.env));
@@ -194,13 +207,64 @@ export function jobNeeds(job: WorkflowJob): string[] {
  * permitted before or after it.
  */
 const POSITIVE_AUTHORIZATION_CONDITION =
-  /^needs\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*==\s*['"]true['"]$/;
+  /^needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\s*==\s*['"]true['"]$/;
 
 /**
- * A recognizable authorization predicate inside a job's steps (or its own
- * `uses:`, for a standardized reusable authorization workflow): a check
- * against `author_association`, or an actor allowlist comparison
- * (`contains(...)` involving `github.actor` or a `.user.login` field).
+ * Finds every `run:` line, across every step in the job, that assigns
+ * `outputName` via the `echo "<outputName>=<value>" >> "$GITHUB_OUTPUT"`
+ * idiom (unquoted or single/double-quoted around the name), and returns
+ * ONLY the assigned value -- the text between the `<outputName>=` and the
+ * redirect into `$GITHUB_OUTPUT` -- never the whole line. Bounding the
+ * extraction there matters: `$GITHUB_OUTPUT` is a plain `name=value` file,
+ * so anything a shell comment or chained command appends AFTER the
+ * redirect is never actually part of the written value and must not count
+ * toward "the assigned value" for predicate matching (TRI-28 C1).
+ *
+ * Deliberately does NOT recognize the heredoc multi-line `$GITHUB_OUTPUT`
+ * form, or an assignment via a job-level `outputs:` mapping pointing at a
+ * step id. An authorization signal expressed either of those ways is
+ * unusual enough that requiring this simpler, single-line shape is the
+ * standardized shape this check enforces, rather than attempting to
+ * generically evaluate every way GitHub Actions can produce a job output.
+ */
+function findOutputAssignmentValues(job: WorkflowJob, outputName: string): string[] {
+  const escapedName = escapeRegExp(outputName);
+  const assignmentStart = new RegExp(`^\\s*echo\\s+["']?${escapedName}=`);
+  const values: string[] = [];
+  for (const step of job.steps ?? []) {
+    if (typeof step.run !== 'string') continue;
+    for (const line of step.run.split('\n')) {
+      if (!assignmentStart.test(line) || !/\$GITHUB_OUTPUT/.test(line)) continue;
+      const afterName = line.slice(line.indexOf(`${outputName}=`) + outputName.length + 1);
+      const redirectMatch = />>\s*["']?\$GITHUB_OUTPUT/.exec(afterName);
+      const value = redirectMatch ? afterName.slice(0, redirectMatch.index) : afterName;
+      values.push(value.trim());
+    }
+  }
+  return values;
+}
+
+/**
+ * True when `value` is EXACTLY one `${{ ... }}` GitHub Actions expression
+ * (a trailing stray quote character from the enclosing `echo "..."` is
+ * tolerated) -- and nothing else: no literal text before or after it, and
+ * no second `${{` anywhere in the value. Requiring the whole assigned
+ * value to be a single, unadorned expression is what makes the predicate
+ * check below meaningful: without it, an attacker could glue arbitrary
+ * extra text (including a fake mention of a trust signal) onto a
+ * hardcoded value, or concatenate a second, unrelated expression, and have
+ * it read as "derived from a check" when it is not.
+ */
+function asSingleTemplateExpression(value: string): string | undefined {
+  if ((value.match(/\$\{\{/g)?.length ?? 0) !== 1) return undefined;
+  const match = /^\$\{\{([\s\S]*)\}\}["']?$/.exec(value);
+  return match?.[1];
+}
+
+/**
+ * A recognizable authorization predicate: a check against
+ * `author_association`, or an actor allowlist comparison (`contains(...)`
+ * involving `github.actor` or a `.user.login` field).
  *
  * TRI-28 B7: `isAuthorizationGated` previously accepted ANY upstream job
  * whose output the privileged job compared to `'true'`, including one that
@@ -210,21 +274,45 @@ const POSITIVE_AUTHORIZATION_CONDITION =
  * everybody or nobody. Requiring one of these concrete trust signals closes
  * that gap without requiring a full evaluator for arbitrary step logic.
  */
-function upstreamJobHasRecognizableAuthorizationCheck(job: WorkflowJob): boolean {
+function isAuthorizationPredicate(expression: string): boolean {
+  const normalized = expression.replace(/\s+/g, '');
+  return (
+    /author_association/.test(normalized) ||
+    (/contains\(/.test(normalized) && /(github\.actor\b|\.user\.login\b)/.test(normalized))
+  );
+}
+
+/**
+ * TRI-28 C1: the previous version of this check searched ALL of the
+ * upstream job's step text for a recognizable authorization predicate --
+ * `author_association`, or a `contains()` actor-allowlist check -- with no
+ * requirement that the predicate have anything to do with the SPECIFIC
+ * output the privileged job's `if:` actually compares. A job that mentions
+ * `author_association` in a harmless log line, while separately emitting a
+ * hardcoded `authorized=true` with no check at all, satisfied every
+ * structural test while authorizing every commenter unconditionally. This
+ * instead locates the line that actually assigns `outputName` to
+ * `$GITHUB_OUTPUT`, requires there be EXACTLY ONE such assignment across
+ * the whole job ($GITHUB_OUTPUT is last-write-wins at runtime, so two
+ * assignments -- one predicate-derived, one hardcoded -- would let the
+ * hardcoded one silently win while this check inspected the other),
+ * requires that single assigned value to be nothing but one unadorned
+ * `${{ ... }}` expression, and only then checks THAT expression for a
+ * recognizable predicate.
+ */
+function upstreamJobHasRecognizableAuthorizationCheck(
+  job: WorkflowJob,
+  outputName: string,
+): boolean {
   if (typeof job.uses === 'string' && /authoriz/i.test(job.uses)) return true;
 
-  const haystacks: string[] = [];
-  for (const step of job.steps ?? []) {
-    if (typeof step.run === 'string') haystacks.push(step.run);
-    if (typeof step.if === 'string') haystacks.push(step.if);
-    if (step.with) haystacks.push(JSON.stringify(step.with));
-  }
-  const combined = haystacks.join('\n');
+  const assignedValues = findOutputAssignmentValues(job, outputName);
+  if (assignedValues.length !== 1) return false;
 
-  return (
-    /author_association/.test(combined) ||
-    (/contains\(/.test(combined) && /(github\.actor\b|\.user\.login\b)/.test(combined))
-  );
+  const expression = asSingleTemplateExpression(assignedValues[0]);
+  if (expression === undefined) return false;
+
+  return isAuthorizationPredicate(expression);
 }
 
 /**
@@ -253,6 +341,7 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
   // unrelated job's output would not actually gate this job's execution
   // on anything this job depends on.
   const referencedJobName = match[1];
+  const authorizationOutputName = match[2];
   if (!needs.includes(referencedJobName)) return false;
 
   // Every job this job `needs:` must itself be safe to depend on: no write
@@ -270,10 +359,15 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
   if (!allNeedsAreSafeToDependOn) return false;
 
   // The job the condition actually authorizes against must implement a
-  // recognizable authorization predicate, not merely produce SOME output
-  // the privileged job happens to compare against `'true'`.
+  // recognizable authorization predicate that DERIVES the specific output
+  // this condition compares -- not merely produce SOME output the
+  // privileged job happens to compare against `'true'` while a recognizable
+  // predicate appears elsewhere in the job (TRI-28 C1).
   const referencedJob = workflow.jobs[referencedJobName];
-  return referencedJob !== undefined && upstreamJobHasRecognizableAuthorizationCheck(referencedJob);
+  return (
+    referencedJob !== undefined &&
+    upstreamJobHasRecognizableAuthorizationCheck(referencedJob, authorizationOutputName)
+  );
 }
 
 /**
@@ -445,6 +539,14 @@ export function formatViolations(violations: Violation[]): string {
 // `github.head_ref`: they are distinct expression strings that resolve to
 // the same attacker-controlled value (the head branch name), and either
 // spelling is equally exploitable.
+//
+// `github.event.workflow_run.head_branch` (TRI-28 C4) is the same
+// attacker-controlled-branch-name class as `head_ref`/`head.ref` above, but
+// for the `workflow_run` trigger specifically: a fork contributor names
+// their own branch (Git permits shell metacharacters in branch names), and
+// `workflow_run` is an untrusted trigger (see `UNTRUSTED_EVENTS`), so a
+// privileged `workflow_run` workflow interpolating this directly into
+// `run:` is directly exploitable the same way.
 const UNTRUSTED_EXPRESSION_FRAGMENTS = [
   'github.event.issue.title',
   'github.event.issue.body',
@@ -457,11 +559,19 @@ const UNTRUSTED_EXPRESSION_FRAGMENTS = [
   'github.event.discussion.title',
   'github.event.discussion.body',
   'github.event.workflow_run.head_commit.message',
+  'github.event.workflow_run.head_branch',
 ];
 
 interface RunBlock {
   jobName: string;
   stepIndex: number;
+  // TRI-28 C5: a step's custom `shell:` field is scanned for the same
+  // untrusted-interpolation violation as its `run:` script. A commenter who
+  // controls `shell: ${{ github.event.comment.body }}` supplies the command
+  // interpreter the step's otherwise-harmless `run:` script executes under
+  // -- moving attacker input from `run:` to the interpreter selection must
+  // not bypass this audit.
+  field: 'run' | 'shell';
   script: string;
 }
 
@@ -470,7 +580,10 @@ function collectRunBlocks(workflow: Workflow): RunBlock[] {
   for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
     (job.steps ?? []).forEach((step, stepIndex) => {
       if (typeof step.run === 'string') {
-        blocks.push({ jobName, stepIndex, script: step.run });
+        blocks.push({ jobName, stepIndex, field: 'run', script: step.run });
+      }
+      if (typeof step.shell === 'string') {
+        blocks.push({ jobName, stepIndex, field: 'shell', script: step.shell });
       }
     });
   }
@@ -482,6 +595,11 @@ function escapeRegExp(text: string): string {
 }
 
 const EXPRESSION_BLOCK_PATTERN = /\$\{\{([\s\S]*?)\}\}/g;
+
+// Matches GitHub Actions bracket-form property access -- `['name']` or
+// `["name"]` -- immediately following an identifier chain, so it can be
+// rewritten to the equivalent dot form before fragment matching.
+const BRACKET_PROPERTY_ACCESS_PATTERN = /\[['"]([A-Za-z0-9_]+)['"]\]/g;
 
 /**
  * Finds `run:` steps that interpolate attacker-controlled text directly as
@@ -499,6 +617,21 @@ const EXPRESSION_BLOCK_PATTERN = /\$\{\{([\s\S]*?)\}\}/g;
  * expression, not only as its literal prefix. A trailing `(?!\w)` boundary
  * keeps a fragment from matching as a prefix of a longer, unrelated
  * identifier (e.g. a hypothetical `github.event.issue.title_hash`).
+ *
+ * TRI-28 C2: GitHub Actions expression syntax evaluates
+ * `github.event['issue']['title']` identically to
+ * `github.event.issue.title`, but whitespace normalization alone leaves the
+ * brackets intact, so no dot-form fragment in `UNTRUSTED_EXPRESSION_FRAGMENTS`
+ * ever matched it. Every `['name']`/`["name"]` index is rewritten to `.name`
+ * BEFORE fragment matching -- after whitespace stripping, so a form like
+ * `github.event[ 'issue' ]` canonicalizes too -- which also canonicalizes a
+ * mixed form like `github.event['issue'].title`.
+ *
+ * TRI-28 C5: also scans a step's custom `shell:` field, not only its
+ * `run:` script. `collectRunBlocks` previously read only `step.run`, so
+ * `shell: ${{ github.event.comment.body }}` -- letting a commenter supply
+ * the command interpreter itself, which executes before the otherwise-safe
+ * `run:` script even runs -- was invisible to this audit entirely.
  */
 export function findUnsafeExpressionInterpolation(workflow: Workflow): Violation[] {
   const violations: Violation[] = [];
@@ -507,14 +640,19 @@ export function findUnsafeExpressionInterpolation(workflow: Workflow): Violation
       (match) => match[1],
     );
     for (const expression of expressions) {
-      const normalized = expression.replace(/\s+/g, '');
+      const normalized = expression
+        .replace(/\s+/g, '')
+        .replace(BRACKET_PROPERTY_ACCESS_PATTERN, '.$1');
       for (const fragment of UNTRUSTED_EXPRESSION_FRAGMENTS) {
         const boundaryPattern = new RegExp(`${escapeRegExp(fragment)}(?!\\w)`);
         if (boundaryPattern.test(normalized)) {
           violations.push({
-            fileName: `${block.jobName}[${block.stepIndex}]`,
+            fileName: `${block.jobName}[${block.stepIndex}].${block.field}`,
             rule: 'unsafe-run-interpolation',
-            message: `run: step interpolates "${fragment}" directly; pass it through env: instead.`,
+            message:
+              block.field === 'run'
+                ? `run: step interpolates "${fragment}" directly; pass it through env: instead.`
+                : `shell: field interpolates "${fragment}" directly; the shell interpreter must be a fixed string, never attacker-controlled text.`,
           });
         }
       }

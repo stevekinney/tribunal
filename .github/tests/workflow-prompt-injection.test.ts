@@ -162,6 +162,59 @@ describe('findUnsafeExpressionInterpolation: whitespace- and wrapper-tolerant (T
 });
 
 /**
+ * TRI-28 C2: `${{ github.event['issue']['title'] }}` is valid GitHub
+ * expression syntax that evaluates identically to the dot form, but
+ * whitespace normalization alone leaves the brackets intact, so no dot-form
+ * fragment matched it. Property access is canonicalized to dot form before
+ * fragment matching.
+ */
+describe('findUnsafeExpressionInterpolation: canonicalizes bracket-form property access (TRI-28 C2)', () => {
+  test("flags single-quoted bracket-form access: `github.event['issue']['title']`", () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ run: "echo \"${{ github.event['issue']['title'] }}\"" }],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+
+  test('flags double-quoted bracket-form access: `github.event["issue"]["title"]`', () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ run: 'echo "${{ github.event["issue"]["title"] }}"' }],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+
+  test("flags a mixed dot/bracket form: `github.event['issue'].title`", () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ run: 'echo "${{ github.event[\'issue\'].title }}"' }],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+
+  test('flags bracket-form access to `github.event.comment.body`', () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ run: "echo \"${{ github.event['comment']['body'] }}\"" }],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+});
+
+/**
  * TRI-28 B6: fragments for `github.event.pull_request.head.ref` (a distinct
  * expression string from `github.head_ref` resolving to the same
  * attacker-controlled branch name), `github.event.discussion.title`/`.body`,
@@ -203,5 +256,67 @@ describe('findUnsafeExpressionInterpolation: new untrusted fragments (TRI-28 B6)
       },
     };
     expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+});
+
+/**
+ * TRI-28 C4: `github.event.workflow_run.head_branch` -- a fork contributor's
+ * own branch name, which Git permits shell metacharacters in -- is the same
+ * direct shell-injection class the list already covers via `head_ref`/
+ * `head.ref`, but for the `workflow_run` trigger (an untrusted trigger as of
+ * TRI-28 B1) specifically.
+ */
+describe('findUnsafeExpressionInterpolation: workflow_run head_branch (TRI-28 C4)', () => {
+  test('flags `github.event.workflow_run.head_branch`', () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ run: 'echo "${{ github.event.workflow_run.head_branch }}"' }],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+});
+
+/**
+ * TRI-28 C5: `collectRunBlocks` previously read only `step.run`, so a
+ * commenter-controlled `shell:` field -- which determines the command
+ * interpreter the step's `run:` script executes under -- was invisible to
+ * this audit. Moving attacker input from `run:` to `shell:` must not
+ * bypass the gate.
+ */
+describe('findUnsafeExpressionInterpolation: custom shell: field (TRI-28 C5)', () => {
+  test('flags a shell: field that splices a comment body directly', () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [{ shell: '${{ github.event.comment.body }}', run: 'echo hello' }],
+        },
+      },
+    };
+    const violations = findUnsafeExpressionInterpolation(workflow);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].message).toMatch(/github\.event\.comment\.body/);
+  });
+
+  test('flags an untrusted fragment in shell: even when run: itself is harmless', () => {
+    const workflow: Workflow = {
+      jobs: {
+        build: {
+          steps: [
+            { shell: '${{ github.event.issue.title }}', run: 'echo "nothing dangerous here"' },
+          ],
+        },
+      },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toHaveLength(1);
+  });
+
+  test('does not flag a fixed shell: field with no expression', () => {
+    const workflow: Workflow = {
+      jobs: { build: { steps: [{ shell: 'bash', run: 'echo hello' }] } },
+    };
+    expect(findUnsafeExpressionInterpolation(workflow)).toEqual([]);
   });
 });

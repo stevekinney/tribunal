@@ -301,6 +301,61 @@ describe('isAuthorizationGated: rejects a cosmetic gate (TRI-28 B7)', () => {
     expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
   });
 
+  test('rejects an authorize job that mentions author_association elsewhere but hardcodes its output (TRI-28 C1)', () => {
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              // Mentions `author_association`, but this step does not SET
+              // the "authorized" output at all -- it only logs it.
+              run: 'echo "commenter association: ${{ github.event.comment.author_association }}"',
+            },
+            {
+              // The step that actually sets "authorized" hardcodes it, with
+              // no derivation from the predicate mentioned above.
+              run: 'echo "authorized=true" >> "$GITHUB_OUTPUT"',
+            },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+  });
+
+  test('rejects an authorize job that assigns the compared output twice, the second hardcoded (TRI-28 C1)', () => {
+    // $GITHUB_OUTPUT is a plain `name=value` file that is last-write-wins at
+    // runtime: a real, predicate-derived assignment followed by a second,
+    // hardcoded assignment of the same output name would authorize every
+    // commenter at runtime while a check that only looked for "is there SOME
+    // predicate-derived assignment" would accept it.
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              run: 'echo "authorized=${{ contains(fromJson(\'["OWNER","MEMBER","COLLABORATOR"]\'), github.event.comment.author_association) }}" >> "$GITHUB_OUTPUT"',
+            },
+            { run: 'echo "authorized=true" >> "$GITHUB_OUTPUT"' },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+  });
+
   test('accepts delegation to a standardized reusable authorization workflow via `uses:`', () => {
     const workflow: Workflow = {
       jobs: {
@@ -416,5 +471,79 @@ describe('jobUsesSecrets: bracket-form access, github.token, and workflow-level 
       jobs: { build: { steps: [{ run: 'bunx turbo build' }] } },
     };
     expect(jobUsesSecrets(workflow.jobs.build, workflow)).toBe(false);
+  });
+});
+
+/**
+ * TRI-28 C3: `jobUsesSecrets` previously never inspected `container.env`,
+ * `container.credentials`, or any `services.*` field, so a job whose only
+ * secret exposure was through its container or a service container
+ * classified as unprivileged.
+ */
+describe('jobUsesSecrets: container and service fields (TRI-28 C3)', () => {
+  test('detects a secret referenced only in `container.env`', () => {
+    expect(
+      jobUsesSecrets({
+        container: { image: 'node:20', env: { TOKEN: '${{ secrets.REGISTRY_TOKEN }}' } },
+        steps: [{ run: 'echo hello' }],
+      }),
+    ).toBe(true);
+  });
+
+  test('detects a secret referenced only in `container.credentials`', () => {
+    expect(
+      jobUsesSecrets({
+        container: {
+          image: 'ghcr.io/example/private:latest',
+          credentials: {
+            username: 'example',
+            password: '${{ secrets.REGISTRY_PASSWORD }}',
+          },
+        },
+        steps: [{ run: 'echo hello' }],
+      }),
+    ).toBe(true);
+  });
+
+  test('detects a secret referenced only in a `services.*` entry', () => {
+    expect(
+      jobUsesSecrets({
+        services: {
+          postgres: {
+            image: 'postgres:16',
+            env: { POSTGRES_PASSWORD: '${{ secrets.DATABASE_PASSWORD }}' },
+          },
+        },
+        steps: [{ run: 'echo hello' }],
+      }),
+    ).toBe(true);
+  });
+
+  test('does not flag a container/services job with no secrets anywhere', () => {
+    expect(
+      jobUsesSecrets({
+        container: { image: 'node:20' },
+        services: { postgres: { image: 'postgres:16', env: { POSTGRES_PASSWORD: 'local-only' } } },
+        steps: [{ run: 'echo hello' }],
+      }),
+    ).toBe(false);
+  });
+
+  test('end-to-end: an issue_comment job with read-only permissions and a container secret is flagged ungated', () => {
+    // The exact false-negative construct from TRI-28 C3: on: issue_comment,
+    // read-only job permissions, and the only secret exposure sitting in
+    // `container.env` -- previously invisible to `jobUsesSecrets`, so the
+    // job classified as unprivileged and ran ungated.
+    const workflow: Workflow = {
+      on: 'issue_comment',
+      permissions: { contents: 'read' },
+      jobs: {
+        act: {
+          container: { image: 'node:20', env: { TOKEN: '${{ secrets.REGISTRY_TOKEN }}' } },
+          steps: [{ run: 'echo hello' }],
+        },
+      },
+    };
+    expect(untrustedPrivilegedUngatedJobs('fixture-c3.yml', workflow)).toEqual(['act']);
   });
 });
