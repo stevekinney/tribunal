@@ -119,7 +119,7 @@ Run an event-driven coordination loop:
 ## Safety Boundaries
 
 - **Do not commit** unless the user explicitly asks.
-- **Do not update Linear ticket status** automatically — report to the user and let them decide.
+- **Do not update Linear ticket status** automatically — report to the user and let them decide. This binds every delegated teammate without exception, whatever tools they hold. It is overridden only where a project's own orchestration document explicitly assigns ticket transitions to the orchestrator and defines the completion evidence required; `documentation/mcp-integration-orchestration.md` does so for the MCP integration project. Outside such a document, report and hand back.
 - **Shut down all teammates before ending.** No orphan processes.
 - **Respect the plan.** Only assign tasks that come from the Task Index. If additional work is discovered, inform the user and add it to the task list with their approval.
 - **One task at a time per teammate.** Do not assign a second task until the first is completed.
