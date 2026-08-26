@@ -55,4 +55,3 @@ allowed-tools:
 
 - [GitHub Domain Reference](references/github-domain-reference.md)
 - [GitHub API Reference](references/github-api-reference.md)
-- [OAuth Integration Reference](references/oauth-integration-reference.md)
