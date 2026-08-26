@@ -10,6 +10,14 @@ paths:
 
 # Authentication patterns
 
+## Hook ordering is a security boundary
+
+Anything in `hooks.server.ts`'s `sequence()` that needs an authenticated user must be sequenced **after** `authHandle`.
+
+A handler placed before it can answer a request without invoking the downstream `resolve`, so `authHandle` never runs and `event.locals.user` is never populated. The handler is then serving an unauthenticated request while looking like it is serving an authenticated one, and the usual repair — validating a token inside the handler — introduces a second identity path that diverges from the first.
+
+Handlers must consume the locals `authHandle` populates rather than validating a token themselves. Assert the ordering in a test: it is one line in `sequence()`, a later edit can invert it, and there is no other symptom.
+
 ## Open redirect prevention
 
 Always use `sanitizeReturnTo()` from `$lib/server/auth/authentication` to validate return URLs before redirecting. This prevents attackers from crafting URLs that redirect users to malicious sites after login.

@@ -16,7 +16,11 @@ This is already decided by the locked project decision ("Identity: Neon Auth wit
 - This re-verification happens fresh, per request, including on the consent form's POST back to approve or deny. There is no cached "is this session still good" flag anywhere; every hop cryptographically re-checks the token that is actually present on that request.
 - When `event.locals.user` is null, the existing pattern (matching `sanitizeReturnTo` in `applications/web/src/lib/utilities/return-to.ts` and the `/login` route) is to redirect to `/login` with a return-to path back to the original request. `GET /oauth/authorize` should follow the same pattern rather than inventing a second sign-in redirect.
 
-One open mechanical question for whoever wires this in TRI-31: Protokit's MCP mount runs through `createApplicationMount()`, and it is not yet confirmed here whether requests through that mount pass through `hooks.server.ts`'s `authHandle` the same way ordinary SvelteKit routes do, or whether the mount needs to call `validateNeonSessionFromToken` directly. That is an implementation detail for TRI-31, not a session-model decision, and does not change the conclusion below.
+**One ordering requirement for TRI-31, and it is a requirement rather than an open question.** The MCP mount runs through `createApplicationMount()`, which is inserted into `hooks.server.ts`'s `sequence()`. If it is placed _before_ `authHandle`, an intercepted `/oauth/authorize` request can be answered by the mount without ever invoking the downstream `resolve`, so `authHandle` never runs and `event.locals.user` is never populated. The consent page would then be handling an unauthenticated request, or would need its own second validation path — the duplicate JWT validator this project's locked decisions rule out.
+
+So: **`authHandle` must run before `createApplicationMount()` in the `sequence()`, and the mounted handlers must consume the locals it populates rather than validating a token themselves.** Both halves need a test — one asserting the ordering, one asserting a mounted consent request sees `event.locals.user` — because the ordering is a single line in `hooks.server.ts` that a later edit can silently invert with no other symptom.
+
+Calling this a mechanical detail, as an earlier draft did, was wrong: the issue scopes itself to how this GET identifies its user, and hook ordering decides whether it identifies one at all.
 
 ## Decision: bind to the Neon Auth JWT, not a new session table
 
@@ -70,7 +74,30 @@ RETURNING *
 
 `:userId` is `event.locals.user.id` from the current request's freshly re-verified JWT, not a value trusted from the submitted form. The single `UPDATE ... RETURNING` still makes every rejection reason (missing, wrong CSRF, expired, already consumed, wrong user) collapse into one atomic predicate, so there is still no window between checking and consuming for a concurrent request to race through.
 
-`applications/web/src/lib/server/database/index.ts` builds on `@tribunal/database`'s `createDatabase`, and `.claude/rules/database.md` already states the same constraint Protokit's own code comments call out: `db.transaction()` is not supported with the neon-http driver Tribunal uses. So Protokit's `unconsumeAuthorizationTransaction` compensating-write pattern (best-effort, un-consume the transaction if the second insert that mints the authorization code fails after the first `UPDATE` succeeded) is not a Protokit quirk to leave behind—it is required here too, for the identical driver reason, and TRI-31 should port it as-is.
+`applications/web/src/lib/server/database/index.ts` builds on `@tribunal/database`'s `createDatabase`, and `.claude/rules/database.md` states the constraint Protokit's own comments call out: `db.transaction()` is not supported with the neon-http driver.
+
+**Do not port `unconsumeAuthorizationTransaction`. It defeats the guarantee this section exists to preserve.** The compensating write is best-effort: un-consume the transaction if the insert that mints the authorization code fails after the `UPDATE` succeeded. But "the insert failed" and "the insert committed and the response was lost" are indistinguishable to the client. If the code row committed in PostgreSQL while the `neon-http` response was dropped or rejected, the catch path un-consumes a transaction that has already produced a valid authorization code — and a retry consumes it again and mints a second one. Single-consume is exactly what that is not.
+
+The absence of `db.transaction()` does not force this. The same rule that names the constraint also gives the answer: where atomicity is required, express it as a single statement. Combine the guarded consume and the code insertion into one data-modifying CTE, so PostgreSQL rolls the whole statement back on failure and there is nothing to compensate for:
+
+```
+WITH consumed AS (
+  UPDATE oauth_authorization_transactions
+  SET consumed_at = now()
+  WHERE transaction_id = :transactionId
+    AND csrf_token_hash = :csrfTokenHash
+    AND user_id = :userId
+    AND consumed_at IS NULL
+    AND expires_at > now()
+  RETURNING transaction_id, user_id, client_id, redirect_uri, scope
+)
+INSERT INTO oauth_codes (code_hash, user_id, client_id, redirect_uri, scope, expires_at)
+SELECT :codeHash, user_id, client_id, redirect_uri, scope, now() + :codeTtl
+FROM consumed
+RETURNING code_hash
+```
+
+If the transaction was already consumed, expired, or belongs to another user, `consumed` is empty, the `INSERT ... SELECT` inserts nothing, and no code is minted. A lost response leaves the whole statement rolled back or wholly applied — never half. Tribunal already uses this shape elsewhere, and the donor's own `revokeOauthRefreshTokenFamily` is a worked example of a multi-table write expressed as one statement for exactly this reason.
 
 ### Concrete deltas for TRI-31
 
