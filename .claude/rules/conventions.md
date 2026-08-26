@@ -40,5 +40,8 @@ paths:
 
 ## Data structure invariants
 
+- **A function name may imply access control it does not implement.** `getRepositoryById` performs an unscoped lookup; its callers are safe only because they call `userCanAccessRepository` separately. On any path where a user or client supplies the identifier, add the check rather than trusting the name. Trusted background consumers resolving from already-verified events owe their own installation or tenant boundary instead.
+- **A flag is enforced where the privileged thing is acquired**, not at the outer loop that looks like the entry point. `REVIEWS_ENABLED` is the worked example: the scheduler still runs its drain loop when the flag is false, and the effective gate is `claimNextReviewIntent` returning `null`. An outer-layer check that leaves the inner acquisition ungated reads as coverage and is not.
+
 - When two data structures track the same relationship (e.g., an edge list and a degree map), ensure they agree on idempotency. If one deduplicates, the other must too, or counts will diverge.
 - Prefer a single source of truth. If you need both a list and a lookup, derive one from the other rather than populating both independently.

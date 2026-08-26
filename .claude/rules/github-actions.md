@@ -67,6 +67,8 @@ If a PR can be updated by automation (for example, `cursor[bot]`), set `allowed_
 
 ## Concurrency control for PR workflows
 
+- **A configuration change is not durable while automation redeploys the committed state.** `deploy-production.yml` redeploys on every successful push to `main`, so an out-of-band or local change to a deployed value is reversed by the next unrelated merge, with nothing announcing the expiry. A durable change requires the committed state to agree with it; an out-of-band override is only the first half.
+
 When workflows trigger on `synchronize` (push to PR), add concurrency to prevent stale runs from completing:
 
 ```yaml

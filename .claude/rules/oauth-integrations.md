@@ -27,6 +27,12 @@ Sign-in itself is Neon Auth and is not covered here. For session handling, `retu
 
 ## Authorization
 
+- **Not offering a capability is not refusing it.** A client controls the `scope` value it sends, so omitting a scope from registrations and the consent screen does not make it unobtainable. Reject any requested scope outside the supported set as `invalid_scope` at the authorize endpoint.
+- **A refresh request may narrow a grant, never widen it.** "Granted exactly as requested" is safe at authorize, where a user is present and approving. On refresh there is no user, so an explicit `scope` must be a subset of what the refresh token already carries; anything outside it is `invalid_scope`.
+- **A scope grants a capability, not an object.** Holding the scope says the user consented to the operation; it says nothing about whether a caller-supplied identifier belongs to them. Every reader on a path where the caller supplies an identifier must enforce ownership or an installation boundary itself.
+- **Consent-screen copy is a security property**, not UX text, whenever it is specified as verbatim display strings. Understating a grant there means the user approved something narrower than what is issued.
+- **Rejecting an attack and accepting one produce different evidence.** A replay or reuse log line usually records a *rejected* attempt, so it is the control working. Do not treat one as proof of compromise, and do not treat its absence as health: the defect that silently accepts may emit nothing.
+
 - **Verify ownership before mutating by external identifier.** An installation identifier or provider account identifier arriving in a callback is attacker-influenced. Confirm the authenticated user actually has access before binding anything to them.
 - **Prefer `NOT_FOUND` over `FORBIDDEN`** when the caller should not learn that a resource exists.
 - **Never expose internal identifiers, raw Zod errors, or database detail** in a user-facing message. Log the detail, return something friendly.
