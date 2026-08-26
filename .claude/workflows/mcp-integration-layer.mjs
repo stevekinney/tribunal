@@ -1,33 +1,91 @@
 export const meta = {
   name: 'mcp-integration-layer',
-  description: 'Drive one opened layer of the Tribunal MCP integration graph: implement each issue, adversarially verify it, push a branch',
-  whenToUse: 'After a layer of the TRI MCP graph opens. Pass args.issues; the orchestrator drives PR gates and Linear separately.',
+  description:
+    'Drive one opened layer of the Tribunal MCP integration graph: implement each issue, adversarially verify it, push a branch',
+  whenToUse:
+    'After a layer of the TRI MCP graph opens. Pass args.issues (see the descriptor contract below); the orchestrator drives pull request gates and Linear separately.',
   phases: [
     { title: 'Execute', detail: 'one agent per issue: implement or draft the decision, then push a branch' },
     { title: 'Verify', detail: 'adversarial pass: does each acceptance criterion actually hold?' },
   ],
 };
 
-const REPO = '/Users/stevekinney/Developer/tribunal';
+// ---------------------------------------------------------------------------
+// Argument contract
+//
+// args.issues: array of descriptors. Every field is required — passing a bare
+// Linear issue object silently routes a decision through implementation mode
+// and substitutes `undefined` into branch commands, so the shape is validated
+// up front rather than failing halfway through a layer.
+//
+//   id      string   Linear identifier, e.g. 'TRI-27'
+//   title   string   issue title
+//   body    string   the issue text, verbatim — agents do not fetch it
+//   branch  string   branch to create or reopen, e.g. 'steve/tri-27-mcp-package'
+//   mode    'implement' | 'decide'
+//   model   'opus' | 'sonnet' | 'haiku'
+//   effort  'low' | 'medium' | 'high' | 'xhigh' | 'max'
+//
+// args.repositoryPath: optional. Only used to name the orchestrator's checkout
+// in the do-not-touch warning. The prohibition is written path-independently,
+// so omitting it costs nothing.
+// ---------------------------------------------------------------------------
 
-// Non-negotiables that every agent in this project inherits. These trace to
-// two inherited failure classes: a test suite passing while the fix is absent,
-// and configuration added to a schema but never wired into its gate.
-const HOUSE_RULES = `
+const VALID_MODES = ['implement', 'decide'];
+const VALID_MODELS = ['opus', 'sonnet', 'haiku'];
+const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+function validateIssues(rawIssues) {
+  const problems = [];
+  rawIssues.forEach((issue, index) => {
+    const where = `issues[${index}]${issue && issue.id ? ` (${issue.id})` : ''}`;
+    if (!issue || typeof issue !== 'object') {
+      problems.push(`${where}: not an object`);
+      return;
+    }
+    for (const field of ['id', 'title', 'body', 'branch']) {
+      if (typeof issue[field] !== 'string' || issue[field].length === 0) {
+        problems.push(`${where}: missing or empty "${field}"`);
+      }
+    }
+    if (!VALID_MODES.includes(issue.mode)) {
+      problems.push(`${where}: mode must be one of ${VALID_MODES.join(', ')} (got ${JSON.stringify(issue.mode)})`);
+    }
+    if (!VALID_MODELS.includes(issue.model)) {
+      problems.push(`${where}: model must be one of ${VALID_MODELS.join(', ')} (got ${JSON.stringify(issue.model)})`);
+    }
+    if (!VALID_EFFORTS.includes(issue.effort)) {
+      problems.push(`${where}: effort must be one of ${VALID_EFFORTS.join(', ')} (got ${JSON.stringify(issue.effort)})`);
+    }
+  });
+  return problems;
+}
+
+// Non-negotiables every agent inherits. These trace to two failure classes this
+// codebase has actually shipped: a test suite passing while the fix is absent,
+// and configuration added to a schema but never wired into its enforcing gate.
+function houseRules(issue, orchestratorCheckout) {
+  const checkoutName = orchestratorCheckout
+    ? `the orchestrator's checkout (\`${orchestratorCheckout}\`)`
+    : "the orchestrator's own checkout of this repository";
+
+  return `
 ## Repository
 
 You are already inside your OWN private git worktree of the Tribunal repository:
 a complete checkout, safe to edit. Work there and only there.
 
-Never \`cd\` to ${REPO} itself. That is the orchestrator's live checkout, and
-switching branches inside it corrupts work in progress.
+Never leave it for ${checkoutName}, whatever its path. Switching branches inside
+that checkout corrupts work in progress, and two agents doing it concurrently
+would each silently operate on a mixture of two branches.
 
 ## Non-negotiable discipline
 
 - Use \`bun\`, never npm/yarn/pnpm. Run scripts with \`bun run <script>\`.
 - Check pass/fail by EXIT CODE, never by grepping output. Tool output carries ANSI
   escapes, so \`grep -c "error TS"\` can report zero against output that plainly
-  contains errors. Use \`cmd > /dev/null 2>&1; echo $?\`.
+  contains errors. Beware pipelines too: \`cmd | tail\` reports tail's status, not
+  cmd's. Use \`cmd > /dev/null 2>&1; echo $?\`.
 - NEVER use \`--no-verify\`, \`HUSKY=0\`, or \`CI=1\` to get past a hook.
 - NEVER raise a timeout, retry count, or resource limit to turn a check green.
 - NEVER skip a test, comment out an assertion, or leave a TODO in place of a fix.
@@ -35,29 +93,42 @@ switching branches inside it corrupts work in progress.
   shipping a partial dressed up as complete.
 - Test runner is vitest. No \`bun:test\` may enter this repository.
 - Prefer full words in names: \`configuration\` not \`config\`, \`utilities\` not \`utils\`.
-- Kebab-case filenames. TypeScript only (\`.ts\`/\`.tsx\`).
+- Kebab-case filenames. **Source code** is TypeScript only (\`.ts\`/\`.tsx\`) — never
+  introduce \`.js\`, \`.mjs\`, \`.cjs\`, or \`.jsx\` source. This restriction is about
+  source files: documentation, decision documents, and learnings are Markdown
+  (\`.md\`) as they are everywhere else in this repository.
 - Match existing repository conventions. Inspect neighbouring files before
   inventing a new pattern or directory.
+- Cite code by file and symbol, never by line number — line references drift.
 - Markdown: em dashes tight (no spaces), no horizontal rules, no numbered
   headings, no bold inside headings, cap heading depth at three levels.
 
 ## Your deliverable
 
-Create your branch from \`main\` and work only there:
+Work on branch \`${issue.branch}\`, created from \`main\` — or reopened, if a previous
+run already pushed it:
 
     git fetch origin main
-    git switch -c BRANCH_NAME origin/main
+    git fetch origin ${issue.branch} || true
+    git switch -c ${issue.branch} origin/${issue.branch} 2>/dev/null \\
+      || git switch ${issue.branch} 2>/dev/null \\
+      || git switch -c ${issue.branch} origin/main
 
-Commit your work and push it with \`git push -u origin BRANCH_NAME\`.
+The first form reopens a branch a previous run pushed, so a retry after a
+\`needs-rework\` verdict amends that work instead of failing on \`-c\`. The last
+form creates it fresh. Confirm which case you landed in before assuming the
+tree is empty.
+
+Commit and push with \`git push -u origin ${issue.branch}\`.
 
 Do NOT open a pull request — the orchestrator does that. Do NOT touch Linear:
-you have no Linear write access and moving a ticket is the orchestrator's job,
-per \`.claude/skills/execute-plan/SKILL.md\` and the orchestration document.
-Never commit directly to \`main\`.
+moving a ticket is the orchestrator's job, per the carve-out recorded in
+\`.claude/skills/execute-plan/SKILL.md\`. Never commit directly to \`main\`.
 
 Return a report: what you changed, the exact verification commands you ran with
-their exit codes, and any acceptance criterion you could NOT satisfy (with why).
+their real exit codes, and any acceptance criterion you could NOT satisfy.
 `;
+}
 
 const REPORT_SCHEMA = {
   type: 'object',
@@ -99,21 +170,36 @@ const VERDICT_SCHEMA = {
         properties: {
           criterion: { type: 'string' },
           met: { type: 'boolean' },
-          evidence: { type: 'string', description: 'The command run and its exit code, or the file/line inspected' },
+          evidence: { type: 'string', description: 'The command run and its exit code, or the file and symbol inspected' },
         },
       },
     },
-    confirmedMet: { type: 'boolean', description: 'true only if EVERY criterion is met' },
-    problems: { type: 'array', items: { type: 'string' } },
+    confirmedMet: { type: 'boolean', description: 'true only if EVERY numbered criterion is met' },
+    problems: {
+      type: 'array',
+      description:
+        'Anything wrong, including problems outside the numbered criteria (out-of-scope changes, fabricated citations, weakened tests). Set recommendation to needs-rework if any of these should block a pull request.',
+      items: { type: 'string' },
+    },
     recommendation: { type: 'string', enum: ['open-pull-request', 'needs-rework', 'hand-back-to-human'] },
   },
 };
 
-const issues = (args && args.issues) || [];
-if (!issues.length) {
+const rawIssues = (args && args.issues) || [];
+if (!rawIssues.length) {
   log('No issues passed in args.issues — nothing to do.');
-  return { results: [] };
+  return { ready: [], rework: [], all: [], invalid: [] };
 }
+
+const contractProblems = validateIssues(rawIssues);
+if (contractProblems.length) {
+  log(`Refusing to start: ${contractProblems.length} issue descriptor problem(s).`);
+  for (const problem of contractProblems) log(`  ${problem}`);
+  return { ready: [], rework: [], all: [], invalid: contractProblems };
+}
+
+const orchestratorCheckout = (args && args.repositoryPath) || null;
+const issues = rawIssues;
 
 log(`Layer opened with ${issues.length} issue(s): ${issues.map((i) => i.id).join(', ')}`);
 
@@ -122,30 +208,28 @@ const results = await pipeline(
 
   // Stage 1 — implement, or draft the decision. One agent per issue, isolated.
   (issue) => {
-    const houseRules = HOUSE_RULES.split('BRANCH_NAME').join(issue.branch);
-
     const decisionFraming = `
 ## This is a DECISION issue — draft, do not self-approve
 
-Your job is to produce a decision document that a human approves. That means:
+Your job is to produce a decision document (Markdown) that a human approves:
 
 - Lay out the genuine options with their trade-offs.
 - Make a clear recommendation and say why.
 - Mark anything you could not resolve from the codebase as an OPEN QUESTION
   rather than quietly picking an answer.
-- Do NOT write it as though the decision is already settled and do NOT claim
+- Do NOT write it as though the decision is already settled, and do NOT claim
   approval. The human checkpoint is the point of this issue.
 
-Ground every claim in the actual codebase. Read the real capability surface
-before naming scopes or bindings — do not carry Protokit's template demo
-content across.`;
+Ground every claim in the actual codebase, and cite only sources you have read.
+A citation that turns out not to say what you claim is worse than no citation,
+because it reads as diligence.`;
 
     const implementationFraming = `
 ## This is an IMPLEMENTATION issue
 
 For every acceptance criterion, prove it holds by running something that exits
 non-zero when it does not. If a criterion asks you to demonstrate a guard fails
-when removed, actually remove it, capture the failing run, restore it, and
+when removed, actually remove it, capture the failing run, RESTORE it, and
 record both exit codes — that demonstration is a deliverable, not a formality.
 
 Any verification script the issue names must be added to the root
@@ -163,7 +247,7 @@ ${issue.body}
 
 ${issue.mode === 'decide' ? decisionFraming : implementationFraming}
 
-${houseRules}
+${houseRules(issue, orchestratorCheckout)}
 
 Start by reading the repository to understand its real shape — do not assume.
 Then do the work. Then verify. Then commit and push.`,
@@ -181,10 +265,22 @@ Then do the work. Then verify. Then commit and push.`,
   // Stage 2 — adversarial verify. Fresh eyes, told to disprove the report.
   (report, issue) => {
     if (!report) {
-      return { issue: issue.id, criteriaVerified: [], confirmedMet: false, problems: ['Stage 1 agent produced no report (died or was skipped).'], recommendation: 'needs-rework' };
+      return {
+        issue: issue.id,
+        criteriaVerified: [],
+        confirmedMet: false,
+        problems: ['Stage 1 agent produced no report (died, errored, or was skipped).'],
+        recommendation: 'needs-rework',
+      };
     }
     if (!report.pushed) {
-      return { issue: issue.id, criteriaVerified: [], confirmedMet: false, problems: [`Branch ${issue.branch} was not pushed. Notes: ${report.notes}`], recommendation: 'needs-rework' };
+      return {
+        issue: issue.id,
+        criteriaVerified: [],
+        confirmedMet: false,
+        problems: [`Branch ${issue.branch} was not pushed. Notes: ${report.notes}`],
+        recommendation: 'needs-rework',
+      };
     }
 
     return agent(
@@ -209,35 +305,45 @@ You are in your OWN private git worktree. Stay in it. Fetch the pushed branch
 and check it out DETACHED:
 
     git fetch origin ${issue.branch}
-    git checkout --detach FETCH_HEAD
+    git switch --detach FETCH_HEAD
 
-Detached is required, not stylistic: the branch is already attached to another
-worktree, so \`git checkout ${issue.branch}\` fails outright.
+Use \`git switch --detach\`, not \`git checkout\`: this repository's settings deny
+the \`git checkout --\` prefix outright, so the checkout form is rejected before
+it selects anything, and you would silently verify your worktree's original
+revision instead of the branch under test. Detaching also avoids colliding with
+the branch attachment another worktree already holds.
 
-Never \`cd\` to ${REPO}. That is the orchestrator's live checkout. Switching
-branches there corrupts work in progress, and two verifiers doing it
-concurrently would each silently verify a mixture of two branches.
+Never leave your worktree for the orchestrator's checkout of this repository,
+whatever its path. Switching branches there corrupts work in progress, and two
+verifiers doing it concurrently would each verify a mixture of two branches.
 
 Then, for EVERY numbered acceptance criterion, establish independently whether
 it holds. Re-run the verification commands yourself and record the REAL exit
 codes — do not take the report's word for them, and do not grep output to decide
-pass/fail.
+pass or fail.
 
-Two failure classes are known to recur in this project. Check both explicitly:
+Two failure classes recur in this project. Check both explicitly:
 
 1. **A test that passes while the fix is absent.** For each new test, revert or
-   neutralize the thing it supposedly guards and confirm the test actually
-   fails. A test that still passes with the guard removed proves nothing.
+   neutralize the thing it guards and confirm the test actually fails. **Restore
+   the worktree after every such mutation, before checking the next criterion** —
+   \`git stash\` or \`git restore\` the file — or later commands run against a
+   deliberately broken tree and report unrelated false failures.
 2. **Configuration added to a schema but never wired into the gate meant to
    enforce it.** If a value was added anywhere, trace it to the code path that
    actually reads and enforces it. An unread field is not a control.
 
 Also check that nothing outside the issue's scope was changed, that no aggregate
-script was edited, and that no test was skipped, weakened, or given a raised
-timeout to make it pass.
+script was edited, that no test was skipped, weakened, or given a raised
+timeout, and that every citation says what it is claimed to say.
 
-Do NOT fix anything. Report only. Set confirmedMet true only if every single
-criterion genuinely holds.`,
+Do NOT fix anything. Report only.
+
+Set \`confirmedMet\` true only if every numbered criterion genuinely holds. Use
+\`recommendation\` for your overall verdict: a problem outside the numbered
+criteria — an out-of-scope change, a fabricated citation, a weakened test — is
+grounds for \`needs-rework\` even when every numbered criterion passes. Put every
+such problem in \`problems\`.`,
       {
         label: `verify:${issue.id}`,
         phase: 'Verify',
@@ -250,11 +356,37 @@ criterion genuinely holds.`,
   },
 );
 
-const clean = results.filter(Boolean);
-const ready = clean.filter((r) => r.confirmedMet);
-const rework = clean.filter((r) => !r.confirmedMet);
+// A falsy result here means the verifier itself died or was skipped. Filtering
+// it away would drop the issue from BOTH collections and leave the orchestrator
+// with no record that it was ever dispatched, so it becomes an explicit verdict.
+const verdicts = results.map((result, index) =>
+  result
+    ? result
+    : {
+        issue: issues[index].id,
+        criteriaVerified: [],
+        confirmedMet: false,
+        problems: ['Stage 2 verifier produced no verdict (died, errored, or was skipped). Work is unverified.'],
+        recommendation: 'needs-rework',
+      },
+);
 
-log(`Verified: ${ready.length} ready for a pull request, ${rework.length} needing rework.`);
-for (const r of rework) log(`  ${r.issue}: ${(r.problems || []).join('; ') || 'no detail'}`);
+// Readiness honours the verifier's own recommendation, not just confirmedMet.
+// A verifier can legitimately confirm every numbered criterion and still return
+// needs-rework for a problem outside them; treating confirmedMet alone as ready
+// discards that verdict. This has already happened once in practice.
+const ready = verdicts.filter((v) => v.confirmedMet && v.recommendation === 'open-pull-request');
+const rework = verdicts.filter((v) => !(v.confirmedMet && v.recommendation === 'open-pull-request'));
 
-return { ready, rework, all: clean };
+log(`Verified: ${ready.length} ready for a pull request, ${rework.length} needing attention.`);
+for (const verdict of rework) {
+  log(`  ${verdict.issue} [${verdict.recommendation}]: ${(verdict.problems || []).join('; ') || 'no detail given'}`);
+}
+// Problems on an otherwise-ready issue are still worth surfacing rather than dropping.
+for (const verdict of ready) {
+  if ((verdict.problems || []).length) {
+    log(`  ${verdict.issue} [ready, with notes]: ${verdict.problems.join('; ')}`);
+  }
+}
+
+return { ready, rework, all: verdicts, invalid: [] };
