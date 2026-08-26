@@ -31,7 +31,9 @@ Three decisions remain open and are tracked as issues: the scope vocabulary (TRI
 
 ## Taking an issue through
 
-Start with **TRI-23**. After it merges, five tracks open in parallel: TRI-24, TRI-25, TRI-26 (decisions), TRI-27 (the `@tribunal/mcp` package port), and TRI-28 (workflow-security tests, independent of everything else).
+Start with **TRI-23**. After it merges, four tracks open in parallel: TRI-24, TRI-25, TRI-26 (decisions), and TRI-28 (workflow-security tests, independent of everything else).
+
+**TRI-27 is not among them.** TRI-67 natively blocks it until the donor is pinned to a reproducible revision, for the reason in the Repositories section above. Treat TRI-67 as the fifth opening track — it is `Ready`, it is cheap, and nothing in the port tier moves until it lands.
 
 For each issue:
 

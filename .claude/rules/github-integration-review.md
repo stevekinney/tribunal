@@ -5,7 +5,7 @@ paths:
   - applications/web/src/routes/api/webhooks/**
   - applications/web/src/routes/login/**
   - applications/web/src/routes/connect/github/**
-  - packages/github/src/webhooks/**
+  - packages/github/src/**
   - .github/workflows/**
 ---
 

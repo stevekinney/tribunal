@@ -7,8 +7,8 @@ paths:
   - applications/web/test/**
   - applications/web/vite.config.ts
   - applications/web/playwright.config.*
-  - **/vitest.config*.*
-  - **/vitest.configuration*.*
+  - '**/vitest.config*.*'
+  - '**/vitest.configuration*.*'
 ---
 
 # Testing

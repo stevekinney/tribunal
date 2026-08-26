@@ -57,4 +57,4 @@ Use this file for Claude-specific workflow mechanics in this repository.
 
 - Start with `documentation/GETTING_STARTED.md` and `documentation/ARCHITECTURE.md`.
 - Testing guidance: `documentation/TESTING.md`.
-- The app is a SvelteKit web app (`applications/web`) backed by shared packages (`packages/*`). GitHub is the only integration: GitHub OAuth for login and a GitHub App for repository access and webhooks.
+- Tribunal is an automated code-review service running as three applications: `applications/web` (SvelteKit), `applications/engine` (Weft workflows and Tensorlake sandboxes), and `applications/proxy` (sandbox egress), plus `packages/*`. Identity is Neon Auth with GitHub as provider; repository access is a GitHub App. It also depends on Neon Postgres, Redis, Tensorlake, and the Claude Agent SDK — GitHub is not the only integration. See `AGENTS.md` for the canonical description.

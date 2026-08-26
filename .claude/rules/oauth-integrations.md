@@ -15,9 +15,9 @@ Sign-in itself is Neon Auth and is not covered here. For session handling, `retu
 
 - **Encrypt tokens before storing.** `oauth_connection.accessToken` and `refreshToken` are encrypted at rest and the caller owns encryption and decryption. Never log or return a raw token.
 - **No multi-statement transactions.** The `neon-http` driver has no `db.transaction()`. Check existence before upsert and clean up only rows the current request created. Where atomicity is required, express it as a single statement.
-- **Upsert on reconnect.** A connection whose `status` is `invalid` may have had its credentials cleared, so reauthorization must insert-on-conflict-update rather than assuming an update target exists.
-- **Revert status on failure.** Capture the previous `status` before setting `active`, and restore it if the credential write fails.
-- **Clear stale state when the account changes.** If `providerUserId` differs from what is stored during reauthorization, delete resources that referenced the old account rather than leaving them pointing at an identity the user no longer has.
+- **Reconnect is one atomic statement.** `upsertOAuthConnection` inserts with `onConflictDoUpdate` on `(userId, provider)`, writing `providerUserId`, both tokens, `expiresAt`, `scope`, and `status: 'active'` together. Do not split it into read-then-write, and do not add compensating status reverts — there is no window between the credential write and the status change to compensate for.
+- **`accessToken` is non-null.** A connection row always carries a token; `status: 'invalid'` marks it unusable rather than absent. Do not write code that expects a row with cleared credentials.
+- **Removal is `deleteOAuthConnection`**, which drops the whole row. There are no OAuth-owned resource relations to clean up, so a changed `providerUserId` is simply overwritten by the upsert.
 
 ## State and CSRF
 
