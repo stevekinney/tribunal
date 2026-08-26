@@ -184,9 +184,12 @@ describe('getSupportedScopes', () => {
     for (const prompt of allPrompts) expected.add(prompt.requiredScope);
 
     expect(getSupportedScopes()).toEqual([...expected].sort());
-    // `list_audit_events` (`audit:read`) is a conformance-only fixture,
-    // never part of `allTools` — its scope must never be advertised to a
-    // real OAuth client.
+    // A conformance-only scope must never be advertised to a real OAuth
+    // client. `getSupportedScopes()` walks only the production registries, so
+    // any scope declared exclusively by a `conformanceOnlyTools` entry is
+    // excluded structurally rather than by a second list. `audit:read` was the
+    // donor's example; this package ships no such fixture yet, so the
+    // assertion guards the mechanism rather than a specific tool.
     expect(getSupportedScopes()).not.toContain('audit:read');
   });
 });
