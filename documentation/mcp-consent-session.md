@@ -139,7 +139,7 @@ Checked directly, not assumed: Tribunal's web application has no `SESSION_SIGNIN
 
 ### One near-identical name already occupies the configuration surface
 
-`SESSION_SECRET` is set to the placeholder `'placeholder-secret-at-least-32-chars-long'` in two places—`.github/workflows/ci.yml:214` and `applications/web/playwright.config.ts:34`—and is read by no runtime code anywhere in the repository. It is dead test configuration.
+`SESSION_SECRET` is set to the placeholder `'placeholder-secret-at-least-32-chars-long'` in two places—the `SESSION_SECRET` entry in `ci.yml`'s end-to-end job environment block, and the `SESSION_SECRET` key in `playwright.config.ts`'s `webServer.env`—and is read by no runtime code anywhere in the repository. It is dead test configuration.
 
 That is not a functional collision, but it is a naming one, and it matters at the moment `SESSION_SIGNING_SECRET` is introduced: two apparent session secrets differing by one word, one of them inert, is exactly the shape that gets wired incorrectly in a deployment or a test harness. **Disposition: delete the stale `SESSION_SECRET` entries in whichever issue first introduces `SESSION_SIGNING_SECRET`**, rather than leaving both standing. Recorded here so that issue does not have to rediscover it.
 
