@@ -40,6 +40,30 @@ export const meta = {
 // interpolation site correctly and hoping none is added later unquoted.
 const SHELL_SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
+// Shell-safe is necessary but not sufficient: `foo..bar`, `foo/`, `foo//bar`,
+// `foo.lock`, and `foo.` all satisfy the character allowlist while Git rejects
+// them as ref names. Such a descriptor would pass validation and launch an
+// executor whose fetch, switch, and push sequence cannot succeed — returning
+// rework for what should have been an immediate `invalid`.
+function gitRefProblem(branch) {
+  if (branch.includes('..')) return 'contains ".."';
+  if (branch.includes('//')) return 'contains "//"';
+  if (branch.includes('@{')) return 'contains "@{"';
+  if (branch.endsWith('/')) return 'ends with "/"';
+  if (branch.endsWith('.')) return 'ends with "."';
+  if (branch.endsWith('.lock')) return 'ends with ".lock"';
+  if (branch.split('/').some((segment) => segment.length === 0)) return 'has an empty path segment';
+  if (branch.split('/').some((segment) => segment.startsWith('.'))) return 'has a path segment starting with "."';
+  if (branch.split('/').some((segment) => segment.endsWith('.lock'))) return 'has a path segment ending with ".lock"';
+  return null;
+}
+
+// The orchestration document puts useful concurrency at two or three executors:
+// most layers are three to six issues and several converge on a single node, so
+// beyond that agents queue on blockers and burn tokens re-reading context.
+// Batching keeps the advertised whole-layer call from exceeding that bound.
+const MAX_CONCURRENT_EXECUTORS = 3;
+
 const VALID_MODES = ['implement', 'decide'];
 const VALID_MODELS = ['opus', 'sonnet', 'haiku'];
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -57,10 +81,17 @@ function validateIssues(rawIssues) {
         problems.push(`${where}: missing or empty "${field}"`);
       }
     }
-    if (typeof issue.branch === 'string' && issue.branch.length > 0 && !SHELL_SAFE_BRANCH.test(issue.branch)) {
-      problems.push(
-        `${where}: branch "${issue.branch}" is not shell-safe. It is interpolated into shell commands, so it must match ${SHELL_SAFE_BRANCH}.`,
-      );
+    if (typeof issue.branch === 'string' && issue.branch.length > 0) {
+      if (!SHELL_SAFE_BRANCH.test(issue.branch)) {
+        problems.push(
+          `${where}: branch "${issue.branch}" is not shell-safe. It is interpolated into shell commands, so it must match ${SHELL_SAFE_BRANCH}.`,
+        );
+      } else {
+        const refProblem = gitRefProblem(issue.branch);
+        if (refProblem) {
+          problems.push(`${where}: branch "${issue.branch}" is not a valid Git ref name — it ${refProblem}.`);
+        }
+      }
     }
     if (!VALID_MODES.includes(issue.mode)) {
       problems.push(`${where}: mode must be one of ${VALID_MODES.join(', ')} (got ${JSON.stringify(issue.mode)})`);
@@ -72,6 +103,24 @@ function validateIssues(rawIssues) {
       problems.push(`${where}: effort must be one of ${VALID_EFFORTS.join(', ')} (got ${JSON.stringify(issue.effort)})`);
     }
   });
+
+  // Git shares branch refs across worktrees and attaches a branch to at most
+  // one, so two descriptors naming the same branch guarantee that whichever
+  // executor arrives second cannot create or switch to it. That layer loses an
+  // executor before it starts; better to refuse than to dispatch it.
+  const seenBranches = new Map();
+  rawIssues.forEach((issue, index) => {
+    if (!issue || typeof issue.branch !== 'string' || issue.branch.length === 0) return;
+    const first = seenBranches.get(issue.branch);
+    if (first === undefined) {
+      seenBranches.set(issue.branch, index);
+      return;
+    }
+    problems.push(
+      `issues[${index}] (${issue.id}): branch "${issue.branch}" is already claimed by issues[${first}]. Two executors cannot share a branch.`,
+    );
+  });
+
   return problems;
 }
 
@@ -217,19 +266,19 @@ if (rawIssues !== undefined && rawIssues !== null && !Array.isArray(rawIssues)) 
   // non-empty string reaches validateIssues and throws on `.forEach`.
   const problem = `args.issues must be an array of issue descriptors, got ${typeof rawIssues}.`;
   log(`Refusing to start: ${problem}`);
-  return { ready: [], rework: [], all: [], invalid: [problem] };
+  return { ready: [], rework: [], handBack: [], all: [], invalid: [problem] };
 }
 
 if (!rawIssues || rawIssues.length === 0) {
   log('No issues passed in args.issues — nothing to do.');
-  return { ready: [], rework: [], all: [], invalid: [] };
+  return { ready: [], rework: [], handBack: [], all: [], invalid: [] };
 }
 
 const contractProblems = validateIssues(rawIssues);
 if (contractProblems.length) {
   log(`Refusing to start: ${contractProblems.length} issue descriptor problem(s).`);
   for (const problem of contractProblems) log(`  ${problem}`);
-  return { ready: [], rework: [], all: [], invalid: contractProblems };
+  return { ready: [], rework: [], handBack: [], all: [], invalid: contractProblems };
 }
 
 const orchestratorCheckout = (args && args.repositoryPath) || null;
@@ -237,8 +286,27 @@ const issues = rawIssues;
 
 log(`Layer opened with ${issues.length} issue(s): ${issues.map((i) => i.id).join(', ')}`);
 
-const results = await pipeline(
-  issues,
+// Run the layer in batches so no more than MAX_CONCURRENT_EXECUTORS executors
+// are in flight at once. Each batch still pipelines internally — an issue's
+// verify starts the moment its own execute finishes, rather than waiting for
+// its batch-mates — so the only cost is a barrier between batches.
+const batches = [];
+for (let index = 0; index < issues.length; index += MAX_CONCURRENT_EXECUTORS) {
+  batches.push(issues.slice(index, index + MAX_CONCURRENT_EXECUTORS));
+}
+if (batches.length > 1) {
+  log(`Running ${issues.length} issues in ${batches.length} batches of at most ${MAX_CONCURRENT_EXECUTORS}.`);
+}
+
+const results = [];
+for (const batch of batches) {
+  const batchResults = await runBatch(batch);
+  results.push(...batchResults);
+}
+
+function runBatch(batchIssues) {
+  return pipeline(
+  batchIssues,
 
   // Stage 1 — implement, or draft the decision. One agent per issue, isolated.
   (issue) => {
@@ -388,7 +456,8 @@ such problem in \`problems\`.`,
       },
     );
   },
-);
+  );
+}
 
 // A falsy result here means the verifier itself died or was skipped. Filtering
 // it away would drop the issue from BOTH collections and leave the orchestrator
@@ -410,9 +479,23 @@ const verdicts = results.map((result, index) =>
 // needs-rework for a problem outside them; treating confirmedMet alone as ready
 // discards that verdict. This has already happened once in practice.
 const ready = verdicts.filter((v) => v.confirmedMet && v.recommendation === 'open-pull-request');
-const rework = verdicts.filter((v) => !(v.confirmedMet && v.recommendation === 'open-pull-request'));
+// A hand-back verdict is not rework. The documented human checkpoints
+// (TRI-24 through TRI-26, TRI-46, TRI-60, TRI-62 through TRI-65) end in a
+// decision only a person can make, so folding them into `rework` invites the
+// orchestrator to redispatch an issue that is waiting on a human instead.
+const handBack = verdicts.filter(
+  (v) => v.recommendation === 'hand-back-to-human' && !(v.confirmedMet && v.recommendation === 'open-pull-request'),
+);
+const rework = verdicts.filter(
+  (v) => !(v.confirmedMet && v.recommendation === 'open-pull-request') && v.recommendation !== 'hand-back-to-human',
+);
 
-log(`Verified: ${ready.length} ready for a pull request, ${rework.length} needing attention.`);
+log(
+  `Verified: ${ready.length} ready for a pull request, ${rework.length} needing rework, ${handBack.length} awaiting a human decision.`,
+);
+for (const verdict of handBack) {
+  log(`  ${verdict.issue} [hand-back]: ${(verdict.problems || []).join('; ') || 'awaiting a human decision'}`);
+}
 for (const verdict of rework) {
   log(`  ${verdict.issue} [${verdict.recommendation}]: ${(verdict.problems || []).join('; ') || 'no detail given'}`);
 }
@@ -423,4 +506,4 @@ for (const verdict of ready) {
   }
 }
 
-return { ready, rework, all: verdicts, invalid: [] };
+return { ready, rework, handBack, all: verdicts, invalid: [] };
