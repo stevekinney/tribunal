@@ -66,7 +66,9 @@ Protokit never returned content it did not author or the authenticated user did 
 
 `review_findings:read` inherits the same exposure at one remove: a finding's `body`/`suggestion` is Tribunal's reviewer agent's own output, but that agent was reading the same adversarial pull request content, so a finding can still repeat or launder injected text if the reviewer agent itself was misled during the review.
 
-`reviews:read` and `cost_events:read` return only system-generated values—run lifecycle state, timestamps, dollar amounts—with no externally authored free text. They do not cross this boundary.
+`reviews:read` and `cost_events:read` return system-generated values—run lifecycle state, timestamps, dollar amounts—**but the readers this document recommends for them also emit repository labels, and those are externally authored.** `getRunsOverview` returns `repositoryOwner` and `repositoryName`, and `getCostOverview` carries the same values in its rollup labels. Those strings are chosen by repository administrators, exactly as the `repositories:read` discussion below describes.
+
+So these two scopes cross the boundary **whenever their output includes repository labels**, which is the default shape of both readers. Two acceptable resolutions, and F2/O1 must pick one per tool rather than leaving it implicit: strip the labels and return repository ids alone, letting a client that wants names ask for `repositories:read` and accept that scope's framing; or keep the labels and apply the same untrusted-content framing `repositories:read` requires. What is not acceptable is returning administrator-controlled strings under a scope this document told the implementer was safe.
 
 **`repositories:read` does cross it, and an earlier draft of this document was wrong to group it with the other two.** Repository names, owner names, and default-branch names are chosen on GitHub by repository administrators, who in an organization or shared repository need not be the authenticated MCP user. Installation-gating controls _who can read_ the value; it does nothing about _who wrote_ it. A default branch named to read as an instruction is attacker-controlled text arriving through a scope this document had classified as safe.
 
@@ -82,9 +84,9 @@ Five production scopes, one per capability family, plus one conformance-only sco
 | ---------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | `repositories:read`    | Repository identity and access            | `list_repositories`, `get_repository`                                                                | Yes—administrator-controlled names         |
 | `pull_requests:read`   | Live GitHub pull request content          | `list_pull_requests`, `get_pull_request`                                                             | Yes—author-controlled content              |
-| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                                                                 | No                                         |
+| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                                                                 | Only if repository labels are included     |
 | `review_findings:read` | Findings emitted by review runs           | `list_review_findings`, `get_review_finding`                                                         | Yes—reflects reviewed pull request content |
-| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                                                               | No                                         |
+| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                                                               | Only if repository labels are included     |
 | `conformance:read`     | Conformance-only fixture, never real data | one synthetic fixture tool, name TBD by whichever issue ports Protokit's `list_audit_events` pattern | No—returns synthetic data only             |
 
 The one-line consent-screen description is the verbatim text a `getSupportedScopes()`-equivalent registry must display, matching the donor's `mcpScopeDescriptions` shape (`packages/mcp/src/scopes.ts`) and rendered the same way the donor's authorize page renders it—one `<li>` per granted or requested scope, the string copied through unmodified:
@@ -177,7 +179,11 @@ Beyond AC5's literal ask, the donor adds one more check worth naming here even t
 
 **Scope cardinality: decided here, one scope per primitive.** An earlier draft left this open while the mechanism section above called single-scope a property the port "must preserve"—a contradiction F2/O1 could not satisfy both halves of, and one that changes both how `getSupportedScopes()` flattens declarations and whether invocation authorization checks one scope or several. Leaving it open was the error, so it is decided rather than restated.
 
-`requiredScope` stays a single `McpScope`. A genuinely cross-domain primitive—a prompt summarizing a pull request's findings would need both `pull_requests:read` and `review_findings:read`—is expressed by splitting it into two primitives, or by scoping it to the more sensitive of the two, not by widening the field.
+`requiredScope` stays a single `McpScope`, and a genuinely cross-domain primitive—a prompt summarizing a pull request's findings would need both `pull_requests:read` and `review_findings:read`—**must be split into two primitives.** It may not be shipped as one.
+
+An earlier draft offered "or scope it to the more sensitive of the two" as an alternative. That is an authorization bypass, not a shortcut, and removing it is the point of this revision. Nothing in this vocabulary or its consent text establishes a hierarchy in which holding one scope implies the other — they are independently listed, independently approved, and independently refusable. A combined primitive gated on whichever scope someone judged more sensitive would therefore return data governed by a scope the user may have declined, to a token that never carried it.
+
+So the rule is unconditional: **a primitive returns data from exactly one capability family.** If a primitive genuinely cannot be split, that is not licence to pick a scope — it is the signal to reopen the cardinality decision below, with `allOf` semantics requiring _every_ scope whose data the primitive returns.
 
 The reason is that widening it is not a type change. It changes what `scopes_supported` derivation must flatten, and it turns invocation authorization from one comparison into a policy question—all of them, or any of them?—that then has to be answered identically at every enforcement site. That is a larger change than a first release needs for a capability surface containing no such primitive.
 
