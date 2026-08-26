@@ -1,15 +1,14 @@
 ---
 paths:
-  - src/**/*.test.ts
-  - src/**/*.svelte.test.ts
-  - src/**/*.spec.ts
-  - src/**/*.svelte.spec.ts
-  - test/**
-  - test/end-to-end/**
-  - documentation/examples/**
-  - playwright.config.*
-  - vitest.config*.*
-  - vitest.setup.*
+  - applications/*/src/**/*.test.ts
+  - applications/*/src/**/*.svelte.test.ts
+  - applications/*/src/**/*.spec.ts
+  - packages/*/src/**/*.test.ts
+  - applications/web/test/**
+  - applications/web/vite.config.ts
+  - applications/web/playwright.config.*
+  - '**/vitest.config*.*'
+  - '**/vitest.configuration*.*'
 ---
 
 # Testing

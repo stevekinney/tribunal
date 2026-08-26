@@ -4,7 +4,15 @@ This is the canonical instruction file for Codex in this repository.
 
 ## What this repository is
 
-Tribunal is a SvelteKit web app (`applications/web`) plus shared packages (`packages/*`). The only integration is GitHub: log in with GitHub OAuth, install the GitHub App in your orgs, then browse your repositories and their open pull requests. The data model is flat: user -> GitHub installation -> repository -> pull request. The app is intentionally minimal — there are no AI, chat, editor, sandbox, project, or workflow-orchestration features. Internal packages are namespaced `@tribunal/*`.
+Tribunal is an automated code-review service. It runs as three deployed applications plus shared packages, all namespaced `@tribunal/*`:
+
+- `applications/web` — SvelteKit (adapter-node). Public UI, `/api/*` routes, GitHub webhook receiver.
+- `applications/engine` — a Bun service running Weft workflows, orchestrating Tensorlake reviewer sandboxes, and posting reviews back to GitHub.
+- `applications/proxy` — a Bun service providing the signed egress boundary for reviewer sandboxes.
+
+Sign-in is Neon Auth with GitHub as the identity provider. Repository access is a GitHub App installation; a separate GitHub OAuth connection (`oauth_connection`) holds per-user tokens. The core path is: user → GitHub installation → repository → pull request → review run.
+
+Beyond GitHub, the service depends on Neon Postgres, Redis, Tensorlake, and the Anthropic Claude Agent SDK. Do not treat GitHub as the only integration when scoping work.
 
 ## Scope and precedence
 

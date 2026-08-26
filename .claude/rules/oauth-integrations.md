@@ -1,61 +1,43 @@
 ---
 paths:
-  - src/routes/connect/**
-  - src/lib/server/workspace-integrations.ts
-  - src/lib/server/linear-webhooks.ts
+  - applications/web/src/routes/connect/**
 ---
 
-# OAuth and workspace integration patterns
+# GitHub connect flow patterns
 
 Before editing paths in this rule, load `$github-integration-rules` and apply its constraints.
-For code examples and flow diagrams, see `github-integration-rules` references.
 
-## Security directives
+Scope: the two connect flows under `applications/web/src/routes/connect/github/`. The GitHub App **installation** flow (`connect/github`, `connect/github/callback`) binds an installation to a user. The GitHub OAuth **account** flow (`connect/github/account`, `connect/github/account/callback`) stores per-user API tokens in `oauth_connection`.
 
-- **Token storage**: Always encrypt tokens before storing; never log or expose raw tokens.
-- **PKCE / state parameter**: Use provider-specific OAuth state cookie names (`workspace_oauth_state_<provider>`) to prevent collisions across concurrent flows.
-- **IDOR prevention**: Verify workspace ownership via JOIN before mutating any resource by external ID. Use `NOT_FOUND` responses to avoid leaking existence.
-- **User-facing errors**: Never expose internal IDs, raw Zod errors, or database details. Log internally; return friendly messages.
-- **Validate before storing**: Fail explicitly when external APIs return empty/default values (e.g., webhook without secret). Do not silently store fallback values.
+Sign-in itself is Neon Auth and is not covered here. For session handling, `returnTo` sanitization, and the Neon Auth bridge, see `authentication.md`.
 
 ## Credential handling
 
-- **Compensating transactions**: Neon HTTP has no `db.transaction()`. Check existence before upsert; only clean up new rows on failure.
-- **Status revert**: Store previous status before updating to `'active'`. Revert if credential write fails.
-- **Upsert for reauth**: Use insert-on-conflict-update -- revoked integrations may have had credentials deleted.
-- **Supplementary credentials** (e.g., `webhook_admin`): Do not change integration status or `providerAccountId` when adding non-primary roles.
-- **Organization match**: Verify `providerAccountId` matches before adding supplementary credentials via OAuth.
-- **Clear resources on account change**: If `providerAccountId` changes during reauth, delete stale resources referencing the old account.
+- **Encrypt tokens before storing.** `oauth_connection.accessToken` and `refreshToken` are encrypted at rest and the caller owns encryption and decryption. Never log or return a raw token.
+- **No multi-statement transactions.** The `neon-http` driver has no `db.transaction()`. Check existence before upsert and clean up only rows the current request created. Where atomicity is required, express it as a single statement.
+- **Reconnect is one atomic statement.** `upsertOAuthConnection` inserts with `onConflictDoUpdate` on `(userId, provider)`, writing `providerUserId`, both tokens, `expiresAt`, `scope`, and `status: 'active'` together. Do not split it into read-then-write, and do not add compensating status reverts — there is no window between the credential write and the status change to compensate for.
+- **`accessToken` is non-null.** A connection row always carries a token; `status: 'invalid'` marks it unusable rather than absent. Do not write code that expects a row with cleared credentials.
+- **Removal is `deleteOAuthConnection`**, which drops the whole row. There are no OAuth-owned resource relations to clean up, so a changed `providerUserId` is simply overwritten by the upsert.
 
-## Provider-specific notes
+## State and CSRF
 
-- **Linear**: Supports multi-credential roles (`app_actor` + `webhook_admin`). Admin OAuth requires existing base integration. Clean up webhooks before cascade delete. Webhook secret lookup prefers exact team match over wildcard.
-- **Notion**: Extract `workspace_id` from token response using runtime type guards, not type assertions.
-- **Google Drive**: `token_uri` is required in service account schemas. Validate the full JSON before storing.
-- **All providers**: Import `integrationProviderEnum.enumValues` from schema instead of duplicating provider lists.
+- **Always set a state parameter.** The account flow uses `setOAuthStateCookie` from `$lib/server/auth/authentication`; the App installation flow sets `github_app_state` directly. Both are `httpOnly`, `sameSite: 'lax'`, `secure` outside development, and short-lived.
+- **Validate state before acting on a callback**, and delete the cookie on every exit path including the denial path.
+- **One documented exception**: GitHub omits state when a user edits repository access from an existing installation's settings page. That path (`setup_action === 'update'` with no stored state) is validated through live installation access instead. Do not widen this carve-out.
 
-## Token validation
+## Authorization
 
-- **Propagate status reasons**: Return `statusReason` in validation results (`token_invalid`, `invalid_grant`, `revoked`, `missing_scopes`) so callers display correct error messages.
-- **Auth error detection helper**: Provide `detectAuthError(e)` to classify 401 as `token_invalid` and 403 as `invalid_grant`.
-- **Map all status reasons**: Connections page error switch must cover every `statusReason` value.
+- **Verify ownership before mutating by external identifier.** An installation identifier or provider account identifier arriving in a callback is attacker-influenced. Confirm the authenticated user actually has access before binding anything to them.
+- **Prefer `NOT_FOUND` over `FORBIDDEN`** when the caller should not learn that a resource exists.
+- **Never expose internal identifiers, raw Zod errors, or database detail** in a user-facing message. Log the detail, return something friendly.
 
-## Resource sync and UI
+## Provider enums
 
-- **Batch operations**: Use `Promise.all` with `BATCH_SIZE = 20` to avoid overwhelming connection pool.
-- **Pagination limits**: Check inside the results loop, not after processing a full page.
-- **Generic resource labels**: Use "resource/resources" instead of provider-specific type names (providers can have multiple types).
-- **Stale selections**: Treat stale/inaccessible resources as pending changes so users can clear them by saving.
-- **Status mapping**: Map `revoked` to `disconnected` in UI (credentials are cleared). Map `invalid` to `invalid`.
+- The provider list is `oauthProviderEnum` in `@tribunal/database` (`['github']`), and connection status is `oauthConnectionStatusEnum` (`['active', 'invalid']`). Import the enum values rather than duplicating either list.
+- A separate, vestigial `authProviderEnum` exists for database type continuity. It is not the connection provider list; do not use it for new work.
+- `oauth_connection` is unique on `(userId, provider)`. Adding a provider means extending the enum, not adding a parallel table.
 
-## GraphQL responses
+## Validation
 
-- Validate response structure before accessing nested fields.
-- Check `errors` array first; then confirm expected data exists.
-
-## General patterns
-
-- **Policy constraints in reauth**: Apply same validations as initial connect (e.g., `requiresAccountId`).
-- **Svelte 5 icons**: Use `Component<{ class?: string }>`, not deprecated `ComponentType<SvelteComponent>`.
-- **Error logging**: Use structured logging with `workspaceId`, `provider`, and error message in catch blocks.
-- **Avoid unnecessary casts**: Use Zod validated types directly instead of casting to `Record<string, unknown>`.
+- **Fail explicitly when an external API returns an empty or default value** where a real one was required. Do not silently store a fallback.
+- **Validate response structure before reading nested fields**, and check any `errors` array before assuming data is present.

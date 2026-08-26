@@ -1,8 +1,6 @@
 ---
 paths:
-  - src/lib/server/database/**
-  - src/lib/server/db/**
-  - packages/database/drizzle.config.ts
+  - applications/web/src/lib/server/database/**
 ---
 
 # Database patterns

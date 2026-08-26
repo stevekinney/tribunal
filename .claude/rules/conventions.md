@@ -1,9 +1,10 @@
 ---
 paths:
-  - src/**
-  - workers/**
+  - applications/*/src/**
+  - packages/*/src/**
+  - runner/**
   - scripts/**
-  - test/**
+  - applications/web/test/**
   - documentation/**
   - .claude/**
   - .github/**

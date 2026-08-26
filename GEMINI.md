@@ -2,7 +2,11 @@ You are able to use the Svelte MCP server, where you have access to comprehensiv
 
 ## About this repository
 
-Tribunal is a SvelteKit web app (`applications/web`) plus shared packages (`packages/*`). The only integration is GitHub: log in with GitHub OAuth, install the GitHub App in your orgs, then browse your repositories and their open pull requests. The data model is flat: user -> GitHub installation -> repository -> pull request. The app is intentionally minimal — there are no AI, chat, editor, sandbox, project, or workflow-orchestration features. Internal packages are namespaced `@tribunal/*`.
+Tribunal is an automated code-review service, namespaced `@tribunal/*`. It runs as three deployed applications: `applications/web` (SvelteKit, public UI and webhook receiver), `applications/engine` (Weft workflows, Tensorlake reviewer sandboxes, review posting), and `applications/proxy` (signed egress boundary for sandboxes), plus shared packages under `packages/*`.
+
+Sign-in is Neon Auth with GitHub as the identity provider; repository access is a GitHub App installation. Beyond GitHub, the service depends on Neon Postgres, Redis, Tensorlake, and the Anthropic Claude Agent SDK. Do not treat GitHub as the only integration when scoping work.
+
+See `AGENTS.md` for the canonical description.
 
 Use Bun for all dependency installs and scripts (e.g., `bun install`, `bun run …`); avoid npm/pnpm/yarn.
 Primary project rules live in `.claude/rules/**` and remain the source of truth.
