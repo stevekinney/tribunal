@@ -329,6 +329,70 @@ describe('isAuthorizationGated: rejects a cosmetic gate (TRI-28 B7)', () => {
     expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
   });
 
+  test('rejects a predicate-derived assignment paired with a heredoc override of the same output (TRI-28 C1)', () => {
+    // The sibling test above covers two `echo NAME=value` assignments. This
+    // one covers the same attack expressed through the heredoc idiom, which
+    // is the form the assignment decoder deliberately does not parse -- and
+    // which, under $GITHUB_OUTPUT's last-write-wins semantics, is the write
+    // that actually takes effect at runtime.
+    //
+    // Found independently by two reviewers on #319: a genuine
+    // predicate-derived assignment plus a hardcoded heredoc override of the
+    // same name read as properly gated, because the heredoc write was
+    // invisible to the "exactly one assignment" counter.
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              run: 'echo "authorized=${{ contains(fromJson(\'["OWNER","MEMBER","COLLABORATOR"]\'), github.event.comment.author_association) }}" >> "$GITHUB_OUTPUT"',
+            },
+            {
+              // Hardcoded override via heredoc. Wins at runtime.
+              run: [
+                '{',
+                "  echo 'authorized<<EOF'",
+                "  echo 'true'",
+                "  echo 'EOF'",
+                '} >> "$GITHUB_OUTPUT"',
+              ].join('\n'),
+            },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+  });
+
+  test('still accepts a single predicate-derived assignment with no second write (TRI-28 C1)', () => {
+    // The counter must reject extra writes without rejecting the legitimate
+    // single-assignment shape it is meant to permit.
+    const workflow: Workflow = {
+      jobs: {
+        authorize: {
+          permissions: { contents: 'read' },
+          'timeout-minutes': 5,
+          steps: [
+            {
+              run: 'echo "authorized=${{ contains(fromJson(\'["OWNER","MEMBER","COLLABORATOR"]\'), github.event.comment.author_association) }}" >> "$GITHUB_OUTPUT"',
+            },
+          ],
+        },
+        privileged: privilegedJob({
+          needs: 'authorize',
+          if: "needs.authorize.outputs.authorized == 'true'",
+        }),
+      },
+    };
+    expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
+  });
+
   test('rejects an authorize job that assigns the compared output twice, the second hardcoded (TRI-28 C1)', () => {
     // $GITHUB_OUTPUT is a plain `name=value` file that is last-write-wins at
     // runtime: a real, predicate-derived assignment followed by a second,

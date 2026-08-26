@@ -245,6 +245,45 @@ function findOutputAssignmentValues(job: WorkflowJob, outputName: string): strin
 }
 
 /**
+ * Counts writes to `outputName` that `findOutputAssignmentValues` cannot
+ * decode, so they can still be counted toward the uniqueness requirement.
+ *
+ * TRI-28 C1 follow-up. `findOutputAssignmentValues` only recognizes the
+ * `echo NAME=value >> $GITHUB_OUTPUT` idiom. The heredoc idiom
+ * (`echo 'NAME<<EOF'; echo 'true'; echo 'EOF'` redirected to
+ * `$GITHUB_OUTPUT`) writes the same output and, under $GITHUB_OUTPUT's
+ * last-write-wins semantics, is what actually takes effect at runtime --
+ * but it was invisible to the counter, so one genuine predicate-derived
+ * assignment plus one hardcoded heredoc override still read as gated.
+ *
+ * These writes are deliberately treated as OPAQUE: their value spans lines
+ * and is not decoded here. Existence is what matters, because any second
+ * write to the same name defeats the "exactly one assignment" guarantee
+ * regardless of what it contains.
+ */
+function countOpaqueOutputWrites(job: WorkflowJob, outputName: string): number {
+  const escapedName = escapeRegExp(outputName);
+  // A heredoc assignment opens with `NAME<<DELIMITER`, optionally quoted by
+  // the enclosing `echo`. Anchoring on a leading quote, whitespace, or line
+  // start avoids matching a longer output name that merely ends in this one.
+  const heredocStart = new RegExp(`(^|["'\\s])${escapedName}<<`);
+  let opaqueWrites = 0;
+
+  for (const step of job.steps ?? []) {
+    if (typeof step.run !== 'string') continue;
+    // The redirect may sit on a different line from the assignment (the
+    // `{ ...; } >> $GITHUB_OUTPUT` grouping form), so qualify per run block
+    // rather than per line.
+    if (!/\$GITHUB_OUTPUT/.test(step.run)) continue;
+    for (const line of step.run.split('\n')) {
+      if (heredocStart.test(line)) opaqueWrites += 1;
+    }
+  }
+
+  return opaqueWrites;
+}
+
+/**
  * True when `value` is EXACTLY one `${{ ... }}` GitHub Actions expression
  * (a trailing stray quote character from the enclosing `echo "..."` is
  * tolerated) -- and nothing else: no literal text before or after it, and
@@ -307,6 +346,15 @@ function upstreamJobHasRecognizableAuthorizationCheck(
   if (typeof job.uses === 'string' && /authoriz/i.test(job.uses)) return true;
 
   const assignedValues = findOutputAssignmentValues(job, outputName);
+  const opaqueWrites = countOpaqueOutputWrites(job, outputName);
+
+  // Every write to this output counts toward uniqueness, decodable or not.
+  // A decodable predicate-derived assignment alongside an opaque heredoc
+  // override is exactly the bypass this check exists to reject: the opaque
+  // one wins at runtime while the decodable one is what gets inspected.
+  if (assignedValues.length + opaqueWrites !== 1) return false;
+  // ...and the one surviving write must be the decodable kind, so its value
+  // can actually be checked for a predicate.
   if (assignedValues.length !== 1) return false;
 
   const expression = asSingleTemplateExpression(assignedValues[0]);
