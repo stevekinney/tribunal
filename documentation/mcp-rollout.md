@@ -93,7 +93,13 @@ Flip the flag on, then run all of:
 
 Then **disable the surface using the durable override** from the Disabling section, and confirm every route from check 1 returns to its dark response. A kill switch first exercised during an incident is an untested code path in the worst possible conditions, and this window is the only opportunity to run it without one.
 
-**Stage three: enable for real,** after checks 4 through 7 have passed and a human has approved. Re-run check 4 once to confirm the final state serves.
+**Stage three: enable for real,** after checks 4 through 7 have passed and a human has approved.
+
+This is a three-step transition, not a flag flip, and the order matters. Stage two deliberately left the surface disabled behind an override built to survive redeploys, so simply setting the TOML value would leave that override still shadowing it — and enabling from a local checkout without committing would be undone by the next automatic deploy of the committed disabled value. Either way the operator would believe the surface is enabled when it is not.
+
+1. **Land the approved enabled state on `main`.** Set `MCP_ENABLED = "true"` in `deployment/fly/web.toml` and merge, so the committed state is the intended one and the automation reinforces it.
+2. **Clear the stage-two override**, explicitly and as its own step. It was designed to outlive a redeploy; nothing removes it implicitly.
+3. **Verify.** Re-run check 4 and confirm the surface actually serves. This step is what catches having done 1 without 2, which otherwise looks identical to a deploy that has not landed yet.
 
 Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3, 5, 6, 7 and the stage-two disable exercise belong to TRI-60. None is satisfied by a merged pull request.
 
