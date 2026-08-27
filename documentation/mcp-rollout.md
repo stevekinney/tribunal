@@ -442,8 +442,19 @@ direction is approved.
 
 ## Summary of open questions for the approver
 
-- The exact HTTP response (`404` versus `503`, or something else) `/mcp`
-  and its OAuth endpoints should return while `MCP_ENABLED` is false.
+This list is what approval did **not** settle. One item has since been
+closed and is recorded here so the two halves of this document cannot give
+opposite instructions:
+
+- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed.**
+  This document's recommendation of `404` stands as the instruction, and
+  TRI-41 ships it and records the per-route expected-status table that
+  rollout gates 1 and 4 assert against. See the flag section above.
+  Departing from `404` needs sign-off; an orchestrator should implement,
+  not stop for approval.
+
+Still open:
+
 - Whether the operator (anyone with `flyctl` deploy access to
   `tribunal-web`) is the intended authority for disabling `/mcp`, or
   whether a narrower role should be defined before launch.

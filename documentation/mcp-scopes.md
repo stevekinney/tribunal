@@ -2,7 +2,9 @@
 
 Status: approved—TRI-24 (Graph ID D1), merged as [#322](https://github.com/stevekinney/tribunal/pull/322) and squashed to `fa440112`. The human checkpoint this issue required was cleared by the user; the approval is recorded as completion evidence on TRI-24. Blocks F2, O1, O2, O4.
 
-One item is deliberately carried forward rather than closed: the grant-everything default on an omitted `scope` rests on an assumption about client behaviour that TRI-62 through TRI-65 are where it gets confirmed, and the section below says it should be revisited rather than inherited if clients turn out to send explicit scopes.
+One item is deliberately carried forward rather than closed, and **TRI-84 closes it**: the grant-everything default on an omitted `scope` rests on an assumption about client behaviour, TRI-62 through TRI-65 are where each client's real behaviour gets recorded, and the section below says the default should be revisited rather than inherited if clients turn out to send explicit scopes.
+
+Those four gates only _observe_. TRI-84 is the node that acts on what they find, and it is natively blocked by all four — without it, every gate could complete having recorded that clients send explicit scopes while the default was inherited anyway on an assumption the project had by then disproved.
 
 Delivery boundary for this issue is documentation only—no code. Every scope, tool, resource, and prompt name below that does not already exist in this repository is a proposal for the implementation tier (F2, O1, O2, O4) to build against, not a claim that it exists yet.
 

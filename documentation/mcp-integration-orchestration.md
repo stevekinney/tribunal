@@ -164,7 +164,7 @@ Each exists because something specific broke in Protokit. Porting the code witho
 - **Redirect-URI matching validates fragment and userinfo on both sides** (TRI-37). Validating only the request side was a real defect.
 - **Trusted-proxy hop counting** (TRI-50): a header-derived address is trusted only when the immediate peer's socket address is inside a configured CIDR, defaulting to trusting nothing. Empty-position collapse in `X-Forwarded-For` was a confirmed bypass letting a caller choose its own network identity.
 - **Every advertised MCP capability is handler-backed** (TRI-29). Protokit once advertised "enterprise authorization" that only checked a static allowlist.
-- **The DNS-rebinding check is not gated on conformance mode** (TRI-30). It once was, so it protected only test runs.
+- **The DNS-rebinding check is not gated on conformance mode** (**TRI-77**, upstream — it is engine behaviour, and moved there with the rest of the conformance harness; it is TRI-77's criterion 5 verbatim). It once was gated, so it protected only test runs. Listed here rather than dropped because this list is what survives the move: an invariant that leaves this repository still has to hold, and the released version Tribunal consumes is where it gets verified.
 
 Two standing requirements nothing here can pre-satisfy: any tool fetching a user-supplied or client-supplied URL must reuse `assertHostnameIsPubliclyRoutable`; and any tool returning untrusted external content as tool output crosses a prompt-injection boundary Protokit never had to defend. Tribunal reviews arbitrary pull request content, so it crosses that boundary immediately.
 
