@@ -6,6 +6,7 @@ paths:
   - applications/web/src/routes/login/**
   - applications/web/src/routes/logout/**
   - applications/web/src/routes/onboarding/**
+  - applications/web/src/routes/auth/**
   - src/routes/login/**
   - src/routes/onboarding/**
   - src/routes/logout/**
