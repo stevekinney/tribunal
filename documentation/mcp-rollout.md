@@ -197,14 +197,32 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   `/health/ready` return `404` rather than `401` when unconfigured in
   Protokit's own RUNBOOK access-control section.
 
-  Approving TRI-26 did not record a separate answer to this sub-question,
-  so the recommendation stands as the instruction — that is what a
-  recommendation in an approved document is for, and gates 1 and 4 cannot
-  assert an exact status against an unanswered question. **TRI-41 ships
-  `404` and records the per-route expected-status table those gates compare
-  against**, since criterion 6 already makes it the issue that honours the
-  flag. Departing from `404` is a decision that needs sign-off, not an
-  implementation detail to settle inside a pull request.
+  **Decided by the project owner on 2026-08-27, on the grounds of what is
+  idiomatic.** This is no longer a recommendation awaiting sign-off. **TRI-41
+  ships `404` and records the per-route expected-status table gates 1 and 4
+  compare against**, since criterion 6 already makes it the issue that
+  honours the flag.
+
+  Three reasons beyond the disclosure argument above, each of which
+  independently rules out `503`:
+
+  - **`503` invites a retry that should never happen.** RFC 9110 defines it
+    as the server being _temporarily_ unable to handle the request; it is
+    the status that pairs with `Retry-After` and that clients back off and
+    retry against. A deliberately disabled surface is not temporarily
+    unavailable in any sense a client should wait out, so `503` would have
+    every MCP client politely retrying a surface that is off on purpose.
+  - **`404` is how discovery is _supposed_ to fail.** A client reads
+    `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`
+    to learn whether this host offers an OAuth-protected MCP surface at all.
+    A `404` answers that question — no, degrade gracefully — which is the
+    path clients already implement. A `503` leaves them unable to
+    distinguish "not offered" from "offered and briefly sick."
+  - **It makes gate 1 a clean binary.** These are SvelteKit routes, so a
+    route that is not mounted returns `404` on its own. Choosing `404` makes
+    the disabled state byte-identical to the never-built state, which is
+    exactly what "the surface is fully dark" needs to mean if it is to be
+    asserted rather than inspected.
 
 ## Disabling `/mcp` in production
 
@@ -446,12 +464,14 @@ This list is what approval did **not** settle. One item has since been
 closed and is recorded here so the two halves of this document cannot give
 opposite instructions:
 
-- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed.**
-  This document's recommendation of `404` stands as the instruction, and
-  TRI-41 ships it and records the per-route expected-status table that
-  rollout gates 1 and 4 assert against. See the flag section above.
-  Departing from `404` needs sign-off; an orchestrator should implement,
-  not stop for approval.
+- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed —
+  `404`, decided by the project owner on 2026-08-27.** TRI-41 ships it and
+  records the per-route expected-status table that rollout gates 1 and 4
+  assert against. The reasoning is in the flag section above: `503` invites
+  a retry that should never happen, `404` is how OAuth discovery is meant to
+  fail, and it makes the disabled state identical to the never-built state
+  so gate 1 is assertable. This is settled — implement it rather than
+  stopping for approval.
 
 Still open:
 
