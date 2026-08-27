@@ -127,4 +127,37 @@ describe('createToolStructuredResponse', () => {
     expect(response.content[0].text).toContain('exceeded');
     expect(response.content[0].text).not.toBe(serialized.slice(0, response.content[0].text.length));
   });
+
+  /**
+   * Review on #324 found the cap was enforced on `String.length`, which counts
+   * UTF-16 code units rather than the UTF-8 bytes that go on the wire. The two
+   * diverge by up to 3x for non-ASCII output, so a character-based check
+   * silently permitted nearly three times the advertised limit -- criterion 8
+   * passing while the guarantee it describes was absent.
+   *
+   * 200,000 CJK characters are comfortably under a 256*1024 CHARACTER cap and
+   * comfortably over a 256*1024 BYTE one, so this test fails against the
+   * character-based implementation and passes against the byte-based one.
+   */
+  it('a multi-byte payload under the character count but over the byte cap produces isError: true', () => {
+    const multiByteText = '\u4e2d'.repeat(200_000);
+
+    expect(multiByteText.length).toBeLessThan(capBytes);
+    expect(new TextEncoder().encode(multiByteText).length).toBeGreaterThan(capBytes);
+
+    const response = createToolTextResponse(multiByteText);
+
+    expect((response as { isError?: boolean }).isError).toBe(true);
+    expect(response.content[0].text).toContain('exceeded');
+    expect(response.content[0].text).toContain('bytes');
+  });
+
+  it('an ASCII payload just under the byte cap is still returned intact', () => {
+    // The fix must not reject what it exists to permit.
+    const withinCap = 'x'.repeat(capBytes - 1024);
+    const response = createToolTextResponse(withinCap);
+
+    expect((response as { isError?: boolean }).isError).toBeUndefined();
+    expect(response.content[0].text).toBe(withinCap);
+  });
 });

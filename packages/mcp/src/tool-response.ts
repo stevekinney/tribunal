@@ -9,18 +9,40 @@
  * response rather than silently truncated: truncating a JSON string mid-way
  * would hand the caller invalid JSON, which is worse than a clear failure.
  */
-const maxToolResultCharacters = 256 * 1024;
+const maxToolResultBytes = 256 * 1024;
+
+const utf8Encoder = new TextEncoder();
+
+/**
+ * The cap is on the UTF-8 bytes that go on the wire, not on `String.length`,
+ * which counts UTF-16 code units. The two diverge badly for non-ASCII output:
+ * 250,000 CJK characters satisfy a character-based check while encoding to
+ * roughly 750 KB, so a character cap silently permits nearly three times the
+ * advertised limit.
+ *
+ * The multiplication is a fast path, not an approximation of the answer. UTF-8
+ * uses at most three bytes per UTF-16 code unit (a surrogate pair is two units
+ * and four bytes, so two bytes per unit), so anything under a third of the cap
+ * cannot possibly exceed it and never needs encoding. Only the remainder pays
+ * for an exact measurement.
+ */
+function utf8ByteLength(text: string): number {
+  return utf8Encoder.encode(text).length;
+}
 
 function boundedTextContent(text: string): { content: [{ type: 'text'; text: string }] } {
-  if (text.length > maxToolResultCharacters) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Result omitted: exceeded the ${maxToolResultCharacters}-character tool result limit (was ${text.length} characters).`,
-        },
-      ],
-    };
+  if (text.length * 3 > maxToolResultBytes) {
+    const byteLength = utf8ByteLength(text);
+    if (byteLength > maxToolResultBytes) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Result omitted: exceeded the ${maxToolResultBytes}-byte tool result limit (was ${byteLength} bytes).`,
+          },
+        ],
+      };
+    }
   }
   return { content: [{ type: 'text', text }] };
 }
@@ -70,16 +92,19 @@ export function createToolStructuredResponse<T>(data: T, summary: string) {
   }
 
   const serialized = JSON.stringify(data) ?? 'null';
-  if (serialized.length > maxToolResultCharacters) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Result omitted: exceeded the ${maxToolResultCharacters}-character tool result limit (was ${serialized.length} characters).`,
-        },
-      ],
-      isError: true,
-    };
+  if (serialized.length * 3 > maxToolResultBytes) {
+    const serializedByteLength = utf8ByteLength(serialized);
+    if (serializedByteLength > maxToolResultBytes) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Result omitted: exceeded the ${maxToolResultBytes}-byte tool result limit (was ${serializedByteLength} bytes).`,
+          },
+        ],
+        isError: true,
+      };
+    }
   }
 
   return { ...boundedSummary, structuredContent: data };
