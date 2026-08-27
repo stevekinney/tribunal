@@ -208,7 +208,9 @@ The reason is that widening it is not a type change. It changes what `scopes_sup
 
 If a later issue finds a primitive that genuinely cannot be split, widening `requiredScope` to `McpScope[]` with `allOf` semantics is the reversible path—but as its own decision, with the derivation and enforcement changes in scope, rather than a field type quietly relaxed mid-implementation.
 
-Consent-screen preselection UX: this document decides the token-grant default (omitted `scope` grants the full supported set) but not how the consent screen visually presents that—whether it shows one flat "grant everything" approval or a checkbox per scope with some subset preselected. That is a session-binding and consent-flow UI decision, tracked separately as TRI-25, and should read this document's default before making that call rather than re-deriving it.
+Consent-screen preselection UX: this document decides the token-grant default (omitted `scope` grants the full supported set) but not how the consent screen visually presents that—whether it shows one flat "grant everything" approval or a checkbox per scope with some subset preselected. **TRI-40 decides it**, as the issue that builds the screen, and should read this document's default before making that call rather than re-deriving it.
+
+An earlier revision assigned this to TRI-25, which is now Done and never covered it: TRI-25 scoped itself to how `GET /oauth/authorize` identifies its user and what the authorization transaction binds to, explicitly not the rest of the flow. Leaving it there would have meant either reopening a completed decision or guessing at deselection behaviour mid-implementation. If TRI-40 concludes the choice is larger than a screen-level call—per-scope deselection changes what token gets issued, not just what renders—raise it as its own decision rather than settling it inside the pull request.
 
 Conformance fixture content: named above—reserving the `conformance:read` scope and its exclusion mechanism is this document's job; deciding what the fixture tool actually returns is not.
 

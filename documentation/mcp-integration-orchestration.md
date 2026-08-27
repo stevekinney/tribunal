@@ -114,7 +114,13 @@ The opening tier — the instruction-file correction, the three decision documen
 
 **Releasing them upstream is not enough on its own — TRI-80 has to run too.** This is the easiest step in the chain to skip, because "registry injection shipped" sounds like the blocker cleared. It did not. Until TRI-80 swaps the bridge for the published package, this repository is still building against `packages/mcp`, whose `server.ts` resolves `allTools`, `allResources`, and `allPrompts` through static module imports. A released upstream capability does nothing for a consumer still importing the copy that lacks it. So the real chain is **TRI-72 and TRI-73 released → TRI-74 published → TRI-80 swapped → TRI-29**, and TRI-29 is natively blocked by all of them. The alternative — patching the temporary copy so TRI-29 can proceed early — deepens exactly the divergence TRI-80 exists to end.
 
-**The Tribunal front continues independently** along the OAuth path — TRI-31 → TRI-35 → TRI-37 remains the critical chain, and it needs nothing from the engine. Prefer breadth over depth so that chain keeps moving.
+**The Tribunal front continues along the OAuth path, but it is not engine-independent all the way down.** TRI-31 (schema tables) and TRI-35 (query modules) genuinely need nothing from the engine — start there, and prefer breadth over depth so the chain keeps moving.
+
+**TRI-37 is where that stops being true, and its Linear blockers do not currently say so.** Two of its seven criteria depend on the registry: criterion 7 (scope-defaulting on an omitted `scope`) and `documentation/mcp-scopes.md`'s requirement that the authorize endpoint reject any scope outside `getSupportedScopes()` as `invalid_scope`. That function derives its answer by walking the production registries, and the same document forbids hand-maintaining a parallel list — which is the only way to satisfy those two criteria before TRI-29 exists. Against today's bridge, an implementer would be validating Tribunal's scopes against Protokit's demo registries or against empty arrays.
+
+The other five criteria — the authorization transaction and its single-consume race, RFC 9207 `iss` on error redirects, both-sides redirect-URI matching, `Sec-Fetch-Site` and `Origin` checks before body parsing, CSRF binding — are the security-critical bulk and need nothing from the engine.
+
+**This needs a call before TRI-37 is picked up, and it is deliberately not made here** because both answers reshape the plan. Blocking TRI-37 on TRI-29 is truthful but serializes most of the project behind upstream work. Splitting the two scope-dependent criteria into their own issue keeps the critical path moving but adds a node and a second review of the same endpoint. Do not start TRI-37 as though the question were settled, and do not quietly hard-code a scope list to get past it.
 
 For each issue:
 
