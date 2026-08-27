@@ -1,6 +1,6 @@
 # MCP consent-flow session binding
 
-Decision document for **TRI-25** (graph node D2). Drafted for human approval, not self-approved. It covers exactly what the issue scopes: how `GET /oauth/authorize` identifies the logged-in user, and what the Tribunal equivalent of `oauth_authorization_transactions.sessionTokenHash` binds to. It does not design the rest of the authorize/approve/deny flow—that belongs to TRI-31, which should treat this document as an input.
+Decision document for **TRI-25** (graph node D2). Status: approved — merged as [#320](https://github.com/stevekinney/tribunal/pull/320) and squashed to `b11c647e`, with the user's approval recorded as completion evidence on TRI-25. One question is carried forward rather than closed, and it is named at the end of this document: whether Neon Auth's JWT exposes a refresh-stable per-login claim, which TRI-31 owns. It covers exactly what the issue scopes: how `GET /oauth/authorize` identifies the logged-in user, and what the Tribunal equivalent of `oauth_authorization_transactions.sessionTokenHash` binds to. It does not design the rest of the authorize/approve/deny flow—that belongs to TRI-31, which should treat this document as an input.
 
 ## Why this is a decision, not a port
 

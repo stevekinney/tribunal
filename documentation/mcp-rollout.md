@@ -9,9 +9,17 @@ published MCP engine, alongside a full OAuth 2.1 authorization server and its
 was to be Protokit's ported `createApplicationMount()`; the orchestration
 document rejects that seam. Nothing this document decides depends on which of
 the two supplies the mount.) This document proposes answers to the three operational
-questions the issue names. It is a draft; nothing here is approved until a
-human signs off, per the issue's own instruction not to self-approve a
-decision issue.
+questions the issue names.
+
+Status: approved — merged as
+[#321](https://github.com/stevekinney/tribunal/pull/321) and squashed to
+`50e1b799`, with the user's approval recorded as completion evidence on
+TRI-26. Approval covers the three questions the issue named: the flag, the
+rollback trigger, and the alerting. It does not close the items this
+document explicitly hands to whoever implements or operates the surface —
+those are collected under "Summary of open questions for the approver" at
+the end and marked `OPEN QUESTION` in place. Treat those as deferred with an
+owner, not as a decision still pending.
 
 Each section states the options considered, a recommendation, and the
 reasoning. Anything the codebase does not currently answer is marked

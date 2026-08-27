@@ -56,7 +56,9 @@ An instruction that reads "delete `google-id-token.ts`" means _do not bring it a
 - **Clients**: all four. This is why the stateless legacy `2025-11-25` protocol lane, CIMD, dynamic client registration, and the ChatGPT connector assets are in scope.
 - **Test runner**: vitest. No `bun:test` enters this repository, enforced by lint rule in TRI-34.
 
-Three further decisions were open when this document was written and have since been made and approved: the scope vocabulary (TRI-24), the consent-flow session binding (TRI-25), and the rollout flag, rollback trigger, and alerting (TRI-26). Their committed documents — `documentation/mcp-scopes.md`, `mcp-consent-session.md`, and `mcp-rollout.md` — are inputs to the implementation tier and belong on this list rather than in a queue. Do not guess against them and do not reopen them.
+Three further decisions were open when this document was written and have since been made and approved by the user, each recorded as completion evidence on its issue: the scope vocabulary (TRI-24, merged as `fa440112`), the consent-flow session binding (TRI-25, `b11c647e`), and the rollout flag, rollback trigger, and alerting (TRI-26, `50e1b799`). Their committed documents — `documentation/mcp-scopes.md`, `documentation/mcp-consent-session.md`, and `documentation/mcp-rollout.md` — are inputs to the implementation tier and belong on this list rather than in a queue. Do not guess against them and do not reopen them.
+
+Approved does not mean every question inside them is closed. Each carries named items deferred to a later issue — `documentation/mcp-rollout.md` keeps a "Summary of open questions for the approver", and `documentation/mcp-consent-session.md` leaves the refresh-stable session claim to TRI-31. Those are deferred deliberately, with an owner; they are not the decision reopening.
 
 ## What the dependency model changes in the graph
 
@@ -88,7 +90,11 @@ Three consequences worth stating before the first upstream change:
 - **A released version is the bar, not a merged pull request.** A Tribunal issue blocked on upstream work stays out of `Ready` until the upstream change is on a registry. Merging upstream moves nothing here.
 - **A released version is also not sufficient on its own — it must be the right one.** A version cut before registry injection (TRI-72) and the consumer scope vocabulary (TRI-73) is not adoptable, because Tribunal cannot supply its own tools or its own scopes to it.
 
-**Two defects found during the port exist upstream too**, and both are filed: **TRI-78**, the tool-result cap measuring UTF-16 code units rather than UTF-8 bytes, and **TRI-79**, a present-but-unparseable `Origin` treated as absent.
+**Two findings from the port apply upstream too, and both are filed — but they are different kinds of thing.**
+
+**TRI-78 is a defect.** The tool-result cap measures UTF-16 code units rather than UTF-8 bytes, so the bound it enforces is not the bound it documents. Nothing needs deciding.
+
+**TRI-79 is an open decision, not a defect**, and must not be implemented as though the answer were settled. A present-but-unparseable `Origin` is currently treated as absent, and absent `Origin` is allowed by design — see the `authenticateMcpUser` invariant below. Whether an unparseable value should instead be rejected is a real question with a real argument on each side, and it is a `type:decision` issue for that reason. Draft the options; do not self-approve, and do not carry "unparseable is a defect" into upstream implementation before the decision is made.
 
 TRI-78 is the one that constrains sequencing, and in the opposite direction from what "the copy has diverged, so swap sooner" suggests on its own. The byte-cap fix landed in this repository's copy and not upstream. Adopting a published version cut from the pinned baseline would therefore **delete a security-relevant bound that is present today** and restore the UTF-16 behaviour, and it would do so silently — the swap looks like a dependency bump. So the fix and its test must be upstream and in the exact released version Tribunal consumes. That is why TRI-78 natively blocks TRI-80, and why TRI-80 carries it as an acceptance criterion rather than trusting the ordering to hold.
 
