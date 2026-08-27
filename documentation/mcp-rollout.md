@@ -208,9 +208,18 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
 
   **Decided by the project owner on 2026-08-27, on the grounds of what is
   idiomatic.** This is no longer a recommendation awaiting sign-off. **TRI-41
-  ships `404` and records the per-route expected-status table gates 1 and 4
-  compare against**, since criterion 6 already makes it the issue that
+  ships `404` and records the expected-status table for gate 1 — the
+  disabled state**, since criterion 6 already makes it the issue that
   honours the flag.
+
+  **Gate 4's table is not TRI-41's**, and assigning it there would be the
+  kind of paperwork that reads as coverage. Gate 4 asserts what the routes
+  return once enabled, which requires a working MCP handler — so it cannot
+  exist until the engine is consumable and TRI-29's registry is defined.
+  TRI-41 can specify what an enabled route _should_ return, but not verify
+  it, and an unverifiable expected value recorded as though it were checked
+  is exactly this project's signature defect. Gate 4's table belongs to
+  whichever issue can produce an enabled surface — TRI-58 at the earliest.
 
   Three reasons beyond the disclosure argument above, each of which
   independently rules out `503`:
@@ -246,6 +255,24 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
     returns a distinctive body or adds a header the real 404 does not carry.
     Where an infrastructure header makes exact equality impossible, name the
     exemption rather than dropping the assertion.
+
+    **And that requirement collides with a second one, so resolve them
+    together rather than discovering it at rollout.** A `404` is
+    heuristically cacheable under RFC 9111. The two discovery documents are
+    unauthenticated `GET`s, so an intermediary or client that caches the
+    stage-one disabled response can keep serving it after stage three flips
+    the flag — the surface is enabled and a client still cannot find it. The
+    obvious fix, `Cache-Control: no-store` on the disabled response, is
+    exactly what header equality forbids, because Tribunal's ordinary 404s
+    carry no cache-control header today.
+
+    **The resolution is to apply `no-store` to both**, so the disabled
+    response stays indistinguishable _and_ uncacheable. Note that this
+    touches Tribunal's global 404 handling rather than only the MCP paths,
+    which makes it a wider change than it first appears — surface it as such
+    rather than slipping it in. The alternative, making only MCP-path 404s
+    uncacheable, reintroduces exactly the distinguishing signal this section
+    exists to remove: a prober comparing headers learns which paths are real.
 
 ## Disabling `/mcp` in production
 
@@ -489,13 +516,16 @@ opposite instructions:
 
 - ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed —
   `404`, decided by the project owner on 2026-08-27.** TRI-41 ships it and
-  records the per-route expected-status table that rollout gates 1 and 4
-  assert against. The reasoning is in the flag section above: `503` invites
+  records the expected-status table that rollout gate 1 asserts against —
+  gate 4's enabled-state table is not TRI-41's, since it needs a working MCP
+  handler. The reasoning is in the flag section above: `503` invites
   a retry that should never happen, `404` is how OAuth discovery is meant to
   fail, and `404` is the only status that can make the surface
-  indistinguishable from an unmounted route. Note the requirement that
-  carries with it — matching status is not matching response, so TRI-41 must
-  assert body and headers too. This is settled — implement it rather than
+  indistinguishable from an unmounted route. Two requirements carry with it —
+  matching status is not matching response, so TRI-41 asserts body and
+  headers too; and a `404` is heuristically cacheable, so both it and
+  Tribunal's ordinary 404 need `Cache-Control: no-store` or a cached
+  disabled response outlives the flag flip. This is settled — implement it rather than
   stopping for approval.
 
 Still open:
