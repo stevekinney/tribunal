@@ -56,7 +56,7 @@ An instruction that reads "delete `google-id-token.ts`" means _do not bring it a
 - **Clients**: all four. This is why the stateless legacy `2025-11-25` protocol lane, CIMD, dynamic client registration, and the ChatGPT connector assets are in scope.
 - **Test runner**: vitest. No `bun:test` enters this repository, enforced by lint rule in TRI-34.
 
-Three decisions remain open and are tracked as issues: the scope vocabulary (TRI-24), the consent-flow session binding (TRI-25), and the rollout flag, rollback trigger, and alerting (TRI-26). Their outputs are inputs to the implementation tier. Do not guess them; drive each to a committed decision document.
+Three further decisions were open when this document was written and have since been made and approved: the scope vocabulary (TRI-24), the consent-flow session binding (TRI-25), and the rollout flag, rollback trigger, and alerting (TRI-26). Their committed documents — `documentation/mcp-scopes.md`, `mcp-consent-session.md`, and `mcp-rollout.md` — are inputs to the implementation tier and belong on this list rather than in a queue. Do not guess against them and do not reopen them.
 
 ## What the dependency model changes in the graph
 
@@ -154,7 +154,10 @@ Two standing requirements nothing here can pre-satisfy: any tool fetching a user
 
 This cannot run fully autonomously end to end. Stop and hand back at:
 
-- **TRI-24, TRI-25, TRI-26** — product and architecture decisions. Draft the document with options and a recommendation; do not self-approve.
+- **Any `type:decision` issue** — product and architecture calls. Draft the document with options and a recommendation; do not self-approve. TRI-24, TRI-25, and TRI-26 have cleared this gate. TRI-79 (whether a present-but-unparseable `Origin` is rejected) and TRI-83 (whether Tribunal commits to singleton deployment or builds instance identity) have not.
+
+  **TRI-83 is worth reaching for early rather than when its blockers clear.** TRI-43, TRI-52, and TRI-56 are each being built against an answer nobody has stated, and the cost of discovering it late is rework in the three places hardest to retrofit.
+
 - **TRI-60** — provisioning production Fly secrets and deploying. Outward-facing and credential-bearing.
 - **TRI-62 through TRI-65** — the client release gates. Browser OAuth is unscriptable by design; run the scripted half and hand the manual half back with exact steps.
 - **TRI-46** — a Cinder version decision affecting the whole design system, not just this project.
