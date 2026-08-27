@@ -18,8 +18,15 @@ TRI-26. Approval covers the three questions the issue named: the flag, the
 rollback trigger, and the alerting. It does not close the items this
 document explicitly hands to whoever implements or operates the surface —
 those are collected under "Summary of open questions for the approver" at
-the end and marked `OPEN QUESTION` in place. Treat those as deferred with an
-owner, not as a decision still pending.
+the end. Treat those as deferred with an owner, not as a decision still
+pending.
+
+One of them has since been closed by a separate owner decision: the
+disabled-surface response is `404`, decided 2026-08-27 and now stated as an
+instruction rather than a recommendation. It is struck through in that
+summary rather than deleted, so the record of what approval did and did not
+settle stays legible. The two that remain are still marked `OPEN QUESTION`
+in place.
 
 Each section states the options considered, a recommendation, and the
 reasoning. Anything the codebase does not currently answer is marked
