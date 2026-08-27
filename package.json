@@ -29,6 +29,10 @@
     "db:studio": "drizzle-kit studio --config packages/database/drizzle.config.ts",
     "database:migration:prepare": "bun run db:generate && bun run db:check && bun run check",
     "validate:turbo": "bun run scripts/validate-turbo-configuration.ts",
+    "audit:workflows": "bun run .github/scripts/audit-workflows.ts",
+    "test:workflow-authorization": "vitest run --config .github/tests/vitest.config.ts workflow-authorization",
+    "test:workflow-prompt-injection": "vitest run --config .github/tests/vitest.config.ts workflow-prompt-injection",
+    "test:production-migration-gate": "vitest run --config .github/tests/vitest.config.ts production-migration-gate",
     "verify": "bun run scripts/verify.ts",
     "deploy:status": "bun run scripts/deploy.ts",
     "test:coverage": "turbo run build --filter='!@tribunal/web' && bun run --cwd applications/engine test:coverage && bun run --cwd applications/proxy test:coverage && bun run --cwd applications/web test:coverage && bun run --cwd packages/review-core test:coverage && bun run --cwd packages/agents test:coverage && bun run --cwd packages/sandbox test:coverage && bun run --cwd packages/cost test:coverage && bun run --cwd packages/github test:coverage && bun run --cwd packages/database test:coverage && bun run --cwd packages/test test:coverage && bun run --cwd scripts test:coverage && bun run --cwd runner test:coverage"
@@ -53,7 +57,8 @@
     "turbo": "^2.10.9",
     "typescript": "6.0.3",
     "typescript-eslint": "^8.67.0",
-    "vitest": "4.0.16"
+    "vitest": "4.0.16",
+    "yaml": "^2.9.0"
   },
   "lint-staged": {
     "*.{js,ts,svelte,json,md,css,html}": [
