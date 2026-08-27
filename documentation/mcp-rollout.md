@@ -320,10 +320,20 @@ with bare `console.log`/`console.error` (see
 kind. So for `/mcp`, both the emitting side (the structured pino logger
 with redaction, and the metrics collector Protokit's
 `packages/mcp/src/logger.ts` and `packages/mcp/src/metrics.ts` provide)
-and the sink are new. The logger and collector arrive with the port itself
-(the orchestration document's TRI-33 invariant on redaction), but nothing
-consumes them into an actual alert without further work this issue's
-acceptance criteria require naming explicitly.
+and the sink are new.
+
+An earlier revision said the logger and collector "arrive with the port
+itself", which was true of a fork and is misleading as a dependency. They
+arrive inside the published engine, which owns its own `pino` instance —
+so engine log lines do **not** inherit Tribunal's redaction policy by
+arriving. That is the gap TRI-76 (host-supplied logger) closes, letting
+Tribunal supply a logger that already redacts and having the engine's
+output inherit it. Until then, treat engine-emitted lines as outside the
+TRI-33 policy rather than covered by it, and do not read the presence of a
+logger in the dependency as evidence redaction is in force.
+
+Either way nothing consumes them into an actual alert without further work
+this issue's acceptance criteria require naming explicitly.
 
 The five conditions from the issue, evaluated:
 
