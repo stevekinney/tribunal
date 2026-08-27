@@ -97,14 +97,14 @@ This is why `pull_requests:read` and `review_findings:read` are kept as their ow
 
 Five production scopes, one per capability family, plus one conformance-only scope. Naming follows the donor's `noun:read` shape and this repository's snake_case-for-multi-word-identifiers convention.
 
-| Scope                  | Capability family                         | Gates (illustrative—final names are F2/O1/O2 decisions)                                              | Crosses the injection boundary             |
-| ---------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `repositories:read`    | Repository identity and access            | `list_repositories`, `get_repository`                                                                | Yes—administrator-controlled names         |
-| `pull_requests:read`   | Live GitHub pull request content          | `list_pull_requests`, `get_pull_request`                                                             | Yes—author-controlled content              |
-| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                                                                 | Only if repository labels are included     |
-| `review_findings:read` | Findings emitted by review runs           | `list_review_findings`, `get_review_finding`                                                         | Yes—reflects reviewed pull request content |
-| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                                                               | Only if repository labels are included     |
-| `conformance:read`     | Conformance-only fixture, never real data | one synthetic fixture tool, name TBD by whichever issue ports Protokit's `list_audit_events` pattern | No—returns synthetic data only             |
+| Scope                  | Capability family                         | Gates (illustrative—final names are F2/O1/O2 decisions)        | Crosses the injection boundary             |
+| ---------------------- | ----------------------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| `repositories:read`    | Repository identity and access            | `list_repositories`, `get_repository`                          | Yes—administrator-controlled names         |
+| `pull_requests:read`   | Live GitHub pull request content          | `list_pull_requests`, `get_pull_request`                       | Yes—author-controlled content              |
+| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                           | Only if repository labels are included     |
+| `review_findings:read` | Findings emitted by review runs           | `list_review_findings`, `get_review_finding`                   | Yes—reflects reviewed pull request content |
+| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                         | Only if repository labels are included     |
+| `conformance:read`     | Conformance-only fixture, never real data | one synthetic fixture tool, name and payload decided by TRI-30 | No—returns synthetic data only             |
 
 The one-line consent-screen description is the verbatim text a `getSupportedScopes()`-equivalent registry must display, matching the donor's `mcpScopeDescriptions` shape (`packages/mcp/src/scopes.ts`) and rendered the same way the donor's authorize page renders it—one `<li>` per granted or requested scope, the string copied through unmodified:
 
@@ -137,7 +137,9 @@ Recommendation: reserve `conformance:read` as Tribunal's equivalent, gating a to
 
 **Requirement: the authorize endpoint must reject any requested scope outside `getSupportedScopes()` as `invalid_scope`.** Since `getSupportedScopes()` structurally excludes conformance-only scopes by walking production registries alone, that single rule makes `conformance:read` unobtainable as a consequence of the mechanism rather than a second list to maintain. It also closes the same hole for any future conformance-only scope automatically.
 
-Open question: this document reserves the _scope name and mechanism_; it does not specify what the fixture tool returns. That is legitimately downstream of whichever issue ports the donor's `conformance-server.ts` and golden-prompts harness, and should be decided there against Tribunal's actual conformance test needs rather than guessed here.
+Open question, with a named owner: this document reserves the _scope name and mechanism_; it does not specify what the fixture tool returns. **TRI-30 decides it**, against Tribunal's actual conformance test needs rather than guessed here.
+
+An earlier revision assigned this to "whichever issue ports `conformance-server.ts`", which under the dependency model is nobody — the harness itself moved upstream to TRI-77, and no Tribunal issue ports it. The choice still belongs here, though, because it is a question about what _Tribunal's_ fixture returns behind _Tribunal's_ reserved scope, and TRI-30 is the issue that points the upstream harness at Tribunal's registry. Do not let it follow the harness upstream and go unanswered.
 
 ## Omitted `scope` parameter at authorize time: grants every supported scope
 

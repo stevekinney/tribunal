@@ -164,12 +164,24 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   schema of the kind `applications/engine/src/environment.ts` and
   `applications/proxy/src/environment.ts` already have; it reads
   `$env/dynamic/private` values ad hoc at each call site (see
-  `hooks.server.ts`, `redis.ts`, `encryption.ts`, and others). The
-  orchestration document's TRI-44 invariants describe porting Protokit's
-  own Zod-validated `environment-schema.ts`, so by the time `/mcp` ships a
-  schema should exist; `MCP_ENABLED` belongs in it with the same
-  `booleanFlag`-style strict parsing engine already uses, not
-  `z.coerce.boolean()`.
+  `hooks.server.ts`, `redis.ts`, `encryption.ts`, and others). TRI-44 creates
+  that schema, and `MCP_ENABLED` belongs in it with the same
+  `booleanFlag`-style strict parsing engine already uses, never
+  `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag set
+  to `"false"` silently enables the surface.
+
+  **The schema is Tribunal's own, not a copy of the engine's.** An earlier
+  revision said to port Protokit's `environment-schema.ts` into the web
+  application, written when the engine was to be forked. Under the
+  dependency model the MCP environment module belongs to the published
+  package and TRI-44 keeps only Tribunal's web-surface half. Recreating the
+  library's internals here would both duplicate a dependency and risk
+  inheriting its defaults — in particular a `NODE_ENV` default, where the
+  orchestration document's invariant is that **`NODE_ENV` has no default**
+  and every fail-closed production check depends on that. Take the
+  invariants from the orchestration document, not the schema shape from the
+  package.
+
 - The flag must be checked in the `sequence(...)` chain in
   `applications/web/src/hooks.server.ts`, before the handle that mounts the
   MCP and OAuth routes, and it must short-circuit every path that
