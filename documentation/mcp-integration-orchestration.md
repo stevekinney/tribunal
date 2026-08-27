@@ -12,7 +12,11 @@ Linear is the source of truth for what to do. This document is the source of tru
 
 **This repository is where all work happens.** Every one of the 43 issues is labeled `repo:tribunal`.
 
-**Protokit is a read-only donor.** It is a standalone Bun MCP server template whose MCP and OAuth implementation is being copied into this repository. It does not change: never commit to it, never open a pull request against it.
+**Protokit is an upstream dependency, not a read-only donor.** This reverses the model the project was originally scoped against, and it is the most important thing on this page.
+
+The original framing was that Protokit is a template to copy from and must never change. That is no longer true. The reusable MCP engine is being **published from Protokit and consumed by this repository as a dependency**, so Protokit now takes pull requests, and work that belongs to the engine belongs upstream rather than here.
+
+The practical test for where a change goes: **does it describe the MCP protocol engine, or does it describe Tribunal?** Engine behaviour — transport, scope enforcement mechanics, tool-response bounds, conformance fixtures — goes upstream. Tribunal's own surface — which tools exist, which scopes they gate, how a user is identified, how the surface is rolled out — stays here.
 
 **Its availability is settled.** TRI-67 chose option (a), pin an immutable revision. The donor is pinned to `6eb354e43ecc48efdac8abe59daea82dcdab88fd` on [`stevekinney/protokit`](https://github.com/stevekinney/protokit), reachable on `origin/main`. Use that revision for every port issue; do not read the author's working tree.
 
@@ -27,7 +31,14 @@ git -C protokit checkout 6eb354e43ecc48efdac8abe59daea82dcdab88fd
 
 Both commands exit 0. The `-C` matters: `git clone` creates the directory but does not change the shell's working directory, so a bare `git checkout` afterwards runs in the caller's repository and exits 128.
 
-**Option (c) was not taken, and nothing here forecloses it.** Publishing the reusable engine as a package both repositories consume remains available later, but it is materially different work with a different owner: it would give Protokit an owning Linear team it currently lacks and turn TRI-27 from a port into a dependency addition. Option (a) is reversible, so that call can be made on its merits rather than as a prerequisite to unblocking the port tier.
+**Option (c) has since been taken, in its narrower form.** TRI-67 chose (a) to unblock the port tier without foreclosing anything, and recorded that (a) was reversible. It has now been reversed deliberately: the engine is published from Protokit and consumed here.
+
+Two grains of (c) were considered and the first was chosen:
+
+- **Publish the engine** (chosen). Protokit ships `packages/mcp` as a public package; Tribunal replaces its copy with a dependency and continues building its own application layer — OAuth endpoints, consent screen, identity binding — on top of it.
+- **Embed the whole application** via `createApplicationMount()` (not chosen). This would have made Tribunal a host for Protokit's entire web application, which `EMBEDDING.md` documents as running into three walls: the donor's application layer has Google identity baked in, its `__Host-` session cookie cannot cross hosts, and migration metadata would need isolating. It also invalidates the locked Neon Auth decision.
+
+The pinned revision above still matters. It is the baseline the published package is cut from, and the reference for reading engine source until a version is on a registry.
 
 **Line references in TRI issue bodies are indicative, not exact.** Locate cited code by symbol name, not line number. Spot-checked at the pinned revision: `packages/mcp/src/env.ts:37-54` is an exact match, landing on the production refusal of `LOG_CONTENT_DIAGNOSTICS_UNTIL` that TRI-44 criterion 8 describes; `applications/web/src/routes/oauth-routes.ts:1204` lands inside `revokeOauthRefreshTokenFamily`, the right subject for TRI-38's refresh and revoke work; `applications/web/src/lib/production-startup-requirements.ts:462-469` lands on the Google credential production requirement, inside TRI-57's module though on content this project deletes by decision. One does not resolve: `applications/web/src/env.ts:37-54` now lands on Railway replica-identifier resolution, because `6eb354e4` rewrote 123 lines of that file.
 
@@ -37,12 +48,38 @@ An instruction that reads "delete `google-id-token.ts`" means _do not bring it a
 
 ## Decisions already made, not to be relitigated
 
-- **Hosting**: mount Protokit's `createApplicationMount()` inside `applications/web/src/hooks.server.ts`. No new Fly app, Dockerfile, or `fly.toml`. The standalone-service alternative was rejected because the consent screen needs a logged-in user and a separate service cannot read this application's session cookie.
+- **Hosting**: `applications/web/src/hooks.server.ts` mounts **Tribunal's own** MCP and OAuth routes, built on the published engine. No new Fly app, Dockerfile, or `fly.toml`. The standalone-service alternative was rejected because the consent screen needs a logged-in user and a separate service cannot read this application's session cookie.
+
+  This supersedes the original wording, which said to mount Protokit's `createApplicationMount()`. That seam mounts Protokit's entire web application, which is the grain of option (c) that was **not** chosen — it carries the donor's Google identity layer and its own session model, both of which this project's locked decisions replace. Use the engine's exports; do not mount the donor's application.
+
 - **Identity**: Neon Auth with GitHub as provider is the sole source. Protokit's Google layer is deleted, not adapted. Reuse `applications/web/src/lib/server/auth/neon-session.ts`; do not port a second JWT validator.
 - **Clients**: all four. This is why the stateless legacy `2025-11-25` protocol lane, CIMD, dynamic client registration, and the ChatGPT connector assets are in scope.
 - **Test runner**: vitest. No `bun:test` enters this repository, enforced by lint rule in TRI-34.
 
 Three decisions remain open and are tracked as issues: the scope vocabulary (TRI-24), the consent-flow session binding (TRI-25), and the rollout flag, rollback trigger, and alerting (TRI-26). Their outputs are inputs to the implementation tier. Do not guess them; drive each to a committed decision document.
+
+## What the dependency model changes in the graph
+
+The graph was authored as a fork: TRI-27 copies the engine, and TRI-32 through TRI-40 rebuild identity, OAuth endpoints, and the consent screen. Most of that survives unchanged, because Tribunal's application layer is Tribunal's either way. What moves is the engine-level work.
+
+**Read this as analysis, not as settled scope.** Each issue below still needs its own description updated before anyone picks it up; this section says which ones and why, so the next reader is not misled by an issue body written against the fork model.
+
+**Already done, now a bridge.** TRI-27 shipped `@tribunal/mcp` as a copy of the engine. That package is now temporary: it is replaced by the published dependency. It is not wasted — it proved the engine has zero database or web coupling, which is what makes publishing viable, and its 31 substantively-changed files are the requirements list for what the published package must abstract (runtime-agnostic environment handling, no `bun:test`, a version that survives bundling, an injectable logger).
+
+**Moves upstream.** TRI-30 (conformance fixtures and conformance server) and TRI-33 (logger redaction) describe engine behaviour, not Tribunal's. Conformance proves the engine speaks the protocol; redaction is the engine's logger. Both belong in the published package, with Tribunal consuming the result. TRI-33 has a second option worth weighing: rather than owning redaction upstream, the engine grows an injectable logger seam and Tribunal supplies a logger that already redacts.
+
+**Shrinks.** TRI-34 loses most of its scope: with no ported suites in this repository, there is nothing to convert from `bun:test`, and what remains is the lint rule that keeps `bun:test` out. TRI-44 splits: the MCP environment module belongs to the published package, while Tribunal's own web-surface invariants (`SKIP_ENV_VALIDATION`, `NODE_ENV` inlining against the Vite artifact, `sslmode=verify-full`, the coercion ban) stay here and remain the more important half.
+
+**Unchanged.** Everything describing Tribunal's own surface: TRI-29 (which tools and resources exist), TRI-31 and TRI-35 through TRI-43 (the OAuth server and its mount), TRI-45 through TRI-61 (operations), and the four client release gates. The three decision documents stand as written — scopes, session binding, and rollout are Tribunal's regardless of where the engine lives.
+
+## Working upstream
+
+Protokit has no owning Linear team, so engine work is tracked as GitHub issues on [`stevekinney/protokit`](https://github.com/stevekinney/protokit) rather than in Linear. That is the documented fallback for a repository with no owning team, not an exception being made here.
+
+Two consequences worth stating before the first upstream change:
+
+- **A Tribunal issue blocked on upstream work has no native `blocked by` relation to express it.** Record the dependency in the issue body with a link to the GitHub issue, and do not move the Tribunal issue to `Ready` until the upstream change is released — a merged upstream pull request is not a released version.
+- **Two defects found during the port exist in the donor too**, and are the first upstream candidates: the tool-result cap measures UTF-16 code units rather than UTF-8 bytes, and a present-but-unparseable `Origin` is treated as absent. The byte-cap fix already landed in this repository's copy, which means the copy has begun diverging from the donor — a reason to make the swap sooner rather than later.
 
 ## Taking an issue through
 
