@@ -188,15 +188,23 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   chain owns: `/mcp` itself, the OAuth authorization/token/registration
   endpoints, and the `.well-known` discovery documents, not just the MCP
   JSON-RPC endpoint.
-- `OPEN QUESTION`: what response the surface returns while disabled. A
-  bare `404` is indistinguishable from "this route was never built," which
-  is arguably the right posture for a security-relevant surface (do not
-  confirm the surface exists to an unauthenticated prober). A `503` would
-  be more honest operationally but confirms the surface is real. This
+- **What the surface returns while disabled: `404`, and TRI-41 owns
+  recording it.** A bare `404` is indistinguishable from "this route was
+  never built," which is the right posture for a security-relevant surface
+  — do not confirm the surface exists to an unauthenticated prober. A `503`
+  would be more honest operationally but confirms the surface is real. This
   document recommends `404` for the same reason `/metrics` and
-  `/health/ready` return `404` rather than `401` when unconfigured in the
-  donor RUNBOOK's own access-control section, but leaves the final call to
-  whoever approves this document.
+  `/health/ready` return `404` rather than `401` when unconfigured in
+  Protokit's own RUNBOOK access-control section.
+
+  Approving TRI-26 did not record a separate answer to this sub-question,
+  so the recommendation stands as the instruction — that is what a
+  recommendation in an approved document is for, and gates 1 and 4 cannot
+  assert an exact status against an unanswered question. **TRI-41 ships
+  `404` and records the per-route expected-status table those gates compare
+  against**, since criterion 6 already makes it the issue that honours the
+  flag. Departing from `404` is a decision that needs sign-off, not an
+  implementation detail to settle inside a pull request.
 
 ## Disabling `/mcp` in production
 

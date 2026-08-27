@@ -29,7 +29,9 @@ Bearer error="insufficient_scope", scope="<required>"
 
 A client always sees every tool exists; it discovers which ones it cannot call by trying.
 
-Tribunal's own `packages/mcp` and its `scopes.ts` / `supported-scopes.ts` equivalents do not exist yet—they are F2/O1 deliverables. This document fixes what goes in them.
+**`packages/mcp` does exist in this repository now, and it is not where this vocabulary goes.** TRI-27 landed it as a copy of Protokit's engine, carrying Protokit's own `scopes.ts` and `supported-scopes.ts` with Protokit's three demo scopes. That package is a **bridge**: TRI-80 deletes it and replaces it with the published engine. An earlier revision of this document said the package did not exist, which invited exactly the wrong move — adding Tribunal's scopes to the temporary copy, deepening the divergence TRI-80 exists to end, and building against a closed `McpScope` union rather than waiting for TRI-73 to open it.
+
+What the implementation tier owns is Tribunal's **injected** registry and vocabulary, supplied to the published engine — F2 (TRI-29) defines the registry, O1 (TRI-37) consumes the derived scope set at authorize time. This document fixes what goes in those, not what goes in the bridge.
 
 ## Tribunal's actual capability surface
 
