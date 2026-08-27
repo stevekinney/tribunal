@@ -121,7 +121,11 @@ This is a three-step transition, not a flag flip, and the order matters. Stage t
 2. **Clear the stage-two override**, explicitly and as its own step. It was designed to outlive a redeploy; nothing removes it implicitly.
 3. **Verify.** Re-run check 4 and confirm the surface actually serves. This step is what catches having done 1 without 2, which otherwise looks identical to a deploy that has not landed yet.
 
-Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3, 5, 6, 7 and the stage-two disable exercise belong to TRI-60. None is satisfied by a merged pull request.
+**Checks 1 and 2 belong to TRI-41**, the issue that implements the flag. Both are about the disabled state, which is what TRI-41 can actually produce and verify — check 2 is explicitly environment-independent and runs in CI.
+
+**Checks 3 through 7 and the stage-two disable exercise belong to TRI-60.** Check 4 is included there deliberately, and an earlier revision had it with the flag issue. It asserts that the surface _serves_ once enabled, which needs a working MCP handler and therefore the consumable engine and TRI-29's registry — none of which TRI-41 has. It is also a deployed-host check like the other four, run during the stage-two enabled window rather than in a test suite. Giving it to the flag issue would either serialize TRI-41 behind the engine work or leave it recording an expectation it cannot check.
+
+None of the seven is satisfied by a merged pull request.
 
 `REVIEWS_ENABLED`'s open-by-default schema value only stays safe because a
 human has to remember the TOML also says `false`—the two declarations can
@@ -212,14 +216,15 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   disabled state**, since criterion 6 already makes it the issue that
   honours the flag.
 
-  **Gate 4's table is not TRI-41's**, and assigning it there would be the
-  kind of paperwork that reads as coverage. Gate 4 asserts what the routes
-  return once enabled, which requires a working MCP handler — so it cannot
-  exist until the engine is consumable and TRI-29's registry is defined.
-  TRI-41 can specify what an enabled route _should_ return, but not verify
-  it, and an unverifiable expected value recorded as though it were checked
-  is exactly this project's signature defect. Gate 4's table belongs to
-  whichever issue can produce an enabled surface — TRI-58 at the earliest.
+  **Check 4 and its table are not TRI-41's — they are TRI-60's**, alongside
+  checks 3, 5, 6, and 7, as the ownership line under the three-step
+  transition above states. Assigning them to TRI-41 would be the kind of
+  paperwork that reads as coverage: check 4 asserts what the routes return
+  once enabled, which requires a working MCP handler and therefore the
+  consumable engine and TRI-29's registry. TRI-41 can specify what an
+  enabled route _should_ return but cannot verify it, and an unverifiable
+  expected value recorded as though it were checked is exactly this
+  project's signature defect.
 
   Three reasons beyond the disclosure argument above, each of which
   independently rules out `503`:
@@ -516,9 +521,9 @@ opposite instructions:
 
 - ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed —
   `404`, decided by the project owner on 2026-08-27.** TRI-41 ships it and
-  records the expected-status table that rollout gate 1 asserts against —
-  gate 4's enabled-state table is not TRI-41's, since it needs a working MCP
-  handler. The reasoning is in the flag section above: `503` invites
+  records the expected-status table that rollout check 1 asserts against.
+  **Check 4 and its enabled-state table are TRI-60's**, since they need a
+  working MCP handler. The reasoning is in the flag section above: `503` invites
   a retry that should never happen, `404` is how OAuth discovery is meant to
   fail, and `404` is the only status that can make the surface
   indistinguishable from an unmounted route. Two requirements carry with it —
