@@ -1,6 +1,10 @@
 # Tribunal MCP scope vocabulary
 
-Status: draft, awaiting human approval—TRI-24 (Graph ID D1). This document proposes a decision; it does not self-approve. Blocks F2, O1, O2, O4.
+Status: approved—TRI-24 (Graph ID D1), merged as [#322](https://github.com/stevekinney/tribunal/pull/322) and squashed to `fa440112`. The human checkpoint this issue required was cleared by the user; the approval is recorded as completion evidence on TRI-24. Blocks F2, O1, O2, O4.
+
+One item is deliberately carried forward rather than closed, and **TRI-84 closes it**: the grant-everything default on an omitted `scope` rests on an assumption about client behaviour, TRI-62 through TRI-65 are where each client's real behaviour gets recorded, and the section below says the default should be revisited rather than inherited if clients turn out to send explicit scopes.
+
+Those four gates only _observe_. TRI-84 is the node that acts on what they find, and it is natively blocked by all four — without it, every gate could complete having recorded that clients send explicit scopes while the default was inherited anyway on an assumption the project had by then disproved.
 
 Delivery boundary for this issue is documentation only—no code. Every scope, tool, resource, and prompt name below that does not already exist in this repository is a proposal for the implementation tier (F2, O1, O2, O4) to build against, not a claim that it exists yet.
 
@@ -8,9 +12,12 @@ Delivery boundary for this issue is documentation only—no code. Every scope, t
 
 Tribunal already has a scoped-permission mechanism: `ProxyPermission` (`packages/review-core/src/capability-token.ts`), the `github:read` / `anthropic:invoke` claims minted onto short-lived capability tokens that let a reviewer sandbox call the proxy during a review run. That mechanism is unrelated to this one. This document defines the OAuth scopes a _human user_ grants to an _MCP client_ (Claude Code, Codex CLI, the Claude hosted connector, ChatGPT developer mode) so that client can call Tribunal's MCP tools on the user's behalf. The two never share a token, a claim shape, or a trust boundary—do not conflate a reviewer sandbox's egress permission with an MCP client's OAuth scope.
 
-## Mechanism, ported unchanged from Protokit
+## Mechanism, inherited unchanged from Protokit
 
-The mechanism is not an open decision—only the vocabulary is. Protokit (pinned donor, [`stevekinney/protokit`](https://github.com/stevekinney/protokit) at `6eb354e43ecc48efdac8abe59daea82dcdab88fd`) establishes three properties this port must preserve:
+The mechanism is not an open decision—only the vocabulary is. Protokit ([`stevekinney/protokit`](https://github.com/stevekinney/protokit) at the pinned revision `6eb354e43ecc48efdac8abe59daea82dcdab88fd`) establishes three properties this must preserve:
+
+> [!IMPORTANT] The mechanism arrives as a dependency, and it does not yet accept this vocabulary
+> This document was drafted when the engine was to be forked, so it reads as a port. Under the dependency model in `documentation/mcp-integration-orchestration.md` the mechanism is consumed from the published engine rather than copied, which changes nothing below—the three properties are the engine's behaviour either way—but it does add a prerequisite. The engine's `McpScope` is today a closed union of Protokit's own three scopes, and every operation's `requiredScope` is typed against it, so the five-scope vocabulary this document settles cannot be expressed without modifying the package or bypassing its type and validation guarantees. **TRI-73** makes the vocabulary consumer-supplied and is a hard blocker on implementing anything here.
 
 Every tool, resource, and prompt declares exactly one `requiredScope` from a closed, hand-authored vocabulary (`packages/mcp/src/scopes.ts` in the donor). There is no generic all-access scope.
 
@@ -24,7 +31,9 @@ Bearer error="insufficient_scope", scope="<required>"
 
 A client always sees every tool exists; it discovers which ones it cannot call by trying.
 
-Tribunal's own `packages/mcp` and its `scopes.ts` / `supported-scopes.ts` equivalents do not exist yet—they are F2/O1 deliverables. This document fixes what goes in them.
+**`packages/mcp` does exist in this repository now, and it is not where this vocabulary goes.** TRI-27 landed it as a copy of Protokit's engine, carrying Protokit's own `scopes.ts` and `supported-scopes.ts` with Protokit's three demo scopes. That package is a **bridge**: TRI-80 deletes it and replaces it with the published engine. An earlier revision of this document said the package did not exist, which invited exactly the wrong move — adding Tribunal's scopes to the temporary copy, deepening the divergence TRI-80 exists to end, and building against a closed `McpScope` union rather than waiting for TRI-73 to open it.
+
+What the implementation tier owns is Tribunal's **injected** registry and vocabulary, supplied to the published engine — F2 (TRI-29) defines the registry, O1 (TRI-37) consumes the derived scope set at authorize time. This document fixes what goes in those, not what goes in the bridge.
 
 ## Tribunal's actual capability surface
 
@@ -92,14 +101,14 @@ This is why `pull_requests:read` and `review_findings:read` are kept as their ow
 
 Five production scopes, one per capability family, plus one conformance-only scope. Naming follows the donor's `noun:read` shape and this repository's snake_case-for-multi-word-identifiers convention.
 
-| Scope                  | Capability family                         | Gates (illustrative—final names are F2/O1/O2 decisions)                                              | Crosses the injection boundary             |
-| ---------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `repositories:read`    | Repository identity and access            | `list_repositories`, `get_repository`                                                                | Yes—administrator-controlled names         |
-| `pull_requests:read`   | Live GitHub pull request content          | `list_pull_requests`, `get_pull_request`                                                             | Yes—author-controlled content              |
-| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                                                                 | Only if repository labels are included     |
-| `review_findings:read` | Findings emitted by review runs           | `list_review_findings`, `get_review_finding`                                                         | Yes—reflects reviewed pull request content |
-| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                                                               | Only if repository labels are included     |
-| `conformance:read`     | Conformance-only fixture, never real data | one synthetic fixture tool, name TBD by whichever issue ports Protokit's `list_audit_events` pattern | No—returns synthetic data only             |
+| Scope                  | Capability family                         | Gates (illustrative—final names are F2/O1/O2 decisions)        | Crosses the injection boundary             |
+| ---------------------- | ----------------------------------------- | -------------------------------------------------------------- | ------------------------------------------ |
+| `repositories:read`    | Repository identity and access            | `list_repositories`, `get_repository`                          | Yes—administrator-controlled names         |
+| `pull_requests:read`   | Live GitHub pull request content          | `list_pull_requests`, `get_pull_request`                       | Yes—author-controlled content              |
+| `reviews:read`         | Review run lifecycle and cost estimate    | `list_review_runs`, `get_review_run`                           | Only if repository labels are included     |
+| `review_findings:read` | Findings emitted by review runs           | `list_review_findings`, `get_review_finding`                   | Yes—reflects reviewed pull request content |
+| `cost_events:read`     | Cost ledger                               | `list_cost_events`, `get_cost_summary`                         | Only if repository labels are included     |
+| `conformance:read`     | Conformance-only fixture, never real data | one synthetic fixture tool, name and payload decided by TRI-30 | No—returns synthetic data only             |
 
 The one-line consent-screen description is the verbatim text a `getSupportedScopes()`-equivalent registry must display, matching the donor's `mcpScopeDescriptions` shape (`packages/mcp/src/scopes.ts`) and rendered the same way the donor's authorize page renders it—one `<li>` per granted or requested scope, the string copied through unmodified:
 
@@ -124,7 +133,7 @@ export const mcpScopeDescriptions: Record<TribunalMcpScope, string> = {
 
 ## Conformance-only scope: recommendation
 
-Protokit's `audit:read` gates `list_audit_events`, a synthetic fixture tool registered only when `enableConformanceMode` is on, excluded from `getSupportedScopes()` because that function only walks the production registries. The orchestration document's invariant list (`documentation/mcp-integration-orchestration.md`) preserves the same shape for Tribunal: "the DNS-rebinding check is not gated on conformance mode" (TRI-30) and "every advertised MCP capability is handler-backed" (TRI-29) both presuppose a conformance mode exists, separate from production, that protocol test suites (`test:conformance:modern`, `test:conformance:legacy`, `test:connector:inspector` in the donor's script list) exercise without touching real repositories, pull requests, findings, or cost data.
+Protokit's `audit:read` gates `list_audit_events`, a synthetic fixture tool registered only when `enableConformanceMode` is on, excluded from `getSupportedScopes()` because that function only walks the production registries. The orchestration document's invariant list (`documentation/mcp-integration-orchestration.md`) preserves the same shape for Tribunal: "the DNS-rebinding check is not gated on conformance mode" (**TRI-77**, upstream — it is engine behaviour and moved there with the conformance harness; do not duplicate it in Tribunal) and "every advertised MCP capability is handler-backed" (TRI-29) both presuppose a conformance mode exists, separate from production, that protocol test suites (`test:conformance:modern`, `test:conformance:legacy`, `test:connector:inspector` in the donor's script list) exercise without touching real repositories, pull requests, findings, or cost data.
 
 Recommendation: reserve `conformance:read` as Tribunal's equivalent, gating a to-be-named synthetic fixture tool, excluded from `getSupportedScopes()` by construction (the same "only walk production registries" mechanism, not a second exclusion list to keep in sync), and never obtainable through a real `/oauth/authorize` flow.
 
@@ -132,7 +141,9 @@ Recommendation: reserve `conformance:read` as Tribunal's equivalent, gating a to
 
 **Requirement: the authorize endpoint must reject any requested scope outside `getSupportedScopes()` as `invalid_scope`.** Since `getSupportedScopes()` structurally excludes conformance-only scopes by walking production registries alone, that single rule makes `conformance:read` unobtainable as a consequence of the mechanism rather than a second list to maintain. It also closes the same hole for any future conformance-only scope automatically.
 
-Open question: this document reserves the _scope name and mechanism_; it does not specify what the fixture tool returns. That is legitimately downstream of whichever issue ports the donor's `conformance-server.ts` and golden-prompts harness, and should be decided there against Tribunal's actual conformance test needs rather than guessed here.
+Open question, with a named owner: this document reserves the _scope name and mechanism_; it does not specify what the fixture tool returns. **TRI-30 decides it**, against Tribunal's actual conformance test needs rather than guessed here.
+
+An earlier revision assigned this to "whichever issue ports `conformance-server.ts`", which under the dependency model is nobody — the harness itself moved upstream to TRI-77, and no Tribunal issue ports it. The choice still belongs here, though, because it is a question about what _Tribunal's_ fixture returns behind _Tribunal's_ reserved scope, and TRI-30 is the issue that points the upstream harness at Tribunal's registry. Do not let it follow the harness upstream and go unanswered.
 
 ## Omitted `scope` parameter at authorize time: grants every supported scope
 
@@ -201,7 +212,9 @@ The reason is that widening it is not a type change. It changes what `scopes_sup
 
 If a later issue finds a primitive that genuinely cannot be split, widening `requiredScope` to `McpScope[]` with `allOf` semantics is the reversible path—but as its own decision, with the derivation and enforcement changes in scope, rather than a field type quietly relaxed mid-implementation.
 
-Consent-screen preselection UX: this document decides the token-grant default (omitted `scope` grants the full supported set) but not how the consent screen visually presents that—whether it shows one flat "grant everything" approval or a checkbox per scope with some subset preselected. That is a session-binding and consent-flow UI decision, tracked separately as TRI-25, and should read this document's default before making that call rather than re-deriving it.
+Consent-screen preselection UX: this document decides the token-grant default (omitted `scope` grants the full supported set) but not how the consent screen visually presents that—whether it shows one flat "grant everything" approval or a checkbox per scope with some subset preselected. **TRI-40 decides it**, as the issue that builds the screen, and should read this document's default before making that call rather than re-deriving it.
+
+An earlier revision assigned this to TRI-25, which is now Done and never covered it: TRI-25 scoped itself to how `GET /oauth/authorize` identifies its user and what the authorization transaction binds to, explicitly not the rest of the flow. Leaving it there would have meant either reopening a completed decision or guessing at deselection behaviour mid-implementation. If TRI-40 concludes the choice is larger than a screen-level call—per-scope deselection changes what token gets issued, not just what renders—raise it as its own decision rather than settling it inside the pull request.
 
 Conformance fixture content: named above—reserving the `conformance:read` scope and its exclusion mechanism is this document's job; deciding what the fixture tool actually returns is not.
 

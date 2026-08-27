@@ -3,12 +3,23 @@
 Decision document for TRI-26. `/mcp` will be Tribunal's first public
 bearer-authenticated HTTP surface—the [orchestration
 document](mcp-integration-orchestration.md) mounts it inside
-`applications/web/src/hooks.server.ts` via a ported `createApplicationMount()`,
-alongside a full OAuth 2.1 authorization server and its `.well-known`
-discovery documents. This document proposes answers to the three operational
-questions the issue names. It is a draft; nothing here is approved until a
-human signs off, per the issue's own instruction not to self-approve a
-decision issue.
+`applications/web/src/hooks.server.ts` via Tribunal's own handle, built on the
+published MCP engine, alongside a full OAuth 2.1 authorization server and its
+`.well-known` discovery documents. (This document was drafted when that mount
+was to be Protokit's ported `createApplicationMount()`; the orchestration
+document rejects that seam. Nothing this document decides depends on which of
+the two supplies the mount.) This document proposes answers to the three operational
+questions the issue names.
+
+Status: approved — merged as
+[#321](https://github.com/stevekinney/tribunal/pull/321) and squashed to
+`50e1b799`, with the user's approval recorded as completion evidence on
+TRI-26. Approval covers the three questions the issue named: the flag, the
+rollback trigger, and the alerting. It does not close the items this
+document explicitly hands to whoever implements or operates the surface —
+those are collected under "Summary of open questions for the approver" at
+the end and marked `OPEN QUESTION` in place. Treat those as deferred with an
+owner, not as a decision still pending.
 
 Each section states the options considered, a recommendation, and the
 reasoning. Anything the codebase does not currently answer is marked
@@ -145,35 +156,55 @@ surface instead of a single schema field.
 
 None of this code exists yet—`/mcp` has no implementation in this
 repository as of this document, so nothing below is a file citation, it is
-a requirement for the implementation tier (TRI-44's environment-schema port
-and whichever issue mounts `createApplicationMount()`):
+a requirement for the implementation tier (TRI-44's environment-schema work
+and whichever issue mounts Tribunal's MCP and OAuth handle):
 
 - `MCP_ENABLED` must be declared in whatever Zod environment schema the web
   application ends up with. Today `applications/web` has no centralized
   schema of the kind `applications/engine/src/environment.ts` and
   `applications/proxy/src/environment.ts` already have; it reads
   `$env/dynamic/private` values ad hoc at each call site (see
-  `hooks.server.ts`, `redis.ts`, `encryption.ts`, and others). The
-  orchestration document's TRI-44 invariants describe porting Protokit's
-  own Zod-validated `environment-schema.ts`, so by the time `/mcp` ships a
-  schema should exist; `MCP_ENABLED` belongs in it with the same
-  `booleanFlag`-style strict parsing engine already uses, not
-  `z.coerce.boolean()`.
+  `hooks.server.ts`, `redis.ts`, `encryption.ts`, and others). TRI-44 creates
+  that schema, and `MCP_ENABLED` belongs in it with the same
+  `booleanFlag`-style strict parsing engine already uses, never
+  `z.coerce.boolean()` — `Boolean("false")` is `true`, so a coerced flag set
+  to `"false"` silently enables the surface.
+
+  **The schema is Tribunal's own, not a copy of the engine's.** An earlier
+  revision said to port Protokit's `environment-schema.ts` into the web
+  application, written when the engine was to be forked. Under the
+  dependency model the MCP environment module belongs to the published
+  package and TRI-44 keeps only Tribunal's web-surface half. Recreating the
+  library's internals here would both duplicate a dependency and risk
+  inheriting its defaults — in particular a `NODE_ENV` default, where the
+  orchestration document's invariant is that **`NODE_ENV` has no default**
+  and every fail-closed production check depends on that. Take the
+  invariants from the orchestration document, not the schema shape from the
+  package.
+
 - The flag must be checked in the `sequence(...)` chain in
-  `applications/web/src/hooks.server.ts`, before whatever handle mounts
-  `createApplicationMount()`, and it must short-circuit every path that
+  `applications/web/src/hooks.server.ts`, before the handle that mounts the
+  MCP and OAuth routes, and it must short-circuit every path that
   chain owns: `/mcp` itself, the OAuth authorization/token/registration
   endpoints, and the `.well-known` discovery documents, not just the MCP
   JSON-RPC endpoint.
-- `OPEN QUESTION`: what response the surface returns while disabled. A
-  bare `404` is indistinguishable from "this route was never built," which
-  is arguably the right posture for a security-relevant surface (do not
-  confirm the surface exists to an unauthenticated prober). A `503` would
-  be more honest operationally but confirms the surface is real. This
+- **What the surface returns while disabled: `404`, and TRI-41 owns
+  recording it.** A bare `404` is indistinguishable from "this route was
+  never built," which is the right posture for a security-relevant surface
+  — do not confirm the surface exists to an unauthenticated prober. A `503`
+  would be more honest operationally but confirms the surface is real. This
   document recommends `404` for the same reason `/metrics` and
-  `/health/ready` return `404` rather than `401` when unconfigured in the
-  donor RUNBOOK's own access-control section, but leaves the final call to
-  whoever approves this document.
+  `/health/ready` return `404` rather than `401` when unconfigured in
+  Protokit's own RUNBOOK access-control section.
+
+  Approving TRI-26 did not record a separate answer to this sub-question,
+  so the recommendation stands as the instruction — that is what a
+  recommendation in an approved document is for, and gates 1 and 4 cannot
+  assert an exact status against an unanswered question. **TRI-41 ships
+  `404` and records the per-route expected-status table those gates compare
+  against**, since criterion 6 already makes it the issue that honours the
+  flag. Departing from `404` is a decision that needs sign-off, not an
+  implementation detail to settle inside a pull request.
 
 ## Disabling `/mcp` in production
 
@@ -297,10 +328,20 @@ with bare `console.log`/`console.error` (see
 kind. So for `/mcp`, both the emitting side (the structured pino logger
 with redaction, and the metrics collector Protokit's
 `packages/mcp/src/logger.ts` and `packages/mcp/src/metrics.ts` provide)
-and the sink are new. The logger and collector arrive with the port itself
-(the orchestration document's TRI-33 invariant on redaction), but nothing
-consumes them into an actual alert without further work this issue's
-acceptance criteria require naming explicitly.
+and the sink are new.
+
+An earlier revision said the logger and collector "arrive with the port
+itself", which was true of a fork and is misleading as a dependency. They
+arrive inside the published engine, which owns its own `pino` instance —
+so engine log lines do **not** inherit Tribunal's redaction policy by
+arriving. That is the gap TRI-76 (host-supplied logger) closes, letting
+Tribunal supply a logger that already redacts and having the engine's
+output inherit it. Until then, treat engine-emitted lines as outside the
+TRI-33 policy rather than covered by it, and do not read the presence of a
+logger in the dependency as evidence redaction is in force.
+
+Either way nothing consumes them into an actual alert without further work
+this issue's acceptance criteria require naming explicitly.
 
 The five conditions from the issue, evaluated:
 
@@ -401,8 +442,19 @@ direction is approved.
 
 ## Summary of open questions for the approver
 
-- The exact HTTP response (`404` versus `503`, or something else) `/mcp`
-  and its OAuth endpoints should return while `MCP_ENABLED` is false.
+This list is what approval did **not** settle. One item has since been
+closed and is recorded here so the two halves of this document cannot give
+opposite instructions:
+
+- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed.**
+  This document's recommendation of `404` stands as the instruction, and
+  TRI-41 ships it and records the per-route expected-status table that
+  rollout gates 1 and 4 assert against. See the flag section above.
+  Departing from `404` needs sign-off; an orchestrator should implement,
+  not stop for approval.
+
+Still open:
+
 - Whether the operator (anyone with `flyctl` deploy access to
   `tribunal-web`) is the intended authority for disabling `/mcp`, or
   whether a narrower role should be defined before launch.
