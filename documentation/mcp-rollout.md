@@ -279,6 +279,37 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
     uncacheable, reintroduces exactly the distinguishing signal this section
     exists to remove: a prober comparing headers learns which paths are real.
 
+    **`no-store` bounds the problem going forward; it does not undo the
+    past, and treating it as a complete fix would be wrong.** These
+    discovery URLs return Tribunal's ordinary, header-less `404` _today_,
+    before any of this ships. Anything that probed them and cached the
+    result holds a fresh entry it can serve without ever contacting the
+    origin — so it never sees the new header and can still hide the
+    discovery documents after stage three. The header only governs
+    responses issued from the deploy that introduces it onward.
+
+    Third-party caches cannot be purged, so the strategy is containment
+    rather than a fix:
+
+    - **Ship the `no-store` change in the first deploy that mounts the
+      surface**, not at stage three. That is what bounds the exposed window
+      to entries created before the surface existed at all.
+    - **Treat a stale negative cache as a named, expected failure mode at
+      stage three** rather than a mystery. Check 4 already requires the
+      discovery documents to return their metadata; if one does not while
+      the origin demonstrably serves it, a cached pre-deployment `404` is
+      the first hypothesis, and a cache-busting query parameter distinguishes
+      it from a real fault in one request.
+    - **Do not add a cache-busting parameter to the published discovery
+      URLs** to route around this. Those URLs are fixed by the OAuth
+      metadata specifications, clients construct them, and Tribunal does not
+      get to decorate them.
+
+    The residual risk is genuinely small — it needs something to have
+    probed a path that has never been advertised — but it is residual
+    rather than eliminated, and stage three should know that before it
+    starts debugging.
+
 ## Disabling `/mcp` in production
 
 ### Mechanism
@@ -470,9 +501,10 @@ The remaining four are deferred with distinct reasons, not one blanket
 Deferring is not a silent punt: per the standing "no silent deferral"
 rule, each deferred condition should get its own tracked Linear issue at
 the point `/mcp` actually ships, not left as a comment in this document.
-This document recommends that whoever approves it also authorizes filing
-those four follow-up issues (one per condition, or grouped, at the
-approver's discretion) rather than treating this section as closing the
+`OPEN QUESTION`: whether those four follow-up issues are filed now or at
+the point `/mcp` ships, and whether they are one issue per condition or
+grouped. This document recommends that whoever approves it also
+authorizes the filing rather than treating this section as closing the
 topic.
 
 ### Sink
