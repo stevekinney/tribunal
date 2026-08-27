@@ -25,6 +25,7 @@ COPY packages/agents/package.json ./packages/agents/package.json
 COPY packages/cost/package.json ./packages/cost/package.json
 COPY packages/database/package.json ./packages/database/package.json
 COPY packages/github/package.json ./packages/github/package.json
+COPY packages/mcp/package.json ./packages/mcp/package.json
 COPY packages/review-core/package.json ./packages/review-core/package.json
 COPY packages/sandbox/package.json ./packages/sandbox/package.json
 COPY packages/test/package.json ./packages/test/package.json
