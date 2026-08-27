@@ -122,7 +122,9 @@ The opening tier — the instruction-file correction, the three decision documen
 
 The other five criteria — the authorization transaction and its single-consume race, RFC 9207 `iss` on error redirects, both-sides redirect-URI matching, `Sec-Fetch-Site` and `Origin` checks before body parsing, CSRF binding — are the security-critical bulk and need nothing from the engine.
 
-**Decided: split, not block.** The project owner chose this on 2026-08-27. Blocking TRI-37 on TRI-29 would have been truthful and would have serialized TRI-38, TRI-39, TRI-40, TRI-41, and TRI-58 behind upstream Protokit work for no gain, since five of those need nothing from the engine either.
+**Decided: split, not block.** The project owner chose this on 2026-08-27. Blocking TRI-37 on TRI-29 would have serialized **TRI-38, TRI-39, TRI-40, and TRI-41** behind upstream Protokit work for no gain, since none of the four needs anything from the engine.
+
+Be precise about what the split does not buy: **TRI-58 stays behind the engine work either way**, because TRI-85 blocks it. That is correct rather than a gap — TRI-58 composes the aggregate scripts and must run last, so it cannot precede the scope validation it aggregates. The four issues above are the whole of the scheduling benefit.
 
 **TRI-85** now owns the two scope-dependent criteria — the `invalid_scope` rejection and scope-defaulting — blocked by TRI-37 and TRI-29. TRI-37 keeps criteria 1 through 6 and is **not** blocked on anything upstream.
 

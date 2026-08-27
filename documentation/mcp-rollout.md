@@ -25,8 +25,10 @@ One of them has since been closed by a separate owner decision: the
 disabled-surface response is `404`, decided 2026-08-27 and now stated as an
 instruction rather than a recommendation. It is struck through in that
 summary rather than deleted, so the record of what approval did and did not
-settle stays legible. The two that remain are still marked `OPEN QUESTION`
-in place.
+settle stays legible. **Three remain open** — the operator authority for
+disabling `/mcp`, the refresh-replay alert destination, and when to file the
+four deferred alert conditions as follow-up issues — and each is still
+marked `OPEN QUESTION` at the point it arises.
 
 Each section states the options considered, a recommendation, and the
 reasoning. Anything the codebase does not currently answer is marked
@@ -225,11 +227,25 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
     A `404` answers that question — no, degrade gracefully — which is the
     path clients already implement. A `503` leaves them unable to
     distinguish "not offered" from "offered and briefly sick."
-  - **It makes gate 1 a clean binary.** These are SvelteKit routes, so a
-    route that is not mounted returns `404` on its own. Choosing `404` makes
-    the disabled state byte-identical to the never-built state, which is
-    exactly what "the surface is fully dark" needs to mean if it is to be
-    asserted rather than inspected.
+  - **It is the only status that can make the surface genuinely
+    indistinguishable.** These are SvelteKit routes, so a route that is not
+    mounted returns `404` on its own; any other choice announces that
+    something is deliberately there.
+
+    **Choosing `404` is necessary for that property but does not deliver
+    it.** A short-circuiting handle returning `404` can still emit a
+    different body or different headers from SvelteKit's own missing-route
+    response, and a prober reading those learns exactly what the status was
+    chosen to hide. Gates 1 and 4 compare a per-route expected-_status_
+    table, so on their own they would prove less than this argument claims.
+
+    **Requirement for TRI-41, since indistinguishability is the actual
+    security goal rather than a nice property of the number:** the disabled
+    response must match an unmounted route's response in body and in
+    headers, not only in status, asserted by a test that fails if the handle
+    returns a distinctive body or adds a header the real 404 does not carry.
+    Where an infrastructure header makes exact equality impossible, name the
+    exemption rather than dropping the assertion.
 
 ## Disabling `/mcp` in production
 
@@ -476,8 +492,10 @@ opposite instructions:
   records the per-route expected-status table that rollout gates 1 and 4
   assert against. The reasoning is in the flag section above: `503` invites
   a retry that should never happen, `404` is how OAuth discovery is meant to
-  fail, and it makes the disabled state identical to the never-built state
-  so gate 1 is assertable. This is settled — implement it rather than
+  fail, and `404` is the only status that can make the surface
+  indistinguishable from an unmounted route. Note the requirement that
+  carries with it — matching status is not matching response, so TRI-41 must
+  assert body and headers too. This is settled — implement it rather than
   stopping for approval.
 
 Still open:
