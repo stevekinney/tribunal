@@ -3,9 +3,12 @@
 Decision document for TRI-26. `/mcp` will be Tribunal's first public
 bearer-authenticated HTTP surface—the [orchestration
 document](mcp-integration-orchestration.md) mounts it inside
-`applications/web/src/hooks.server.ts` via a ported `createApplicationMount()`,
-alongside a full OAuth 2.1 authorization server and its `.well-known`
-discovery documents. This document proposes answers to the three operational
+`applications/web/src/hooks.server.ts` via Tribunal's own handle, built on the
+published MCP engine, alongside a full OAuth 2.1 authorization server and its
+`.well-known` discovery documents. (This document was drafted when that mount
+was to be Protokit's ported `createApplicationMount()`; the orchestration
+document rejects that seam. Nothing this document decides depends on which of
+the two supplies the mount.) This document proposes answers to the three operational
 questions the issue names. It is a draft; nothing here is approved until a
 human signs off, per the issue's own instruction not to self-approve a
 decision issue.
@@ -145,8 +148,8 @@ surface instead of a single schema field.
 
 None of this code exists yet—`/mcp` has no implementation in this
 repository as of this document, so nothing below is a file citation, it is
-a requirement for the implementation tier (TRI-44's environment-schema port
-and whichever issue mounts `createApplicationMount()`):
+a requirement for the implementation tier (TRI-44's environment-schema work
+and whichever issue mounts Tribunal's MCP and OAuth handle):
 
 - `MCP_ENABLED` must be declared in whatever Zod environment schema the web
   application ends up with. Today `applications/web` has no centralized
@@ -160,8 +163,8 @@ and whichever issue mounts `createApplicationMount()`):
   `booleanFlag`-style strict parsing engine already uses, not
   `z.coerce.boolean()`.
 - The flag must be checked in the `sequence(...)` chain in
-  `applications/web/src/hooks.server.ts`, before whatever handle mounts
-  `createApplicationMount()`, and it must short-circuit every path that
+  `applications/web/src/hooks.server.ts`, before the handle that mounts the
+  MCP and OAuth routes, and it must short-circuit every path that
   chain owns: `/mcp` itself, the OAuth authorization/token/registration
   endpoints, and the `.well-known` discovery documents, not just the MCP
   JSON-RPC endpoint.

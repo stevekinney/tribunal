@@ -8,9 +8,12 @@ Delivery boundary for this issue is documentation only—no code. Every scope, t
 
 Tribunal already has a scoped-permission mechanism: `ProxyPermission` (`packages/review-core/src/capability-token.ts`), the `github:read` / `anthropic:invoke` claims minted onto short-lived capability tokens that let a reviewer sandbox call the proxy during a review run. That mechanism is unrelated to this one. This document defines the OAuth scopes a _human user_ grants to an _MCP client_ (Claude Code, Codex CLI, the Claude hosted connector, ChatGPT developer mode) so that client can call Tribunal's MCP tools on the user's behalf. The two never share a token, a claim shape, or a trust boundary—do not conflate a reviewer sandbox's egress permission with an MCP client's OAuth scope.
 
-## Mechanism, ported unchanged from Protokit
+## Mechanism, inherited unchanged from Protokit
 
-The mechanism is not an open decision—only the vocabulary is. Protokit (pinned donor, [`stevekinney/protokit`](https://github.com/stevekinney/protokit) at `6eb354e43ecc48efdac8abe59daea82dcdab88fd`) establishes three properties this port must preserve:
+The mechanism is not an open decision—only the vocabulary is. Protokit ([`stevekinney/protokit`](https://github.com/stevekinney/protokit) at the pinned revision `6eb354e43ecc48efdac8abe59daea82dcdab88fd`) establishes three properties this must preserve:
+
+> [!IMPORTANT] The mechanism arrives as a dependency, and it does not yet accept this vocabulary
+> This document was drafted when the engine was to be forked, so it reads as a port. Under the dependency model in `documentation/mcp-integration-orchestration.md` the mechanism is consumed from the published engine rather than copied, which changes nothing below—the three properties are the engine's behaviour either way—but it does add a prerequisite. The engine's `McpScope` is today a closed union of Protokit's own three scopes, and every operation's `requiredScope` is typed against it, so the five-scope vocabulary this document settles cannot be expressed without modifying the package or bypassing its type and validation guarantees. **TRI-73** makes the vocabulary consumer-supplied and is a hard blocker on implementing anything here.
 
 Every tool, resource, and prompt declares exactly one `requiredScope` from a closed, hand-authored vocabulary (`packages/mcp/src/scopes.ts` in the donor). There is no generic all-access scope.
 
