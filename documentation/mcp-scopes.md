@@ -33,7 +33,9 @@ A client always sees every tool exists; it discovers which ones it cannot call b
 
 **`packages/mcp` does exist in this repository now, and it is not where this vocabulary goes.** TRI-27 landed it as a copy of Protokit's engine, carrying Protokit's own `scopes.ts` and `supported-scopes.ts` with Protokit's three demo scopes. That package is a **bridge**: TRI-80 deletes it and replaces it with the published engine. An earlier revision of this document said the package did not exist, which invited exactly the wrong move — adding Tribunal's scopes to the temporary copy, deepening the divergence TRI-80 exists to end, and building against a closed `McpScope` union rather than waiting for TRI-73 to open it.
 
-What the implementation tier owns is Tribunal's **injected** registry and vocabulary, supplied to the published engine — F2 (TRI-29) defines the registry, O1 (TRI-37) consumes the derived scope set at authorize time. This document fixes what goes in those, not what goes in the bridge.
+What the implementation tier owns is Tribunal's **injected** registry and vocabulary, supplied to the published engine — F2 (TRI-29) defines the registry, and **TRI-85** consumes the derived scope set at authorize time. This document fixes what goes in those, not what goes in the bridge.
+
+O1 (TRI-37) builds the authorize endpoint itself. **TRI-85 owns all of its scope behaviour**, not only the two rules that need the registry. That is deliberate: this document's other authorize-time scope rules — a present-but-empty `scope=` rejected as `invalid_scope`, and an explicit non-empty list granted exactly as requested and never expanded — need nothing from TRI-29 and could have stayed with TRI-37, but splitting them across two issues would leave scope handling half-implemented in each. Rejecting an empty `scope` while still accepting arbitrary unknown ones is not a coherent intermediate state to ship. TRI-85's criteria 3 and 4 carry both rules.
 
 ## Tribunal's actual capability surface
 
@@ -139,7 +141,9 @@ Recommendation: reserve `conformance:read` as Tribunal's equivalent, gating a to
 
 **That last property needs an actual check, not just absence from the UI.** The client controls the `scope` value it sends, so omitting `conformance:read` from registrations and the consent screen does not make it unobtainable — and this document's own rule that "an explicit non-empty `scope` list is granted exactly as requested" would otherwise hand it straight to any client that asks for it by name. Not offering something is not the same as refusing it.
 
-**Requirement: the authorize endpoint must reject any requested scope outside `getSupportedScopes()` as `invalid_scope`.** Since `getSupportedScopes()` structurally excludes conformance-only scopes by walking production registries alone, that single rule makes `conformance:read` unobtainable as a consequence of the mechanism rather than a second list to maintain. It also closes the same hole for any future conformance-only scope automatically.
+**Requirement: the authorize endpoint must reject any requested scope outside `getSupportedScopes()` as `invalid_scope`. TRI-85 implements it.** Since `getSupportedScopes()` structurally excludes conformance-only scopes by walking production registries alone, that single rule makes `conformance:read` unobtainable as a consequence of the mechanism rather than a second list to maintain. It also closes the same hole for any future conformance-only scope automatically.
+
+This requirement and the omitted-`scope` default below were split out of TRI-37 on 2026-08-27, because both need the production registries TRI-29 builds and this document forbids the parallel list that would be the only way to satisfy them earlier. TRI-85 is blocked by TRI-37 and TRI-29, and blocks TRI-58 — so `/mcp` cannot reach a production enable with these unenforced.
 
 Open question, with a named owner: this document reserves the _scope name and mechanism_; it does not specify what the fixture tool returns. **TRI-30 decides it**, against Tribunal's actual conformance test needs rather than guessed here.
 

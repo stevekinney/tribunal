@@ -18,8 +18,17 @@ TRI-26. Approval covers the three questions the issue named: the flag, the
 rollback trigger, and the alerting. It does not close the items this
 document explicitly hands to whoever implements or operates the surface —
 those are collected under "Summary of open questions for the approver" at
-the end and marked `OPEN QUESTION` in place. Treat those as deferred with an
-owner, not as a decision still pending.
+the end. Treat those as deferred with an owner, not as a decision still
+pending.
+
+One of them has since been closed by a separate owner decision: the
+disabled-surface response is `404`, decided 2026-08-27 and now stated as an
+instruction rather than a recommendation. It is struck through in that
+summary rather than deleted, so the record of what approval did and did not
+settle stays legible. **Three remain open** — the operator authority for
+disabling `/mcp`, the refresh-replay alert destination, and when to file the
+four deferred alert conditions as follow-up issues — and each is still
+marked `OPEN QUESTION` at the point it arises.
 
 Each section states the options considered, a recommendation, and the
 reasoning. Anything the codebase does not currently answer is marked
@@ -112,7 +121,11 @@ This is a three-step transition, not a flag flip, and the order matters. Stage t
 2. **Clear the stage-two override**, explicitly and as its own step. It was designed to outlive a redeploy; nothing removes it implicitly.
 3. **Verify.** Re-run check 4 and confirm the surface actually serves. This step is what catches having done 1 without 2, which otherwise looks identical to a deploy that has not landed yet.
 
-Checks 1, 2, and 4 belong to whichever issue implements the flag. Checks 3, 5, 6, 7 and the stage-two disable exercise belong to TRI-60. None is satisfied by a merged pull request.
+**Checks 1 and 2 belong to TRI-41**, the issue that implements the flag. Both are about the disabled state, which is what TRI-41 can actually produce and verify — check 2 is explicitly environment-independent and runs in CI.
+
+**Checks 3 through 7 and the stage-two disable exercise belong to TRI-60.** Check 4 is included there deliberately, and an earlier revision had it with the flag issue. It asserts that the surface _serves_ once enabled, which needs a working MCP handler and therefore the consumable engine and TRI-29's registry — none of which TRI-41 has. It is also a deployed-host check like the other four, run during the stage-two enabled window rather than in a test suite. Giving it to the flag issue would either serialize TRI-41 behind the engine work or leave it recording an expectation it cannot check.
+
+None of the seven is satisfied by a merged pull request.
 
 `REVIEWS_ENABLED`'s open-by-default schema value only stays safe because a
 human has to remember the TOML also says `false`—the two declarations can
@@ -197,14 +210,105 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   `/health/ready` return `404` rather than `401` when unconfigured in
   Protokit's own RUNBOOK access-control section.
 
-  Approving TRI-26 did not record a separate answer to this sub-question,
-  so the recommendation stands as the instruction — that is what a
-  recommendation in an approved document is for, and gates 1 and 4 cannot
-  assert an exact status against an unanswered question. **TRI-41 ships
-  `404` and records the per-route expected-status table those gates compare
-  against**, since criterion 6 already makes it the issue that honours the
-  flag. Departing from `404` is a decision that needs sign-off, not an
-  implementation detail to settle inside a pull request.
+  **Decided by the project owner on 2026-08-27, on the grounds of what is
+  idiomatic.** This is no longer a recommendation awaiting sign-off. **TRI-41
+  ships `404` and records the expected-status table for gate 1 — the
+  disabled state**, since criterion 6 already makes it the issue that
+  honours the flag.
+
+  **Check 4 and its table are not TRI-41's — they are TRI-60's**, alongside
+  checks 3, 5, 6, and 7, as the ownership line under the three-step
+  transition above states. Assigning them to TRI-41 would be the kind of
+  paperwork that reads as coverage: check 4 asserts what the routes return
+  once enabled, which requires a working MCP handler and therefore the
+  consumable engine and TRI-29's registry. TRI-41 can specify what an
+  enabled route _should_ return but cannot verify it, and an unverifiable
+  expected value recorded as though it were checked is exactly this
+  project's signature defect.
+
+  Three reasons beyond the disclosure argument above, each of which
+  independently rules out `503`:
+
+  - **`503` invites a retry that should never happen.** RFC 9110 defines it
+    as the server being _temporarily_ unable to handle the request; it is
+    the status that pairs with `Retry-After` and that clients back off and
+    retry against. A deliberately disabled surface is not temporarily
+    unavailable in any sense a client should wait out, so `503` would have
+    every MCP client politely retrying a surface that is off on purpose.
+  - **`404` is how discovery is _supposed_ to fail.** A client reads
+    `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`
+    to learn whether this host offers an OAuth-protected MCP surface at all.
+    A `404` answers that question — no, degrade gracefully — which is the
+    path clients already implement. A `503` leaves them unable to
+    distinguish "not offered" from "offered and briefly sick."
+  - **It is the only status that can make the surface genuinely
+    indistinguishable.** These are SvelteKit routes, so a route that is not
+    mounted returns `404` on its own; any other choice announces that
+    something is deliberately there.
+
+    **Choosing `404` is necessary for that property but does not deliver
+    it.** A short-circuiting handle returning `404` can still emit a
+    different body or different headers from SvelteKit's own missing-route
+    response, and a prober reading those learns exactly what the status was
+    chosen to hide. Gates 1 and 4 compare a per-route expected-_status_
+    table, so on their own they would prove less than this argument claims.
+
+    **Requirement for TRI-41, since indistinguishability is the actual
+    security goal rather than a nice property of the number:** the disabled
+    response must match an unmounted route's response in body and in
+    headers, not only in status, asserted by a test that fails if the handle
+    returns a distinctive body or adds a header the real 404 does not carry.
+    Where an infrastructure header makes exact equality impossible, name the
+    exemption rather than dropping the assertion.
+
+    **And that requirement collides with a second one, so resolve them
+    together rather than discovering it at rollout.** A `404` is
+    heuristically cacheable under RFC 9111. The two discovery documents are
+    unauthenticated `GET`s, so an intermediary or client that caches the
+    stage-one disabled response can keep serving it after stage three flips
+    the flag — the surface is enabled and a client still cannot find it. The
+    obvious fix, `Cache-Control: no-store` on the disabled response, is
+    exactly what header equality forbids, because Tribunal's ordinary 404s
+    carry no cache-control header today.
+
+    **The resolution is to apply `no-store` to both**, so the disabled
+    response stays indistinguishable _and_ uncacheable. Note that this
+    touches Tribunal's global 404 handling rather than only the MCP paths,
+    which makes it a wider change than it first appears — surface it as such
+    rather than slipping it in. The alternative, making only MCP-path 404s
+    uncacheable, reintroduces exactly the distinguishing signal this section
+    exists to remove: a prober comparing headers learns which paths are real.
+
+    **`no-store` bounds the problem going forward; it does not undo the
+    past, and treating it as a complete fix would be wrong.** These
+    discovery URLs return Tribunal's ordinary, header-less `404` _today_,
+    before any of this ships. Anything that probed them and cached the
+    result holds a fresh entry it can serve without ever contacting the
+    origin — so it never sees the new header and can still hide the
+    discovery documents after stage three. The header only governs
+    responses issued from the deploy that introduces it onward.
+
+    Third-party caches cannot be purged, so the strategy is containment
+    rather than a fix:
+
+    - **Ship the `no-store` change in the first deploy that mounts the
+      surface**, not at stage three. That is what bounds the exposed window
+      to entries created before the surface existed at all.
+    - **Treat a stale negative cache as a named, expected failure mode at
+      stage three** rather than a mystery. Check 4 already requires the
+      discovery documents to return their metadata; if one does not while
+      the origin demonstrably serves it, a cached pre-deployment `404` is
+      the first hypothesis, and a cache-busting query parameter distinguishes
+      it from a real fault in one request.
+    - **Do not add a cache-busting parameter to the published discovery
+      URLs** to route around this. Those URLs are fixed by the OAuth
+      metadata specifications, clients construct them, and Tribunal does not
+      get to decorate them.
+
+    The residual risk is genuinely small — it needs something to have
+    probed a path that has never been advertised — but it is residual
+    rather than eliminated, and stage three should know that before it
+    starts debugging.
 
 ## Disabling `/mcp` in production
 
@@ -397,9 +501,10 @@ The remaining four are deferred with distinct reasons, not one blanket
 Deferring is not a silent punt: per the standing "no silent deferral"
 rule, each deferred condition should get its own tracked Linear issue at
 the point `/mcp` actually ships, not left as a comment in this document.
-This document recommends that whoever approves it also authorizes filing
-those four follow-up issues (one per condition, or grouped, at the
-approver's discretion) rather than treating this section as closing the
+`OPEN QUESTION`: whether those four follow-up issues are filed now or at
+the point `/mcp` ships, and whether they are one issue per condition or
+grouped. This document recommends that whoever approves it also
+authorizes the filing rather than treating this section as closing the
 topic.
 
 ### Sink
@@ -446,12 +551,19 @@ This list is what approval did **not** settle. One item has since been
 closed and is recorded here so the two halves of this document cannot give
 opposite instructions:
 
-- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed.**
-  This document's recommendation of `404` stands as the instruction, and
-  TRI-41 ships it and records the per-route expected-status table that
-  rollout gates 1 and 4 assert against. See the flag section above.
-  Departing from `404` needs sign-off; an orchestrator should implement,
-  not stop for approval.
+- ~~The exact HTTP response while `MCP_ENABLED` is false.~~ **Closed —
+  `404`, decided by the project owner on 2026-08-27.** TRI-41 ships it and
+  records the expected-status table that rollout check 1 asserts against.
+  **Check 4 and its enabled-state table are TRI-60's**, since they need a
+  working MCP handler. The reasoning is in the flag section above: `503` invites
+  a retry that should never happen, `404` is how OAuth discovery is meant to
+  fail, and `404` is the only status that can make the surface
+  indistinguishable from an unmounted route. Two requirements carry with it —
+  matching status is not matching response, so TRI-41 asserts body and
+  headers too; and a `404` is heuristically cacheable, so both it and
+  Tribunal's ordinary 404 need `Cache-Control: no-store` or a cached
+  disabled response outlives the flag flip. This is settled — implement it rather than
+  stopping for approval.
 
 Still open:
 
