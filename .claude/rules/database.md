@@ -1,6 +1,8 @@
 ---
 paths:
   - applications/web/src/lib/server/database/**
+  - applications/web/src/lib/server/review/**
+  - packages/mcp/src/**
 ---
 
 # Database patterns
@@ -9,6 +11,8 @@ Before editing paths in this rule, load `$database-operations` and apply its con
 
 - Schema changes follow a **migration-first** workflow. Edit the TypeScript schema, run `bun run db:generate -- --name describe-your-change`, review the generated SQL, and commit it alongside the schema change. See `documentation/DATABASE.md` for the full workflow.
 - Avoid `db.transaction()` with neon-http (not supported).
+- **Do not compensate for a failed write; make it one statement.** With `neon-http`, "the insert failed" and "the insert committed and the response was lost" are indistinguishable to the client, so a best-effort undo can reverse work that actually succeeded — turning a single-consume guarantee into a double-issue bug. When a multi-table write must be all-or-nothing, express it as one data-modifying CTE and let PostgreSQL roll the whole statement back.
+- **A reader may return more than its name implies.** Check what a projection actually selects before reusing it behind an access boundary, and check whether it writes: a "get" helper that upserts defaults is not read-only. Check for unconditional `.limit(...)` too, since a silently truncated list cannot be distinguished from a complete one by its caller.
 - Prefer joins to avoid N+1 queries.
 - Use `selectDistinct` for deduping join results instead of post-processing.
 - Keep query helpers pure; return `null` for "not found" when callers expect it.

@@ -27,6 +27,8 @@ Sign-in itself is Neon Auth and is not covered here. For session handling, `retu
 
 ## Authorization
 
+Tribunal is the OAuth **client** here; GitHub owns the authorize and token endpoints. Requirements for the authorization server Tribunal itself runs live in `mcp-authorization.md`.
+
 - **Verify ownership before mutating by external identifier.** An installation identifier or provider account identifier arriving in a callback is attacker-influenced. Confirm the authenticated user actually has access before binding anything to them.
 - **Prefer `NOT_FOUND` over `FORBIDDEN`** when the caller should not learn that a resource exists.
 - **Never expose internal identifiers, raw Zod errors, or database detail** in a user-facing message. Log the detail, return something friendly.

@@ -1,5 +1,12 @@
 ---
 paths:
+  - applications/web/src/hooks.server.ts
+  - applications/web/src/lib/server/auth/**
+  - applications/web/src/lib/auth/**
+  - applications/web/src/routes/login/**
+  - applications/web/src/routes/logout/**
+  - applications/web/src/routes/onboarding/**
+  - applications/web/src/routes/auth/**
   - src/routes/login/**
   - src/routes/onboarding/**
   - src/routes/logout/**
@@ -9,6 +16,16 @@ paths:
 ---
 
 # Authentication patterns
+
+## Hook ordering is a security boundary
+
+Anything in `hooks.server.ts`'s `sequence()` that needs an authenticated user must be sequenced **after every identity-populating handle**, not merely after `authHandle`.
+
+The distinction is load-bearing. The current sequence ends `authHandle, devAuthBypassHandle`, and `devAuthBypassHandle` is what populates the synthetic user when `DEV_AUTH_BYPASS=1`. A short-circuiting handler placed between them sees no authenticated user in exactly the preview environment the bypass exists to serve. Restate this rule if another identity handle is ever added.
+
+A handler placed before the identity handles can answer a request without invoking the downstream `resolve`, so they never run and `event.locals.user` is never populated. The handler is then serving an unauthenticated request while looking like it is serving an authenticated one, and the usual repair — validating a token inside the handler — introduces a second identity path that diverges from the first.
+
+Handlers must consume the locals `authHandle` populates rather than validating a token themselves. Assert the ordering in a test: it is one line in `sequence()`, a later edit can invert it, and there is no other symptom.
 
 ## Open redirect prevention
 
