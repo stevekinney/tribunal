@@ -19,6 +19,23 @@ export default defineConfig(
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
+      // TRI-34. Duplicated from `.oxlintrc.json` rather than inherited,
+      // because this is the one workspace whose `lint` script runs `eslint`
+      // alone -- every other one runs `oxlint . && eslint .`, so the root
+      // oxlint config already covers them. Without this copy, `scripts/` is
+      // a hole in a rule that claims to be repo-wide.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'bun:test',
+              message:
+                "Tribunal's test runner is vitest. Import from 'vitest' instead — bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner.",
+            },
+          ],
+        },
+      ],
     },
   },
   {
