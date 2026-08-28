@@ -632,6 +632,136 @@ describe('loaders invoked through call and apply', () => {
   });
 });
 
+describe('a var loop header assigns on entry, not before the iterable', () => {
+  it('a call in the iterable expression still reaches the real loader', () => {
+    // The iterable is evaluated before the loop assigns, so comparing against
+    // the declaration rather than the body suppressed a genuine load.
+    expect(
+      findBannedTestRunnerImports("for (var require of require('bun:test')) {}\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a call in the loop body is shadowed', () => {
+    expect(
+      findBannedTestRunnerImports("for (var require of loaders) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('switch clauses share a scope but not control flow', () => {
+  it('a var initializer in another clause does not suppress', () => {
+    // Control flow enters at one clause, so `case 0`'s initializer need never
+    // have run when `case 1` executes. Flattening every clause into one list
+    // made it look dominant.
+    expect(
+      findBannedTestRunnerImports(
+        "switch (x) { case 0: var require = custom; break; case 1: require('bun:test'); }\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a var initializer in the SAME clause does suppress', () => {
+    // There is no goto in JavaScript and fall-through enters a clause at its
+    // top, so statements within one clause do run in order.
+    expect(
+      findBannedTestRunnerImports(
+        "switch (x) { case 0: var require = custom; require('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a const in another clause still suppresses, because the scope is shared', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "switch (x) { case 0: const require = custom; break; case 1: require('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('immutable aliases of a loader', () => {
+  it('follows `const load = require`', () => {
+    expect(findBannedTestRunnerImports("const load = require;\nload('bun:test');\n")).toHaveLength(
+      1,
+    );
+  });
+
+  it('follows a chain of const aliases', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\nconst other = load;\nother('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('resolves the INNERMOST binding, so an inner shadow wins', () => {
+    // Taking any enclosing alias would report valid code here.
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\n{ const load = other; load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('does not follow an alias of a parameter named require', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "function f(require) { const load = require; load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a parameter of the same name shadows an outer alias', () => {
+    // Without checking parameters the walk would reach the outer
+    // `const load = require` and report a call to the parameter.
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\nfunction f(load) { load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('an inner function declaration of the same name shadows an outer alias', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\nfunction g() { function load(n) { return n; } load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('follows an alias declared in a switch clause', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "switch (x) { case 0: const load = require; load('bun:test'); }\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not follow a `let` alias, which is not immutable', () => {
+    // Out of scope deliberately, and it fails toward not reporting. This is a
+    // lint against accidents, not a boundary against deliberate evasion.
+    expect(findBannedTestRunnerImports("let load = require;\nload('bun:test');\n")).toHaveLength(0);
+  });
+});
+
+describe('erased declarations are not runtime bindings', () => {
+  it('a bodyless overload signature does not shadow', () => {
+    // It emits nothing even without a `declare` modifier; only the
+    // implementation binds.
+    expect(
+      findBannedTestRunnerImports(
+        "function require(name: string): unknown;\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a function with a body does shadow', () => {
+    expect(
+      findBannedTestRunnerImports("function require(n) { return n; }\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);
@@ -907,13 +1037,28 @@ describe('extensionless entrypoints', () => {
     expect(isExtensionlessPath('a/b.c/module.ts')).toBe(false);
   });
 
-  it('scans an unrecognised or uppercase extension rather than skipping it', () => {
-    // The filter lists what is *not* source. An allowlist cannot predict every
-    // spelling a runnable file might use — `bun bin/run-tests.task` executes
-    // JavaScript, and a case-sensitive list misses `.TS` besides.
-    expect(isScannableFile('bin/run-tests.task')).toBe(true);
-    expect(isScannableFile('bin/.run-tests')).toBe(true);
+  it('skips an unrecognised extension, and still scans uppercase and extensionless', () => {
+    // This asserted that `bin/run-tests.task` is scanned, on the grounds that
+    // an allowlist cannot predict every spelling a runnable file might use.
+    // That reasoning was sound and its premise was not: it assumed parsing a
+    // non-module is harmless, and TypeScript's parser recovers instead of
+    // failing, so `# import 'bun:test'` in any hash-commented language becomes
+    // a reported import and blocks every commit.
+    //
+    // Three rounds added the languages observed so far. The tail does not end
+    // — Lua's `require('bun:test')` is valid Lua that parses as a JavaScript
+    // call — while this repository tracks no exotic-but-JavaScript extension at
+    // all. And the false-negative cost is capped by the rule's purpose: it bans
+    // a runner whose suites silently do not run under vitest, and a file no
+    // runner collects cannot be a silently-skipped suite.
+    expect(isScannableFile('bin/run-tests.task')).toBe(false);
+
+    // The two cases that still hold, and the reason the check is not a plain
+    // extension equality test: case-insensitivity, and extensionless
+    // entrypoints, which the shebang decides on once the contents are read.
     expect(isScannableFile('module.TS')).toBe(true);
+    expect(isScannableFile('bin/.run-tests')).toBe(true);
+    expect(isScannableFile('bin/run-tests')).toBe(true);
   });
 
   it('skips shell, which this test previously asserted was scanned', () => {

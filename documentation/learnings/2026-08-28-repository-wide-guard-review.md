@@ -72,3 +72,20 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 ## Scopes the grammar creates that the tree does not name `Block`
 
 - **A `switch` body is a `CaseBlock`**, and its clauses share one block scope, so `case 'a': const require = x;` binds for every later clause too. A braced `case 'x': { ... }` already worked because that introduces a real `Block`; the bare, far more common spelling had no node the ancestor walk recognised. When enumerating scopes, enumerate the grammar's scopes rather than the node kinds that happen to be named after them.
+
+## State the governing rule once, or keep discovering positions
+
+- **Four rounds each found another place a `var` assignment might not have run**: before the declaration, in its own initializer, before a loop header, inside a dead branch, in a different `switch` clause, in a loop's iterable expression. Each fix was correct and each was a position, not a principle. The rule is now written once, as a rule: a `var` suppresses only when its assignment provably executes before the call, which holds in exactly two shapes — one executed statement sequence with the call after the initializer, or the body of a loop whose header assigns on entry. A finding now has to break the principle rather than name an unlisted position.
+- **Sharing a scope is not sharing control flow.** `switch` clauses share one block scope, so a `const` in any clause binds for all of them — but control flow enters at one clause, so a `var` initializer in another need never have run. Flattening the clauses was right for the lexical question and wrong for the temporal one. Same-clause dominance is sound because there is no `goto`: fall-through enters a clause at its top.
+
+## An exclusion list that grows each round is the wrong shape
+
+- **Three rounds added hash-comment languages** — `.py` and `.sh`, then `.ps1` and `.r` — and the tail does not end. Lua settles it: `require('bun:test')` is _valid Lua_ that parses as a JavaScript call, so no comment-based rule would catch it either. The blocklist was replaced with an allowlist of JavaScript and TypeScript extensions, plus extensionless files whose shebang decides.
+- **The argument that kept the blocklist was about a hypothetical file.** It defended `bun bin/run-tests.task`; the repository tracks no exotic-but-JavaScript extension at all, while the false positives were live and blocked every commit. Checking the actual inventory turned a stand-off between two plausible principles into a one-command decision.
+- **A rule's purpose bounds its acceptable false negatives.** This one bans a runner whose suites silently do not run under vitest — so a file no runner collects cannot be a silently-skipped suite, and skipping unknown extensions costs little by the rule's own measure.
+
+## Following a name means resolving the innermost binding
+
+- **`const load = require; load('bun:test')` is ordinary code, not evasion**, and a name-only check never saw it. But "an enclosing `const load = require` exists" is the wrong question: `{ const load = somethingElse; load(...) }` would then report valid code. The walk stops at the **first** scope binding the name — parameter, function declaration, or variable — and answers only for a `const`.
+- **`const` needs no ordering check where `var` does.** It is in its temporal dead zone before the declaration, so a call above it throws rather than loads.
+- **Name the analysis boundary in the code.** `let` aliases, destructured aliases, and property aliases are not followed, and each fails toward reporting. Writing that down makes it the documented limit of a lint against accidents rather than an unnoticed hole in a security boundary.

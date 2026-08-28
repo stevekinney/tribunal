@@ -221,10 +221,19 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * Whether a variable declaration replaces the existing binding *by the time
    * this call runs*.
    *
-   * `var` is the whole difficulty. The binding is hoisted, but its **value**
-   * is assigned where the declaration is written, and CommonJS supplies
-   * `require` and `module` as live wrapper parameters. So until the assignment
-   * executes, the real loader is what a call reaches. Verified under Node:
+   * One governing rule, stated once because four rounds of review each found
+   * another position that a narrower rule had not anticipated:
+   *
+   * > A `var` suppresses only when its assignment provably executes before the
+   * > call. That holds in exactly two shapes — the declaration and the call sit
+   * > in one executed statement sequence with the call after the initializer,
+   * > or the call is inside the body of a loop whose header assigns on entry.
+   * > Everything else reports.
+   *
+   * `var` is the whole difficulty because the binding hoists but the **value**
+   * does not: it is assigned where the declaration is written, and CommonJS
+   * supplies `require` and `module` as live wrapper parameters, so until then a
+   * call reaches the real loader. Verified under Node:
    *
    * ```
    * before assign, typeof require: function
@@ -232,37 +241,48 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * after assign: custom
    * ```
    *
-   * Three consequences, and each was a separate false negative:
+   * `let` and `const` are exempt from all of it. They create a fresh binding
+   * for the whole block, and an access before the declaration is a
+   * temporal-dead-zone `ReferenceError` rather than a load, so treating them as
+   * shadowing the entire scope cannot hide an import.
    *
-   * - `require('bun:test'); var require = custom;` loads the runner.
-   * - `var require = require('bun:test');` loads it too — the initializer's
-   *   right-hand side is evaluated with the binding still pointing at the
-   *   wrapper.
-   * - `require('bun:test'); for (var require of loaders) {}` loads it, because
-   *   a `var` loop header assigns at loop entry, not at hoist time.
-   *
-   * So every `var` case is positional. `let` and `const` are not: they create
-   * a fresh binding for the whole block, and an access before the declaration
-   * is a temporal-dead-zone `ReferenceError` rather than a load, so treating
-   * them as shadowing the entire scope cannot hide a real import.
-   *
-   * Deliberately NOT handled: plain reassignment, as in
-   * `require = custom; require('bun:test')`. Following that needs dataflow
-   * analysis, and not following it means the call is reported — the safe
-   * direction for a ban.
+   * Deliberately NOT handled, and each fails toward *reporting*, which is the
+   * safe direction: plain reassignment (`require = custom;`), and any `var`
+   * whose execution needs control-flow analysis to establish — a nested block,
+   * a different `switch` clause, a conditional.
    */
   const replacesBinding = (declaration: ts.VariableDeclaration): boolean => {
     const list = declaration.parent;
     if ((list.flags & ts.NodeFlags.BlockScoped) !== 0) return true;
 
-    // A `var` loop header assigns on entry, so it shadows the body but not
-    // anything positioned before the loop.
-    if (ts.isForOfStatement(list.parent) || ts.isForInStatement(list.parent)) {
-      return callStart >= declaration.getEnd();
+    // A `var` loop header assigns on entry, so it shadows the body — but the
+    // iterable expression is evaluated *before* that assignment, so
+    // `for (var require of require('bun:test'))` still reaches the loader.
+    // Comparing against the body rather than the declaration separates them.
+    const loop = list.parent;
+    if (ts.isForOfStatement(loop) || ts.isForInStatement(loop)) {
+      return callStart >= loop.statement.getStart();
     }
 
     if (declaration.initializer === undefined) return false;
     return callStart >= declaration.initializer.getEnd();
+  };
+
+  /**
+   * The `switch` clause a node sits in, if any, stopping at the first function
+   * boundary so a clause never claims a call inside a nested function.
+   */
+  const enclosingClause = (from: ts.Node): ts.Node | undefined => {
+    // Written as a loop condition rather than an early return inside the body,
+    // so the trailing `return` is the normal exit. Every chain ends at a
+    // `SourceFile`, so a post-loop fallback would be unreachable — and the
+    // coverage gate said so.
+    let scope: ts.Node | undefined = from;
+    while (scope !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) {
+      if (ts.isCaseClause(scope) || ts.isDefaultClause(scope)) return scope;
+      scope = scope.parent;
+    }
+    return undefined;
   };
 
   /**
@@ -291,7 +311,10 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
       return replacesBinding(candidate) && nameBinds(candidate.name);
     }
     return (
-      (ts.isFunctionDeclaration(candidate) ||
+      // A bodyless overload signature — `function require(n: string): unknown;`
+      // — emits nothing, so it introduces no runtime binding even without a
+      // `declare` modifier. Only the implementation binds.
+      ((ts.isFunctionDeclaration(candidate) && candidate.body !== undefined) ||
         ts.isParameter(candidate) ||
         ts.isClassDeclaration(candidate) ||
         ts.isBindingElement(candidate)) &&
@@ -335,6 +358,8 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * after such a block go unreported — a false negative introduced by an
    * earlier round's fix for the opposite problem.
    */
+  const callClause = enclosingClause(node);
+
   const declaredDirectlyIn = (scope: ts.Node): boolean => {
     let found = false;
     // A `switch` body is a `CaseBlock`, not a `Block`, and its clauses share
@@ -347,7 +372,21 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
       : ts.isBlock(scope)
         ? scope.statements
         : ts.isCaseBlock(scope)
-          ? scope.clauses.flatMap((clause) => [...clause.statements])
+          ? // Clauses share one block scope, so a `const` in any clause binds
+            // for the whole switch. A `var` does not get the same treatment:
+            // control flow enters at one clause, so an initializer in another
+            // one need never have run. Restricting `var` to its own clause is
+            // sound because there is no `goto` — fall-through enters a clause
+            // at its top, so statements within one clause do run in order.
+            scope.clauses.flatMap((clause) =>
+              clause === callClause
+                ? [...clause.statements]
+                : clause.statements.filter(
+                    (statement) =>
+                      !ts.isVariableStatement(statement) ||
+                      (statement.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0,
+                  ),
+            )
           : functionBodyOf(scope)?.statements;
 
     if (ts.isFunctionLike(scope)) {
@@ -471,9 +510,72 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * `options.require('...')`, `config.require('...')`, and
  * `new.target.require('...')` stay unreported.
  */
-function isModuleLoader(callee: ts.Node): boolean {
+/**
+ * The initializer of the **innermost** `const` binding of an identifier.
+ *
+ * `const load = require; load('bun:test')` loads the runner by a spelling that
+ * is ordinary rather than evasive, and a name-only check never saw it.
+ *
+ * Resolving the innermost binding is the part that matters. Taking any
+ * enclosing `const load = require` would report
+ * `{ const load = somethingElse; load('bun:test'); }`, where the inner binding
+ * wins — a false positive of exactly the kind this gate keeps paying for. So
+ * the walk stops at the first scope that binds the name at all, and answers
+ * only for a `const`.
+ *
+ * No ordering check is needed, unlike `var`: `const` is in its temporal dead
+ * zone before the declaration, so a call above it throws rather than loads.
+ */
+function constAliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
+  const wanted = identifier.text;
+  const namesIt = (name: ts.BindingName): boolean => ts.isIdentifier(name) && name.text === wanted;
+
+  for (let scope: ts.Node | undefined = identifier.parent; scope; scope = scope.parent) {
+    if (ts.isFunctionLike(scope)) {
+      for (const parameter of scope.parameters) {
+        if (namesIt(parameter.name)) return undefined;
+      }
+    }
+    const statements = ts.isSourceFile(scope)
+      ? scope.statements
+      : ts.isBlock(scope)
+        ? scope.statements
+        : ts.isCaseBlock(scope)
+          ? scope.clauses.flatMap((clause) => [...clause.statements])
+          : ts.isFunctionLike(scope)
+            ? functionBodyOf(scope)?.statements
+            : undefined;
+    for (const statement of statements ?? []) {
+      if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+        if (statement.name.text === wanted) return undefined;
+      }
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!namesIt(declaration.name)) continue;
+        // A binding of this name exists here, so the search ends whatever it
+        // is. Only an immutable one can be followed.
+        return (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+          ? declaration.initializer
+          : undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   if (ts.isIdentifier(callee) && callee.text === 'require') {
     return !isLocallyShadowed(callee, 'require');
+  }
+
+  // Follow an immutable alias, and its aliases. `seen` guards against a cycle
+  // that only invalid source could produce, but which would otherwise recurse
+  // forever.
+  if (ts.isIdentifier(callee) && !seen.has(callee)) {
+    const aliased = constAliasInitializer(callee);
+    if (aliased !== undefined) {
+      return isModuleLoader(unwrapTransparent(aliased), new Set([...seen, callee]));
+    }
   }
 
   const member = staticMemberName(callee);
@@ -674,73 +776,48 @@ export function findBannedImportsForPath(path: string, contents: string): Banned
 }
 
 /**
- * Extensions whose contents are definitely not executable source.
+ * Extensions the TypeScript parser is allowed to read.
  *
- * Inverted from an allowlist deliberately. An allowlist has to predict every
- * spelling a runnable file might use, and it cannot: `bun bin/run-tests.task`
- * executes JavaScript, so does a file named `.run-tests`, and a case-sensitive
- * list misses `.TS` besides. Listing what is *not* source keeps those working.
+ * This was a blocklist twice, and both spellings of that idea failed the same
+ * way. The original reasoning was that an allowlist "has to predict every
+ * spelling a runnable file might use, and it cannot" — `bun bin/run-tests.task`
+ * executes JavaScript — so listing what is *not* source would fail safe.
  *
- * The inversion stands; the reason originally given for it does not. That
- * reason was "parsing a non-module yields no imports", and it is false.
- * TypeScript's parser does not fail closed on foreign syntax, it *recovers*:
- * given `# import 'bun:test'` — an ordinary comment in Python, shell, or a
- * Dockerfile — it lexes the `#` as a stray private identifier and then builds
- * a genuine `ImportDeclaration` from the rest of the line. The gate reported a
- * banned import in files containing no JavaScript at all, and because the hook
- * runs on every commit, one explanatory comment anywhere in the repository
- * blocked all of them. This repository tracks fourteen such files.
+ * It does not fail safe, because TypeScript's parser recovers rather than
+ * failing. Given `# import 'bun:test'` it lexes the `#` as a stray private
+ * identifier and constructs a genuine `ImportDeclaration` from the rest of the
+ * line, so an ordinary comment in a foreign language becomes a reported import
+ * and the always-on hook rejects every commit. Three review rounds each added
+ * the languages observed so far — `.py`, `.sh`, then `.ps1`, `.r` — which is
+ * chasing a tail that does not end. Lua goes further: `require('bun:test')` is
+ * *valid Lua* that parses as a JavaScript call, so no comment rule would catch
+ * it either.
  *
- * So the safety net is no longer "parsing is harmless" but three explicit
- * exclusions: the `#`-comment extensions below, `NON_SOURCE_BASENAMES` for the
- * extensionless recipes, and `hasForeignShebang` for everything else.
+ * Three things settle it the other way:
  *
- * Markdown is excluded on purpose rather than by accident: documentation
- * legitimately shows the banned import inside a fenced example, and reporting
- * those would make the gate reject its own explanation.
+ * - This repository tracks no exotic-but-JavaScript extension at all. Every
+ *   tracked extension is `.ts`, `.js`, `.mjs`, `.svelte`, or plainly not
+ *   source, so `run-tests.task` is hypothetical while the false positives are
+ *   live and recurring.
+ * - The false-negative cost is capped by what this rule is *for*. It bans a
+ *   test runner whose suites silently do not run under vitest — and a file no
+ *   runner collects cannot be a silently-skipped suite.
+ * - The false-positive cost is every commit in the repository.
+ *
+ * Files with no extension are still read: their shebang decides, which keeps
+ * `bun bin/run-tests` — a real entrypoint with no shebang and no extension —
+ * inside the gate.
  */
-export const NON_SOURCE_EXTENSIONS: readonly string[] = [
-  '.md',
-  '.mdx',
-  '.json',
-  '.jsonc',
-  '.lock',
-  '.yml',
-  '.yaml',
-  '.toml',
-  '.txt',
-  '.csv',
-  '.sql',
-  '.html',
-  '.css',
-  '.scss',
-  '.svg',
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.ico',
-  '.webp',
-  '.avif',
-  '.woff',
-  '.woff2',
-  '.ttf',
-  '.otf',
-  '.pdf',
-  '.zip',
-  '.gz',
-  '.tgz',
-  '.map',
-  '.snap',
-  // Languages whose comment marker is `#`. See the note above: these are not
-  // merely uninteresting to parse, they are actively dangerous to parse.
-  '.py',
-  '.sh',
-  '.bash',
-  '.zsh',
-  '.fish',
-  '.rb',
-  '.pl',
+export const JAVASCRIPT_EXTENSIONS: readonly string[] = [
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.svelte',
 ];
 
 /**
@@ -756,9 +833,6 @@ export const NON_SOURCE_BASENAMES: readonly string[] = [
   'gemfile',
   'rakefile',
   'procfile',
-  // Configuration dotfiles that also comment with `#`. A leading dot does not
-  // by itself mean configuration -- `.eslintrc.js` is JavaScript -- so these
-  // are listed rather than matched by a dot prefix.
   '.env',
   '.gitignore',
   '.gitattributes',
@@ -780,7 +854,9 @@ export function isScannableFile(fileName: string): boolean {
   const dot = base.indexOf('.', base.startsWith('.') ? 1 : 0);
   const stem = dot === -1 ? base : base.slice(0, dot);
   if (NON_SOURCE_BASENAMES.includes(stem)) return false;
-  return !NON_SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+  if (JAVASCRIPT_EXTENSIONS.some((extension) => lower.endsWith(extension))) return true;
+  // No extension at all, so the shebang decides once the contents are read.
+  return dot === -1;
 }
 
 /**
