@@ -214,26 +214,55 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
   const isAmbient = (candidate: ts.Node): boolean =>
     (ts.getCombinedModifierFlags(candidate as ts.Declaration) & ts.ModifierFlags.Ambient) !== 0;
 
+  /** Where the call being judged sits, for the `var` ordering rules below. */
+  const callStart = node.getStart();
+
   /**
-   * Whether a variable declaration actually replaces an existing binding.
+   * Whether a variable declaration replaces the existing binding *by the time
+   * this call runs*.
    *
-   * A bare `var` does not. It redeclares the name and the previous value
-   * survives, which matters because CommonJS supplies `require` and `module`
-   * as wrapper parameters. Verified under Node: in a `.cjs` file
-   * `var require;` leaves `typeof require` as `'function'` and
-   * `require('bun:test')` still loads the runner. Treating that as a shadow
-   * suppressed a genuine finding — the dangerous direction.
+   * `var` is the whole difficulty. The binding is hoisted, but its **value**
+   * is assigned where the declaration is written, and CommonJS supplies
+   * `require` and `module` as live wrapper parameters. So until the assignment
+   * executes, the real loader is what a call reaches. Verified under Node:
    *
-   * `let` and `const` always create a fresh binding, so an uninitialized
-   * `let require;` genuinely shadows. A `for...of` or `for...in` header always
-   * assigns to its declaration, so it shadows with no initializer written; a
-   * classic `for (var require; ; )` does not.
+   * ```
+   * before assign, typeof require: function
+   * it loads: function            // require('node:path') worked
+   * after assign: custom
+   * ```
+   *
+   * Three consequences, and each was a separate false negative:
+   *
+   * - `require('bun:test'); var require = custom;` loads the runner.
+   * - `var require = require('bun:test');` loads it too — the initializer's
+   *   right-hand side is evaluated with the binding still pointing at the
+   *   wrapper.
+   * - `require('bun:test'); for (var require of loaders) {}` loads it, because
+   *   a `var` loop header assigns at loop entry, not at hoist time.
+   *
+   * So every `var` case is positional. `let` and `const` are not: they create
+   * a fresh binding for the whole block, and an access before the declaration
+   * is a temporal-dead-zone `ReferenceError` rather than a load, so treating
+   * them as shadowing the entire scope cannot hide a real import.
+   *
+   * Deliberately NOT handled: plain reassignment, as in
+   * `require = custom; require('bun:test')`. Following that needs dataflow
+   * analysis, and not following it means the call is reported — the safe
+   * direction for a ban.
    */
   const replacesBinding = (declaration: ts.VariableDeclaration): boolean => {
-    if (declaration.initializer !== undefined) return true;
     const list = declaration.parent;
     if ((list.flags & ts.NodeFlags.BlockScoped) !== 0) return true;
-    return ts.isForOfStatement(list.parent) || ts.isForInStatement(list.parent);
+
+    // A `var` loop header assigns on entry, so it shadows the body but not
+    // anything positioned before the loop.
+    if (ts.isForOfStatement(list.parent) || ts.isForInStatement(list.parent)) {
+      return callStart >= declaration.getEnd();
+    }
+
+    if (declaration.initializer === undefined) return false;
+    return callStart >= declaration.initializer.getEnd();
   };
 
   /**
@@ -584,13 +613,24 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  */
 function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
-  // Commented-out markup is not code. The Svelte parser knows that; this
-  // regex fallback does not, so a `<!-- <script>...</script> -->` left in a
-  // component whose parse failed was reported as an active import. Blanking
-  // the comment spans rather than deleting them keeps every byte offset — and
-  // so every reported line number — correct.
-  const active = contents.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '));
-  for (const match of active.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
+  // Deliberately does NOT try to skip commented-out markup.
+  //
+  // A previous round blanked `<!-- ... -->` spans here, so a commented-out
+  // `<script>` would not be reported. That was wrong twice over. The comment
+  // above `parseSvelte` had already named the exact spelling that breaks it —
+  // `{'<!--'}` in a Svelte expression — and it does: delimiters written either
+  // side of a real script blank the script itself, so a genuine banned import
+  // goes unreported. And it inverted this fallback's stated contract, which is
+  // to fail *closed*.
+  //
+  // That contract is the right one. This runs only for a component Svelte's
+  // own parser rejected, so a false positive here costs a clear failure on a
+  // file that is already broken, while a false negative lets a banned import
+  // through in exactly the files nothing else can read. Distinguishing a real
+  // comment from an expression that looks like one requires Svelte's grammar,
+  // and re-deriving that grammar from successive review findings is the
+  // mistake this module already made with regular expressions once.
+  for (const match of contents.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     const body = match[1];
     if (body === undefined) continue;
     const bodyStart = (match.index ?? 0) + match[0].indexOf(body);

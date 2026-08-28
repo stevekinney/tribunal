@@ -477,6 +477,44 @@ describe('an uninitialized var redeclares rather than replaces', () => {
     ).toHaveLength(1);
   });
 
+  it('a call BEFORE an initialized `var` still reaches the real loader', () => {
+    // `var` hoists the binding but assigns its value where it is written, so
+    // until that line runs the CommonJS wrapper's `require` is what a call
+    // reaches. Verified under Node.
+    expect(
+      findBannedTestRunnerImports("require('bun:test');\nvar require = custom;\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a self-referential initializer evaluates its right-hand side with the real loader', () => {
+    expect(findBannedTestRunnerImports("var require = require('bun:test');\n")).toHaveLength(1);
+  });
+
+  it('a call BEFORE a `var` for-of header still reaches the real loader', () => {
+    // A `var` loop header assigns on entry, not at hoist time.
+    expect(
+      findBannedTestRunnerImports("require('bun:test');\nfor (var require of loaders) {}\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a call BEFORE a `var` for-in header still reaches the real loader', () => {
+    expect(
+      findBannedTestRunnerImports("require('bun:test');\nfor (var require in obj) {}\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a call inside a `var` for-of body is shadowed', () => {
+    expect(
+      findBannedTestRunnerImports("for (var require of loaders) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a call inside a `var` for-in body is shadowed', () => {
+    expect(
+      findBannedTestRunnerImports("for (var require in obj) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
   it('an initialized `var require = ...` does shadow', () => {
     expect(findBannedTestRunnerImports("var require = load;\nrequire('bun:test');\n")).toHaveLength(
       0,
@@ -674,14 +712,34 @@ describe('findBannedImportsInSvelte', () => {
 });
 
 describe('the unparseable-Svelte fallback ignores commented-out markup', () => {
-  it('does not report a script inside an HTML comment when the parser fails', () => {
-    // The markup is deliberately malformed so the Svelte parser rejects it and
-    // the textual fallback runs. That fallback is a regex, so it cannot tell a
-    // commented-out script from an active one without help.
+  it('reports a commented-out script too, deliberately, because the fallback fails closed', () => {
+    // This previously asserted the opposite — that a commented-out script is
+    // not reported — and the masking that made it pass has been removed.
+    //
+    // What it asserted was that the fallback should distinguish comments from
+    // code. It cannot, without Svelte's grammar. The comment above
+    // `parseSvelte` had already named the spelling that breaks a regex attempt
+    // at it, `{'<!--'}` in an expression, and it did: delimiters written
+    // either side of a real script blanked the script, so a genuine banned
+    // import went unreported. The test below pins that.
+    //
+    // The new behaviour is correct because this fallback runs only for a
+    // component Svelte's own parser rejected. Reporting a commented-out script
+    // there costs a clear failure on an already-broken file; missing a real
+    // import costs the ban.
     const component =
       '<script lang="ts">\n  const x = 1;\n</script>\n\n' +
       "<!-- <script>import 'bun:test'</script> -->\n{#if x}\n<p>unclosed\n";
-    expect(findBannedImportsForPath('src/Broken.svelte', component)).toHaveLength(0);
+    expect(findBannedImportsForPath('src/Broken.svelte', component)).toHaveLength(1);
+  });
+
+  it('reports an active script bracketed by expressions that look like comment delimiters', () => {
+    // `{'<!--'}` and `{'-->'}` are Svelte expressions rendering literal text,
+    // not markup comments. Blanking between them hid the real script.
+    const component =
+      "<p>{'<!--'}</p>\n<script lang=\"ts\">\n  import 'bun:test';\n</script>\n" +
+      "<p>{'-->'}</p>\n{#if x}\n<p>unclosed\n";
+    expect(findBannedImportsForPath('src/Bracketed.svelte', component)).toHaveLength(1);
   });
 
   it('still reports an active script in a component the parser rejects', () => {
