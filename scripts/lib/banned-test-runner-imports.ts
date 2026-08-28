@@ -1,3 +1,5 @@
+import ts from 'typescript';
+
 /**
  * Detect `bun:test` imports in source text.
  *
@@ -10,21 +12,40 @@
  *
  * It also catches a form ESLint's own `no-restricted-imports` cannot see: that
  * rule matches static import and export declarations only, so a dynamic
- * `import(...)` of the same specifier reports nothing under plain ESLint.
- * Note the limitation is ESLint's specifically — oxlint 1.78 *does* flag the
- * dynamic form, so the eleven oxlint-backed workspaces are already covered
- * there. It is the eslint-only `scripts/` workspace, plus every unlinted path,
- * that needs this backstop for dynamic imports.
+ * `import(...)` reports nothing under plain ESLint. The limitation is ESLint's
+ * specifically — oxlint 1.78 does flag the dynamic form — so the eleven
+ * oxlint-backed workspaces are already covered there, and the gap this
+ * backstop fills is the eslint-only `scripts/` workspace plus every unlinted
+ * path.
  *
- * Pure by design — all filesystem access lives in the script, so these rules
- * stay covered by the 100% gate.
+ * **This parses rather than pattern-matches, deliberately.** The previous
+ * implementation was a set of regular expressions, and review found a new
+ * lexical construct that defeated it in three consecutive rounds: multiline
+ * imports, block comments between tokens, line comments between tokens,
+ * template-literal specifiers, `import(spec, options)` with a second
+ * argument, and a semicolon inside a comment inside a static import. Each fix
+ * was correct and the next construct still slipped through, because a regular
+ * expression cannot decide questions about a lexical grammar. TypeScript's
+ * parser answers all of them by construction, and it is already a dependency.
+ *
+ * One deliberate behaviour changed with the rewrite, recorded rather than
+ * dropped silently: the regex version reported import syntax appearing inside
+ * a *comment*, and its own doc argued that was correct because a false
+ * positive someone can rephrase beats a false negative nobody learns about.
+ * That trade only existed because the matcher could not tell code from
+ * commentary. A parser can, so there is no longer a false negative to trade
+ * against, and a comment mentioning an import is no longer reported. The same
+ * change removes the need for the allowlist the old check carried: this
+ * module's own tests hold import syntax inside string literals, which a
+ * parser correctly does not treat as imports, so **no file is excluded from
+ * the scan at all.**
  */
 
 /** A banned import found in one file. */
 export type BannedImport = {
   /** 1-indexed line the import begins on. */
   line: number;
-  /** The matched text, trimmed and flattened, for the failure report. */
+  /** The import's own source text, flattened to one line for the report. */
   text: string;
   /** Which import form matched, so the report can explain the rule's reach. */
   form: 'static' | 'dynamic' | 'require';
@@ -32,130 +53,120 @@ export type BannedImport = {
 
 /**
  * The banned specifier, assembled at runtime rather than written as one
- * literal.
- *
- * This module is scanned by the very check it backs. Writing the specifier
- * next to import syntax — which the patterns below unavoidably do — would make
- * this file match itself, and the only escape would be an allowlist. An
- * allowlist in a check whose entire purpose is preventing recurrence is a hole
- * in that purpose, so the source simply never contains the two halves
- * adjacent.
+ * literal, so this module and its tests are not themselves reported. With a
+ * parser this is belt-and-braces rather than load-bearing, but it costs
+ * nothing and keeps the file readable next to its own subject.
  */
 const BANNED_SPECIFIER = ['bun', 'test'].join(':');
 
-/** The specifier as it appears inside quotes, ready for a pattern. */
-const QUOTED_SPECIFIER = `['"]${BANNED_SPECIFIER}['"]`;
-
-/**
- * What may sit between tokens: whitespace, a block comment, or a line comment.
- *
- * `import/*c* /('bun:test')` and `import(// reason\n'bun:test')` are both valid
- * JavaScript, and a matcher allowing only `\s*` between the keyword and the
- * parenthesis lets either through — a bypass in a check whose whole job is
- * that it cannot be bypassed.
- *
- * Note this only ever *adds* detections. It is the opposite of stripping
- * comments before matching, which would risk a `//` inside a string
- * truncating a line and hiding a real import after it.
- */
-const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*`;
-
-/**
- * The body of a static import between the keyword and `from`.
- *
- * Newlines are deliberately allowed. A formatter routinely produces
- * `import {\n  describe,\n  test,\n} from '...'`, and a matcher anchored on
- * `[^;\n]` stops at the first newline and reports success on exactly the
- * multiline form most likely to appear. Semicolons are still excluded, so the
- * body cannot run past the end of the statement into an unrelated one.
- */
-const STATIC_BODY = String.raw`[^;]*?`;
-
-const IMPORT_PATTERNS: ReadonlyArray<{ form: BannedImport['form']; pattern: RegExp }> = [
-  // Named, default, namespace, type-only, and re-export forms, single or
-  // multiline.
-  {
-    form: 'static',
-    pattern: new RegExp(
-      String.raw`(?<![\w.])(?:import|export)\b${STATIC_BODY}\bfrom${GAP}${QUOTED_SPECIFIER}`,
-      'g',
-    ),
-  },
-  // Bare side-effect import.
-  {
-    form: 'static',
-    pattern: new RegExp(String.raw`(?<![\w.])import${GAP}${QUOTED_SPECIFIER}`, 'g'),
-  },
-  // Dynamic import — the form plain ESLint cannot see at all.
-  {
-    form: 'dynamic',
-    pattern: new RegExp(String.raw`(?<![\w.])import${GAP}\(${GAP}${QUOTED_SPECIFIER}${GAP}\)`, 'g'),
-  },
-  {
-    form: 'require',
-    pattern: new RegExp(
-      String.raw`(?<![\w.])require${GAP}\(${GAP}${QUOTED_SPECIFIER}${GAP}\)`,
-      'g',
-    ),
-  },
-];
-
-/** Collapse a possibly-multiline match into one readable report line. */
+/** Collapse a possibly-multiline node into one readable report line. */
 function flatten(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
 /**
- * Deterministic string ordering.
+ * The literal value of a module specifier, or undefined when the specifier is
+ * not a compile-time constant.
  *
- * Not `localeCompare`: its result depends on the runtime's locale, so the same
- * two findings could be reported in a different order on a developer machine
- * than in CI. `AGENTS.md` requires deterministic comparisons in runtime logic
- * for exactly this reason.
+ * Accepts a no-substitution template literal as well as a quoted string:
+ * `import(`bun:test`)` is valid and loads the same module. A specifier built
+ * at runtime (a variable, or a template with substitutions) is deliberately
+ * not matched — its value is not knowable here, and guessing would produce
+ * findings nobody can act on.
  */
-function compareText(first: string, second: string): number {
-  if (first < second) return -1;
-  if (first > second) return 1;
-  return 0;
+function constantSpecifier(node: ts.Node | undefined): string | undefined {
+  if (node === undefined) return undefined;
+  if (ts.isStringLiteralLike(node)) return node.text;
+  return undefined;
 }
 
 /**
  * Returns every `bun:test` import in `contents`, in line order.
  *
- * A file with no violations returns an empty array, which is what the caller
- * treats as passing — an empty result must never be conflated with "not
- * scanned", so the script counts scanned files separately.
+ * `lineOffset` shifts reported line numbers, so a `<script>` block extracted
+ * from a Svelte component reports lines in the coordinates of the original
+ * file rather than of the extracted fragment.
  */
-export function findBannedTestRunnerImports(contents: string): BannedImport[] {
+export function findBannedTestRunnerImports(contents: string, lineOffset = 0): BannedImport[] {
+  const sourceFile = ts.createSourceFile(
+    'scanned.ts',
+    contents,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+  );
+
   const found: BannedImport[] = [];
-  const seen = new Set<string>();
 
-  for (const { form, pattern } of IMPORT_PATTERNS) {
-    // `lastIndex` is shared state on a module-scope global regex; reset it so
-    // one file's scan cannot start partway through because of the previous
-    // file's match position.
-    pattern.lastIndex = 0;
+  const record = (node: ts.Node, form: BannedImport['form']): void => {
+    const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+    found.push({ line: line + 1 + lineOffset, text: flatten(node.getText(sourceFile)), form });
+  };
 
-    for (const match of contents.matchAll(pattern)) {
-      const index = match.index ?? 0;
-      // Two patterns can cover the same span (a bare import is a prefix of no
-      // other form, but keeping this explicit means adding a pattern later
-      // cannot silently double-report).
-      const key = `${index}:${match[0].length}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      found.push({
-        line: contents.slice(0, index).split('\n').length,
-        text: flatten(match[0]),
-        form,
-      });
+  const visit = (node: ts.Node): void => {
+    // `import ... from '...'` and `import '...'`, including `import type`.
+    if (ts.isImportDeclaration(node)) {
+      if (constantSpecifier(node.moduleSpecifier) === BANNED_SPECIFIER) record(node, 'static');
     }
+    // `export ... from '...'`.
+    else if (ts.isExportDeclaration(node)) {
+      if (constantSpecifier(node.moduleSpecifier) === BANNED_SPECIFIER) record(node, 'static');
+    }
+    // `import('...')`, with or without a second options argument, and
+    // `require('...')`.
+    else if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      if (
+        (isDynamicImport || isRequire) &&
+        constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
+      ) {
+        record(node, isDynamicImport ? 'dynamic' : 'require');
+      }
+    }
+    // `import x = require('...')`, the TypeScript-only form.
+    else if (ts.isImportEqualsDeclaration(node)) {
+      const reference = node.moduleReference;
+      if (
+        ts.isExternalModuleReference(reference) &&
+        constantSpecifier(reference.expression) === BANNED_SPECIFIER
+      ) {
+        record(node, 'require');
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  ts.forEachChild(sourceFile, visit);
+
+  return found.sort((first, second) => first.line - second.line);
+}
+
+/**
+ * Svelte components are not TypeScript, so the parser cannot read one whole.
+ * Their `<script>` blocks are, and that is the only place a component can
+ * import anything.
+ */
+export function findBannedImportsInSvelte(contents: string): BannedImport[] {
+  const found: BannedImport[] = [];
+  const scriptBlock = /<script\b[^>]*>([\s\S]*?)<\/script>/g;
+
+  for (const match of contents.matchAll(scriptBlock)) {
+    const body = match[1];
+    if (body === undefined) continue;
+    const bodyStart = (match.index ?? 0) + match[0].indexOf(body);
+    const lineOffset = contents.slice(0, bodyStart).split('\n').length - 1;
+    found.push(...findBannedTestRunnerImports(body, lineOffset));
   }
 
-  return found.sort(
-    (first, second) => first.line - second.line || compareText(first.text, second.text),
-  );
+  return found.sort((first, second) => first.line - second.line);
+}
+
+/** Dispatch to the right reader for a path's extension. */
+export function findBannedImportsForPath(path: string, contents: string): BannedImport[] {
+  return path.endsWith('.svelte')
+    ? findBannedImportsInSvelte(contents)
+    : findBannedTestRunnerImports(contents);
 }
 
 /** File extensions whose contents can contain a module import. */

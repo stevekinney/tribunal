@@ -31,7 +31,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { findBannedTestRunnerImports, isScannableFile } from './lib/banned-test-runner-imports';
+import { findBannedImportsForPath, isScannableFile } from './lib/banned-test-runner-imports';
 import { resolveRepositoryRoot } from './lib/repository-root';
 
 const repositoryRoot = resolveRepositoryRoot();
@@ -44,8 +44,15 @@ const repositoryRoot = resolveRepositoryRoot();
  */
 const GIT_TIMEOUT_MS = 30_000;
 
-/** The only excluded path — see the comment on FIXTURE_FILE below. */
-const FIXTURE_FILE = join('scripts', 'lib', 'banned-test-runner-imports.test.ts');
+/**
+ * No path is excluded from this scan.
+ *
+ * The regex implementation needed an allowlist for its own test file, whose
+ * fixtures are necessarily real-looking import syntax — and an allowlist in a
+ * check whose purpose is preventing recurrence is a hole in that purpose. The
+ * parser removed the need: those fixtures are string literals, which are not
+ * imports, so nothing has to be exempted.
+ */
 
 type SourceEntry = {
   /** Repository-relative path, as git reports it. */
@@ -171,7 +178,7 @@ function readIndexBlobs(blobs: readonly string[]): Map<string, string> {
 }
 
 function main(): void {
-  const entries = collectSourceEntries().filter((entry) => entry.path !== FIXTURE_FILE);
+  const entries = collectSourceEntries();
   const blobContents = readIndexBlobs(
     entries.map((entry) => entry.blob).filter((blob): blob is string => blob !== undefined),
   );
@@ -180,7 +187,22 @@ function main(): void {
   let scannedCount = 0;
 
   for (const entry of entries) {
-    let contents: string;
+    // Both the staged blob and the working copy are scanned, and the two
+    // differ in ways that each matter:
+    //
+    // - The **index** is what git will commit. With a partially staged file
+    //   whose staged version imports the banned runner and whose worktree
+    //   version was already corrected, reading only the worktree passes the
+    //   pre-commit hook while the banned blob lands in the commit.
+    // - The **worktree** is what a developer is actually running. With an
+    //   unstaged edit under an unlinted path, reading only the index lets
+    //   `bun run verify` report success on a tree that imports the banned
+    //   runner right now.
+    //
+    // Scanning both removes the need for a mode flag, and with it the chance
+    // of invoking the check the wrong way for the context.
+    const sources: { label: string; contents: string }[] = [];
+
     if (entry.blob !== undefined) {
       const staged = blobContents.get(entry.blob);
       // A tracked path whose blob git would not hand back is a real problem
@@ -192,20 +214,37 @@ function main(): void {
         );
         process.exit(1);
       }
-      contents = staged;
-    } else {
-      try {
-        contents = readFileSync(join(repositoryRoot, entry.path), 'utf-8');
-      } catch {
-        // An untracked path can disappear between listing and reading.
-        continue;
-      }
+      sources.push({ label: 'staged', contents: staged });
     }
 
+    let worktree: string | undefined;
+    try {
+      worktree = readFileSync(join(repositoryRoot, entry.path), 'utf-8');
+    } catch {
+      // Staged deletions and files removed between listing and reading.
+      worktree = undefined;
+    }
+    // Only worth scanning separately when it differs from what is staged.
+    if (worktree !== undefined && worktree !== sources[0]?.contents) {
+      sources.push({
+        label: entry.blob === undefined ? 'untracked' : 'working tree',
+        contents: worktree,
+      });
+    }
+
+    if (sources.length === 0) continue;
     scannedCount += 1;
 
-    for (const found of findBannedTestRunnerImports(contents)) {
-      failures.push(`${entry.path}:${found.line} (${found.form} import) — ${found.text}`);
+    const reported = new Set<string>();
+    for (const source of sources) {
+      for (const found of findBannedImportsForPath(entry.path, source.contents)) {
+        const key = `${found.line}:${found.form}:${found.text}`;
+        if (reported.has(key)) continue;
+        reported.add(key);
+        failures.push(
+          `${entry.path}:${found.line} (${found.form} import, ${source.label}) — ${found.text}`,
+        );
+      }
     }
   }
 
@@ -228,13 +267,13 @@ function main(): void {
       "\nTribunal's test runner is vitest. Import from 'vitest' instead — `describe`, `expect`, `test`, and `it` have the same names, and `mock()`/`spyOn()` become `vi.fn()`/`vi.spyOn()`.",
     );
     console.error(
-      'Tracked files are read from the git index, so a staged import is reported even when the working copy has already been corrected.',
+      'Each finding says whether it came from the staged blob or the working copy; both are scanned, because they are not always the same file.',
     );
     process.exit(1);
   }
 
   console.log(
-    `validate:test-runner-imports passed (${scannedCount} source file(s) scanned from the index, no bun:test imports).`,
+    `validate:test-runner-imports passed (${scannedCount} source file(s) scanned, staged and working copies, no bun:test imports).`,
   );
 }
 
