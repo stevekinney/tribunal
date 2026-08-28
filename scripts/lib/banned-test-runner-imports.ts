@@ -79,12 +79,33 @@ function flatten(text: string): string {
  * not matched — its value is not knowable here, and guessing would produce
  * findings nobody can act on.
  */
+/**
+ * Strip the wrappers that change a node's shape without changing what it
+ * means: grouping parentheses, and TypeScript's assertion forms, all of which
+ * are erased before anything runs.
+ *
+ * One helper rather than a check at each call site, because the previous round
+ * fixed parentheses on the *specifier* and left them unhandled on the
+ * *callee*, and left assertions unhandled in both positions. Transparency is a
+ * property of the node, not of where it happens to appear, so it is answered
+ * once here and reused everywhere a node's identity matters.
+ */
+function unwrapTransparent(node: ts.Node): ts.Node {
+  let current = node;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) current = current.expression;
+    // `x as const`, `<T>x`, `x satisfies T`, `x!` — all erased at compile time.
+    else if (ts.isAsExpression(current)) current = current.expression;
+    else if (ts.isTypeAssertionExpression(current)) current = current.expression;
+    else if (ts.isSatisfiesExpression(current)) current = current.expression;
+    else if (ts.isNonNullExpression(current)) current = current.expression;
+    else return current;
+  }
+}
+
 function constantSpecifier(node: ts.Node | undefined): string | undefined {
   if (node === undefined) return undefined;
-  // `import(('bun:test'))` is the same import as `import('bun:test')`;
-  // parentheses are transparent to meaning but are a node in the tree.
-  let current: ts.Node = node;
-  while (ts.isParenthesizedExpression(current)) current = current.expression;
+  const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
   return undefined;
 }
@@ -132,7 +153,11 @@ export function findBannedTestRunnerImports(
     // `import('...')`, with or without a second options argument, and
     // `require('...')`.
     else if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      // `(require)('bun:test')` and `(module.require)('bun:test')` call the
+      // same loaders; grouping around the callee is as transparent as grouping
+      // around the argument.
+      const callee = unwrapTransparent(node.expression);
+      const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
       // The three receivers that are actually module loaders: a bare
       // `require(...)`, CommonJS's `module.require(...)`, and Bun's
       // `import.meta.require(...)`.
@@ -142,18 +167,19 @@ export function findBannedTestRunnerImports(
       // that `options.require('...')` and `config.require('...')` stay
       // unreported.
       const isRequire =
-        (ts.isIdentifier(node.expression) && node.expression.text === 'require') ||
-        (ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === 'require' &&
-          ((ts.isIdentifier(node.expression.expression) &&
-            node.expression.expression.text === 'module') ||
+        (ts.isIdentifier(callee) && callee.text === 'require') ||
+        (ts.isPropertyAccessExpression(callee) &&
+          callee.name.text === 'require' &&
+          ((ts.isIdentifier(unwrapTransparent(callee.expression)) &&
+            (unwrapTransparent(callee.expression) as ts.Identifier).text === 'module') ||
             // `import.meta` specifically. `ts.isMetaProperty` alone is also
             // true for `new.target`, and `new.target.require(...)` is a method
             // on an arbitrary object, which the surrounding predicate
             // deliberately does not treat as a loader.
-            (ts.isMetaProperty(node.expression.expression) &&
-              node.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
-              node.expression.expression.name.text === 'meta')));
+            (ts.isMetaProperty(unwrapTransparent(callee.expression)) &&
+              (unwrapTransparent(callee.expression) as ts.MetaProperty).keywordToken ===
+                ts.SyntaxKind.ImportKeyword &&
+              (unwrapTransparent(callee.expression) as ts.MetaProperty).name.text === 'meta')));
       if (
         (isDynamicImport || isRequire) &&
         constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
@@ -215,11 +241,20 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
   try {
     root = parseSvelte(contents, { modern: true }) as SvelteRoot;
   } catch {
-    // A component that does not parse cannot be analysed. Falling back to
-    // scanning the whole file as TypeScript would produce nonsense findings;
-    // reporting nothing is honest, and such a file fails Svelte's own build
-    // anyway.
-    return [];
+    // Never return "clean" here.
+    //
+    // The previous version did, on the reasoning that a component which does
+    // not parse fails Svelte's own build. That reasoning was wrong:
+    // `applications/web/svelte.config.js` enables `vitePreprocess()`, so a
+    // component can legitimately require preprocessing before Svelte's parser
+    // accepts it while still building perfectly well. Silently reporting
+    // nothing for such a file is a false negative in a ban.
+    //
+    // Falling back to extracting `<script>` blocks textually is less precise
+    // than the real parser — a commented-out block would be reported — but it
+    // fails closed, and a false positive on a component the parser could not
+    // read is much cheaper than missing a real import in one.
+    return findBannedImportsInUnparseableSvelte(contents);
   }
 
   const found: BannedImport[] = [];
@@ -231,6 +266,23 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
     found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
   }
 
+  return found.sort((first, second) => first.line - second.line);
+}
+
+/**
+ * Last-resort reader for a component Svelte's own parser rejected. Extracts
+ * `<script>` blocks textually and parses each as TypeScript, so an import is
+ * still found rather than silently missed.
+ */
+function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] {
+  const found: BannedImport[] = [];
+  for (const match of contents.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
+    const body = match[1];
+    if (body === undefined) continue;
+    const bodyStart = (match.index ?? 0) + match[0].indexOf(body);
+    const lineOffset = contents.slice(0, bodyStart).split('\n').length - 1;
+    found.push(...findBannedTestRunnerImports(body, lineOffset));
+  }
   return found.sort((first, second) => first.line - second.line);
 }
 

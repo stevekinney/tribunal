@@ -116,6 +116,44 @@ describe('findBannedTestRunnerImports', () => {
     );
   });
 
+  /**
+   * Transparency is a property of the node, not of where it appears. The
+   * previous round handled parentheses on the specifier only, leaving them
+   * unhandled on the callee and leaving assertions unhandled in both
+   * positions.
+   */
+  it('unwraps every transparent wrapper, in both positions', () => {
+    // Around the specifier.
+    for (const source of [
+      "await import('bun:test' as const);",
+      "await import('bun:test' as string);",
+      "require('bun:test' as const);",
+      "await import(<string>'bun:test');",
+      "await import('bun:test' satisfies string);",
+      "await import('bun:test'!);",
+    ]) {
+      expect(findBannedTestRunnerImports(source), source).toHaveLength(1);
+    }
+
+    // Around the callee.
+    for (const source of [
+      "(require)('bun:test');",
+      "(module.require)('bun:test');",
+      "((require))('bun:test');",
+      "(import.meta.require)('bun:test');",
+    ]) {
+      expect(findBannedTestRunnerImports(source), source).toHaveLength(1);
+    }
+
+    // Both at once.
+    expect(findBannedTestRunnerImports("(require)(('bun:test') as const);")).toHaveLength(1);
+  });
+
+  it('still refuses a non-loader callee however it is wrapped', () => {
+    expect(findBannedTestRunnerImports("(options.require)('bun:test');")).toEqual([]);
+    expect(findBannedTestRunnerImports("(new.target.require)('bun:test');")).toEqual([]);
+  });
+
   it('unwraps parenthesized specifiers, which are semantically transparent', () => {
     expect(findBannedTestRunnerImports("await import(('bun:test'));")).toHaveLength(1);
     expect(findBannedTestRunnerImports("require(('bun:test'));")).toHaveLength(1);
@@ -261,8 +299,20 @@ describe('findBannedImportsInSvelte', () => {
     expect(found[0]?.line).toBe(3);
   });
 
-  it('returns nothing for a component that does not parse', () => {
-    expect(findBannedImportsInSvelte('<script>{{{ unclosed')).toEqual([]);
+  /**
+   * A component the parser rejects must never be reported as clean. The
+   * earlier version returned an empty result on the reasoning that such a file
+   * fails Svelte's own build — which is wrong, because `vitePreprocess()`
+   * means a component can legitimately need preprocessing before Svelte's
+   * parser accepts it while building fine.
+   */
+  it('falls back to textual script extraction when the parser rejects a component', () => {
+    // Malformed markup Svelte's parser will not accept, with a real import
+    // inside a script block.
+    const contents = ['<div <<<>', '<script>', "  import 'bun:test';", '</script>'].join('\n');
+    const found = findBannedImportsInSvelte(contents);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.line).toBe(3);
   });
 
   it('treats comment delimiters inside a script as data, not as a comment', () => {
