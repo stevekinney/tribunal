@@ -116,6 +116,24 @@ describe('findBannedTestRunnerImports', () => {
     );
   });
 
+  it('unwraps parenthesized specifiers, which are semantically transparent', () => {
+    expect(findBannedTestRunnerImports("await import(('bun:test'));")).toHaveLength(1);
+    expect(findBannedTestRunnerImports("require(('bun:test'));")).toHaveLength(1);
+    expect(findBannedTestRunnerImports("await import((('bun:test')));")).toHaveLength(1);
+  });
+
+  it("catches TypeScript's import-type expression", () => {
+    const found = findBannedTestRunnerImports("type T = import('bun:test').Mock;");
+    expect(found).toHaveLength(1);
+    expect(found[0]?.form).toBe('static');
+  });
+
+  it('does not treat new.target.require as a loader', () => {
+    // `ts.isMetaProperty` is true for `new.target` as well as `import.meta`,
+    // so the receiver check has to name the keyword, not just the node kind.
+    expect(findBannedTestRunnerImports("new.target.require('bun:test');")).toEqual([]);
+  });
+
   it('reports each occurrence in line order', () => {
     const contents = [
       "import { test } from 'bun:test';",
@@ -228,6 +246,25 @@ describe('findBannedImportsInSvelte', () => {
    * swallows the live import between them. A comment is markup, so `<!--`
    * inside a script opens nothing.
    */
+  it('treats comment delimiters inside a Svelte expression as markup, not a comment', () => {
+    // `{'<!--'}` is an expression rendering a string, not a comment opener.
+    // The hand-rolled scan read it as one and skipped past the real script.
+    const contents = [
+      "<p>{'<!--'}</p>",
+      '<script>',
+      "  import 'bun:test';",
+      '</script>',
+      "<p>{'-->'}</p>",
+    ].join('\n');
+    const found = findBannedImportsInSvelte(contents);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.line).toBe(3);
+  });
+
+  it('returns nothing for a component that does not parse', () => {
+    expect(findBannedImportsInSvelte('<script>{{{ unclosed')).toEqual([]);
+  });
+
   it('treats comment delimiters inside a script as data, not as a comment', () => {
     const contents = [
       '<script>',

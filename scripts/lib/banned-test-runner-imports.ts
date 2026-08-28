@@ -1,4 +1,9 @@
 import ts from 'typescript';
+import { parse as parseSvelte } from 'svelte/compiler';
+
+/** The parts of Svelte's AST this module reads. */
+type SvelteScript = { content: { start: number; end: number } };
+type SvelteRoot = { instance?: SvelteScript | null; module?: SvelteScript | null };
 
 /**
  * Detect `bun:test` imports in source text.
@@ -76,7 +81,11 @@ function flatten(text: string): string {
  */
 function constantSpecifier(node: ts.Node | undefined): string | undefined {
   if (node === undefined) return undefined;
-  if (ts.isStringLiteralLike(node)) return node.text;
+  // `import(('bun:test'))` is the same import as `import('bun:test')`;
+  // parentheses are transparent to meaning but are a node in the tree.
+  let current: ts.Node = node;
+  while (ts.isParenthesizedExpression(current)) current = current.expression;
+  if (ts.isStringLiteralLike(current)) return current.text;
   return undefined;
 }
 
@@ -138,12 +147,31 @@ export function findBannedTestRunnerImports(
           node.expression.name.text === 'require' &&
           ((ts.isIdentifier(node.expression.expression) &&
             node.expression.expression.text === 'module') ||
-            ts.isMetaProperty(node.expression.expression)));
+            // `import.meta` specifically. `ts.isMetaProperty` alone is also
+            // true for `new.target`, and `new.target.require(...)` is a method
+            // on an arbitrary object, which the surrounding predicate
+            // deliberately does not treat as a loader.
+            (ts.isMetaProperty(node.expression.expression) &&
+              node.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+              node.expression.expression.name.text === 'meta')));
       if (
         (isDynamicImport || isRequire) &&
         constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
       ) {
         record(node, isDynamicImport ? 'dynamic' : 'require');
+      }
+    }
+    // `type T = import('...').X`, TypeScript's import-type expression. It is
+    // neither a declaration nor a call, so nothing above sees it — and the
+    // equivalent `import type { X } from '...'` is already banned, so missing
+    // this would leave an inconsistent rule.
+    else if (ts.isImportTypeNode(node)) {
+      const argument = node.argument;
+      if (
+        ts.isLiteralTypeNode(argument) &&
+        constantSpecifier(argument.literal) === BANNED_SPECIFIER
+      ) {
+        record(node, 'static');
       }
     }
     // `import x = require('...')`, the TypeScript-only form.
@@ -171,47 +199,36 @@ export function findBannedTestRunnerImports(
  * import anything.
  */
 export function findBannedImportsInSvelte(contents: string): BannedImport[] {
+  // Svelte's own parser, not a hand-rolled scan.
+  //
+  // Three consecutive review rounds found a lexical context the hand-rolled
+  // version got wrong: comment delimiters as string data inside a script,
+  // then the same delimiters inside a Svelte expression (`{'<!--'}`) in
+  // markup. Attribute strings would have been next. Deciding which `<!--` is
+  // a comment and which `<script>` is real requires knowing Svelte's grammar,
+  // and re-deriving that grammar incrementally from review feedback is the
+  // same mistake this module already made once with regular expressions.
+  //
+  // `svelte` is already a dependency of this repository at the same version
+  // `applications/web` pins.
+  let root: SvelteRoot;
+  try {
+    root = parseSvelte(contents, { modern: true }) as SvelteRoot;
+  } catch {
+    // A component that does not parse cannot be analysed. Falling back to
+    // scanning the whole file as TypeScript would produce nonsense findings;
+    // reporting nothing is honest, and such a file fails Svelte's own build
+    // anyway.
+    return [];
+  }
+
   const found: BannedImport[] = [];
 
-  // Walked left to right rather than matched with two independent regular
-  // expressions, because the two questions are entangled: which script blocks
-  // are real depends on where the comments are, and which `<!--` are comments
-  // depends on where the script blocks are.
-  //
-  // Blanking every `<!-- ... -->` span first — the previous approach — gets
-  // that backwards. `"<!--"` is a perfectly ordinary string inside a script,
-  // so a component holding that literal, then a live `import`, then `"-->"`
-  // had its real import blanked away and reported nothing. A false negative
-  // is the dangerous direction for a ban, and it was introduced by the fix for
-  // a false positive.
-  //
-  // Scanning in order resolves it: a comment is markup, so `<!--` only opens
-  // one when we are not already inside a script block.
-  const scriptOpen = /<script\b[^>]*>/giy;
-  let index = 0;
-
-  while (index < contents.length) {
-    if (contents.startsWith('<!--', index)) {
-      const close = contents.indexOf('-->', index + 4);
-      index = close === -1 ? contents.length : close + 3;
-      continue;
-    }
-
-    if (contents[index] === '<') {
-      scriptOpen.lastIndex = index;
-      const opening = scriptOpen.exec(contents);
-      if (opening !== null) {
-        const bodyStart = index + opening[0].length;
-        const bodyEnd = contents.indexOf('</script', bodyStart);
-        const end = bodyEnd === -1 ? contents.length : bodyEnd;
-        const lineOffset = contents.slice(0, bodyStart).split('\n').length - 1;
-        found.push(...findBannedTestRunnerImports(contents.slice(bodyStart, end), lineOffset));
-        index = end;
-        continue;
-      }
-    }
-
-    index += 1;
+  for (const script of [root.instance, root.module]) {
+    if (!script) continue;
+    const { start, end } = script.content;
+    const lineOffset = contents.slice(0, start).split('\n').length - 1;
+    found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
   }
 
   return found.sort((first, second) => first.line - second.line);

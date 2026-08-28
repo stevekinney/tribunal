@@ -132,9 +132,17 @@ function collectSourceEntries(): SourceEntry[] {
     const tabIndex = record.indexOf('\t');
     if (tabIndex === -1) continue;
 
-    const [, blob, stage] = record.slice(0, tabIndex).split(' ');
+    const [mode, blob, stage] = record.slice(0, tabIndex).split(' ');
     const path = record.slice(tabIndex + 1);
     if (!isCandidatePath(path) || blob === undefined) continue;
+
+    // Mode 160000 is a gitlink: a submodule, whose index entry names a commit
+    // rather than a blob. Asking `cat-file --batch` for it returns a `commit`
+    // object, and a submodule at an extensionless path (`vendor/tool`) is
+    // admitted as a candidate by the shebang rule — so without this the batch
+    // would carry an object that is not a blob. There is nothing to scan in a
+    // gitlink; the submodule's own repository is where its source lives.
+    if (mode === '160000') continue;
 
     // Stage 0 is the ordinary, unconflicted entry. During a merge conflict a
     // path instead has stages 1-3; taking the first seen would arbitrarily
@@ -179,13 +187,20 @@ function readIndexBlobs(blobs: readonly string[]): Map<string, string> {
     if (headerEnd === -1) break;
 
     const [sha, type, sizeText] = decoder.decode(output.subarray(offset, headerEnd)).split(' ');
-    if (sha === undefined || type !== 'blob' || sizeText === undefined) break;
+    if (sha === undefined || sizeText === undefined) break;
 
     const size = Number.parseInt(sizeText, 10);
     if (!Number.isFinite(size)) break;
 
     const bodyStart = headerEnd + 1;
-    contents.set(sha, decoder.decode(output.subarray(bodyStart, bodyStart + size)));
+    // Consume every response, but only keep blobs. Aborting on the first
+    // non-blob would discard every remaining entry in the batch — one
+    // unexpected object type would silently stop the scan partway through
+    // and, because the caller treats a missing blob as a bug, fail the whole
+    // gate. Skipping past it keeps the parser synchronised.
+    if (type === 'blob') {
+      contents.set(sha, decoder.decode(output.subarray(bodyStart, bodyStart + size)));
+    }
     offset = bodyStart + size + 1;
   }
 
