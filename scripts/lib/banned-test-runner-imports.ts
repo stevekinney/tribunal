@@ -107,6 +107,17 @@ function constantSpecifier(node: ts.Node | undefined): string | undefined {
   if (node === undefined) return undefined;
   const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
+
+  // `import('bun:' + 'test')` names the same module as `import('bun:test')`.
+  // Only `+` over operands that are themselves constant is folded — anything
+  // involving a variable is not knowable here, and guessing would produce
+  // findings nobody can act on.
+  if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = constantSpecifier(current.left);
+    const right = constantSpecifier(current.right);
+    if (left !== undefined && right !== undefined) return left + right;
+  }
+
   return undefined;
 }
 
@@ -144,42 +155,87 @@ function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | un
  * this false positive for a false negative.
  */
 function isLocallyShadowed(node: ts.Node, name: string): boolean {
-  const declaresName = (candidate: ts.Node): boolean => {
+  /** A binding introduced by this node, if it names `name`. */
+  const bindsName = (candidate: ts.Node): boolean =>
+    (ts.isVariableDeclaration(candidate) ||
+      ts.isFunctionDeclaration(candidate) ||
+      ts.isParameter(candidate) ||
+      ts.isClassDeclaration(candidate) ||
+      ts.isImportSpecifier(candidate) ||
+      ts.isImportClause(candidate)) &&
+    candidate.name !== undefined &&
+    ts.isIdentifier(candidate.name) &&
+    candidate.name.text === name;
+
+  /**
+   * Declarations written directly in this scope's own statement list.
+   *
+   * Deliberately does not descend into a nested block: `let`, `const`, and
+   * `class` are block-scoped, so `{ const require = x; }` binds nothing
+   * outside its braces. Treating it as a shadow let a genuine loader call
+   * after such a block go unreported — a false negative introduced by the
+   * previous round's fix for the opposite problem.
+   */
+  const declaredDirectlyIn = (scope: ts.Node): boolean => {
     let found = false;
-    const check = (child: ts.Node): void => {
+    const statements = ts.isSourceFile(scope)
+      ? scope.statements
+      : ts.isBlock(scope)
+        ? scope.statements
+        : ts.isFunctionLike(scope) && scope.body !== undefined && ts.isBlock(scope.body)
+          ? scope.body.statements
+          : undefined;
+
+    if (ts.isFunctionLike(scope)) {
+      for (const parameter of scope.parameters) if (bindsName(parameter)) found = true;
+    }
+    for (const statement of statements ?? []) {
+      if (bindsName(statement)) found = true;
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (bindsName(declaration)) found = true;
+        }
+      }
+    }
+    return found;
+  };
+
+  /**
+   * `var` is function-scoped, so one written inside a nested block still binds
+   * across the whole function. Searched separately, and **only** for `var`.
+   *
+   * Function declarations deliberately excluded: in a module (and anywhere
+   * strict), a function declared inside a block is block-scoped like `let`,
+   * not hoisted out of it — verified by running
+   * `{ function f(){} } f()` under Node, which throws `ReferenceError`.
+   * Treating them as hoisted would have made a function declared in an
+   * unrelated block shadow a genuine loader call outside it. Declarations at
+   * the scope's own level are already handled by `declaredDirectlyIn`.
+   */
+  const hoistedVarIn = (scope: ts.Node): boolean => {
+    let found = false;
+    const visit = (child: ts.Node): void => {
       if (found) return;
+      // A nested function has its own hoisting scope.
+      if (child !== scope && ts.isFunctionLike(child)) return;
       if (
-        (ts.isVariableDeclaration(child) ||
-          ts.isFunctionDeclaration(child) ||
-          ts.isParameter(child) ||
-          ts.isClassDeclaration(child) ||
-          ts.isImportSpecifier(child) ||
-          ts.isImportClause(child)) &&
-        child.name !== undefined &&
-        ts.isIdentifier(child.name) &&
-        child.name.text === name
+        ts.isVariableStatement(child) &&
+        (child.declarationList.flags & ts.NodeFlags.BlockScoped) === 0
       ) {
-        found = true;
-        return;
+        for (const declaration of child.declarationList.declarations) {
+          if (bindsName(declaration)) found = true;
+        }
       }
-      // Do not descend into a nested function at all. Its parameters and
-      // locals belong to its own scope, not to this one — checking them here
-      // made a nested `function helper(require)` shadow a genuine top-level
-      // `require(...)` call, which is a false negative rather than the false
-      // positive this function exists to prevent.
-      if (child !== candidate && (ts.isFunctionLike(child) || ts.isModuleDeclaration(child))) {
-        return;
-      }
-      ts.forEachChild(child, check);
+      ts.forEachChild(child, visit);
     };
-    ts.forEachChild(candidate, check);
-    if (ts.isFunctionLike(candidate)) candidate.parameters?.forEach(check);
+    ts.forEachChild(scope, visit);
     return found;
   };
 
   for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
-    if (ts.isFunctionLike(scope) || ts.isBlock(scope) || ts.isSourceFile(scope)) {
-      if (declaresName(scope)) return true;
+    if (ts.isBlock(scope) || ts.isFunctionLike(scope) || ts.isSourceFile(scope)) {
+      if (declaredDirectlyIn(scope)) return true;
+      if ((ts.isFunctionLike(scope) || ts.isSourceFile(scope)) && hoistedVarIn(scope)) return true;
     }
   }
   return false;

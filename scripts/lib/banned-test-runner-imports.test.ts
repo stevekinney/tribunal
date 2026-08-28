@@ -162,6 +162,60 @@ describe('findBannedTestRunnerImports', () => {
     }
   });
 
+  it('folds constant string concatenation in a specifier', () => {
+    expect(findBannedTestRunnerImports("await import('bun:' + 'test');")).toHaveLength(1);
+    expect(findBannedTestRunnerImports("require('bun' + ':' + 'test');")).toHaveLength(1);
+  });
+
+  it('does not fold a concatenation involving a variable', () => {
+    // Not knowable here, and guessing produces findings nobody can act on.
+    expect(findBannedTestRunnerImports("await import('bun:' + kind);")).toEqual([]);
+  });
+
+  /**
+   * Lexical scoping, done properly. `let`/`const`/`class` are block-scoped;
+   * `var` and function declarations are function-scoped and hoisted. The two
+   * previous attempts at this each got one half right and the other wrong —
+   * first descending into nested functions' parameters, then descending into
+   * unrelated blocks.
+   */
+  describe('shadow resolution follows real scoping rules', () => {
+    it('a block-scoped binding does not shadow a call outside its block', () => {
+      expect(
+        findBannedTestRunnerImports("{ const require = custom; }\nrequire('bun:test');"),
+      ).toHaveLength(1);
+    });
+
+    it('a var in a nested block does shadow, because var hoists', () => {
+      expect(
+        findBannedTestRunnerImports("{ var require = custom; }\nrequire('bun:test');"),
+      ).toEqual([]);
+    });
+
+    it('a function declared in a block does not shadow outside it', () => {
+      // In a module, a block-scoped function declaration is not hoisted out of
+      // its block — verified against Node, where `{ function f(){} } f()`
+      // throws ReferenceError. Only `var` hoists.
+      expect(
+        findBannedTestRunnerImports("{ function require(n) { return n; } }\nrequire('bun:test');"),
+      ).toHaveLength(1);
+    });
+
+    it('a nested function parameter does not shadow the enclosing scope', () => {
+      expect(
+        findBannedTestRunnerImports(
+          "function helper(require) { return require; }\nrequire('bun:test');",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('a parameter does shadow within its own function', () => {
+      expect(
+        findBannedTestRunnerImports("function f(require) { return require('bun:test'); }"),
+      ).toEqual([]);
+    });
+  });
+
   it('does not report a locally shadowed require or module', () => {
     // These call the file's own code, not a loader, so reporting them would
     // reject a valid commit — and it would contradict the rule that an
