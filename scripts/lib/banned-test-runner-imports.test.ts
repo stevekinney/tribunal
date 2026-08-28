@@ -307,12 +307,32 @@ describe('findBannedImportsInSvelte', () => {
    * parser accepts it while building fine.
    */
   it('falls back to textual script extraction when the parser rejects a component', () => {
-    // Malformed markup Svelte's parser will not accept, with a real import
-    // inside a script block.
+    // `<div <<<>` is verified to make Svelte 5.56.4's parser throw ("`<div>`
+    // was left open"), so this exercises the fallback rather than the parser
+    // path — the two are otherwise indistinguishable here, and a fixture the
+    // parser accepts would let this test pass with the fallback deleted.
     const contents = ['<div <<<>', '<script>', "  import 'bun:test';", '</script>'].join('\n');
     const found = findBannedImportsInSvelte(contents);
     expect(found).toHaveLength(1);
     expect(found[0]?.line).toBe(3);
+  });
+
+  it('orders fallback findings across multiple script blocks', () => {
+    // Two findings, so the ordering actually runs: with one, `Array.sort`
+    // never invokes its comparator and the ordering would be untested — which
+    // is exactly how it slipped past the 100% function-coverage gate.
+    const contents = [
+      '<div <<<>',
+      '<script context="module">',
+      "  import 'bun:test';",
+      '</script>',
+      '<script>',
+      "  const later = require('bun:test');",
+      '</script>',
+    ].join('\n');
+    const found = findBannedImportsInSvelte(contents);
+    expect(found.map((entry) => entry.line)).toEqual([3, 6]);
+    expect(found.map((entry) => entry.form)).toEqual(['static', 'require']);
   });
 
   it('treats comment delimiters inside a script as data, not as a comment', () => {
