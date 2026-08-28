@@ -171,6 +171,7 @@
         "@types/pg": "^8.21.0",
         "change-case": "^5.4.4",
         "drizzle-kit": "^0.31.10",
+        "vitest": "4.0.16",
       },
     },
     "packages/github": {

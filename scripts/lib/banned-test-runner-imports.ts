@@ -87,9 +87,18 @@ function constantSpecifier(node: ts.Node | undefined): string | undefined {
  * from a Svelte component reports lines in the coordinates of the original
  * file rather than of the extracted fragment.
  */
-export function findBannedTestRunnerImports(contents: string, lineOffset = 0): BannedImport[] {
+export function findBannedTestRunnerImports(
+  contents: string,
+  lineOffset = 0,
+  fileName = 'scanned.ts',
+): BannedImport[] {
+  // The file name is what selects the grammar. Parsing a `.tsx` or `.jsx`
+  // file as `.ts` mis-parses every JSX element, and the malformed subtree
+  // contains no call expression — so an import nested inside JSX simply is
+  // not there to find. Passing the real name makes TypeScript choose the
+  // matching `ScriptKind` itself.
   const sourceFile = ts.createSourceFile(
-    'scanned.ts',
+    fileName,
     contents,
     ts.ScriptTarget.Latest,
     /* setParentNodes */ true,
@@ -115,7 +124,16 @@ export function findBannedTestRunnerImports(contents: string, lineOffset = 0): B
     // `require('...')`.
     else if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      // `require(...)` and CommonJS's `module.require(...)`, which Bun honours
+      // as a loader. Deliberately NOT any `<anything>.require(...)`: an
+      // arbitrary object with a `require` method is not a module system, and a
+      // test below pins that `options.require('...')` stays unreported.
+      const isRequire =
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require') ||
+        (ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'require' &&
+          ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === 'module');
       if (
         (isDynamicImport || isRequire) &&
         constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
@@ -151,11 +169,17 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
   const scriptBlock = /<script\b[^>]*>([\s\S]*?)<\/script>/g;
 
-  for (const match of contents.matchAll(scriptBlock)) {
+  // Svelte ignores markup comments entirely, so `<!-- <script>...</script> -->`
+  // is not an active script block and reporting it would reject a commit over
+  // disabled code. Blanked rather than deleted so every remaining offset — and
+  // therefore every reported line number — stays correct.
+  const active = contents.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '));
+
+  for (const match of active.matchAll(scriptBlock)) {
     const body = match[1];
     if (body === undefined) continue;
     const bodyStart = (match.index ?? 0) + match[0].indexOf(body);
-    const lineOffset = contents.slice(0, bodyStart).split('\n').length - 1;
+    const lineOffset = active.slice(0, bodyStart).split('\n').length - 1;
     found.push(...findBannedTestRunnerImports(body, lineOffset));
   }
 
@@ -166,7 +190,7 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
 export function findBannedImportsForPath(path: string, contents: string): BannedImport[] {
   return path.endsWith('.svelte')
     ? findBannedImportsInSvelte(contents)
-    : findBannedTestRunnerImports(contents);
+    : findBannedTestRunnerImports(contents, 0, path);
 }
 
 /** File extensions whose contents can contain a module import. */

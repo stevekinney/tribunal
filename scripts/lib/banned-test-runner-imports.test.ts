@@ -89,6 +89,31 @@ describe('findBannedTestRunnerImports', () => {
     });
   });
 
+  /**
+   * The file name is what selects the grammar. Parsed as `.ts`, a JSX element
+   * mis-parses and the call expression inside it is simply not in the tree,
+   * so an import nested in JSX was invisible in unlinted `.jsx`/`.tsx` files.
+   */
+  it('parses JSX files with the JSX grammar', () => {
+    const jsx = "const view = <div>{import('bun:test')}</div>;";
+    expect(findBannedImportsForPath('component.tsx', jsx)).toHaveLength(1);
+    expect(findBannedImportsForPath('component.jsx', jsx)).toHaveLength(1);
+  });
+
+  it('still parses angle-bracket type assertions in .ts, which .tsx forbids', () => {
+    // Guards against "just parse everything as TSX": this is valid TypeScript
+    // and would be a syntax error under the JSX grammar.
+    expect(
+      findBannedImportsForPath('module.ts', "const x = <string>y; import 'bun:test';"),
+    ).toHaveLength(1);
+  });
+
+  it('catches CommonJS module.require, which Bun honours as a loader', () => {
+    expect(findBannedTestRunnerImports("const t = module.require('bun:test');")[0]?.form).toBe(
+      'require',
+    );
+  });
+
   it('reports each occurrence in line order', () => {
     const contents = [
       "import { test } from 'bun:test';",
@@ -136,7 +161,11 @@ describe('findBannedTestRunnerImports', () => {
   it('does not report other specifiers', () => {
     expect(findBannedTestRunnerImports("import { describe } from 'vitest';")).toEqual([]);
     expect(findBannedTestRunnerImports("import { file } from 'bun:jsc';")).toEqual([]);
+    // Deliberate, and kept when `module.require` was added: an arbitrary
+    // object with a `require` method is not a module system, so only the
+    // `module.require` form is treated as a loader.
     expect(findBannedTestRunnerImports("options.require('bun:test')")).toEqual([]);
+    expect(findBannedTestRunnerImports("config.require('bun:test')")).toEqual([]);
   });
 
   it('returns an empty array for empty input rather than throwing', () => {
@@ -179,6 +208,27 @@ describe('findBannedImportsInSvelte', () => {
 
   it('ignores markup that merely mentions the specifier', () => {
     expect(findBannedImportsInSvelte("<p>never import from 'bun:test'</p>")).toEqual([]);
+  });
+
+  /**
+   * Svelte ignores markup comments entirely, so a commented-out script block
+   * is not active code and rejecting a commit over it would be a false
+   * positive on disabled markup.
+   */
+  it('ignores a script block inside a markup comment', () => {
+    expect(findBannedImportsInSvelte("<!-- <script>import 'bun:test';</script> -->")).toEqual([]);
+  });
+
+  it('keeps line numbers correct for a real block after a commented one', () => {
+    const contents = [
+      "<!-- <script>import 'bun:test';</script> -->",
+      '<script>',
+      "  import 'bun:test';",
+      '</script>',
+    ].join('\n');
+    const found = findBannedImportsInSvelte(contents);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.line).toBe(3);
   });
 });
 
