@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  findBannedTestRunnerImports,
-  isIgnoredPath,
-  isScannableFile,
-} from './banned-test-runner-imports';
+import { findBannedTestRunnerImports, isScannableFile } from './banned-test-runner-imports';
 
 describe('findBannedTestRunnerImports', () => {
   it('catches a named static import', () => {
@@ -21,8 +17,7 @@ describe('findBannedTestRunnerImports', () => {
   });
 
   it('catches a bare side-effect import', () => {
-    const found = findBannedTestRunnerImports("import 'bun:test';\n");
-    expect(found).toHaveLength(1);
+    expect(findBannedTestRunnerImports("import 'bun:test';\n")).toHaveLength(1);
   });
 
   it('catches a re-export', () => {
@@ -32,12 +27,43 @@ describe('findBannedTestRunnerImports', () => {
   });
 
   /**
-   * The reason this module exists alongside the lint rule.
-   * `no-restricted-imports` matches static import and export declarations
-   * only, so this form reports nothing at all under eslint or oxlint —
-   * verified against the installed configuration during review.
+   * Regression for the review finding on this branch. The first version
+   * anchored the import body on `[^;\n]`, which stops at the first newline —
+   * so the multiline form a formatter routinely produces passed straight
+   * through the backstop, in exactly the unlinted paths it exists to cover.
    */
-  it('catches a dynamic import, which no-restricted-imports cannot see', () => {
+  it('catches a multiline static import, as a formatter would write it', () => {
+    const contents = ['import {', '  describe,', '  test,', "} from 'bun:test';"].join('\n');
+    const found = findBannedTestRunnerImports(contents);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.form).toBe('static');
+    expect(found[0]?.line).toBe(1);
+    // The report must stay on one line even when the import spans four.
+    expect(found[0]?.text).not.toContain('\n');
+  });
+
+  it('catches a multiline re-export', () => {
+    const contents = ['export {', '  test,', "} from 'bun:test';"].join('\n');
+    expect(findBannedTestRunnerImports(contents)).toHaveLength(1);
+  });
+
+  /**
+   * `import/*c* /('bun:test')` is valid JavaScript. A matcher permitting only
+   * whitespace between tokens is bypassed by it, which is disqualifying for a
+   * check whose whole claim is that it cannot be bypassed.
+   */
+  it('catches an import with a block comment between the tokens', () => {
+    expect(findBannedTestRunnerImports("import/* sneaky */('bun:test')")).toHaveLength(1);
+    expect(findBannedTestRunnerImports("require/* sneaky */('bun:test')")).toHaveLength(1);
+    expect(findBannedTestRunnerImports("import(/* sneaky */ 'bun:test')")).toHaveLength(1);
+  });
+
+  /**
+   * The form plain ESLint's `no-restricted-imports` cannot see. oxlint 1.78
+   * does flag it, so this matters for the eslint-only `scripts/` workspace and
+   * for every unlinted path.
+   */
+  it('catches a dynamic import, which plain ESLint cannot see', () => {
     const found = findBannedTestRunnerImports("const t = await import('bun:test');\n");
     expect(found).toHaveLength(1);
     expect(found[0]?.form).toBe('dynamic');
@@ -70,6 +96,24 @@ describe('findBannedTestRunnerImports', () => {
   });
 
   /**
+   * Ordering must not depend on the runtime locale — the same two findings
+   * would otherwise be reported in a different order locally than in CI.
+   * `AGENTS.md` requires deterministic comparisons for exactly this reason.
+   */
+  it('orders two findings on the same line deterministically', () => {
+    const contents = "const a = require('bun:test'); const b = await import('bun:test');";
+    const first = findBannedTestRunnerImports(contents).map((entry) => entry.text);
+    const second = findBannedTestRunnerImports(contents).map((entry) => entry.text);
+    expect(first).toEqual(second);
+    expect(first).toHaveLength(2);
+    expect([...first].sort()).toEqual(first);
+  });
+
+  it('reports a match once, not once per overlapping pattern', () => {
+    expect(findBannedTestRunnerImports("import 'bun:test';")).toHaveLength(1);
+  });
+
+  /**
    * The rule's own definition in `.oxlintrc.json` names the specifier as a
    * configuration value. A check that flagged the configuration declaring it
    * would be unusable, so the patterns match import syntax rather than the
@@ -85,16 +129,14 @@ describe('findBannedTestRunnerImports', () => {
    * comments before matching is the obvious alternative and it is worse: a
    * `//` inside a string (a URL, most commonly) would truncate the rest of
    * the line, so a real import sharing that line would go unreported. For a
-   * ban, a false positive someone can see and rephrase beats a false
-   * negative nobody ever learns about.
+   * ban, a false positive someone can see and rephrase beats a false negative
+   * nobody ever learns about.
    *
-   * The cost is that this file's own fixtures below look like violations,
-   * which is why `validate-test-runner-imports.ts` excludes exactly this
-   * path and no other.
+   * The cost is that this file's own fixtures look like violations, which is
+   * why `validate-test-runner-imports.ts` excludes exactly this path.
    */
   it('reports import syntax inside a comment, failing closed', () => {
-    const found = findBannedTestRunnerImports("// never import from 'bun:test' here");
-    expect(found).toHaveLength(1);
+    expect(findBannedTestRunnerImports("// never import from 'bun:test' here")).toHaveLength(1);
   });
 
   it('does not flag an identifier that merely ends in a keyword', () => {
@@ -108,6 +150,13 @@ describe('findBannedTestRunnerImports', () => {
 
   it('does not flag a different bun builtin', () => {
     expect(findBannedTestRunnerImports("import { file } from 'bun:jsc';")).toEqual([]);
+  });
+
+  it('does not let a static import run past its own statement into another', () => {
+    // The preceding statement is terminated, so the `import` keyword on line 1
+    // cannot reach the specifier on line 2.
+    const contents = ["import { readFile } from 'node:fs';", 'const x = 1;'].join('\n');
+    expect(findBannedTestRunnerImports(contents)).toEqual([]);
   });
 
   it('returns an empty array for empty input rather than throwing', () => {
@@ -149,22 +198,9 @@ describe('isScannableFile', () => {
       expect(isScannableFile(name)).toBe(false);
     }
   });
-});
 
-describe('isIgnoredPath', () => {
-  it('ignores dependency and build-output directories', () => {
-    expect(isIgnoredPath(['packages', 'database', 'node_modules', 'x.ts'])).toBe(true);
-    expect(isIgnoredPath(['applications', 'web', 'dist', 'x.js'])).toBe(true);
-    expect(isIgnoredPath(['applications', 'web', '.svelte-kit', 'x.js'])).toBe(true);
-  });
-
-  it('does not ignore a real source path', () => {
-    expect(isIgnoredPath(['runner', 'run-agent.test.mjs'])).toBe(false);
-    expect(isIgnoredPath(['.github', 'scripts', 'audit-workflows.ts'])).toBe(false);
-  });
-
-  it('matches whole segments, not substrings', () => {
-    // `distribution/` is not `dist/`, and must still be scanned.
-    expect(isIgnoredPath(['packages', 'distribution', 'x.ts'])).toBe(false);
+  it('accepts a nested path, since git reports paths rather than basenames', () => {
+    expect(isScannableFile('runner/run-agent.test.mjs')).toBe(true);
+    expect(isScannableFile('.github/scripts/audit-workflows.ts')).toBe(true);
   });
 });

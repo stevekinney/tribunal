@@ -8,9 +8,13 @@
  * silently exempt from it. This module backs the repository-wide check that
  * closes that gap (`scripts/validate-test-runner-imports.ts`).
  *
- * It also catches what `no-restricted-imports` structurally cannot: that rule
- * matches static import and export declarations only, so a dynamic
- * `import(...)` of the same specifier reports nothing at all.
+ * It also catches a form ESLint's own `no-restricted-imports` cannot see: that
+ * rule matches static import and export declarations only, so a dynamic
+ * `import(...)` of the same specifier reports nothing under plain ESLint.
+ * Note the limitation is ESLint's specifically — oxlint 1.78 *does* flag the
+ * dynamic form, so the eleven oxlint-backed workspaces are already covered
+ * there. It is the eslint-only `scripts/` workspace, plus every unlinted path,
+ * that needs this backstop for dynamic imports.
  *
  * Pure by design — all filesystem access lives in the script, so these rules
  * stay covered by the 100% gate.
@@ -18,25 +22,14 @@
 
 /** A banned import found in one file. */
 export type BannedImport = {
-  /** 1-indexed line the import appears on. */
+  /** 1-indexed line the import begins on. */
   line: number;
-  /** The matched text, trimmed, for the failure report. */
+  /** The matched text, trimmed and flattened, for the failure report. */
   text: string;
   /** Which import form matched, so the report can explain the rule's reach. */
   form: 'static' | 'dynamic' | 'require';
 };
 
-/**
- * Each pattern is anchored on a leading non-identifier character so a longer
- * identifier ending in the keyword cannot match (`myimport('bun:test')`), and
- * excludes a preceding `.` so a property access cannot either
- * (`options.require('bun:test')` is not a module system call).
- *
- * They deliberately match the import SYNTAX rather than the bare specifier.
- * `.oxlintrc.json` and this file both contain the string `'bun:test'` as
- * configuration and test data; a check that flagged its own rule definition
- * would be unusable.
- */
 /**
  * The banned specifier, assembled at runtime rather than written as one
  * literal.
@@ -54,38 +47,72 @@ const BANNED_SPECIFIER = ['bun', 'test'].join(':');
 const QUOTED_SPECIFIER = `['"]${BANNED_SPECIFIER}['"]`;
 
 /**
- * Each pattern is anchored with a negative lookbehind so a longer identifier
- * ending in the keyword cannot match, and so a property access cannot either —
- * a `.require(...)` call is not a module system call.
+ * What may sit between tokens: whitespace, or a block comment.
  *
- * They deliberately match import SYNTAX rather than the bare specifier, so
- * `.oxlintrc.json` naming the specifier as a configuration value is not
- * reported as a violation of the rule it declares.
+ * `import/*c* /('bun:test')` is valid JavaScript, and a matcher that allowed
+ * only `\s*` between the keyword and the parenthesis would let it through —
+ * a bypass in a check whose whole job is that it cannot be bypassed.
  */
+const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+
+/**
+ * The body of a static import between the keyword and `from`.
+ *
+ * Newlines are deliberately allowed. A formatter routinely produces
+ * `import {\n  describe,\n  test,\n} from '...'`, and a matcher anchored on
+ * `[^;\n]` stops at the first newline and reports success on exactly the
+ * multiline form most likely to appear. Semicolons are still excluded, so the
+ * body cannot run past the end of the statement into an unrelated one.
+ */
+const STATIC_BODY = String.raw`[^;]*?`;
+
 const IMPORT_PATTERNS: ReadonlyArray<{ form: BannedImport['form']; pattern: RegExp }> = [
-  // Named, default, namespace, type-only, and re-export forms.
+  // Named, default, namespace, type-only, and re-export forms, single or
+  // multiline.
   {
     form: 'static',
     pattern: new RegExp(
-      `(?<![\\w.])(?:import|export)\\s+(?:type\\s+)?[^;\\n]*?from\\s*${QUOTED_SPECIFIER}`,
+      String.raw`(?<![\w.])(?:import|export)\b${STATIC_BODY}\bfrom${GAP}${QUOTED_SPECIFIER}`,
       'g',
     ),
   },
   // Bare side-effect import.
   {
     form: 'static',
-    pattern: new RegExp(`(?<![\\w.])import\\s*${QUOTED_SPECIFIER}`, 'g'),
+    pattern: new RegExp(String.raw`(?<![\w.])import${GAP}${QUOTED_SPECIFIER}`, 'g'),
   },
-  // Dynamic import — the form `no-restricted-imports` cannot see at all.
+  // Dynamic import — the form plain ESLint cannot see at all.
   {
     form: 'dynamic',
-    pattern: new RegExp(`(?<![\\w.])import\\s*\\(\\s*${QUOTED_SPECIFIER}\\s*\\)`, 'g'),
+    pattern: new RegExp(String.raw`(?<![\w.])import${GAP}\(${GAP}${QUOTED_SPECIFIER}${GAP}\)`, 'g'),
   },
   {
     form: 'require',
-    pattern: new RegExp(`(?<![\\w.])require\\s*\\(\\s*${QUOTED_SPECIFIER}\\s*\\)`, 'g'),
+    pattern: new RegExp(
+      String.raw`(?<![\w.])require${GAP}\(${GAP}${QUOTED_SPECIFIER}${GAP}\)`,
+      'g',
+    ),
   },
 ];
+
+/** Collapse a possibly-multiline match into one readable report line. */
+function flatten(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Deterministic string ordering.
+ *
+ * Not `localeCompare`: its result depends on the runtime's locale, so the same
+ * two findings could be reported in a different order on a developer machine
+ * than in CI. `AGENTS.md` requires deterministic comparisons in runtime logic
+ * for exactly this reason.
+ */
+function compareText(first: string, second: string): number {
+  if (first < second) return -1;
+  if (first > second) return 1;
+  return 0;
+}
 
 /**
  * Returns every `bun:test` import in `contents`, in line order.
@@ -96,6 +123,7 @@ const IMPORT_PATTERNS: ReadonlyArray<{ form: BannedImport['form']; pattern: RegE
  */
 export function findBannedTestRunnerImports(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
+  const seen = new Set<string>();
 
   for (const { form, pattern } of IMPORT_PATTERNS) {
     // `lastIndex` is shared state on a module-scope global regex; reset it so
@@ -105,19 +133,23 @@ export function findBannedTestRunnerImports(contents: string): BannedImport[] {
 
     for (const match of contents.matchAll(pattern)) {
       const index = match.index ?? 0;
+      // Two patterns can cover the same span (a bare import is a prefix of no
+      // other form, but keeping this explicit means adding a pattern later
+      // cannot silently double-report).
+      const key = `${index}:${match[0].length}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
       found.push({
         line: contents.slice(0, index).split('\n').length,
-        text: match[0].trim(),
+        text: flatten(match[0]),
         form,
       });
     }
   }
 
-  // Two patterns can match the same static import (the `from` form and the
-  // bare form never overlap, but keeping this stable makes the report
-  // deterministic regardless of pattern order).
   return found.sort(
-    (first, second) => first.line - second.line || first.text.localeCompare(second.text),
+    (first, second) => first.line - second.line || compareText(first.text, second.text),
   );
 }
 
@@ -133,24 +165,6 @@ export const SCANNABLE_EXTENSIONS: readonly string[] = [
   '.cjs',
   '.svelte',
 ];
-
-/** Directory names never worth scanning — build output and dependencies. */
-export const IGNORED_DIRECTORIES: readonly string[] = [
-  'node_modules',
-  'dist',
-  'build',
-  'coverage',
-  '.svelte-kit',
-  '.turbo',
-  '.git',
-  '.vercel',
-  'drizzle',
-];
-
-/** Whether a path segment list contains a directory this check never scans. */
-export function isIgnoredPath(segments: readonly string[]): boolean {
-  return segments.some((segment) => IGNORED_DIRECTORIES.includes(segment));
-}
 
 /** Whether a filename has an extension whose contents can hold an import. */
 export function isScannableFile(fileName: string): boolean {
