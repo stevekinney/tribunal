@@ -94,6 +94,14 @@ function unwrapTransparent(node: ts.Node): ts.Node {
   let current = node;
   for (;;) {
     if (ts.isParenthesizedExpression(current)) current = current.expression;
+    // `(0, require)(...)` is the conventional indirect-call spelling; a comma
+    // expression evaluates to its final operand, so that operand is the real
+    // callee.
+    else if (
+      ts.isBinaryExpression(current) &&
+      current.operatorToken.kind === ts.SyntaxKind.CommaToken
+    )
+      current = current.right;
     // `x as const`, `<T>x`, `x satisfies T`, `x!` — all erased at compile time.
     else if (ts.isAsExpression(current)) current = current.expression;
     else if (ts.isTypeAssertionExpression(current)) current = current.expression;
@@ -134,9 +142,12 @@ function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | un
     return { object: unwrapTransparent(node.expression), name: node.name.text };
   }
   if (ts.isElementAccessExpression(node)) {
-    const argument = unwrapTransparent(node.argumentExpression);
-    if (ts.isStringLiteralLike(argument)) {
-      return { object: unwrapTransparent(node.expression), name: argument.text };
+    // Folded the same way a specifier is: the validator already evaluates
+    // `'bun:' + 'test'`, and applying a different standard to the member name
+    // would be an inconsistency rather than a decision.
+    const name = constantSpecifier(node.argumentExpression);
+    if (name !== undefined) {
+      return { object: unwrapTransparent(node.expression), name };
     }
   }
   return undefined;
@@ -194,7 +205,17 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
     return ts.isIdentifier(node) && node.text === name;
   };
 
+  /**
+   * `declare const require: ...` is a type-only assertion that some runtime
+   * binding exists. TypeScript erases it, so it introduces nothing and cannot
+   * shadow the real loader — treating it as a binding suppressed a genuine
+   * finding.
+   */
+  const isAmbient = (candidate: ts.Node): boolean =>
+    (ts.getCombinedModifierFlags(candidate as ts.Declaration) & ts.ModifierFlags.Ambient) !== 0;
+
   const bindsName = (candidate: ts.Node): boolean =>
+    !isAmbient(candidate) &&
     (ts.isVariableDeclaration(candidate) ||
       ts.isFunctionDeclaration(candidate) ||
       ts.isParameter(candidate) ||

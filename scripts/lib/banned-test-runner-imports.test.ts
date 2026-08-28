@@ -227,6 +227,20 @@ describe('findBannedTestRunnerImports', () => {
       ).toHaveLength(1);
     });
 
+    it('an ambient declaration does not shadow, because it binds nothing', () => {
+      // `declare const require: ...` asserts that some runtime binding exists;
+
+      // TypeScript erases it, so treating it as a shadow suppressed a real
+
+      // finding rather than preventing a false one.
+
+      expect(
+        findBannedTestRunnerImports(
+          "declare const require: (n: string) => unknown;\nrequire('bun:test');",
+        ),
+      ).toHaveLength(1);
+    });
+
     it('a parameter does shadow within its own function', () => {
       expect(
         findBannedTestRunnerImports("function f(require) { return require('bun:test'); }"),

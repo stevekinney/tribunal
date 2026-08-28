@@ -251,3 +251,23 @@ const output = await outputPromise;
 ```
 
 This is especially problematic with verbose reporters that increase output volume.
+
+## Repository-wide guards
+
+Lessons from the twelve-round review on [#327](https://github.com/stevekinney/tribunal/pull/327); full detail in `documentation/learnings/2026-08-28-repository-wide-guard-review.md`.
+
+**Parse the language, do not pattern-match it.** A check that must decide "is this really an import / a loader / a script block" needs the language's own parser — `typescript` and `svelte` are both dependencies here. A regular expression against a lexical grammar has no fixed point: multiline forms, comments between tokens, template-literal specifiers, and a semicolon inside a comment each defeated a different iteration of the same matcher. Parsing also removes the allowlist a matcher needs for its own fixtures, and an allowlist inside a guard is a hole in it.
+
+**A filter lists what it excludes.** An allowlist of source extensions cannot be complete — `bun bin/run-tests.task` and a shebang-less `bin/run-tests` both execute, and a case-sensitive list misses `.TS`. Name what is definitely not source so an unrecognised file is inspected rather than skipped.
+
+**A pre-commit gate reads the index, and the worktree.** They differ: the index is what git will commit, so reading only the worktree lets a partially staged violation through; the worktree is what the developer is running, so reading only the index lets an unstaged one survive `bun run verify`. Scan both and label which source a finding came from.
+
+**Bound every subprocess with `killSignal`.** `Bun.spawnSync`'s `timeout` signals the child and then waits for it, so a child ignoring SIGTERM is unbounded — measured at 4019ms against a 400ms deadline. Always pair `timeout` with `killSignal: 'SIGKILL'`.
+
+**Enumerate through git, never by walking the tree.** `git ls-files --cached --others --exclude-standard` honours `.gitignore` with no list to maintain, which keeps an always-on hook from rejecting commits over a stale `.tmp/` checkout or traversing a nested worktree. Skip mode-160000 gitlinks, and consume non-blob `cat-file --batch` responses rather than aborting the batch.
+
+**A guard needs its own guard, and it must be precise.** An invariant test derived from the tree beats a maintained list, but it has to model the real graph: scanning only direct mentions misses the common transitive case, and following only relative specifiers misses alias hops. The blunt version of the same rule covered 53 scripts where 20 were genuinely affected, and an invariant that noisy gets routed around. Any exemption states the mechanism, and a test rejects an exemption naming something that no longer exists.
+
+**Verify the edit landed, not only that the reasoning was right.** A scripted replacement whose anchor does not match silently does nothing. Assert the match, then grep the file — a fix reported in a commit message and never actually applied is worse than no fix, because it stops anyone looking again.
+
+**Gate the commit on the checks rather than running them beside it.** Make the commit conditional on the exit codes, and include every gate CI runs — `bun run check` is the one most easily forgotten, and its CI job is named "Type Check". Note also that a background task's completion notification reports the wrapper's exit status, not the command's.
