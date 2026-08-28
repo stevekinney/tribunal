@@ -24,6 +24,12 @@ const checks: { name: string; command: string[]; continueOnError?: boolean }[] =
   { name: 'Lockfile sync', command: ['bun', 'install', '--frozen-lockfile'] },
   { name: 'Turborepo configuration', command: ['bun', 'run', 'validate:turbo'] },
   { name: 'Skill wiring', command: ['bun', 'run', '--cwd', 'scripts', 'validate:skills'] },
+  // Repository-wide, and deliberately not covered by the Lint step below:
+  // `turbo run lint` only runs workspaces declaring a `lint` script, so
+  // `runner/`, `.github/`, and `packages/typescript/` are invisible to it.
+  // Without this entry, a banned import in one of those survives `bun run
+  // verify` and fails in CI instead, which contradicts this script's contract.
+  { name: 'Test runner imports', command: ['bun', 'run', 'validate:test-runner-imports'] },
   { name: 'Type check', command: ['bun', 'run', 'check'] },
   { name: 'Format check', command: ['bun', 'run', 'format:check'] },
   { name: 'Lint', command: ['bun', 'run', 'lint'] },

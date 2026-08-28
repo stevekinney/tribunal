@@ -47,13 +47,18 @@ const BANNED_SPECIFIER = ['bun', 'test'].join(':');
 const QUOTED_SPECIFIER = `['"]${BANNED_SPECIFIER}['"]`;
 
 /**
- * What may sit between tokens: whitespace, or a block comment.
+ * What may sit between tokens: whitespace, a block comment, or a line comment.
  *
- * `import/*c* /('bun:test')` is valid JavaScript, and a matcher that allowed
- * only `\s*` between the keyword and the parenthesis would let it through —
- * a bypass in a check whose whole job is that it cannot be bypassed.
+ * `import/*c* /('bun:test')` and `import(// reason\n'bun:test')` are both valid
+ * JavaScript, and a matcher allowing only `\s*` between the keyword and the
+ * parenthesis lets either through — a bypass in a check whose whole job is
+ * that it cannot be bypassed.
+ *
+ * Note this only ever *adds* detections. It is the opposite of stripping
+ * comments before matching, which would risk a `//` inside a string
+ * truncating a line and hiding a real import after it.
  */
-const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*`;
 
 /**
  * The body of a static import between the keyword and `from`.

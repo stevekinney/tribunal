@@ -28,8 +28,8 @@
  * `lib/banned-test-runner-imports.ts`, which is covered by the 100% gate.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { findBannedTestRunnerImports, isScannableFile } from './lib/banned-test-runner-imports';
 import { resolveRepositoryRoot } from './lib/repository-root';
@@ -37,13 +37,49 @@ import { resolveRepositoryRoot } from './lib/repository-root';
 const repositoryRoot = resolveRepositoryRoot();
 
 /**
- * The only excluded path, and it is excluded for one specific reason: this is
- * the file that proves the matcher works, so it necessarily contains the
- * import forms the matcher is built to find. Every other file in the
- * repository is scanned. Keeping the list to a single exact path — rather than
- * a glob over test files — means a real violation cannot hide behind it.
+ * Every git invocation here runs inside a pre-commit hook, so none of them may
+ * hang the commit. A stalled child (a filesystem that stops responding, a
+ * credential prompt on a misconfigured remote) would otherwise block
+ * indefinitely, because `spawnSync` has no deadline of its own.
  */
+const GIT_TIMEOUT_MS = 30_000;
+
+/** The only excluded path — see the comment on FIXTURE_FILE below. */
 const FIXTURE_FILE = join('scripts', 'lib', 'banned-test-runner-imports.test.ts');
+
+type SourceEntry = {
+  /** Repository-relative path, as git reports it. */
+  path: string;
+  /**
+   * The blob this path will contribute to the commit, when it is tracked.
+   * Undefined for an untracked file, which has no index entry and must be read
+   * from disk.
+   */
+  blob?: string;
+};
+
+function runGit(args: string[], stdin?: string): Buffer {
+  const result = Bun.spawnSync(['git', ...args], {
+    cwd: repositoryRoot,
+    timeout: GIT_TIMEOUT_MS,
+    stdin: stdin === undefined ? 'ignore' : new TextEncoder().encode(stdin),
+  });
+
+  // A timeout kills the child, leaving a null exit code and a signal.
+  if (result.exitCode === null) {
+    throw new Error(
+      `git ${args[0]} did not finish within ${GIT_TIMEOUT_MS}ms (killed with ${result.signalCode ?? 'unknown signal'}).`,
+    );
+  }
+  if (result.exitCode !== 0) {
+    const stderr = new TextDecoder().decode(result.stderr).trim();
+    throw new Error(
+      `git ${args[0]} failed (exit ${result.exitCode})${stderr ? `: ${stderr}` : ''}`,
+    );
+  }
+
+  return Buffer.from(result.stdout);
+}
 
 /**
  * Enumerate candidate files through git rather than by walking the tree.
@@ -51,53 +87,125 @@ const FIXTURE_FILE = join('scripts', 'lib', 'banned-test-runner-imports.test.ts'
  * Walking descends into whatever happens to be on disk, including gitignored
  * local artifacts — `.tmp/`, a stale `.worktrees/` checkout, a scratch copy of
  * the repository. Because the pre-commit hook is deliberately unscoped, a
- * banned fixture sitting in one of those would reject unrelated commits while
- * CI stayed green from a clean checkout, and a nested worktree would make
- * every scan traverse a duplicate repository.
+ * banned fixture in one of those would reject unrelated commits while CI
+ * stayed green from a clean checkout, and a nested worktree would make every
+ * scan traverse a duplicate repository.
  *
- * `--cached --others --exclude-standard` is exactly the set that matters:
- * everything tracked, plus everything untracked that is *not* ignored, so a
- * newly written file is caught before it is ever committed. Output is sorted
- * so a failure report is byte-identical across platforms and filesystems.
+ * Tracked entries carry their **index** blob, not their worktree path alone.
+ * That distinction is the whole point: with a partially staged file whose
+ * staged version imports the banned runner and whose worktree version has
+ * already been corrected, reading the worktree would pass the hook while git
+ * committed the banned blob — the gate green on precisely the commit that
+ * reintroduces what it exists to stop.
+ *
+ * Untracked-but-not-ignored files have no index entry and are read from disk,
+ * so a newly written file is still caught before it is ever committed.
  */
-function collectSourceFiles(): string[] {
-  const result = Bun.spawnSync(
-    ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
-    { cwd: repositoryRoot },
-  );
+function collectSourceEntries(): SourceEntry[] {
+  const entries = new Map<string, SourceEntry>();
 
-  if (result.exitCode !== 0) {
-    const stderr = new TextDecoder().decode(result.stderr).trim();
-    throw new Error(`git ls-files failed (exit ${result.exitCode})${stderr ? `: ${stderr}` : ''}`);
+  // `<mode> <sha> <stage>\t<path>\0`
+  for (const record of runGit(['ls-files', '--stage', '-z']).toString('utf8').split('\0')) {
+    if (record === '') continue;
+    const tabIndex = record.indexOf('\t');
+    if (tabIndex === -1) continue;
+
+    const [, blob, stage] = record.slice(0, tabIndex).split(' ');
+    const path = record.slice(tabIndex + 1);
+    if (!isScannableFile(path) || blob === undefined) continue;
+
+    // Stage 0 is the ordinary, unconflicted entry. During a merge conflict a
+    // path instead has stages 1-3; taking the first seen would arbitrarily
+    // pick one side, so a conflicted path falls through to a worktree read
+    // (which is what the developer is actually resolving).
+    if (stage === '0') entries.set(path, { path, blob });
+    else if (!entries.has(path)) entries.set(path, { path });
   }
 
-  return new TextDecoder()
-    .decode(result.stdout)
-    .split('\0')
-    .filter((path) => path !== '' && isScannableFile(path))
-    .sort();
+  for (const path of runGit(['ls-files', '--others', '--exclude-standard', '-z'])
+    .toString('utf8')
+    .split('\0')) {
+    if (path === '' || !isScannableFile(path)) continue;
+    if (!entries.has(path)) entries.set(path, { path });
+  }
+
+  // Sorted so a failure report is byte-identical across platforms and
+  // filesystems, whose traversal order is not guaranteed.
+  return [...entries.values()].sort((first, second) =>
+    first.path < second.path ? -1 : first.path > second.path ? 1 : 0,
+  );
+}
+
+/**
+ * Read every index blob in one `git cat-file --batch` process.
+ *
+ * One spawn per file would be correct and unusably slow at ~700 files. The
+ * batch format is `<sha> <type> <size>\n<contents>\n`, and contents are sliced
+ * by the declared byte length rather than split on newlines, so a blob
+ * containing the delimiter cannot desynchronise the parse.
+ */
+function readIndexBlobs(blobs: readonly string[]): Map<string, string> {
+  const contents = new Map<string, string>();
+  if (blobs.length === 0) return contents;
+
+  const output = runGit(['cat-file', '--batch'], `${blobs.join('\n')}\n`);
+  const decoder = new TextDecoder();
+  let offset = 0;
+
+  while (offset < output.length) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd === -1) break;
+
+    const [sha, type, sizeText] = decoder.decode(output.subarray(offset, headerEnd)).split(' ');
+    if (sha === undefined || type !== 'blob' || sizeText === undefined) break;
+
+    const size = Number.parseInt(sizeText, 10);
+    if (!Number.isFinite(size)) break;
+
+    const bodyStart = headerEnd + 1;
+    contents.set(sha, decoder.decode(output.subarray(bodyStart, bodyStart + size)));
+    offset = bodyStart + size + 1;
+  }
+
+  return contents;
 }
 
 function main(): void {
-  const relativePaths = collectSourceFiles();
+  const entries = collectSourceEntries().filter((entry) => entry.path !== FIXTURE_FILE);
+  const blobContents = readIndexBlobs(
+    entries.map((entry) => entry.blob).filter((blob): blob is string => blob !== undefined),
+  );
+
   const failures: string[] = [];
   let scannedCount = 0;
 
-  for (const relativePath of relativePaths) {
-    if (relativePath === FIXTURE_FILE) continue;
-
-    const absolutePath = join(repositoryRoot, relativePath);
-    // `git ls-files` can name a path that no longer exists on disk (a staged
-    // deletion, most commonly). Reading it would throw and look like a check
-    // failure rather than a deleted file.
-    if (!existsSync(absolutePath)) continue;
+  for (const entry of entries) {
+    let contents: string;
+    if (entry.blob !== undefined) {
+      const staged = blobContents.get(entry.blob);
+      // A tracked path whose blob git would not hand back is a real problem
+      // with this check, not a clean file. Failing loudly beats reporting a
+      // pass nobody can trust.
+      if (staged === undefined) {
+        console.error(
+          `validate:test-runner-imports could not read the staged blob for ${entry.path}. That is a bug in this check, not a passing file.`,
+        );
+        process.exit(1);
+      }
+      contents = staged;
+    } else {
+      try {
+        contents = readFileSync(join(repositoryRoot, entry.path), 'utf-8');
+      } catch {
+        // An untracked path can disappear between listing and reading.
+        continue;
+      }
+    }
 
     scannedCount += 1;
 
-    for (const found of findBannedTestRunnerImports(readFileSync(absolutePath, 'utf-8'))) {
-      failures.push(
-        `${relative('.', relativePath)}:${found.line} (${found.form} import) — ${found.text}`,
-      );
+    for (const found of findBannedTestRunnerImports(contents)) {
+      failures.push(`${entry.path}:${found.line} (${found.form} import) — ${found.text}`);
     }
   }
 
@@ -119,11 +227,14 @@ function main(): void {
     console.error(
       "\nTribunal's test runner is vitest. Import from 'vitest' instead — `describe`, `expect`, `test`, and `it` have the same names, and `mock()`/`spyOn()` become `vi.fn()`/`vi.spyOn()`.",
     );
+    console.error(
+      'Tracked files are read from the git index, so a staged import is reported even when the working copy has already been corrected.',
+    );
     process.exit(1);
   }
 
   console.log(
-    `validate:test-runner-imports passed (${scannedCount} source file(s) scanned, no bun:test imports).`,
+    `validate:test-runner-imports passed (${scannedCount} source file(s) scanned from the index, no bun:test imports).`,
   );
 }
 

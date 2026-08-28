@@ -59,6 +59,23 @@ describe('findBannedTestRunnerImports', () => {
   });
 
   /**
+   * Line comments are valid token separators too, and the first version of
+   * `GAP` handled only block comments — so this form passed both pre-commit
+   * and CI in unlinted paths.
+   */
+  it('catches an import with a line comment between the tokens', () => {
+    expect(
+      findBannedTestRunnerImports("const t = await import(// reason\n'bun:test');"),
+    ).toHaveLength(1);
+    expect(findBannedTestRunnerImports("const t = require(// reason\n'bun:test');")).toHaveLength(
+      1,
+    );
+    expect(findBannedTestRunnerImports("import { test } from // reason\n'bun:test';")).toHaveLength(
+      1,
+    );
+  });
+
+  /**
    * The form plain ESLint's `no-restricted-imports` cannot see. oxlint 1.78
    * does flag it, so this matters for the eslint-only `scripts/` workspace and
    * for every unlinted path.
