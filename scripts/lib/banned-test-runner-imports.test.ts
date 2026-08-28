@@ -4,9 +4,9 @@ import {
   findBannedImportsForPath,
   findBannedImportsInSvelte,
   findBannedTestRunnerImports,
-  hasScriptShebang,
   isExtensionlessPath,
   isScannableFile,
+  looksBinary,
 } from './banned-test-runner-imports';
 
 describe('findBannedTestRunnerImports', () => {
@@ -147,6 +147,47 @@ describe('findBannedTestRunnerImports', () => {
 
     // Both at once.
     expect(findBannedTestRunnerImports("(require)(('bun:test') as const);")).toHaveLength(1);
+  });
+
+  it('catches computed access to the standard loaders', () => {
+    // `module['require']` calls the same function as `module.require`; a
+    // predicate that recognises only the dotted spelling is bypassed by
+    // writing the other one.
+    for (const source of [
+      "module['require']('bun:test');",
+      'module["require"](\'bun:test\');',
+      "import.meta['require']('bun:test');",
+    ]) {
+      expect(findBannedTestRunnerImports(source), source).toHaveLength(1);
+    }
+  });
+
+  it('does not report a locally shadowed require or module', () => {
+    // These call the file's own code, not a loader, so reporting them would
+    // reject a valid commit — and it would contradict the rule that an
+    // arbitrary object's `require` method is not a module system.
+    expect(
+      findBannedTestRunnerImports("function require(name) { return name; }\nrequire('bun:test');"),
+    ).toEqual([]);
+    expect(
+      findBannedTestRunnerImports("function load(module) { return module.require('bun:test'); }"),
+    ).toEqual([]);
+  });
+
+  it('still reports a genuine loader elsewhere in a file that shadows one', () => {
+    // The shadow is scoped to the function, so the top-level call is real.
+    // A file-wide approximation would have missed this.
+    const contents = [
+      'function helper(require) { return require; }',
+      "const t = require('bun:test');",
+    ].join('\n');
+    expect(findBannedTestRunnerImports(contents)).toHaveLength(1);
+  });
+
+  it('catches JSDoc type imports, which forEachChild does not traverse', () => {
+    expect(
+      findBannedTestRunnerImports("/** @type {import('bun:test').Mock} */\nlet m;"),
+    ).toHaveLength(1);
   });
 
   it('still refuses a non-loader callee however it is wrapped', () => {
@@ -407,18 +448,12 @@ describe('extensionless entrypoints', () => {
     expect(isExtensionlessPath('a/b.c/module.ts')).toBe(false);
   });
 
-  it('accepts a script shebang and rejects anything else', () => {
-    for (const line of [
-      '#!/usr/bin/env bun',
-      '#!/usr/bin/env node',
-      '#!/usr/bin/node',
-      '#!/usr/bin/env -S bun run',
-      '#!/usr/bin/env tsx',
-    ]) {
-      expect(hasScriptShebang(line), line).toBe(true);
-    }
-    for (const line of ['#!/bin/sh', '#!/usr/bin/env python3', 'MIT License', '', '#!/bin/bash']) {
-      expect(hasScriptShebang(line), line).toBe(false);
-    }
+  it('skips only binary content, not prose', () => {
+    // A shebang requirement was the previous filter and excluded
+    // `bun bin/run-tests`, which needs none. Prose is cheap to parse and
+    // yields no imports, so only binary is worth skipping.
+    expect(looksBinary('MIT License\n\nPermission is hereby granted')).toBe(false);
+    expect(looksBinary('#!/usr/bin/env bun\nimport x from "y";')).toBe(false);
+    expect(looksBinary('\u0000\u0001binary')).toBe(true);
   });
 });

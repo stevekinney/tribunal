@@ -111,6 +111,111 @@ function constantSpecifier(node: ts.Node | undefined): string | undefined {
 }
 
 /**
+ * The property name a member access reads, when it is statically known.
+ *
+ * Covers both spellings: `module.require` is a `PropertyAccessExpression`,
+ * `module['require']` is an `ElementAccessExpression` with a literal
+ * argument. They call the same function, so a predicate that recognises only
+ * the first is bypassed by writing the second.
+ */
+function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | undefined {
+  if (ts.isPropertyAccessExpression(node)) {
+    return { object: unwrapTransparent(node.expression), name: node.name.text };
+  }
+  if (ts.isElementAccessExpression(node)) {
+    const argument = unwrapTransparent(node.argumentExpression);
+    if (ts.isStringLiteralLike(argument)) {
+      return { object: unwrapTransparent(node.expression), name: argument.text };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether an identifier is bound by the source itself rather than by the
+ * runtime.
+ *
+ * A file that declares `function require(...)` or takes a `module` parameter
+ * is calling its own code, not a module loader, and reporting it would reject
+ * a valid commit. Resolved by walking the node's ancestors — which is why the
+ * source file is parsed with `setParentNodes` — so a shadow in one function
+ * does not excuse a genuine loader call elsewhere in the same file. That
+ * file-wide approximation would have been the easy version and would trade
+ * this false positive for a false negative.
+ */
+function isLocallyShadowed(node: ts.Node, name: string): boolean {
+  const declaresName = (candidate: ts.Node): boolean => {
+    let found = false;
+    const check = (child: ts.Node): void => {
+      if (found) return;
+      if (
+        (ts.isVariableDeclaration(child) ||
+          ts.isFunctionDeclaration(child) ||
+          ts.isParameter(child) ||
+          ts.isClassDeclaration(child) ||
+          ts.isImportSpecifier(child) ||
+          ts.isImportClause(child)) &&
+        child.name !== undefined &&
+        ts.isIdentifier(child.name) &&
+        child.name.text === name
+      ) {
+        found = true;
+        return;
+      }
+      // Do not descend into a nested function at all. Its parameters and
+      // locals belong to its own scope, not to this one — checking them here
+      // made a nested `function helper(require)` shadow a genuine top-level
+      // `require(...)` call, which is a false negative rather than the false
+      // positive this function exists to prevent.
+      if (child !== candidate && (ts.isFunctionLike(child) || ts.isModuleDeclaration(child))) {
+        return;
+      }
+      ts.forEachChild(child, check);
+    };
+    ts.forEachChild(candidate, check);
+    if (ts.isFunctionLike(candidate)) candidate.parameters?.forEach(check);
+    return found;
+  };
+
+  for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
+    if (ts.isFunctionLike(scope) || ts.isBlock(scope) || ts.isSourceFile(scope)) {
+      if (declaresName(scope)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a call target is one of the three receivers that actually load a
+ * module: a bare `require(...)`, CommonJS's `module.require(...)`, or Bun's
+ * `import.meta.require(...)` — in either the dotted or the computed spelling.
+ *
+ * Deliberately NOT any `<anything>.require(...)`: an arbitrary object with a
+ * `require` method is not a module system, and tests pin that
+ * `options.require('...')`, `config.require('...')`, and
+ * `new.target.require('...')` stay unreported.
+ */
+function isModuleLoader(callee: ts.Node): boolean {
+  if (ts.isIdentifier(callee) && callee.text === 'require') {
+    return !isLocallyShadowed(callee, 'require');
+  }
+
+  const member = staticMemberName(callee);
+  if (member === undefined || member.name !== 'require') return false;
+
+  if (ts.isIdentifier(member.object) && member.object.text === 'module') {
+    return !isLocallyShadowed(member.object, 'module');
+  }
+  // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
+  // `new.target`, whose `require` is a method on an arbitrary object.
+  return (
+    ts.isMetaProperty(member.object) &&
+    member.object.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    member.object.name.text === 'meta'
+  );
+}
+
+/**
  * Returns every `bun:test` import in `contents`, in line order.
  *
  * `lineOffset` shifts reported line numbers, so a `<script>` block extracted
@@ -158,28 +263,7 @@ export function findBannedTestRunnerImports(
       // around the argument.
       const callee = unwrapTransparent(node.expression);
       const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      // The three receivers that are actually module loaders: a bare
-      // `require(...)`, CommonJS's `module.require(...)`, and Bun's
-      // `import.meta.require(...)`.
-      //
-      // Deliberately NOT any `<anything>.require(...)`: an arbitrary object
-      // with a `require` method is not a module system, and a test below pins
-      // that `options.require('...')` and `config.require('...')` stay
-      // unreported.
-      const isRequire =
-        (ts.isIdentifier(callee) && callee.text === 'require') ||
-        (ts.isPropertyAccessExpression(callee) &&
-          callee.name.text === 'require' &&
-          ((ts.isIdentifier(unwrapTransparent(callee.expression)) &&
-            (unwrapTransparent(callee.expression) as ts.Identifier).text === 'module') ||
-            // `import.meta` specifically. `ts.isMetaProperty` alone is also
-            // true for `new.target`, and `new.target.require(...)` is a method
-            // on an arbitrary object, which the surrounding predicate
-            // deliberately does not treat as a loader.
-            (ts.isMetaProperty(unwrapTransparent(callee.expression)) &&
-              (unwrapTransparent(callee.expression) as ts.MetaProperty).keywordToken ===
-                ts.SyntaxKind.ImportKeyword &&
-              (unwrapTransparent(callee.expression) as ts.MetaProperty).name.text === 'meta')));
+      const isRequire = isModuleLoader(callee);
       if (
         (isDynamicImport || isRequire) &&
         constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
@@ -210,6 +294,11 @@ export function findBannedTestRunnerImports(
         record(node, 'require');
       }
     }
+
+    // `ts.forEachChild` does not traverse JSDoc, so `/** @type
+    // {import('bun:test').Mock} */` in a `.js` file would never be reached.
+    // The same dependency the TypeScript form already bans.
+    for (const doc of (node as { jsDoc?: ts.Node[] }).jsDoc ?? []) visit(doc);
 
     ts.forEachChild(node, visit);
   };
@@ -312,19 +401,16 @@ export function isScannableFile(fileName: string): boolean {
 }
 
 /**
- * Whether an extensionless file is a script Bun or Node would execute.
+ * Whether contents look like a binary file rather than source.
  *
- * A conventional entrypoint like `bin/run-tests` carries no extension and is
- * identified by its shebang instead. An extension-only predicate skips it
- * before parsing, so such a file could import the banned runner while both
- * pre-commit and CI reported success.
- *
- * Only the first line is inspected, and only when the name has no extension at
- * all — this must not start reading every `LICENSE` and `Makefile` in the
- * repository as source.
+ * The only reason to skip an extensionless file. A shebang requirement was
+ * the previous filter and it was wrong twice over: `bun bin/run-tests`
+ * executes a file with no shebang at all, and the cost it was avoiding does
+ * not exist — this repository has two extensionless tracked files, and
+ * parsing prose with a TypeScript parser simply yields no imports.
  */
-export function hasScriptShebang(firstLine: string): boolean {
-  return /^#!.*\b(bun|node|deno|tsx)\b/.test(firstLine);
+export function looksBinary(contents: string): boolean {
+  return contents.slice(0, 8000).includes('\0');
 }
 
 /** Whether a path has no extension, so its shebang decides. */

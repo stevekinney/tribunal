@@ -33,9 +33,9 @@ import { join } from 'node:path';
 
 import {
   findBannedImportsForPath,
-  hasScriptShebang,
   isExtensionlessPath,
   isScannableFile,
+  looksBinary,
 } from './lib/banned-test-runner-imports';
 import { resolveRepositoryRoot } from './lib/repository-root';
 
@@ -264,12 +264,14 @@ function main(): void {
 
     if (sources.length === 0) continue;
 
-    // An extensionless path is only source if its shebang says so. Checking
-    // here rather than at listing time keeps the repository's `LICENSE`,
-    // `Makefile`, and friends out of the parser without a name allowlist.
+    // Extensionless files are parsed unless they are binary. A shebang
+    // requirement was the previous filter and excluded a real case:
+    // `bun bin/run-tests` executes a file that has no shebang. Parsing the
+    // handful of extensionless files this repository has costs nothing, and a
+    // parser finds no imports in prose, so `LICENSE` needs no special case.
     if (
       isExtensionlessPath(entry.path) &&
-      !sources.some((source) => hasScriptShebang(source.contents.split('\n', 1)[0] ?? ''))
+      sources.every((source) => looksBinary(source.contents))
     ) {
       continue;
     }
