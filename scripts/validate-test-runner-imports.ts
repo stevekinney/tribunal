@@ -31,7 +31,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { findBannedImportsForPath, isScannableFile } from './lib/banned-test-runner-imports';
+import {
+  findBannedImportsForPath,
+  hasScriptShebang,
+  isExtensionlessPath,
+  isScannableFile,
+} from './lib/banned-test-runner-imports';
 import { resolveRepositoryRoot } from './lib/repository-root';
 
 const repositoryRoot = resolveRepositoryRoot();
@@ -53,6 +58,16 @@ const GIT_TIMEOUT_MS = 30_000;
  * parser removed the need: those fixtures are string literals, which are not
  * imports, so nothing has to be exempted.
  */
+
+/**
+ * Paths worth reading. An extension is the usual signal, but a conventional
+ * Bun entrypoint like `bin/run-tests` carries none and is identified by its
+ * shebang instead — which cannot be known until the contents are in hand, so
+ * such paths are admitted here and filtered after reading.
+ */
+function isCandidatePath(path: string): boolean {
+  return isScannableFile(path) || isExtensionlessPath(path);
+}
 
 type SourceEntry = {
   /** Repository-relative path, as git reports it. */
@@ -119,7 +134,7 @@ function collectSourceEntries(): SourceEntry[] {
 
     const [, blob, stage] = record.slice(0, tabIndex).split(' ');
     const path = record.slice(tabIndex + 1);
-    if (!isScannableFile(path) || blob === undefined) continue;
+    if (!isCandidatePath(path) || blob === undefined) continue;
 
     // Stage 0 is the ordinary, unconflicted entry. During a merge conflict a
     // path instead has stages 1-3; taking the first seen would arbitrarily
@@ -132,7 +147,7 @@ function collectSourceEntries(): SourceEntry[] {
   for (const path of runGit(['ls-files', '--others', '--exclude-standard', '-z'])
     .toString('utf8')
     .split('\0')) {
-    if (path === '' || !isScannableFile(path)) continue;
+    if (path === '' || !isCandidatePath(path)) continue;
     if (!entries.has(path)) entries.set(path, { path });
   }
 
@@ -233,6 +248,17 @@ function main(): void {
     }
 
     if (sources.length === 0) continue;
+
+    // An extensionless path is only source if its shebang says so. Checking
+    // here rather than at listing time keeps the repository's `LICENSE`,
+    // `Makefile`, and friends out of the parser without a name allowlist.
+    if (
+      isExtensionlessPath(entry.path) &&
+      !sources.some((source) => hasScriptShebang(source.contents.split('\n', 1)[0] ?? ''))
+    ) {
+      continue;
+    }
+
     scannedCount += 1;
 
     const reported = new Set<string>();

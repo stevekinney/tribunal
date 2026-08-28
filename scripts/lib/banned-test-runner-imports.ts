@@ -124,16 +124,21 @@ export function findBannedTestRunnerImports(
     // `require('...')`.
     else if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      // `require(...)` and CommonJS's `module.require(...)`, which Bun honours
-      // as a loader. Deliberately NOT any `<anything>.require(...)`: an
-      // arbitrary object with a `require` method is not a module system, and a
-      // test below pins that `options.require('...')` stays unreported.
+      // The three receivers that are actually module loaders: a bare
+      // `require(...)`, CommonJS's `module.require(...)`, and Bun's
+      // `import.meta.require(...)`.
+      //
+      // Deliberately NOT any `<anything>.require(...)`: an arbitrary object
+      // with a `require` method is not a module system, and a test below pins
+      // that `options.require('...')` and `config.require('...')` stay
+      // unreported.
       const isRequire =
         (ts.isIdentifier(node.expression) && node.expression.text === 'require') ||
         (ts.isPropertyAccessExpression(node.expression) &&
           node.expression.name.text === 'require' &&
-          ts.isIdentifier(node.expression.expression) &&
-          node.expression.expression.text === 'module');
+          ((ts.isIdentifier(node.expression.expression) &&
+            node.expression.expression.text === 'module') ||
+            ts.isMetaProperty(node.expression.expression)));
       if (
         (isDynamicImport || isRequire) &&
         constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
@@ -167,20 +172,46 @@ export function findBannedTestRunnerImports(
  */
 export function findBannedImportsInSvelte(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
-  const scriptBlock = /<script\b[^>]*>([\s\S]*?)<\/script>/g;
 
-  // Svelte ignores markup comments entirely, so `<!-- <script>...</script> -->`
-  // is not an active script block and reporting it would reject a commit over
-  // disabled code. Blanked rather than deleted so every remaining offset — and
-  // therefore every reported line number — stays correct.
-  const active = contents.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '));
+  // Walked left to right rather than matched with two independent regular
+  // expressions, because the two questions are entangled: which script blocks
+  // are real depends on where the comments are, and which `<!--` are comments
+  // depends on where the script blocks are.
+  //
+  // Blanking every `<!-- ... -->` span first — the previous approach — gets
+  // that backwards. `"<!--"` is a perfectly ordinary string inside a script,
+  // so a component holding that literal, then a live `import`, then `"-->"`
+  // had its real import blanked away and reported nothing. A false negative
+  // is the dangerous direction for a ban, and it was introduced by the fix for
+  // a false positive.
+  //
+  // Scanning in order resolves it: a comment is markup, so `<!--` only opens
+  // one when we are not already inside a script block.
+  const scriptOpen = /<script\b[^>]*>/giy;
+  let index = 0;
 
-  for (const match of active.matchAll(scriptBlock)) {
-    const body = match[1];
-    if (body === undefined) continue;
-    const bodyStart = (match.index ?? 0) + match[0].indexOf(body);
-    const lineOffset = active.slice(0, bodyStart).split('\n').length - 1;
-    found.push(...findBannedTestRunnerImports(body, lineOffset));
+  while (index < contents.length) {
+    if (contents.startsWith('<!--', index)) {
+      const close = contents.indexOf('-->', index + 4);
+      index = close === -1 ? contents.length : close + 3;
+      continue;
+    }
+
+    if (contents[index] === '<') {
+      scriptOpen.lastIndex = index;
+      const opening = scriptOpen.exec(contents);
+      if (opening !== null) {
+        const bodyStart = index + opening[0].length;
+        const bodyEnd = contents.indexOf('</script', bodyStart);
+        const end = bodyEnd === -1 ? contents.length : bodyEnd;
+        const lineOffset = contents.slice(0, bodyStart).split('\n').length - 1;
+        found.push(...findBannedTestRunnerImports(contents.slice(bodyStart, end), lineOffset));
+        index = end;
+        continue;
+      }
+    }
+
+    index += 1;
   }
 
   return found.sort((first, second) => first.line - second.line);
@@ -209,4 +240,26 @@ export const SCANNABLE_EXTENSIONS: readonly string[] = [
 /** Whether a filename has an extension whose contents can hold an import. */
 export function isScannableFile(fileName: string): boolean {
   return SCANNABLE_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+}
+
+/**
+ * Whether an extensionless file is a script Bun or Node would execute.
+ *
+ * A conventional entrypoint like `bin/run-tests` carries no extension and is
+ * identified by its shebang instead. An extension-only predicate skips it
+ * before parsing, so such a file could import the banned runner while both
+ * pre-commit and CI reported success.
+ *
+ * Only the first line is inspected, and only when the name has no extension at
+ * all — this must not start reading every `LICENSE` and `Makefile` in the
+ * repository as source.
+ */
+export function hasScriptShebang(firstLine: string): boolean {
+  return /^#!.*\b(bun|node|deno|tsx)\b/.test(firstLine);
+}
+
+/** Whether a path has no extension, so its shebang decides. */
+export function isExtensionlessPath(path: string): boolean {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  return base.length > 0 && !base.includes('.');
 }

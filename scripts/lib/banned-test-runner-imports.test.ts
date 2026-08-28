@@ -4,6 +4,8 @@ import {
   findBannedImportsForPath,
   findBannedImportsInSvelte,
   findBannedTestRunnerImports,
+  hasScriptShebang,
+  isExtensionlessPath,
   isScannableFile,
 } from './banned-test-runner-imports';
 
@@ -219,6 +221,27 @@ describe('findBannedImportsInSvelte', () => {
     expect(findBannedImportsInSvelte("<!-- <script>import 'bun:test';</script> -->")).toEqual([]);
   });
 
+  /**
+   * Regression for a false negative the previous fix introduced. Blanking
+   * every `<!-- ... -->` span before parsing looks right until a script holds
+   * those delimiters as ordinary string data, at which point the blanking
+   * swallows the live import between them. A comment is markup, so `<!--`
+   * inside a script opens nothing.
+   */
+  it('treats comment delimiters inside a script as data, not as a comment', () => {
+    const contents = [
+      '<script>',
+      '  const opening = "<!--";',
+      "  import 'bun:test';",
+      '  const closing = "-->";',
+      '  void opening; void closing;',
+      '</script>',
+    ].join('\n');
+    const found = findBannedImportsInSvelte(contents);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.line).toBe(3);
+  });
+
   it('keeps line numbers correct for a real block after a commented one', () => {
     const contents = [
       "<!-- <script>import 'bun:test';</script> -->",
@@ -266,5 +289,29 @@ describe('isScannableFile', () => {
   it('accepts a nested path, since git reports paths rather than basenames', () => {
     expect(isScannableFile('runner/run-agent.test.mjs')).toBe(true);
     expect(isScannableFile('.github/scripts/audit-workflows.ts')).toBe(true);
+  });
+});
+
+describe('extensionless entrypoints', () => {
+  it('recognises a path with no extension', () => {
+    expect(isExtensionlessPath('bin/run-tests')).toBe(true);
+    expect(isExtensionlessPath('scripts/verify')).toBe(true);
+    expect(isExtensionlessPath('module.ts')).toBe(false);
+    expect(isExtensionlessPath('a/b.c/module.ts')).toBe(false);
+  });
+
+  it('accepts a script shebang and rejects anything else', () => {
+    for (const line of [
+      '#!/usr/bin/env bun',
+      '#!/usr/bin/env node',
+      '#!/usr/bin/node',
+      '#!/usr/bin/env -S bun run',
+      '#!/usr/bin/env tsx',
+    ]) {
+      expect(hasScriptShebang(line), line).toBe(true);
+    }
+    for (const line of ['#!/bin/sh', '#!/usr/bin/env python3', 'MIT License', '', '#!/bin/bash']) {
+      expect(hasScriptShebang(line), line).toBe(false);
+    }
   });
 });
