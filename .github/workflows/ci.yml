@@ -58,6 +58,11 @@ jobs:
         run: bun run validate:turbo
       - name: Validate skill wiring
         run: bun run --cwd scripts validate:skills
+      # Repository-wide for the same reason as the two gates above: the
+      # `bun:test` lint rule in .oxlintrc.json only reaches workspaces that
+      # declare a `lint` script, and runner/ and .github/ declare none.
+      - name: Validate test runner imports
+        run: bun run validate:test-runner-imports
       # .github/** is inside no Turborepo workspace, so these root-level
       # workflow-security gates (TRI-28) run directly rather than through
       # `bunx turbo run`. See .github/scripts/workflow-policy.ts.

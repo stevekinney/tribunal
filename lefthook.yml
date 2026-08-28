@@ -30,6 +30,19 @@ pre-commit:
       glob: '{turbo.json,*/turbo.json,*/*/turbo.json,package.json,*/package.json,*/*/package.json,tsconfig.json,*/tsconfig.json,*/*/tsconfig.json,*/svelte.config.js,*/*/svelte.config.js}'
       run: bun run scripts/validate-turbo-configuration.ts
 
+    test-runner-imports:
+      # Same reasoning as turbo-configuration above: a repository-wide
+      # invariant, no network or build, and the failure it catches is
+      # invisible locally. `bun:test` in an unlinted directory (runner/,
+      # .github/, or any workspace without a `lint` script) produces a green
+      # `turbo run lint` while the file quietly uses the wrong runner.
+      #
+      # No `glob`: the check is repo-wide by definition, and scoping it to
+      # changed files would reintroduce exactly the "only where someone
+      # remembered" gap it exists to close. It scans ~720 files in well under
+      # a second.
+      run: bun run scripts/validate-test-runner-imports.ts
+
 pre-push:
   parallel: false
   commands:
