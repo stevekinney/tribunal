@@ -4,6 +4,7 @@ import {
   findBannedImportsForPath,
   findBannedImportsInSvelte,
   findBannedTestRunnerImports,
+  hasForeignShebang,
   isExtensionlessPath,
   isScannableFile,
   looksBinary,
@@ -366,6 +367,189 @@ describe('findBannedTestRunnerImports', () => {
   });
 });
 
+describe('binding positions the ancestor walk does not reach through statements', () => {
+  it('an aliased import shadows, so calling it is not a loader call', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { load as require } from './loader';\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a default import shadows', () => {
+    expect(
+      findBannedTestRunnerImports("import require from './loader';\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a namespace import shadows', () => {
+    expect(
+      findBannedTestRunnerImports("import * as require from './loader';\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a type-only import clause does NOT shadow, because it is erased', () => {
+    // The dangerous direction: treating an erased binding as a shadow hides a
+    // real loader call.
+    expect(
+      findBannedTestRunnerImports(
+        "import type { load as require } from './loader';\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('an inline type-only specifier does NOT shadow either', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { type load as require } from './loader';\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('an `import x = require(...)` alias shadows', () => {
+    expect(
+      findBannedTestRunnerImports("import require = require('./loader');\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a side-effect import binds nothing, so it does not shadow', () => {
+    // `import './setup';` has no import clause at all. Returning early on that
+    // is what keeps a genuine loader call after it reportable.
+    expect(findBannedTestRunnerImports("import './setup';\nrequire('bun:test');\n")).toHaveLength(
+      1,
+    );
+  });
+
+  it('a catch parameter shadows within the catch block', () => {
+    expect(
+      findBannedTestRunnerImports("try { go(); } catch (require) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a destructured catch parameter shadows too', () => {
+    expect(
+      findBannedTestRunnerImports("try { go(); } catch ({ require }) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a for-of header binding shadows within the loop body', () => {
+    expect(
+      findBannedTestRunnerImports("for (const require of loaders) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a for-in header binding shadows within the loop body', () => {
+    expect(
+      findBannedTestRunnerImports("for (const require in loaders) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a classic for header binding shadows within the loop body', () => {
+    expect(
+      findBannedTestRunnerImports("for (let require = f; ; ) { require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a named function expression binds its own name inside itself', () => {
+    expect(
+      findBannedTestRunnerImports("const f = function require() { require('bun:test'); };\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a named class expression binds its own name inside its methods', () => {
+    expect(
+      findBannedTestRunnerImports("const C = class require { run() { require('bun:test'); } };\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('an uninitialized var redeclares rather than replaces', () => {
+  it('a bare `var require;` does NOT shadow, because the CommonJS binding survives', () => {
+    // Verified under Node: in a .cjs file `var require;` leaves
+    // `typeof require === 'function'` and the call still loads the runner.
+    // Treating it as a shadow suppressed a genuine finding.
+    expect(findBannedTestRunnerImports("var require;\nrequire('bun:test');\n")).toHaveLength(1);
+  });
+
+  it('a bare `var require;` in a nested block does not shadow either', () => {
+    expect(
+      findBannedTestRunnerImports("function f() { { var require; } require('bun:test'); }\n"),
+    ).toHaveLength(1);
+  });
+
+  it('an initialized `var require = ...` does shadow', () => {
+    expect(findBannedTestRunnerImports("var require = load;\nrequire('bun:test');\n")).toHaveLength(
+      0,
+    );
+  });
+
+  it('an uninitialized `let require;` does shadow, because let always rebinds', () => {
+    expect(findBannedTestRunnerImports("let require;\nrequire('bun:test');\n")).toHaveLength(0);
+  });
+});
+
+describe('hasForeignShebang', () => {
+  it('rejects a python shebang', () => {
+    expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);
+  });
+
+  it('rejects a shell shebang', () => {
+    expect(hasForeignShebang('#!/bin/sh\necho hi\n')).toBe(true);
+  });
+
+  it('accepts a bun shebang', () => {
+    expect(hasForeignShebang('#!/usr/bin/env bun\n')).toBe(false);
+  });
+
+  it('accepts a node shebang', () => {
+    expect(hasForeignShebang('#!/usr/bin/env node\n')).toBe(false);
+  });
+
+  it('admits a file with no shebang, preserving the entrypoint that rule excluded', () => {
+    // `bun bin/run-tests` executes a file with no shebang at all. A missing
+    // shebang must never exclude, or that real entrypoint stops being scanned.
+    expect(hasForeignShebang("import 'bun:test';\n")).toBe(false);
+  });
+
+  it('handles a single-line file with no trailing newline', () => {
+    expect(hasForeignShebang('#!/bin/bash')).toBe(true);
+  });
+});
+
+describe('sources that are not JavaScript are never handed to the TypeScript parser', () => {
+  it("does not report a python comment, which TypeScript's recovery turns into an import", () => {
+    expect(
+      findBannedImportsForPath('scripts/tool.py', "#!/usr/bin/env python3\n# import 'bun:test'\n"),
+    ).toHaveLength(0);
+  });
+
+  it('does not report a shell comment', () => {
+    expect(findBannedImportsForPath('bin/go.sh', "#!/bin/sh\n# import 'bun:test'\n")).toHaveLength(
+      0,
+    );
+  });
+
+  it('rejects a Dockerfile by basename, since it has neither extension nor shebang', () => {
+    expect(isScannableFile('Dockerfile')).toBe(false);
+    expect(isScannableFile('applications/web/Dockerfile.production')).toBe(false);
+  });
+
+  it('rejects configuration dotfiles, including suffixed variants', () => {
+    expect(isScannableFile('.env')).toBe(false);
+    expect(isScannableFile('.env.example')).toBe(false);
+    expect(isScannableFile('.gitignore')).toBe(false);
+  });
+
+  it('still admits an extensionless JavaScript entrypoint', () => {
+    expect(isScannableFile('bin/run-tests')).toBe(true);
+    expect(findBannedImportsForPath('bin/run-tests', "import 'bun:test';\n")).toHaveLength(1);
+  });
+
+  it('still admits a dotfile that really is JavaScript', () => {
+    expect(isScannableFile('.eslintrc.js')).toBe(true);
+  });
+});
+
 describe('findBannedImportsInSvelte', () => {
   it('finds an import inside a script block and reports its line in the whole file', () => {
     const contents = [
@@ -489,6 +673,24 @@ describe('findBannedImportsInSvelte', () => {
   });
 });
 
+describe('the unparseable-Svelte fallback ignores commented-out markup', () => {
+  it('does not report a script inside an HTML comment when the parser fails', () => {
+    // The markup is deliberately malformed so the Svelte parser rejects it and
+    // the textual fallback runs. That fallback is a regex, so it cannot tell a
+    // commented-out script from an active one without help.
+    const component =
+      '<script lang="ts">\n  const x = 1;\n</script>\n\n' +
+      "<!-- <script>import 'bun:test'</script> -->\n{#if x}\n<p>unclosed\n";
+    expect(findBannedImportsForPath('src/Broken.svelte', component)).toHaveLength(0);
+  });
+
+  it('still reports an active script in a component the parser rejects', () => {
+    const component =
+      '<script lang="ts">\n  import \'bun:test\';\n</script>\n{#if x}\n<p>unclosed\n';
+    expect(findBannedImportsForPath('src/Broken.svelte', component)).toHaveLength(1);
+  });
+});
+
 describe('findBannedImportsForPath', () => {
   it('uses the Svelte reader only for .svelte files', () => {
     const svelte = ['<script>', "  import 'bun:test';", '</script>'].join('\n');
@@ -548,7 +750,21 @@ describe('extensionless entrypoints', () => {
     expect(isScannableFile('bin/run-tests.task')).toBe(true);
     expect(isScannableFile('bin/.run-tests')).toBe(true);
     expect(isScannableFile('module.TS')).toBe(true);
-    expect(isScannableFile('script.sh')).toBe(true);
+  });
+
+  it('skips shell, which this test previously asserted was scanned', () => {
+    // `script.sh` was an assertion of the case above: `.sh` was not listed, so
+    // it was scanned, and that was cited as the inverted filter working. The
+    // principle is unchanged and the three cases above still prove it — an
+    // unrecognised spelling is still scanned. What changed is that `.sh` is no
+    // longer unrecognised.
+    //
+    // It is listed now because parsing shell as TypeScript is not harmless.
+    // The parser recovers rather than failing: `# import 'bun:test'` becomes a
+    // real ImportDeclaration, so an ordinary comment in any of the fourteen
+    // `#`-commented files this repository tracks made the always-on hook
+    // reject every commit.
+    expect(isScannableFile('script.sh')).toBe(false);
   });
 
   it('skips files that are definitely not source', () => {

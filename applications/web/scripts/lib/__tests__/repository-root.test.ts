@@ -1,5 +1,6 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 
 import { resolveRepositoryRoot } from '../repository-root';
@@ -9,34 +10,31 @@ import { resolveRepositoryRoot } from '../repository-root';
 // is collected it runs under Vitest -- where `import.meta.dir` is undefined,
 // because it is a Bun-only extension Vite's module system never populates.
 //
-// The dual-runtime split is not invented here: `scripts/lib/repository-root.test.ts`
-// already established it for the identical helper one directory up. It is spelled
-// with `runIf` rather than that file's early `return`, because this workspace sets
-// `expect: { requireAssertions: true }`, under which a test that returns before
-// asserting fails rather than passing vacuously. Skipping states the same thing
-// honestly and satisfies the convention.
-const runningUnderBun = typeof (import.meta as { dir?: string }).dir === 'string';
+// Splitting on the runtime is not enough on its own. Every configured
+// invocation of this file is Vitest, so a branch guarded on "running under Bun"
+// is *permanently* skipped, and the only assertion left proves that a Bun-only
+// helper fails under a runtime it is never used in. That is not a regression
+// guard. The real behaviour is exercised by running the helper under Bun in a
+// subprocess and asserting on its exit code.
+const testDirectory = dirname(fileURLToPath(import.meta.url));
 
 describe('resolveRepositoryRoot from applications/web/scripts/lib', () => {
-  test.runIf(runningUnderBun)('resolves to the monorepo root', () => {
-    // The three original assertions, preserved verbatim -- they need the Bun
-    // runtime to mean anything, not a different subject.
-    const root = resolveRepositoryRoot();
-    expect(existsSync(join(root, 'package.json'))).toBe(true);
-    expect(existsSync(join(root, 'packages/database'))).toBe(true);
-    expect(existsSync(join(root, 'applications/web'))).toBe(true);
+  test('resolves to the monorepo root when run under Bun', () => {
+    const result = spawnSync('bun', [join(testDirectory, 'repository-root.bun-fixture.ts')], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(result.stderr ?? '').toBe('');
+    expect(result.status).toBe(0);
   });
 
-  test.runIf(!runningUnderBun)(
-    'throws under Vite/Vitest because import.meta.dir is a Bun-only extension',
-    () => {
-      // `resolveRepositoryRoot()` calls `resolve(import.meta.dir, '..', '..', '..', '..')`.
-      // Bun populates `import.meta.dir`; Vite never does, so `node:path#resolve`
-      // receives `undefined` and throws. This is unmocked behaviour of the real
-      // source under the mandated harness, and it is why the helper stays Bun-only
-      // rather than being quietly rewritten -- fifteen call sites across the
-      // repository use `import.meta.dir`, and this one is not special.
-      expect(() => resolveRepositoryRoot()).toThrow(TypeError);
-    },
-  );
+  test('throws under Vite/Vitest because import.meta.dir is a Bun-only extension', () => {
+    // `resolveRepositoryRoot()` calls `resolve(import.meta.dir, '..', '..', '..', '..')`.
+    // Bun populates `import.meta.dir`; Vite never does, so `node:path#resolve`
+    // receives `undefined` and throws. This is unmocked behaviour of the real
+    // source, and it is why the helper stays Bun-only rather than being quietly
+    // rewritten -- fifteen call sites across the repository use
+    // `import.meta.dir`, and this one is not special.
+    expect(() => resolveRepositoryRoot()).toThrow(TypeError);
+  });
 });

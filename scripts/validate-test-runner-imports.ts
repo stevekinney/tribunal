@@ -66,7 +66,13 @@ const GIT_TIMEOUT_MS = 30_000;
  * such paths are admitted here and filtered after reading.
  */
 function isCandidatePath(path: string): boolean {
-  return isScannableFile(path) || isExtensionlessPath(path);
+  // Not `|| isExtensionlessPath(path)`. `isScannableFile` already admits a
+  // path with no extension -- nothing in its blocklist can match one -- so the
+  // disjunction added no entrypoint and instead overrode the basename
+  // rejection it now performs, letting `Dockerfile` through to the TypeScript
+  // parser. `isExtensionlessPath` still decides whether a binary check applies
+  // once the contents are read.
+  return isScannableFile(path);
 }
 
 type SourceEntry = {

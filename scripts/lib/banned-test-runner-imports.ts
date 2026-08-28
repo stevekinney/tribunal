@@ -214,16 +214,85 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
   const isAmbient = (candidate: ts.Node): boolean =>
     (ts.getCombinedModifierFlags(candidate as ts.Declaration) & ts.ModifierFlags.Ambient) !== 0;
 
-  const bindsName = (candidate: ts.Node): boolean =>
-    !isAmbient(candidate) &&
-    (ts.isVariableDeclaration(candidate) ||
-      ts.isFunctionDeclaration(candidate) ||
-      ts.isParameter(candidate) ||
-      ts.isClassDeclaration(candidate) ||
-      ts.isImportSpecifier(candidate) ||
-      ts.isImportClause(candidate) ||
-      ts.isBindingElement(candidate)) &&
-    nameBinds(candidate.name);
+  /**
+   * Whether a variable declaration actually replaces an existing binding.
+   *
+   * A bare `var` does not. It redeclares the name and the previous value
+   * survives, which matters because CommonJS supplies `require` and `module`
+   * as wrapper parameters. Verified under Node: in a `.cjs` file
+   * `var require;` leaves `typeof require` as `'function'` and
+   * `require('bun:test')` still loads the runner. Treating that as a shadow
+   * suppressed a genuine finding — the dangerous direction.
+   *
+   * `let` and `const` always create a fresh binding, so an uninitialized
+   * `let require;` genuinely shadows. A `for...of` or `for...in` header always
+   * assigns to its declaration, so it shadows with no initializer written; a
+   * classic `for (var require; ; )` does not.
+   */
+  const replacesBinding = (declaration: ts.VariableDeclaration): boolean => {
+    if (declaration.initializer !== undefined) return true;
+    const list = declaration.parent;
+    if ((list.flags & ts.NodeFlags.BlockScoped) !== 0) return true;
+    return ts.isForOfStatement(list.parent) || ts.isForInStatement(list.parent);
+  };
+
+  /**
+   * Whether an import binding is erased before it reaches the runtime.
+   *
+   * `import type { load as require }` carries the flag on the clause;
+   * `import { type load as require }` carries it on the specifier. Both are
+   * erased and introduce nothing, so treating either as a shadow would
+   * suppress a real loader call.
+   */
+  const isTypeOnlyImport = (candidate: ts.ImportSpecifier | ts.NamespaceImport): boolean => {
+    if (ts.isImportSpecifier(candidate) && candidate.isTypeOnly) return true;
+    const clause = ts.isImportSpecifier(candidate) ? candidate.parent.parent : candidate.parent;
+    return ts.isImportClause(clause) && clause.isTypeOnly;
+  };
+
+  const bindsName = (candidate: ts.Node): boolean => {
+    if (isAmbient(candidate)) return false;
+    if (ts.isImportSpecifier(candidate) || ts.isNamespaceImport(candidate)) {
+      return !isTypeOnlyImport(candidate) && nameBinds(candidate.name);
+    }
+    if (ts.isImportClause(candidate)) {
+      return !candidate.isTypeOnly && nameBinds(candidate.name);
+    }
+    if (ts.isVariableDeclaration(candidate)) {
+      return replacesBinding(candidate) && nameBinds(candidate.name);
+    }
+    return (
+      (ts.isFunctionDeclaration(candidate) ||
+        ts.isParameter(candidate) ||
+        ts.isClassDeclaration(candidate) ||
+        ts.isBindingElement(candidate)) &&
+      nameBinds(candidate.name)
+    );
+  };
+
+  /**
+   * Bindings introduced by an import statement.
+   *
+   * Needed because the statement itself is an `ImportDeclaration`, which binds
+   * nothing directly — the names live on its clause, its namespace binding, or
+   * its specifiers. Without descending, `import { load as require }` never
+   * reached `bindsName`, and a call to the imported function was reported as a
+   * CommonJS loader.
+   */
+  const importBinds = (statement: ts.Statement): boolean => {
+    if (ts.isImportEqualsDeclaration(statement)) {
+      return !isAmbient(statement) && nameBinds(statement.name);
+    }
+    if (!ts.isImportDeclaration(statement)) return false;
+    const clause = statement.importClause;
+    if (clause === undefined) return false;
+    if (bindsName(clause)) return true;
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) return false;
+    return ts.isNamespaceImport(bindings)
+      ? bindsName(bindings)
+      : bindings.elements.some((element) => bindsName(element));
+  };
 
   /**
    * Declarations written directly in this scope's own statement list.
@@ -231,8 +300,8 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * Deliberately does not descend into a nested block: `let`, `const`, and
    * `class` are block-scoped, so `{ const require = x; }` binds nothing
    * outside its braces. Treating it as a shadow let a genuine loader call
-   * after such a block go unreported — a false negative introduced by the
-   * previous round's fix for the opposite problem.
+   * after such a block go unreported — a false negative introduced by an
+   * earlier round's fix for the opposite problem.
    */
   const declaredDirectlyIn = (scope: ts.Node): boolean => {
     let found = false;
@@ -246,7 +315,7 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
       for (const parameter of scope.parameters) if (bindsName(parameter)) found = true;
     }
     for (const statement of statements ?? []) {
-      if (bindsName(statement)) found = true;
+      if (bindsName(statement) || importBinds(statement)) found = true;
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (bindsName(declaration)) found = true;
@@ -298,7 +367,35 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
     return found;
   };
 
+  /**
+   * Bindings a scope introduces outside any statement list of its own.
+   *
+   * Three positions live here, and each produced a false positive because the
+   * walk below only ever inspected blocks, functions, and source files:
+   * a named function or class expression binds its own name inside itself, a
+   * catch clause binds its parameter for the catch block, and a loop header
+   * binds for the loop body.
+   */
+  const bindsOutsideStatementList = (scope: ts.Node): boolean => {
+    if (ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) {
+      return nameBinds(scope.name);
+    }
+    if (ts.isCatchClause(scope)) {
+      return nameBinds(scope.variableDeclaration?.name);
+    }
+    if (ts.isForStatement(scope) || ts.isForOfStatement(scope) || ts.isForInStatement(scope)) {
+      const initializer = scope.initializer;
+      return (
+        initializer !== undefined &&
+        ts.isVariableDeclarationList(initializer) &&
+        initializer.declarations.some((declaration) => bindsName(declaration))
+      );
+    }
+    return false;
+  };
+
   for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
+    if (bindsOutsideStatementList(scope)) return true;
     if (ts.isBlock(scope) || ts.isFunctionLike(scope) || ts.isSourceFile(scope)) {
       if (declaredDirectlyIn(scope)) return true;
       if ((ts.isFunctionLike(scope) || ts.isSourceFile(scope)) && hoistedVarIn(scope)) return true;
@@ -487,7 +584,13 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  */
 function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
-  for (const match of contents.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
+  // Commented-out markup is not code. The Svelte parser knows that; this
+  // regex fallback does not, so a `<!-- <script>...</script> -->` left in a
+  // component whose parse failed was reported as an active import. Blanking
+  // the comment spans rather than deleting them keeps every byte offset — and
+  // so every reported line number — correct.
+  const active = contents.replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\n]/g, ' '));
+  for (const match of active.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     const body = match[1];
     if (body === undefined) continue;
     const bodyStart = (match.index ?? 0) + match[0].indexOf(body);
@@ -499,6 +602,7 @@ function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] 
 
 /** Dispatch to the right reader for a path's extension. */
 export function findBannedImportsForPath(path: string, contents: string): BannedImport[] {
+  if (hasForeignShebang(contents)) return [];
   return path.endsWith('.svelte')
     ? findBannedImportsInSvelte(contents)
     : findBannedTestRunnerImports(contents, 0, path);
@@ -510,9 +614,21 @@ export function findBannedImportsForPath(path: string, contents: string): Banned
  * Inverted from an allowlist deliberately. An allowlist has to predict every
  * spelling a runnable file might use, and it cannot: `bun bin/run-tests.task`
  * executes JavaScript, so does a file named `.run-tests`, and a case-sensitive
- * list misses `.TS` besides. Listing what is *not* source fails safe — an
- * unrecognised extension gets parsed, and parsing a non-module yields no
- * imports.
+ * list misses `.TS` besides. Listing what is *not* source keeps those working.
+ *
+ * The inversion stands; the reason originally given for it does not. That
+ * reason was "parsing a non-module yields no imports", and it is false.
+ * TypeScript's parser does not fail closed on foreign syntax, it *recovers*:
+ * given `# import 'bun:test'` — an ordinary comment in Python, shell, or a
+ * Dockerfile — it lexes the `#` as a stray private identifier and then builds
+ * a genuine `ImportDeclaration` from the rest of the line. The gate reported a
+ * banned import in files containing no JavaScript at all, and because the hook
+ * runs on every commit, one explanatory comment anywhere in the repository
+ * blocked all of them. This repository tracks fourteen such files.
+ *
+ * So the safety net is no longer "parsing is harmless" but three explicit
+ * exclusions: the `#`-comment extensions below, `NON_SOURCE_BASENAMES` for the
+ * extensionless recipes, and `hasForeignShebang` for everything else.
  *
  * Markdown is excluded on purpose rather than by accident: documentation
  * legitimately shows the banned import inside a fenced example, and reporting
@@ -551,12 +667,74 @@ export const NON_SOURCE_EXTENSIONS: readonly string[] = [
   '.tgz',
   '.map',
   '.snap',
+  // Languages whose comment marker is `#`. See the note above: these are not
+  // merely uninteresting to parse, they are actively dangerous to parse.
+  '.py',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.fish',
+  '.rb',
+  '.pl',
+];
+
+/**
+ * Basenames that are build recipes or configuration, never JavaScript, and
+ * which carry no extension to recognise them by. Matched case-insensitively
+ * against the basename up to its first dot, so `Dockerfile.production` is
+ * covered as well as `Dockerfile`.
+ */
+export const NON_SOURCE_BASENAMES: readonly string[] = [
+  'dockerfile',
+  'containerfile',
+  'makefile',
+  'gemfile',
+  'rakefile',
+  'procfile',
+  // Configuration dotfiles that also comment with `#`. A leading dot does not
+  // by itself mean configuration -- `.eslintrc.js` is JavaScript -- so these
+  // are listed rather than matched by a dot prefix.
+  '.env',
+  '.gitignore',
+  '.gitattributes',
+  '.dockerignore',
+  '.npmrc',
+  '.nvmrc',
+  '.editorconfig',
+  '.prettierignore',
+  '.eslintignore',
 ];
 
 /** Whether a file's contents could hold a module import. */
 export function isScannableFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+  // The search starts past a leading dot so `.env.example` reduces to `.env`
+  // rather than to the empty string, which matched nothing and let every
+  // dotfile variant through.
+  const dot = base.indexOf('.', base.startsWith('.') ? 1 : 0);
+  const stem = dot === -1 ? base : base.slice(0, dot);
+  if (NON_SOURCE_BASENAMES.includes(stem)) return false;
   return !NON_SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+/**
+ * Whether a file's first line hands it to something other than a JavaScript
+ * runtime.
+ *
+ * The complement of a rule this validator deliberately removed earlier, and
+ * not a reversal of it. That rule *required* a shebang naming a JavaScript
+ * runtime, which wrongly excluded `bun bin/run-tests` — a real entrypoint with
+ * no shebang at all. That reason still holds, so a missing shebang still
+ * admits the file. Only a shebang naming a foreign interpreter excludes it,
+ * which the earlier rule's second justification — that parsing prose is
+ * harmless — turns out to require.
+ */
+export function hasForeignShebang(contents: string): boolean {
+  const newline = contents.indexOf('\n');
+  const firstLine = newline === -1 ? contents : contents.slice(0, newline);
+  if (!firstLine.startsWith('#!')) return false;
+  return !/\b(node|bun|deno)\b/.test(firstLine);
 }
 
 /**
