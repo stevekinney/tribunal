@@ -310,7 +310,10 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    */
   const importBinds = (statement: ts.Statement): boolean => {
     if (ts.isImportEqualsDeclaration(statement)) {
-      return !isAmbient(statement) && nameBinds(statement.name);
+      // `import type require = require('./types')` is erased just as
+      // `import type { x }` is, so it introduces no runtime binding. The flag
+      // lives on the statement for this spelling.
+      return !isAmbient(statement) && !statement.isTypeOnly && nameBinds(statement.name);
     }
     if (!ts.isImportDeclaration(statement)) return false;
     const clause = statement.importClause;
@@ -334,11 +337,18 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    */
   const declaredDirectlyIn = (scope: ts.Node): boolean => {
     let found = false;
+    // A `switch` body is a `CaseBlock`, not a `Block`, and its clauses share
+    // one block scope — `case 'a': const require = x;` binds for every later
+    // clause too. An unbraced clause therefore has no `Block` for the walk to
+    // find, which is why a braced `case 'x': { ... }` already worked and a bare
+    // one did not.
     const statements = ts.isSourceFile(scope)
       ? scope.statements
       : ts.isBlock(scope)
         ? scope.statements
-        : functionBodyOf(scope)?.statements;
+        : ts.isCaseBlock(scope)
+          ? scope.clauses.flatMap((clause) => [...clause.statements])
+          : functionBodyOf(scope)?.statements;
 
     if (ts.isFunctionLike(scope)) {
       for (const parameter of scope.parameters) if (bindsName(parameter)) found = true;
@@ -355,46 +365,29 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
   };
 
   /**
-   * `var` is function-scoped, so one written inside a nested block still binds
-   * across the whole function. Searched separately, and **only** for `var`.
+   * There is deliberately no hoisted-`var` search any more.
    *
-   * Function declarations deliberately excluded: in a module (and anywhere
-   * strict), a function declared inside a block is block-scoped like `let`,
-   * not hoisted out of it — verified by running
-   * `{ function f(){} } f()` under Node, which throws `ReferenceError`.
-   * Treating them as hoisted would have made a function declared in an
-   * unrelated block shadow a genuine loader call outside it. Declarations at
-   * the scope's own level are already handled by `declaredDirectlyIn`.
+   * `var` is function-scoped, so a declaration inside a nested block does bind
+   * across the whole function — but binding is not the question. The question
+   * is whether the *assignment* has run by the time the call executes, and for
+   * anything nested that cannot be decided lexically:
+   *
+   * ```js
+   * if (false) { var require = custom; }
+   * require('bun:test');            // still the real loader
+   * ```
+   *
+   * The initializer precedes the call in source order and never executes.
+   * Position was standing in for control-flow dominance, and it is not a
+   * substitute for it.
+   *
+   * Rather than approximate dominance, suppression now requires the strongest
+   * form of it that is free: the declaration must be a direct statement of a
+   * scope enclosing the call, so the two are in one statement list and run in
+   * order. Every nested `var` reports instead, which is the safe direction for
+   * a ban. A bare `var` never suppressed anyway, so this only changes the
+   * nested-and-initialized case.
    */
-  const hoistedVarIn = (scope: ts.Node): boolean => {
-    let found = false;
-    const visit = (child: ts.Node): void => {
-      if (found) return;
-      // Anything that introduces its own `var` scope stops the walk: nested
-      // functions, class static blocks, and TypeScript namespace bodies. A
-      // `var` inside `class C { static { ... } }` is scoped to that block, so
-      // treating it as hoisted let a genuine outer loader call go unreported.
-      if (
-        child !== scope &&
-        (ts.isFunctionLike(child) ||
-          ts.isClassStaticBlockDeclaration(child) ||
-          ts.isModuleDeclaration(child))
-      ) {
-        return;
-      }
-      if (
-        ts.isVariableStatement(child) &&
-        (child.declarationList.flags & ts.NodeFlags.BlockScoped) === 0
-      ) {
-        for (const declaration of child.declarationList.declarations) {
-          if (bindsName(declaration)) found = true;
-        }
-      }
-      ts.forEachChild(child, visit);
-    };
-    ts.forEachChild(scope, visit);
-    return found;
-  };
 
   /**
    * Bindings a scope introduces outside any statement list of its own.
@@ -425,12 +418,47 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
 
   for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
     if (bindsOutsideStatementList(scope)) return true;
-    if (ts.isBlock(scope) || ts.isFunctionLike(scope) || ts.isSourceFile(scope)) {
+    if (
+      ts.isBlock(scope) ||
+      ts.isCaseBlock(scope) ||
+      ts.isFunctionLike(scope) ||
+      ts.isSourceFile(scope)
+    ) {
       if (declaredDirectlyIn(scope)) return true;
-      if ((ts.isFunctionLike(scope) || ts.isSourceFile(scope)) && hoistedVarIn(scope)) return true;
     }
   }
   return false;
+}
+
+/**
+ * The argument holding the module specifier, if this call loads a module.
+ *
+ * Most invocations put it first. `Function.prototype.call` and `.apply` move
+ * it, because there the loader is the **receiver** of the invocation method
+ * rather than the callee — `require.call(undefined, 'bun:test')` runs the real
+ * loader with the specifier second, and `.apply` wraps it in an array. That is
+ * a different shape from the transparent callee wrappers `unwrapTransparent`
+ * handles: those leave the loader *as* the callee, so unwrapping reaches it,
+ * while here unwrapping only ever reaches `call`.
+ *
+ * Only a literal array is read for `.apply`. A variable holding the arguments
+ * is not statically knowable, and guessing would report calls that load
+ * something else.
+ */
+function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
+  const callee = unwrapTransparent(node.expression);
+  if (isModuleLoader(callee)) return node.arguments[0];
+
+  const invoker = staticMemberName(callee);
+  if (invoker === undefined) return undefined;
+  if (invoker.name !== 'call' && invoker.name !== 'apply') return undefined;
+  if (!isModuleLoader(unwrapTransparent(invoker.object))) return undefined;
+
+  const second = node.arguments[1];
+  if (invoker.name === 'call') return second;
+  return second !== undefined && ts.isArrayLiteralExpression(second)
+    ? second.elements[0]
+    : undefined;
 }
 
 /**
@@ -511,11 +539,8 @@ export function findBannedTestRunnerImports(
       // around the argument.
       const callee = unwrapTransparent(node.expression);
       const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = isModuleLoader(callee);
-      if (
-        (isDynamicImport || isRequire) &&
-        constantSpecifier(node.arguments[0]) === BANNED_SPECIFIER
-      ) {
+      const specifier = isDynamicImport ? node.arguments[0] : loaderSpecifierArgument(node);
+      if (specifier !== undefined && constantSpecifier(specifier) === BANNED_SPECIFIER) {
         record(node, isDynamicImport ? 'dynamic' : 'require');
       }
     }

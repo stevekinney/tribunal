@@ -205,10 +205,27 @@ describe('findBannedTestRunnerImports', () => {
       ).toEqual([]);
     });
 
-    it('a var in a nested block does shadow, because var hoists', () => {
+    it('a var in a nested block no longer shadows, because its assignment cannot be proven to run', () => {
+      // This asserted the opposite, on the grounds that `var` hoists. The
+      // binding does hoist, and that part was right. What it missed is that
+      // hoisting moves the binding and not the value: the assignment happens
+      // where it is written, so the question is whether it has executed, not
+      // whether the name exists.
+      //
+      // For a bare block like this one it has — a block with no condition
+      // always runs — so this specific shape loses a correct suppression, and
+      // that is a real cost rather than a technicality. But nothing
+      // distinguishes it lexically from `if (false) { var require = custom; }`,
+      // which never runs and was suppressing a genuine loader call. Telling
+      // them apart needs control-flow analysis.
+      //
+      // So suppression now requires the declaration to be a direct statement of
+      // a scope enclosing the call, where the two share one statement list and
+      // run in order. Everything nested reports, which is the safe direction
+      // for a ban.
       expect(
         findBannedTestRunnerImports("{ var require = custom; }\nrequire('bun:test');"),
-      ).toEqual([]);
+      ).toHaveLength(1);
     });
 
     it('a function declared in a block does not shadow outside it', () => {
@@ -412,6 +429,14 @@ describe('binding positions the ancestor walk does not reach through statements'
     ).toHaveLength(0);
   });
 
+  it('a type-only `import type x = require(...)` does NOT shadow, because it is erased', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import type require = require('./types');\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
   it('a side-effect import binds nothing, so it does not shadow', () => {
     // `import './setup';` has no import clause at all. Returning early on that
     // is what keeps a genuine loader call after it reportable.
@@ -523,6 +548,87 @@ describe('an uninitialized var redeclares rather than replaces', () => {
 
   it('an uninitialized `let require;` does shadow, because let always rebinds', () => {
     expect(findBannedTestRunnerImports("let require;\nrequire('bun:test');\n")).toHaveLength(0);
+  });
+});
+
+describe('lexical order is not control flow', () => {
+  it('a var initializer in a dead branch does not suppress, because it never runs', () => {
+    // The initializer precedes the call in source order but never executes, so
+    // the CommonJS wrapper's loader is still what the call reaches. Position
+    // was standing in for control-flow dominance and is not a substitute.
+    expect(
+      findBannedTestRunnerImports("if (false) { var require = custom; }\nrequire('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a var initializer inside any conditional does not suppress', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "function f() { if (x) { var require = custom; } require('bun:test'); }\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a straight-line var in the same statement list does suppress', () => {
+    // Statements in one list run in order, which is the strongest form of
+    // dominance available for free.
+    expect(
+      findBannedTestRunnerImports("var require = custom;\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('switch clauses share one block scope', () => {
+  it('an unbraced case binding shadows', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "switch (kind) { case 'x': const require = loader; require('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a binding in one clause shadows a later clause, since the scope is the whole block', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "switch (kind) { case 'a': const require = loader; break; case 'b': require('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a braced case block still shadows', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "switch (kind) { case 'x': { const require = loader; require('bun:test'); } }\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('loaders invoked through call and apply', () => {
+  it('catches require.call, where the specifier is the second argument', () => {
+    expect(findBannedTestRunnerImports("require.call(undefined, 'bun:test');\n")).toHaveLength(1);
+  });
+
+  it('catches module.require.call', () => {
+    expect(findBannedTestRunnerImports("module.require.call(module, 'bun:test');\n")).toHaveLength(
+      1,
+    );
+  });
+
+  it('catches require.apply, reading the literal argument array', () => {
+    expect(findBannedTestRunnerImports("require.apply(undefined, ['bun:test']);\n")).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not report call on something that is not a loader', () => {
+    expect(findBannedTestRunnerImports("options.require.call(o, 'bun:test');\n")).toHaveLength(0);
+  });
+
+  it('does not guess at a non-literal apply argument array', () => {
+    // A variable holding the arguments is not statically knowable, and
+    // guessing would report calls that load something else entirely.
+    expect(findBannedTestRunnerImports('require.apply(undefined, args);\n')).toHaveLength(0);
   });
 });
 
