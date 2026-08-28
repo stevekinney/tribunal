@@ -143,6 +143,20 @@ function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | un
 }
 
 /**
+ * A function's block body, when it has one.
+ *
+ * `ts.isFunctionLike` narrows to `SignatureDeclaration`, which does not
+ * declare `body` even though every function-like node that has a body is
+ * assignable to it — so the cast is localized here with the reason rather
+ * than repeated at each use.
+ */
+function functionBodyOf(node: ts.Node): ts.Block | undefined {
+  if (!ts.isFunctionLike(node)) return undefined;
+  const body = (node as ts.FunctionLikeDeclaration).body;
+  return body !== undefined && ts.isBlock(body) ? body : undefined;
+}
+
+/**
  * Whether an identifier is bound by the source itself rather than by the
  * runtime.
  *
@@ -182,9 +196,7 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
       ? scope.statements
       : ts.isBlock(scope)
         ? scope.statements
-        : ts.isFunctionLike(scope) && scope.body !== undefined && ts.isBlock(scope.body)
-          ? scope.body.statements
-          : undefined;
+        : functionBodyOf(scope)?.statements;
 
     if (ts.isFunctionLike(scope)) {
       for (const parameter of scope.parameters) if (bindsName(parameter)) found = true;
