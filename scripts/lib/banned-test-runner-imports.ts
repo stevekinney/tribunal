@@ -170,16 +170,39 @@ function functionBodyOf(node: ts.Node): ts.Block | undefined {
  */
 function isLocallyShadowed(node: ts.Node, name: string): boolean {
   /** A binding introduced by this node, if it names `name`. */
+  /**
+   * Whether a binding name introduces `name`, following destructuring.
+   *
+   * `function load({ require })` binds `require` just as surely as
+   * `function load(require)` does, but its `name` is an `ObjectBindingPattern`
+   * rather than an identifier — so an identifier-only check reported a call
+   * that invokes the caller's own function.
+   */
+  const nameBinds = (node: ts.Node | undefined): boolean => {
+    if (node === undefined) return false;
+    if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
+      // An `OmittedExpression` (the hole in `[, x]`) is not a binding element,
+      // so `some` correctly skips it.
+      return node.elements.some(
+        (element) => ts.isBindingElement(element) && nameBinds(element.name),
+      );
+    }
+    // Every remaining binding name is an identifier; anything else is not a
+    // binding of this name. Written as one return rather than an identifier
+    // check plus a trailing `return false`, which was unreachable — no AST
+    // node reaches it, and the coverage gate said so.
+    return ts.isIdentifier(node) && node.text === name;
+  };
+
   const bindsName = (candidate: ts.Node): boolean =>
     (ts.isVariableDeclaration(candidate) ||
       ts.isFunctionDeclaration(candidate) ||
       ts.isParameter(candidate) ||
       ts.isClassDeclaration(candidate) ||
       ts.isImportSpecifier(candidate) ||
-      ts.isImportClause(candidate)) &&
-    candidate.name !== undefined &&
-    ts.isIdentifier(candidate.name) &&
-    candidate.name.text === name;
+      ts.isImportClause(candidate) ||
+      ts.isBindingElement(candidate)) &&
+    nameBinds(candidate.name);
 
   /**
    * Declarations written directly in this scope's own statement list.
@@ -228,8 +251,18 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
     let found = false;
     const visit = (child: ts.Node): void => {
       if (found) return;
-      // A nested function has its own hoisting scope.
-      if (child !== scope && ts.isFunctionLike(child)) return;
+      // Anything that introduces its own `var` scope stops the walk: nested
+      // functions, class static blocks, and TypeScript namespace bodies. A
+      // `var` inside `class C { static { ... } }` is scoped to that block, so
+      // treating it as hoisted let a genuine outer loader call go unreported.
+      if (
+        child !== scope &&
+        (ts.isFunctionLike(child) ||
+          ts.isClassStaticBlockDeclaration(child) ||
+          ts.isModuleDeclaration(child))
+      ) {
+        return;
+      }
       if (
         ts.isVariableStatement(child) &&
         (child.declarationList.flags & ts.NodeFlags.BlockScoped) === 0
@@ -450,22 +483,59 @@ export function findBannedImportsForPath(path: string, contents: string): Banned
     : findBannedTestRunnerImports(contents, 0, path);
 }
 
-/** File extensions whose contents can contain a module import. */
-export const SCANNABLE_EXTENSIONS: readonly string[] = [
-  '.ts',
-  '.tsx',
-  '.mts',
-  '.cts',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.svelte',
+/**
+ * Extensions whose contents are definitely not executable source.
+ *
+ * Inverted from an allowlist deliberately. An allowlist has to predict every
+ * spelling a runnable file might use, and it cannot: `bun bin/run-tests.task`
+ * executes JavaScript, so does a file named `.run-tests`, and a case-sensitive
+ * list misses `.TS` besides. Listing what is *not* source fails safe — an
+ * unrecognised extension gets parsed, and parsing a non-module yields no
+ * imports.
+ *
+ * Markdown is excluded on purpose rather than by accident: documentation
+ * legitimately shows the banned import inside a fenced example, and reporting
+ * those would make the gate reject its own explanation.
+ */
+export const NON_SOURCE_EXTENSIONS: readonly string[] = [
+  '.md',
+  '.mdx',
+  '.json',
+  '.jsonc',
+  '.lock',
+  '.yml',
+  '.yaml',
+  '.toml',
+  '.txt',
+  '.csv',
+  '.sql',
+  '.html',
+  '.css',
+  '.scss',
+  '.svg',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.ico',
+  '.webp',
+  '.avif',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.pdf',
+  '.zip',
+  '.gz',
+  '.tgz',
+  '.map',
+  '.snap',
 ];
 
-/** Whether a filename has an extension whose contents can hold an import. */
+/** Whether a file's contents could hold a module import. */
 export function isScannableFile(fileName: string): boolean {
-  return SCANNABLE_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+  const lower = fileName.toLowerCase();
+  return !NON_SOURCE_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
 /**

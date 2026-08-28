@@ -186,6 +186,24 @@ describe('findBannedTestRunnerImports', () => {
       ).toHaveLength(1);
     });
 
+    it('a var in a class static block does not shadow outside it', () => {
+      // A static block is its own `var` scope, like a function.
+      expect(
+        findBannedTestRunnerImports(
+          "class C { static { var require = custom; } }\nrequire('bun:test');",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('a destructured parameter does shadow within its function', () => {
+      // `function load({ require })` binds `require` as surely as a plain
+      // parameter does; an identifier-only check reported the caller's own
+      // function as a loader.
+      expect(
+        findBannedTestRunnerImports("function load({ require }) { return require('bun:test'); }"),
+      ).toEqual([]);
+    });
+
     it('a var in a nested block does shadow, because var hoists', () => {
       expect(
         findBannedTestRunnerImports("{ var require = custom; }\nrequire('bun:test');"),
@@ -483,9 +501,16 @@ describe('isScannableFile', () => {
   });
 
   it('rejects files that cannot contain an import', () => {
-    for (const name of ['a.json', 'a.md', 'a.sql', 'a.svg', 'README']) {
-      expect(isScannableFile(name)).toBe(false);
+    // `README` was in this list when the filter was an allowlist of source
+    // extensions. It is not any more, and deliberately: extensionless files
+    // are scanned because `bun bin/run-tests` is a real entrypoint shape, and
+    // excluding prose by name would need exactly the name allowlist that
+    // approach exists to avoid. Parsing a README yields no imports, so the
+    // cost is nothing and the guarantee is stronger.
+    for (const name of ['a.json', 'a.md', 'a.sql', 'a.svg']) {
+      expect(isScannableFile(name), name).toBe(false);
     }
+    expect(isScannableFile('README')).toBe(true);
   });
 
   it('accepts a nested path, since git reports paths rather than basenames', () => {
@@ -500,6 +525,22 @@ describe('extensionless entrypoints', () => {
     expect(isExtensionlessPath('scripts/verify')).toBe(true);
     expect(isExtensionlessPath('module.ts')).toBe(false);
     expect(isExtensionlessPath('a/b.c/module.ts')).toBe(false);
+  });
+
+  it('scans an unrecognised or uppercase extension rather than skipping it', () => {
+    // The filter lists what is *not* source. An allowlist cannot predict every
+    // spelling a runnable file might use — `bun bin/run-tests.task` executes
+    // JavaScript, and a case-sensitive list misses `.TS` besides.
+    expect(isScannableFile('bin/run-tests.task')).toBe(true);
+    expect(isScannableFile('bin/.run-tests')).toBe(true);
+    expect(isScannableFile('module.TS')).toBe(true);
+    expect(isScannableFile('script.sh')).toBe(true);
+  });
+
+  it('skips files that are definitely not source', () => {
+    for (const name of ['a.json', 'a.md', 'a.sql', 'a.svg', 'a.woff2', 'a.MD']) {
+      expect(isScannableFile(name), name).toBe(false);
+    }
   });
 
   it('skips only binary content, not prose', () => {

@@ -84,6 +84,13 @@ function runGit(args: string[], stdin?: string): Buffer {
   const result = Bun.spawnSync(['git', ...args], {
     cwd: repositoryRoot,
     timeout: GIT_TIMEOUT_MS,
+    // `timeout` alone signals the child and then waits for it to exit, so a
+    // child that traps or ignores SIGTERM is not bounded at all. Measured: a
+    // TERM-trapping child ran the full 5s against a 500ms timeout, while the
+    // same call with SIGKILL returned at 503ms with `signalCode=SIGKILL`. In
+    // an always-on pre-commit gate that is the difference between a deadline
+    // and a suggestion.
+    killSignal: 'SIGKILL',
     stdin: stdin === undefined ? 'ignore' : new TextEncoder().encode(stdin),
   });
 
