@@ -109,6 +109,23 @@ describe('findBannedTestRunnerImports', () => {
     expect([...first].sort()).toEqual(first);
   });
 
+  /**
+   * Two findings whose text is byte-identical, on the same line. The
+   * tie-breaker has to return "equal" here rather than picking an arbitrary
+   * winner, or the report order would depend on the sort's internal
+   * comparison order for equal elements.
+   */
+  it('treats two identical findings on one line as equal, without reordering them', () => {
+    const contents = "const a = require('bun:test'); const b = require('bun:test');";
+    const found = findBannedTestRunnerImports(contents);
+    expect(found).toHaveLength(2);
+    expect(found[0]?.text).toBe(found[1]?.text);
+    expect(found.map((entry) => entry.line)).toEqual([1, 1]);
+    // Stable across repeated scans, which is the property the tie-break exists
+    // to provide.
+    expect(findBannedTestRunnerImports(contents)).toEqual(found);
+  });
+
   it('reports a match once, not once per overlapping pattern', () => {
     expect(findBannedTestRunnerImports("import 'bun:test';")).toHaveLength(1);
   });
