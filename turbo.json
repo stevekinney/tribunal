@@ -16,38 +16,24 @@
       "env": ["CI"],
       "passThroughEnv": ["VITEST_*"]
     },
-    // The scripts suite holds repository-wide invariants — every tracked
-    // source is enumerated through git and inspected, so a change anywhere can
-    // turn it red. Turborepo's default hash covers only this workspace and its
-    // dependency graph, which means a `bun:test` import or an unbounded
-    // subprocess added in another package would leave the cached pass intact
-    // and CI would replay it. Declaring the sources it actually reads is what
-    // makes the cache honest; the cost is that this task rarely hits, which is
-    // the correct cost for a guard whose input is the whole repository.
+    // The scripts suite holds repository-wide invariants: every tracked source
+    // is enumerated through git and inspected, so a change anywhere can turn it
+    // red. It is not cached, and that is the point rather than a concession.
+    //
+    // Caching it needs a hash covering everything it reads, and the first
+    // attempt at that listed the source directories — which left root-level
+    // files and any directory added later outside the hash, so the same stale
+    // green would come back through a smaller door. A list of what the
+    // repository currently contains is the defect this guard exists to remove,
+    // and writing one into the cache key reintroduces it one layer down.
+    //
+    // The cost is that this task always runs. For a guard whose input is the
+    // whole repository, always running is what correct looks like.
     "@tribunal/scripts#test": {
       "dependsOn": ["^build"],
       "env": ["CI"],
       "passThroughEnv": ["VITEST_*"],
-      // Listed by directory rather than as a repository-wide `**` glob: the
-      // wide form pulls in `node_modules` and hashes four hundred thousand
-      // files. These are the seven directories that hold tracked sources,
-      // which is what `git ls-files` returns to the guard.
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/applications/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/packages/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/runner/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/.github/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/.claude/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/.agents/**/*.{ts,tsx,mts,cts,js,mjs,cjs,svelte}",
-        "$TURBO_ROOT$/.github/workflows/*.yml",
-        // Nested `node_modules` and build output are not tracked sources, and
-        // including them made the hash cover thousands of files the guard never
-        // reads.
-        "!$TURBO_ROOT$/**/node_modules/**",
-        "!$TURBO_ROOT$/**/dist/**",
-        "!$TURBO_ROOT$/**/.svelte-kit/**"
-      ]
+      "cache": false
     },
     "lint": {},
     "format": {
