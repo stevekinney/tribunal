@@ -577,11 +577,26 @@ export function shellCommandLines(run: string): string[] {
  */
 export function runLinesExecute(lines: readonly string[], command: string): boolean {
   const NEUTRALIZING = /(\|\||&&|;|\||>|&)/;
-  return lines.some((line) => {
-    if (line === command) return true;
-    if (!line.startsWith(`${command} `)) return false;
-    return !NEUTRALIZING.test(line.slice(command.length));
-  });
+  // Depth of shell control structure. A command nested inside `if false; then
+  // … fi` satisfied every other rule while bash never ran it, so a step could
+  // keep the gate's text and lose its execution. Only a line at depth zero is
+  // unconditionally executed, which is what "wired" has to mean.
+  const OPENS = /^(if|for|while|until|case)\b/;
+  const CLOSES = /^(fi|done|esac)\b/;
+  let depth = 0;
+  for (const line of lines) {
+    if (CLOSES.test(line)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    const executed =
+      depth === 0 &&
+      (line === command ||
+        (line.startsWith(`${command} `) && !NEUTRALIZING.test(line.slice(command.length))));
+    if (executed) return true;
+    if (OPENS.test(line)) depth += 1;
+  }
+  return false;
 }
 
 /**

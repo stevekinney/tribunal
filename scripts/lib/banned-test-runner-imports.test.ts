@@ -2360,6 +2360,16 @@ describe('extensionless entrypoints', () => {
     expect(isScannableFile('script.sh')).toBe(false);
   });
 
+  it('dispatches an uppercase Svelte path to the Svelte reader', () => {
+    // The classifier accepts extensions case-insensitively on purpose, so
+    // `Component.SVELTE` is admitted — and then went to the TypeScript reader,
+    // which cannot reconstruct a template binding and reported nothing. Two
+    // spellings of "is this Svelte" five lines apart, disagreeing.
+    const markup = "{#each ['bun:test'] as runner}{require(runner)}{/each}";
+    expect(findBannedImportsForPath('Component.SVELTE', markup)).toHaveLength(1);
+    expect(findBannedImportsForPath('Component.svelte', markup)).toHaveLength(1);
+  });
+
   it('skips files that are definitely not source', () => {
     for (const name of ['a.json', 'a.md', 'a.sql', 'a.svg', 'a.woff2', 'a.MD']) {
       expect(isScannableFile(name), name).toBe(false);

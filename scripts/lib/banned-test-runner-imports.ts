@@ -2240,7 +2240,12 @@ export function findBannedImportsForPath(path: string, contents: string): Banned
   const lower = path.toLowerCase();
   const namedByExtension = JAVASCRIPT_EXTENSIONS.some((extension) => lower.endsWith(extension));
   if (!namedByExtension && hasForeignShebang(contents)) return [];
-  return path.endsWith('.svelte')
+  // Dispatch on the normalised path, not the raw one. The classifier above
+  // accepts extensions case-insensitively on purpose, so `Component.SVELTE` is
+  // admitted — and then went to the TypeScript reader, which cannot reconstruct
+  // a template binding and reported nothing for markup the Svelte reader
+  // catches. Two spellings of "is this Svelte" in five lines, disagreeing.
+  return lower.endsWith('.svelte')
     ? findBannedImportsInSvelte(contents)
     : findBannedTestRunnerImports(contents, 0, path);
 }

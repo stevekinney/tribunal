@@ -124,6 +124,21 @@ describe('the CI wiring rule rejects what the shell would neutralise', () => {
     }
   });
 
+  test('rejects a command that shell control structure never reaches', () => {
+    // `if false; then … fi` keeps the gate's text and loses its execution, so
+    // every other rule was satisfied while bash never ran the command.
+    expect(runLinesExecute(shellCommandLines(`if false; then\n${COMMAND}\nfi`), COMMAND)).toBe(
+      false,
+    );
+    expect(runLinesExecute(shellCommandLines(`for x in 1; do\n${COMMAND}\ndone`), COMMAND)).toBe(
+      false,
+    );
+    // A command after a *closed* block is unconditionally executed.
+    expect(
+      runLinesExecute(shellCommandLines(`if false; then\necho hi\nfi\n${COMMAND}`), COMMAND),
+    ).toBe(true);
+  });
+
   test('joins a continuation before judging it, as bash does', () => {
     // The physical first line *is* the command plus a backslash, so a
     // per-line check found nothing objectionable while bash ran the joined,

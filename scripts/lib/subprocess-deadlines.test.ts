@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -103,14 +103,18 @@ export function spawnAliasesIn(
         }
       }
       // `import * as cp from 'node:child_process'` binds the module object, and
-      // `cp.spawnSync(...)` is the same call written through it.
-      if (
-        clause !== undefined &&
-        ts.isNamespaceImport(clause) &&
+      // `cp.spawnSync(...)` is the same call written through it. So does the
+      // default import Node supports, `import childProcess from …`, which has
+      // no `namedBindings` at all — reading only those left the file with no
+      // spawner binding and dropped it from the scan entirely.
+      const bindsModule =
         ts.isStringLiteralLike(node.moduleSpecifier) &&
-        NODE_CHILD_PROCESS.has(node.moduleSpecifier.text)
-      ) {
+        NODE_CHILD_PROCESS.has(node.moduleSpecifier.text);
+      if (bindsModule && clause !== undefined && ts.isNamespaceImport(clause)) {
         namespaces.set(clause.name.text, clause.name);
+      }
+      if (bindsModule && node.importClause?.name !== undefined) {
+        namespaces.set(node.importClause.name.text, node.importClause.name);
       }
     }
 
@@ -338,13 +342,22 @@ function readOptions(options: ts.ObjectLiteralExpression): OptionsReading {
     : { kind: 'unbounded', because: `timeout without killSignal: '${SIGKILL}'` };
 }
 
-export function unboundedSpawnCalls(
+/**
+ * Every spawn call in a source, and which of them are unbounded.
+ *
+ * Both answers come from one walk because they are one question asked twice:
+ * "does this file contain a spawner call" and "is that call bounded" were
+ * previously answered by separate code, and the file-selection copy used a text
+ * prefilter that a bracketed member read walked straight past.
+ */
+export function inspectSpawnCalls(
   source: string,
   fileName: string,
   index: ReadonlyMap<string, Set<string>> = new Map(),
   tracked: ReadonlySet<string> = new Set(index.keys()),
-): number[] {
+): { calls: number[]; unbounded: number[] } {
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const calls: number[] = [];
   const offenders: number[] = [];
 
   const exportsOf = (specifier: string): ReadonlySet<string> => {
@@ -370,10 +383,17 @@ export function unboundedSpawnCalls(
         innermostBinding(callee, callee.text, true) === innermostBinding(bound, callee.text, true)
       );
     }
-    if (!ts.isPropertyAccessExpression(callee)) return false;
-    if (callee.name.text !== 'spawnSync') return false;
-    if (!ts.isIdentifier(callee.expression)) return false;
-    const receiver = callee.expression;
+    // Both spellings of a member read call the same function, so recognising
+    // only the dotted one is bypassed by writing `Bun['spawnSync']`.
+    const member = ts.isPropertyAccessExpression(callee)
+      ? { receiver: callee.expression, name: callee.name.text }
+      : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)
+        ? { receiver: callee.expression, name: callee.argumentExpression.text }
+        : undefined;
+    if (member === undefined) return false;
+    if (member.name !== 'spawnSync') return false;
+    if (!ts.isIdentifier(member.receiver)) return false;
+    const receiver = member.receiver;
     if (receiver.text === 'Bun') return true;
     const bound = namespaces.get(receiver.text);
     return (
@@ -397,6 +417,7 @@ export function unboundedSpawnCalls(
       const target = forwarder === undefined ? callee : forwarder.expression;
 
       if (isSpawner(target)) {
+        calls.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
         const forwarded =
           forwarder === undefined
             ? [...node.arguments]
@@ -406,8 +427,18 @@ export function unboundedSpawnCalls(
                   const list = node.arguments[1];
                   return list !== undefined && ts.isArrayLiteralExpression(list)
                     ? [...list.elements]
-                    : [];
+                    : undefined;
                 })();
+
+        // An `.apply` list this guard cannot read is not "no arguments" — it is
+        // arguments it cannot see, which under a fail-closed contract must
+        // report. Treating it as empty made `spawnSync.apply(null, invocation)`
+        // pass, a hole in the very property the rewrite was for.
+        if (forwarded === undefined) {
+          offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+          ts.forEachChild(node, visit);
+          return;
+        }
 
         // Where the options sit. Node accepts `(command, args, options)` and
         // `(command, options)`; Bun's only form is the second, and its first
@@ -422,7 +453,7 @@ export function unboundedSpawnCalls(
         // passes. Closing it would report every `spawnSync(command, args)`,
         // which is the worse trade.
         const isBun =
-          ts.isPropertyAccessExpression(target) &&
+          (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
           ts.isIdentifier(target.expression) &&
           target.expression.text === 'Bun';
         const first = forwarded[1] === undefined ? undefined : unwrapTransparent(forwarded[1]);
@@ -449,24 +480,49 @@ export function unboundedSpawnCalls(
     ts.forEachChild(node, visit);
   };
   visit(parsed);
-  return offenders;
+  return { calls, unbounded: offenders };
+}
+
+/** The lines of every spawn call that sets a deadline this guard cannot certify. */
+export function unboundedSpawnCalls(
+  source: string,
+  fileName: string,
+  index: ReadonlyMap<string, Set<string>> = new Map(),
+  tracked: ReadonlySet<string> = new Set(index.keys()),
+): number[] {
+  return inspectSpawnCalls(source, fileName, index, tracked).unbounded;
 }
 
 const READABLE_MODES = new Set(['100644', '100755']);
-const tracked = execFileSync('git', ['ls-files', '-z', '--stage'], {
-  cwd: root,
-  encoding: 'utf8',
-  maxBuffer: 32 * 1024 * 1024,
-})
-  .split('\0')
-  .filter((entry) => entry.length > 0)
-  .flatMap((entry) => {
-    const separator = entry.indexOf('\t');
-    if (separator < 0) return [];
-    return READABLE_MODES.has(entry.slice(0, entry.indexOf(' ')))
-      ? [entry.slice(separator + 1)]
-      : [];
-  });
+const git = (...args: string[]): string[] =>
+  execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    .split('\0')
+    .filter((entry) => entry.length > 0);
+
+// Tracked entries come with modes, so symlinks and gitlinks are filtered by
+// what git says they are rather than guessed from the path: this repository
+// tracks `.claude/skills/tensorlake` as a symlink to a directory, and reading
+// it throws EISDIR.
+const trackedSources = git('ls-files', '-z', '--stage').flatMap((entry) => {
+  const separator = entry.indexOf('\t');
+  if (separator < 0) return [];
+  return READABLE_MODES.has(entry.slice(0, entry.indexOf(' '))) ? [entry.slice(separator + 1)] : [];
+});
+
+// Untracked-but-not-ignored files are inspected too, which is what the sibling
+// scanner already does. A guard that reads only the index reports success for a
+// worktree where a new orchestration script sets an unbounded deadline, right
+// up until someone stages it — and `bun run verify` is run *before* staging.
+// `--others` carries no mode, so the filesystem answers instead.
+const untrackedSources = git('ls-files', '-z', '--others', '--exclude-standard').filter((path) => {
+  try {
+    return lstatSync(join(root, path)).isFile();
+  } catch {
+    return false;
+  }
+});
+
+const tracked = [...trackedSources, ...untrackedSources];
 
 /**
  * Which tracked paths hold JavaScript, decided by the sibling module's own
@@ -498,22 +554,18 @@ const trackedPaths = new Set(sources.keys());
 // Every source is inspected. Selecting files by whether their text mentions the
 // spawner was itself a hole — a module can re-export it under another name, and
 // its caller then mentions it nowhere.
+// Which files hold a spawn call is answered by the same walk that judges them,
+// rather than by a second detector. The previous one asked whether the text
+// contained `Bun.spawnSync`, which `Bun['spawnSync']` does not — a text
+// prefilter in front of an AST guard, which is the shape of hole this pair has
+// been corrected for twice already.
 const spawners = [...sources]
-  .filter(([path, text]) => unboundedSpawnCallsFinds(path, text))
+  .filter(
+    ([path, text]) =>
+      inspectSpawnCalls(text, path, repositoryAliases, trackedPaths).calls.length > 0,
+  )
   .map(([path]) => path)
   .sort();
-
-/** Whether a file contains any call this guard recognises as the spawner. */
-function unboundedSpawnCallsFinds(path: string, text: string): boolean {
-  const parsed = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
-  const exportsOf = (specifier: string): ReadonlySet<string> => {
-    const resolved = resolveSpecifier(path, specifier, trackedPaths);
-    return (resolved === undefined ? undefined : repositoryAliases.get(resolved)) ?? new Set();
-  };
-  const { direct, namespaces } = spawnAliasesIn(parsed, exportsOf);
-  if (direct.size === 0 && namespaces.size === 0 && !text.includes('Bun.spawnSync')) return false;
-  return true;
-}
 
 /**
  * A fixture with provenance, reported in the fixture's own line numbers.
@@ -659,6 +711,46 @@ describe('every subprocess deadline is enforceable', () => {
       ),
     ).toEqual([2]);
     expect(unbounded(['const run = spawnSync;', "run('x', [], { timeout: 10 });"])).toEqual([2]);
+  });
+
+  it('binds the module object through a default import as well as a namespace one', () => {
+    // Node supports `import childProcess from 'node:child_process'`, which has
+    // no `namedBindings` at all — reading only those left the file with no
+    // spawner binding, so it was dropped from the scan entirely.
+    expect(
+      unboundedSpawnCalls(
+        "import childProcess from 'node:child_process';\nchildProcess.spawnSync('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([2]);
+  });
+
+  it('recognises a spawner written with a bracketed member read', () => {
+    // Both spellings call the same function, and the file-selection pass used
+    // to ask whether the text contained `Bun.spawnSync` — a text prefilter in
+    // front of an AST guard, which this one walked straight past.
+    expect(unboundedSpawnCalls("Bun['spawnSync'](cmd, { timeout: 10 });\n", 'p.ts')).toEqual([1]);
+    expect(
+      unboundedSpawnCalls(
+        "Bun['spawnSync'](cmd, { timeout: 10, killSignal: 'SIGKILL' });\n",
+        'p.ts',
+      ),
+    ).toEqual([]);
+    expect(inspectSpawnCalls("Bun['spawnSync'](cmd, {});\n", 'p.ts').calls).toEqual([1]);
+  });
+
+  it('reports an apply list it cannot read, rather than reading it as no arguments', () => {
+    // A hole in the fail-closed contract itself: an unreadable list is not
+    // "no arguments", it is arguments the guard cannot see.
+    expect(
+      unbounded([
+        "const invocation = ['x', [], { timeout: 10 }];",
+        'spawnSync.apply(null, invocation);',
+      ]),
+    ).toEqual([2]);
+    expect(
+      unbounded("spawnSync.apply(null, ['x', [], { timeout: 10, killSignal: 'SIGKILL' }]);"),
+    ).toEqual([]);
   });
 
   it('reads both spawnSync signatures rather than classifying the argument list', () => {
