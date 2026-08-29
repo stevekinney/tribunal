@@ -28,7 +28,7 @@
  * `lib/banned-test-runner-imports.ts`, which is covered by the 100% gate.
  */
 
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -58,6 +58,24 @@ const GIT_TIMEOUT_MS = 30_000;
  * parser removed the need: those fixtures are string literals, which are not
  * imports, so nothing has to be exempted.
  */
+
+/**
+ * Whether a repository-relative path is a regular file right now.
+ *
+ * `git ls-files --others` carries no mode, so the filesystem answers what
+ * `--stage` answers for tracked entries. An untracked *symlink* is read through
+ * otherwise: following one into an ignored or external file made this
+ * always-on gate reject every commit over a banned import stored in no
+ * repository blob, with nothing in the failure to explain why.
+ */
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(join(repositoryRoot, path)).isFile();
+  } catch {
+    // Listed between the scan and the read, or otherwise gone.
+    return false;
+  }
+}
 
 /**
  * Paths worth reading. An extension is the usual signal, but a conventional
@@ -178,6 +196,12 @@ function collectSourceEntries(): SourceEntry[] {
     .toString('utf8')
     .split('\0')) {
     if (path === '' || !isCandidatePath(path)) continue;
+    // `--others` carries no mode, so the filesystem answers the question
+    // `--stage` answered for tracked entries. An untracked symlink is read
+    // through — following it to an ignored or external file would reject a
+    // commit over content stored in no blob, and a link to a directory throws
+    // `EISDIR` outright and takes the whole pre-commit gate down with it.
+    if (!isRegularFile(path)) continue;
     if (!entries.has(path)) entries.set(path, { path });
   }
 

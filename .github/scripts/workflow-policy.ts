@@ -538,119 +538,56 @@ const REQUIRED_CI_SECURITY_COMMANDS = [
 ];
 
 /**
- * The commands a `run:` block actually executes, one per logical line.
+ * Whether one step wires `command` such that its failure fails the job.
  *
- * Continuations are joined because the shell joins them: a step written as
- * `bun run validate:test-runner-imports \` followed by `|| true` presents a
- * first line that *is* the command plus a trailing backslash, and a
- * per-physical-line suffix check sees nothing objectionable in it. What bash
- * executes is the joined line, so that is what gets checked.
+ * This replaces a reader that tried to decide which lines of a `run:` block
+ * bash would execute, and the replacement is a *contract* change: a required
+ * security gate must now be its own step whose `run` is the bare command.
  *
- * Exported so the rule can be asserted against fixtures rather than only
- * against the real `ci.yml`, which has no injectable form.
+ * The reasoning is on the record because the previous approach was extended
+ * six times before it was abandoned. Each round found another way to keep a
+ * gate's text and lose its execution — a neutralising suffix (`|| true`), a
+ * backslash continuation hiding one, an implicit operator continuation
+ * (`true ||` and a newline), shell control structure (`if false; then … fi`),
+ * a function body nobody calls, a here-document whose contents are data, a
+ * `continue-on-error` step, a skipped `if:`, `exit 0` before the line, and a
+ * `shell:` that never executes the script. Every fix was correct and the next
+ * one arrived anyway, because deciding what bash runs means being bash.
+ *
+ * A rule that refuses to interpret has no such tail. The step's `run`, trimmed,
+ * must be the command or the command followed by arguments containing no shell
+ * metacharacter; the step must carry no `shell:` override, no
+ * `continue-on-error`, and no `if:` that is not definitely true. Anything else
+ * — a multi-line script, a pipeline, a conditional — simply does not wire the
+ * gate, and the remedy is to write the gate as its own step. All three of this
+ * repository's real gate steps already take exactly that form.
  */
-export function shellCommandLines(run: string): string[] {
-  // A trailing control operator continues implicitly: bash reads `true ||` and
-  // a newline as one command list, so splitting on the newline presented the
-  // gate as an isolated, unconditionally executed line when it runs only if
-  // `true` fails. An explicit backslash and an implicit operator continuation
-  // are the same thing to the shell and are joined the same way here.
-  const CONTINUES = /(\|\||&&|\||&)$/;
-  // A here-document body is *data*: `cat <<'EOF'` … `EOF` passes those lines to
-  // the command's stdin rather than executing them, so a required gate written
-  // inside one was accepted while every real step could be deleted.
-  const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
-  const joined: string[] = [];
-  let pending = '';
-  let heredoc: string | undefined;
-  for (const raw of run.split('\n')) {
-    const line = raw.trim();
-    if (heredoc !== undefined) {
-      if (line === heredoc) heredoc = undefined;
-      continue;
-    }
-    if (line.endsWith('\\')) {
-      pending += `${line.slice(0, -1).trim()} `;
-      continue;
-    }
-    if (CONTINUES.test(line)) {
-      pending += `${line} `;
-      continue;
-    }
-    joined.push(`${pending}${line}`.trim());
-    pending = '';
-    const opened = HEREDOC.exec(line);
-    if (opened?.[2] !== undefined) heredoc = opened[2];
-  }
-  // A trailing backslash on the final line continues into nothing; keep what it
-  // accumulated rather than dropping the command entirely.
-  if (pending.length > 0) joined.push(pending.trim());
-  return joined.filter((line) => line.length > 0);
-}
+export function stepWiresCommand(step: WorkflowStep, command: string): boolean {
+  // A custom shell decides the interpreter: `shell: cat {0}` prints the script
+  // and exits zero. Only the runner's default is accepted, because anything
+  // else has to be reasoned about and that is the reasoning this rule removes.
+  if (step.shell !== undefined) return false;
 
-/**
- * Whether a set of run lines executes `command` in a way that can fail the job.
- *
- * A suffix must not be able to change the command's exit status. Accepting any
- * suffix let `bun run validate:test-runner-imports || true` count as wired
- * while the shell made its failure non-gating — the check verified the command
- * was *present*, not that it *gates*.
- */
-export function runLinesExecute(lines: readonly string[], command: string): boolean {
-  const NEUTRALIZING = /(\|\||&&|;|\||>|&)/;
-  // Depth of shell control structure. A command nested inside `if false; then
-  // … fi` satisfied every other rule while bash never ran it, so a step could
-  // keep the gate's text and lose its execution. Only a line at depth zero is
-  // unconditionally executed, which is what "wired" has to mean.
-  // A shell *function definition* also holds commands the shell only defines:
-  // `gate() {` … `}` with nobody calling `gate` keeps the gate's text and loses
-  // its execution just as `if false` does. Braces count as depth too, which is
-  // the third distinct way a step could be un-wired without deleting anything.
-  const OPENS = /^(if|for|while|until|case)\b|(\(\)\s*\{|^\{)$|\{$/;
-  const CLOSES = /^(fi|done|esac|\})/;
-  let depth = 0;
-  for (const line of lines) {
-    if (CLOSES.test(line)) {
-      depth = Math.max(0, depth - 1);
-      continue;
-    }
-    const executed =
-      depth === 0 &&
-      (line === command ||
-        (line.startsWith(`${command} `) && !NEUTRALIZING.test(line.slice(command.length))));
-    if (executed) return true;
-    if (OPENS.test(line)) depth += 1;
-  }
-  return false;
-}
-
-/**
- * Whether a step's failure can fail its job.
- *
- * A gate inside a `continue-on-error` step is wired in appearance only: GitHub
- * keeps the job green when the command fails, so the audit reported a gate that
- * no longer gates. Flattening every step's `run` discarded exactly the metadata
- * that decides whether a failure counts.
- *
- * Anything other than a definite false is treated as continuing. An expression
- * like `${{ … }}` is not knowable here, and guessing in the permissive
- * direction is the failure this rule exists to prevent.
- */
-export function stepCanFailTheJob(step: WorkflowStep): boolean {
   const continues = step['continue-on-error'];
   if (continues !== undefined && continues !== false && continues !== 'false') return false;
-  // A step with an `if:` may not run at all, so its command is wired only when
-  // the condition is present and definitely true. `if: ${{ false }}` skips the
-  // step while leaving the flattened command list unchanged — the same
-  // "keeps the text, loses the execution" shape as the shell cases, one level
-  // up in the workflow rather than inside the script.
+
+  // A step with a condition may not run at all. `if: ${{ false }}` skips it
+  // while leaving its `run` text untouched.
   const condition = step.if;
-  if (condition === undefined) return true;
-  const normalised = String(condition)
-    .trim()
-    .replace(/^\$\{\{|\}\}$/g, '')
-    .trim();
-  return normalised === 'true' || normalised === 'always()';
+  if (condition !== undefined) {
+    const normalised = String(condition)
+      .trim()
+      .replace(/^\$\{\{|\}\}$/g, '')
+      .trim();
+    if (normalised !== 'true' && normalised !== 'always()') return false;
+  }
+
+  const run = (step.run ?? '').trim();
+  if (run === command) return true;
+  if (!run.startsWith(`${command} `)) return false;
+  // Arguments are allowed; anything that could redirect, chain, background, or
+  // continue the command is not.
+  return !/[|&;<>()`$\\\n]/.test(run.slice(command.length));
 }
 
 /**
@@ -693,16 +630,14 @@ export function ciWiringViolations(): Violation[] {
   // lines are read. Anything other than a definite false is treated as
   // continuing: an expression like `${{ ... }}` is not knowable here, and
   // guessing in the permissive direction is what this rule exists to prevent.
-  const runLines = (job.steps ?? [])
-    .filter((step) => stepCanFailTheJob(step))
-    .flatMap((step) => shellCommandLines(step.run ?? ''));
-  return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !runLinesExecute(runLines, command)).map(
-    (command) => ({
-      fileName: 'ci.yml',
-      rule: 'ci-wiring',
-      message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
-    }),
-  );
+  const steps = job.steps ?? [];
+  return REQUIRED_CI_SECURITY_COMMANDS.filter(
+    (command) => !steps.some((step) => stepWiresCommand(step, command)),
+  ).map((command) => ({
+    fileName: 'ci.yml',
+    rule: 'ci-wiring',
+    message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
+  }));
 }
 
 export function formatViolations(violations: Violation[]): string {

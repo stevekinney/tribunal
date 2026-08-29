@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   ciWiringViolations,
-  runLinesExecute,
-  shellCommandLines,
-  stepCanFailTheJob,
+  stepWiresCommand,
   isAuthorizationGated,
   jobGrantsWrite,
   jobUsesSecrets,
@@ -99,104 +97,84 @@ describe('ciWiringViolations: the real ci.yml has every root security gate wired
   test('reports no violations against the real ci.yml', () => {
     expect(ciWiringViolations()).toEqual([]);
   });
-
-  test('a continue-on-error step cannot wire a gate', () => {
-    // GitHub keeps the job green when such a step fails, so a gate inside one
-    // is wired in appearance only.
-    const run = 'bun run validate:test-runner-imports';
-    expect(stepCanFailTheJob({ run })).toBe(true);
-    expect(stepCanFailTheJob({ run, 'continue-on-error': false })).toBe(true);
-    expect(stepCanFailTheJob({ run, 'continue-on-error': 'false' })).toBe(true);
-    expect(stepCanFailTheJob({ run, 'continue-on-error': true })).toBe(false);
-    expect(stepCanFailTheJob({ run, 'continue-on-error': 'true' })).toBe(false);
-    // Not knowable here, so not counted — guessing permissively is the failure
-    // this rule prevents.
-    expect(stepCanFailTheJob({ run, 'continue-on-error': '${{ github.event_name }}' })).toBe(false);
-    // A step that may not run at all is not wired either: `if: ${{ false }}`
-    // skips it while leaving the flattened command list unchanged.
-    expect(stepCanFailTheJob({ run, if: '${{ false }}' })).toBe(false);
-    expect(stepCanFailTheJob({ run, if: "github.event_name == 'push'" })).toBe(false);
-    expect(stepCanFailTheJob({ run, if: '${{ always() }}' })).toBe(true);
-    expect(stepCanFailTheJob({ run, if: 'true' })).toBe(true);
-  });
 });
 
 /**
  * The wiring rule itself, against fixtures rather than the real file.
  *
  * `ciWiringViolations` reads `ci.yml` and takes no injectable workflow, so the
- * shapes that bypass it can only be pinned by testing the rule directly. Both
- * of these were real bypasses: a suffix that neutralises the exit status, and
- * the same suffix hidden behind a shell line continuation, which a
- * per-physical-line check reads as a bare command with a trailing backslash.
+ * shapes that bypass it can only be pinned by testing the rule directly.
+ *
+ * Every case below was a real, separately filed bypass of the reader this rule
+ * replaced. That reader tried to decide which lines of a `run:` block bash
+ * would execute; it was corrected six times and the seventh arrived anyway,
+ * because deciding what bash runs means being bash. The rule now refuses to
+ * interpret: a gate is its own step whose `run` is the bare command.
  */
-describe('the CI wiring rule rejects what the shell would neutralise', () => {
+describe('the CI wiring rule certifies only a bare, unconditional command step', () => {
   const COMMAND = 'bun run validate:test-runner-imports';
 
-  test('accepts the command standing alone, or with gating arguments', () => {
-    expect(runLinesExecute(shellCommandLines(COMMAND), COMMAND)).toBe(true);
-    expect(runLinesExecute(shellCommandLines(`${COMMAND} --strict`), COMMAND)).toBe(true);
+  test('accepts the command alone, or with plain arguments', () => {
+    expect(stepWiresCommand({ run: COMMAND }, COMMAND)).toBe(true);
+    expect(stepWiresCommand({ run: `  ${COMMAND}  ` }, COMMAND)).toBe(true);
+    expect(stepWiresCommand({ run: `${COMMAND} --strict` }, COMMAND)).toBe(true);
   });
 
-  test('rejects a suffix that can change the exit status', () => {
-    for (const suffix of ['|| true', '; true', '| cat', '& disown', '&& echo ok', '> /dev/null']) {
-      const line = `${COMMAND} ${suffix}`;
-      expect(runLinesExecute(shellCommandLines(line), COMMAND), line).toBe(false);
+  test('rejects every shape that keeps the text and loses the execution', () => {
+    for (const run of [
+      // A suffix that changes the exit status.
+      `${COMMAND} || true`,
+      `${COMMAND} ; true`,
+      `${COMMAND} | cat`,
+      `${COMMAND} > /dev/null`,
+      `${COMMAND} & disown`,
+      // A backslash continuation hiding one.
+      `${COMMAND} \\\n  || true`,
+      // An implicit operator continuation: bash reads this as one command list.
+      `true ||\n${COMMAND}`,
+      // Control structure the shell never enters.
+      `if false; then\n${COMMAND}\nfi`,
+      `for x in 1; do\n${COMMAND}\ndone`,
+      // A function body nobody calls.
+      `gate() {\n${COMMAND}\n}`,
+      // Here-document contents, which are data — in all three delimiter forms.
+      `cat <<'EOF'\n${COMMAND}\nEOF`,
+      `cat <<EOF\n${COMMAND}\nEOF`,
+      `cat <<\\EOF\n${COMMAND}\nEOF`,
+      // A successful exit before the gate is ever reached.
+      `exit 0\n${COMMAND}`,
+    ]) {
+      expect(stepWiresCommand({ run }, COMMAND), JSON.stringify(run)).toBe(false);
     }
   });
 
-  test('rejects a command that shell control structure never reaches', () => {
-    // `if false; then … fi` keeps the gate's text and loses its execution, so
-    // every other rule was satisfied while bash never ran the command.
-    expect(runLinesExecute(shellCommandLines(`if false; then\n${COMMAND}\nfi`), COMMAND)).toBe(
-      false,
-    );
-    expect(runLinesExecute(shellCommandLines(`for x in 1; do\n${COMMAND}\ndone`), COMMAND)).toBe(
-      false,
-    );
-    // A command after a *closed* block is unconditionally executed.
+  test('rejects step metadata that stops the failure counting', () => {
+    // GitHub keeps the job green when such a step fails.
+    expect(stepWiresCommand({ run: COMMAND, 'continue-on-error': true }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: COMMAND, 'continue-on-error': 'true' }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: COMMAND, 'continue-on-error': false }, COMMAND)).toBe(true);
+    expect(stepWiresCommand({ run: COMMAND, 'continue-on-error': 'false' }, COMMAND)).toBe(true);
+    // Not knowable here, so not counted.
     expect(
-      runLinesExecute(shellCommandLines(`if false; then\necho hi\nfi\n${COMMAND}`), COMMAND),
-    ).toBe(true);
-  });
+      stepWiresCommand({ run: COMMAND, 'continue-on-error': '${{ github.event_name }}' }, COMMAND),
+    ).toBe(false);
 
-  test('joins an implicit operator continuation, as bash does', () => {
-    // Bash reads `true ||` plus a newline as one command list, so splitting on
-    // the newline presented the gate as an isolated unconditional line when it
-    // runs only if `true` fails.
-    expect(runLinesExecute(shellCommandLines(`true ||\n${COMMAND}`), COMMAND)).toBe(false);
-    expect(runLinesExecute(shellCommandLines(`true &&\n${COMMAND}`), COMMAND)).toBe(false);
-    expect(runLinesExecute(shellCommandLines(`true\n${COMMAND}`), COMMAND)).toBe(true);
-  });
-
-  test('ignores a here-document body, which bash passes as data', () => {
-    expect(runLinesExecute(shellCommandLines(`cat <<'EOF'\n${COMMAND}\nEOF`), COMMAND)).toBe(false);
-    expect(runLinesExecute(shellCommandLines(`cat <<EOF\n${COMMAND}\nEOF`), COMMAND)).toBe(false);
-    // The command after a closed here-document is executed normally.
-    expect(runLinesExecute(shellCommandLines(`cat <<'EOF'\nhello\nEOF\n${COMMAND}`), COMMAND)).toBe(
-      true,
+    // A step with a condition may not run at all.
+    expect(stepWiresCommand({ run: COMMAND, if: '${{ false }}' }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: COMMAND, if: "github.event_name == 'push'" }, COMMAND)).toBe(
+      false,
     );
+    expect(stepWiresCommand({ run: COMMAND, if: '${{ always() }}' }, COMMAND)).toBe(true);
+
+    // `shell: cat {0}` prints the script and exits zero, so only the runner's
+    // default interpreter counts.
+    expect(stepWiresCommand({ run: COMMAND, shell: 'cat {0}' }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: COMMAND, shell: 'bash' }, COMMAND)).toBe(false);
   });
 
-  test('rejects a command the shell only defines', () => {
-    // A function body holds commands bash defines rather than runs, so
-    // `gate() { … }` with nobody calling `gate` keeps the gate's text and
-    // loses its execution — the third distinct way to un-wire without
-    // deleting anything.
-    expect(runLinesExecute(shellCommandLines(`gate() {\n${COMMAND}\n}`), COMMAND)).toBe(false);
-    expect(runLinesExecute(shellCommandLines(`gate() {\necho hi\n}\n${COMMAND}`), COMMAND)).toBe(
-      true,
-    );
-  });
-
-  test('joins a continuation before judging it, as bash does', () => {
-    // The physical first line *is* the command plus a backslash, so a
-    // per-line check found nothing objectionable while bash ran the joined,
-    // neutralised command.
-    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n  || true`), COMMAND)).toBe(false);
-    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n  --strict`), COMMAND)).toBe(true);
-    // A trailing backslash continuing into nothing still runs the command.
-    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n`), COMMAND)).toBe(true);
+  test('rejects a step that merely mentions the command', () => {
+    expect(stepWiresCommand({ run: `echo '${COMMAND}'` }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: `# ${COMMAND}` }, COMMAND)).toBe(false);
   });
 });
 

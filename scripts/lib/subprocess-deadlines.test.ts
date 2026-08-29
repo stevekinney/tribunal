@@ -188,9 +188,12 @@ export function spawnAliasesIn(
       if (ts.isIdentifier(node.name)) namespaces.set(node.name.text, node.name);
       if (ts.isObjectBindingPattern(node.name)) {
         for (const element of node.name.elements) {
+          // `const { 'spawnSync': run } = require('node:child_process')` is
+          // legal and names the same export; an identifier-only read recorded
+          // no binding, so the call was never inspected.
           const key =
-            element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
-              ? element.propertyName.text
+            element.propertyName !== undefined
+              ? staticPropertyName(element.propertyName)
               : ts.isIdentifier(element.name)
                 ? element.name.text
                 : undefined;
@@ -873,6 +876,18 @@ describe('every subprocess deadline is enforceable', () => {
   it('unwraps a transparent wrapper on the callee before asking provenance', () => {
     expect(unbounded("spawnSync!('x', [], { timeout: 10 });")).toEqual([1]);
     expect(unbounded("(0, spawnSync)('x', [], { timeout: 10 });")).toEqual([1]);
+  });
+
+  it('folds a quoted key when destructuring the spawner', () => {
+    // `const { 'spawnSync': run } = require('node:child_process')` names the
+    // same export; an identifier-only read recorded no binding at all, so the
+    // call was never inspected.
+    expect(
+      unboundedSpawnCalls(
+        "const { 'spawnSync': run } = require('node:child_process');\nrun('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([2]);
   });
 
   it('recognises an awaited or aliased child_process load', () => {
