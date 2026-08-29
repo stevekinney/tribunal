@@ -576,8 +576,17 @@ export function ciWiringViolations(): Violation[] {
       .map((line) => line.trim())
       .filter((line) => line.length > 0),
   );
+  // A suffix must not be able to change the command's exit status. Accepting
+  // any suffix let `bun run validate:test-runner-imports || true` count as
+  // wired while the shell made its failure non-gating — the check verified the
+  // command was *present*, not that it *gates*.
+  const NEUTRALIZING = /(\|\||&&|;|\||>|&)/;
   const executes = (command: string): boolean =>
-    runLines.some((line) => line === command || line.startsWith(`${command} `));
+    runLines.some((line) => {
+      if (line === command) return true;
+      if (!line.startsWith(`${command} `)) return false;
+      return !NEUTRALIZING.test(line.slice(command.length));
+    });
   return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !executes(command)).map((command) => ({
     fileName: 'ci.yml',
     rule: 'ci-wiring',

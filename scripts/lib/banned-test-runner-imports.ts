@@ -129,6 +129,15 @@ function constantSpecifier(
   // An array names every module it holds. Reading through it is what lets an
   // each block bind from a named list, and it follows the same any-match rule
   // as the alias resolution below.
+  // `import(useBun ? 'bun:test' : 'vitest')` names the runner down one branch.
+  if (ts.isConditionalExpression(current)) {
+    const branches = [current.whenTrue, current.whenFalse]
+      .map((branch) => constantSpecifier(branch, seen))
+      .filter((value): value is string => value !== undefined);
+    if (branches.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
+    return branches[0];
+  }
+
   if (ts.isArrayLiteralExpression(current)) {
     const resolved = current.elements
       .map((element) => constantSpecifier(element, seen))
@@ -763,7 +772,27 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   // A default gives a parameter its value exactly as an initializer gives one
   // to a declaration: `function f(load = require) { load('bun:test') }` loads.
   if (binding !== undefined && ts.isParameter(binding)) {
-    return binding.initializer === undefined ? [] : [binding.initializer];
+    // A destructured parameter carries its defaults on the binding elements,
+    // not on the parameter: `function run({ load = require })` has no parameter
+    // initializer at all, so returning that alone found nothing.
+    const defaults: ts.Expression[] = [];
+    const collect = (name: ts.BindingName): void => {
+      if (ts.isIdentifier(name)) return;
+      for (const element of name.elements) {
+        if (!ts.isBindingElement(element)) continue;
+        if (
+          element.initializer !== undefined &&
+          ts.isIdentifier(element.name) &&
+          element.name.text === identifier.text
+        ) {
+          defaults.push(element.initializer);
+        }
+        collect(element.name);
+      }
+    };
+    collect(binding.name);
+    if (binding.initializer !== undefined) defaults.push(binding.initializer);
+    return defaults;
   }
   if (binding === undefined || !ts.isVariableDeclaration(binding)) return [];
 
@@ -955,14 +984,18 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
         if ((sibling.initializer.flags & ts.NodeFlags.BlockScoped) === 0) {
           takeDeclarations(sibling.initializer);
         }
-        continue;
+        // No `continue`: the header declares and the *body* can assign, so
+        // `for (let i = 0; ...) { load = require; }` needs the search below.
       }
       // `for (load = require; false; )` — a header that assigns rather than
       // declares. It combines the two routes handled either side of this: a
       // loop initializer that always runs, and an assignment as the place a
       // value arrives. Neither branch saw it on its own.
-      takeAssignment(sibling.initializer);
-      continue;
+      if (!ts.isVariableDeclarationList(sibling.initializer)) {
+        takeAssignment(sibling.initializer);
+      }
+      // Still no `continue`: the body is searched below like any other
+      // statement's, which is where `for (...) { load = require; }` lives.
     }
     // `let load; load = require;` splits declaration from initialization, so
     // the assignment is where the value arrives. Which assignment is live at
@@ -1129,6 +1162,9 @@ function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: str
   if (!takesExport) return false;
 
   const required = unwrapTransparent(binding.initializer);
+  // The source may be a name already holding the module rather than a call:
+  // `import * as Module from 'node:module'; const { createRequire } = Module`.
+  if (ts.isIdentifier(required)) return resolvesToNodeModule(required, new Set());
   if (!ts.isCallExpression(required)) return false;
   if (!isModuleLoader(unwrapTransparent(required.expression))) return false;
   const target = constantSpecifier(required.arguments[0]);
@@ -1194,7 +1230,10 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
 /** Whether an identifier resolves, through any number of aliases, to `module`. */
 function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.Node>): boolean {
   if (seen.has(identifier)) return false;
-  if (identifier.text === 'module') return !isLocallyShadowed(identifier, 'module');
+  // A direct, unshadowed `module` is the object. When it *is* shadowed the
+  // enquiry continues rather than ending, because `var module = module`
+  // redeclares the binding and assigns its existing value straight back.
+  if (identifier.text === 'module' && !isLocallyShadowed(identifier, 'module')) return true;
   const next = new Set([...seen, identifier]);
   return aliasInitializers(identifier).some((initializer) => {
     const source = unwrapTransparent(initializer);
@@ -1259,14 +1298,12 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
   if (member === undefined || member.name !== 'require') return false;
 
   if (ts.isIdentifier(member.object)) {
-    if (member.object.text === 'module') return !isLocallyShadowed(member.object, 'module');
-    // `const commonjsModule = module; commonjsModule.require(...)` keeps the
-    // module object and reaches its property later. Followed by resolving the
-    // receiver, so an arbitrary object carrying a `require` method still fails.
-    // Followed recursively, because an alias of an alias is still the module
-    // object: `const first = module; const second = first`. A previous version
-    // checked one hop and said a visited set was unnecessary — true of a
-    // one-hop check, and the reason the second hop was missed.
+    // Every identifier receiver goes through the one resolver, recursively:
+    // `const first = module; const second = first` is still the module object,
+    // and `var module = module` redeclares the binding while assigning its own
+    // value back. A `text === 'module'` shortcut here used to return first and
+    // answered the second case "shadowed, therefore not the loader". An
+    // arbitrary object carrying a `require` method still fails.
     return resolvesToModuleObject(member.object, seen);
   }
   // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
@@ -1836,6 +1873,14 @@ export function hasForeignShebang(contents: string): boolean {
     // binary accepts both spellings. Skipping only the option token left its
     // operand looking like the command, so `env -S -u FOO bun` selected `FOO`.
     const takesOperand = new Set(['-u', '--unset', '-C', '--chdir']);
+    // `--split-string=bun` carries the command inside the option, so the loop
+    // below would skip the only token naming it.
+    const inlineSplit = tokens.slice(1).find((token) => token.startsWith('--split-string='));
+    if (inlineSplit !== undefined) {
+      const [first] = inlineSplit.slice('--split-string='.length).trim().split(/\s+/);
+      const named = commandName(first ?? '');
+      return named !== 'node' && named !== 'bun' && named !== 'deno';
+    }
     const rest = tokens.slice(1);
     let command: string | undefined;
     for (let index = 0; index < rest.length; index += 1) {

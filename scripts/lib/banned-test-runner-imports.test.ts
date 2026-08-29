@@ -1255,6 +1255,55 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('round thirty-six: more of the same shapes, one resolver each', () => {
+  const reports: [string, string][] = [
+    [
+      'createRequire destructured from a namespace',
+      "import * as Module from 'node:module';\nconst { createRequire } = Module;\ncreateRequire(import.meta.url)('bun:test');\n",
+    ],
+    ['a conditional specifier', "const t = await import(useBun ? 'bun:test' : 'vitest');\n"],
+    [
+      'an assignment in a classic for body',
+      "let load = custom;\nfor (let i = 0; i < 1; i++) { load = require; }\nload('bun:test');\n",
+    ],
+    [
+      'a destructured parameter default',
+      "function run({ load = require }) { load('bun:test'); }\nrun({});\n",
+    ],
+    ['a self-redeclared loader', "var require = require;\nrequire('bun:test');\n"],
+    ['a self-redeclared module object', "var module = module;\nmodule.require('bun:test');\n"],
+  ];
+
+  it.each(reports)('reports %s', (_label, source) => {
+    expect(findBannedTestRunnerImports(source, 0, 'probe.cjs')).toHaveLength(1);
+  });
+
+  const silent: [string, string][] = [
+    ['a conditional naming other modules', "const t = await import(useBun ? 'vitest' : 'jest');\n"],
+    [
+      'a parameter default naming something else',
+      "function run({ load = other }) { load('bun:test'); }\n",
+    ],
+    [
+      'a for body assigning something else',
+      "let load = custom;\nfor (let i = 0; i < 1; i++) { load = other; }\nload('bun:test');\n",
+    ],
+    [
+      'a destructure from an unrelated namespace',
+      "import * as H from './helpers';\nconst { createRequire } = H;\ncreateRequire(u)('bun:test');\n",
+    ],
+  ];
+
+  it.each(silent)('does not report %s', (_label, source) => {
+    expect(findBannedTestRunnerImports(source, 0, 'probe.cjs')).toHaveLength(0);
+  });
+
+  it('reads the long form of env split-string', () => {
+    expect(hasForeignShebang('#!/usr/bin/env --split-string=bun\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env --split-string=python3\n')).toBe(true);
+  });
+});
+
 describe('round thirty-five: shapes the shared resolvers now cover', () => {
   it('a conditional initializer is a loader down one branch', () => {
     expect(

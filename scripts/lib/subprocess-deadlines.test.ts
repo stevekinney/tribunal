@@ -100,7 +100,16 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
         // The options may be held in a variable: `const options = { timeout: 10 };
         // spawnSync('x', [], options)`. Looking only for an inline literal
         // treated that call as compliant because it found nothing to inspect.
-        const argument = node.arguments[2];
+        // Node's signature is `spawnSync(command, args, options)`; Bun's is
+        // `Bun.spawnSync(command, options)`. Always reading index 2 meant the
+        // guard never inspected a `Bun.spawnSync` call — including the one in
+        // `scripts/validate-test-runner-imports.ts`, which is the very file
+        // this invariant was added to protect.
+        const isBunApi =
+          ts.isPropertyAccessExpression(callee) &&
+          ts.isIdentifier(callee.expression) &&
+          callee.expression.text === 'Bun';
+        const argument = isBunApi ? node.arguments[1] : node.arguments[2];
         const options =
           argument !== undefined && ts.isObjectLiteralExpression(argument)
             ? argument
@@ -165,6 +174,16 @@ describe('every subprocess deadline is enforceable', () => {
 
   it('accepts a call that sets no deadline at all', () => {
     expect(unboundedSpawnCalls("spawnSync('a', []);\n", 'probe.ts')).toEqual([]);
+  });
+
+  it("reads Bun.spawnSync's two-argument signature", () => {
+    // Node takes `(command, args, options)`; Bun takes `(command, options)`.
+    // Always reading index 2 meant this guard never inspected the repository's
+    // own spawner, which is a `Bun.spawnSync` call.
+    expect(unboundedSpawnCalls('Bun.spawnSync(cmd, { timeout: 10 });\n', 'p.ts')).toEqual([1]);
+    expect(
+      unboundedSpawnCalls("Bun.spawnSync(cmd, { timeout: 10, killSignal: 'SIGKILL' });\n", 'p.ts'),
+    ).toEqual([]);
   });
 
   it('follows an aliased spawnSync import', () => {
