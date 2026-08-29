@@ -1468,6 +1468,24 @@ describe('an alias receives its value from more than declarations', () => {
   });
 });
 
+describe('a for header can assign instead of declare', () => {
+  it('follows an assignment in a classic-for header', () => {
+    // Combines two routes already handled separately: a loop initializer that
+    // always runs, and an assignment as the place a value arrives.
+    expect(
+      findBannedTestRunnerImports(
+        "let load;\nfor (load = require; false; ) {}\nload('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report a for header assigning something else', () => {
+    expect(
+      findBannedTestRunnerImports("let load;\nfor (load = other; false; ) {}\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+});
+
 describe('the shebang interpreter is parsed, not searched for', () => {
   it('does not classify a shell script as JavaScript because it mentions node', () => {
     expect(hasForeignShebang('#!/bin/sh # invoke node below\n')).toBe(true);
@@ -1480,6 +1498,14 @@ describe('the shebang interpreter is parsed, not searched for', () => {
 
   it('skips env options before the command', () => {
     expect(hasForeignShebang('#!/usr/bin/env -S bun run\n')).toBe(false);
+  });
+
+  it('skips env assignments as well as options', () => {
+    // `env`'s own synopsis is `[-u name] [name=value ...] [utility ...]`, so
+    // an assignment sits between the options and the command. Selecting it as
+    // the interpreter wrote off a real JavaScript entrypoint as foreign.
+    expect(hasForeignShebang('#!/usr/bin/env -S NODE_OPTIONS=--no-warnings node\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env -S FOO=bar python3\n')).toBe(true);
   });
 
   it('reads a direct interpreter path', () => {

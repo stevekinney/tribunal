@@ -698,6 +698,18 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     return binding.initializer === undefined ? [] : [binding.initializer];
 
   const initializers: ts.Expression[] = [];
+  const takeAssignment = (candidate: ts.Expression): void => {
+    const expression = unwrapTransparent(candidate);
+    if (
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(expression.left) &&
+      expression.left.text === identifier.text
+    ) {
+      initializers.push(expression.right);
+    }
+  };
+
   const takeDeclarations = (list: ts.VariableDeclarationList): void => {
     for (const declaration of list.declarations) {
       if (!ts.isIdentifier(declaration.name)) continue;
@@ -714,30 +726,25 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     // A classic `for` header declares into this scope when it uses `var`, and
     // its initializer always runs — so it is one of the assignments this
     // binding receives, alongside any plain declaration of the same name.
-    if (
-      ts.isForStatement(sibling) &&
-      sibling.initializer !== undefined &&
-      ts.isVariableDeclarationList(sibling.initializer) &&
-      (sibling.initializer.flags & ts.NodeFlags.BlockScoped) === 0
-    ) {
-      takeDeclarations(sibling.initializer);
+    if (ts.isForStatement(sibling) && sibling.initializer !== undefined) {
+      if (ts.isVariableDeclarationList(sibling.initializer)) {
+        if ((sibling.initializer.flags & ts.NodeFlags.BlockScoped) === 0) {
+          takeDeclarations(sibling.initializer);
+        }
+        continue;
+      }
+      // `for (load = require; false; )` — a header that assigns rather than
+      // declares. It combines the two routes handled either side of this: a
+      // loop initializer that always runs, and an assignment as the place a
+      // value arrives. Neither branch saw it on its own.
+      takeAssignment(sibling.initializer);
       continue;
     }
     // `let load; load = require;` splits declaration from initialization, so
     // the assignment is where the value arrives. Which assignment is live at
     // the call is not established — every one is a candidate and any match is a
     // match, which fails toward reporting.
-    if (ts.isExpressionStatement(sibling)) {
-      const expression = unwrapTransparent(sibling.expression);
-      if (
-        ts.isBinaryExpression(expression) &&
-        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isIdentifier(expression.left) &&
-        expression.left.text === identifier.text
-      ) {
-        initializers.push(expression.right);
-      }
-    }
+    if (ts.isExpressionStatement(sibling)) takeAssignment(sibling.expression);
   }
   return initializers;
 }
@@ -1394,8 +1401,13 @@ export function hasForeignShebang(contents: string): boolean {
   const commandName = (token: string): string => token.slice(token.lastIndexOf('/') + 1);
   let interpreter = commandName(tokens[0] ?? '');
   if (interpreter === 'env') {
-    // `env` may carry its own options before the command, as in `env -S bun`.
-    const command = tokens.slice(1).find((token) => !token.startsWith('-'));
+    // `env` takes options and then environment assignments before the command:
+    // its own synopsis is `[-u name] [name=value ...] [utility [argument ...]]`.
+    // Skipping only options selected `NODE_OPTIONS=--no-warnings` as the
+    // interpreter and wrote off a real JavaScript entrypoint as foreign.
+    const command = tokens
+      .slice(1)
+      .find((token) => !token.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token));
     interpreter = commandName(command ?? '');
   }
   return interpreter !== 'node' && interpreter !== 'bun' && interpreter !== 'deno';
