@@ -33,6 +33,28 @@ const root =
 const SOURCE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
 /** Every `spawnSync` call in a source text that sets a `timeout`. */
+/** The object literal a name is declared with in this file, if any. */
+function declaredObjectLiteral(
+  source: ts.SourceFile,
+  name: string,
+): ts.ObjectLiteralExpression | undefined {
+  let found: ts.ObjectLiteralExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer !== undefined &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      found = node.initializer;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 export function unboundedSpawnCalls(source: string, fileName: string): number[] {
   const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const offenders: number[] = [];
@@ -54,8 +76,17 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
           ? callee.name.text
           : undefined;
       if (name === 'spawnSync') {
-        const options = node.arguments.find((argument) => ts.isObjectLiteralExpression(argument));
-        if (options !== undefined && ts.isObjectLiteralExpression(options)) {
+        // The options may be held in a variable: `const options = { timeout: 10 };
+        // spawnSync('x', [], options)`. Looking only for an inline literal
+        // treated that call as compliant because it found nothing to inspect.
+        const argument = node.arguments[2];
+        const options =
+          argument !== undefined && ts.isObjectLiteralExpression(argument)
+            ? argument
+            : argument !== undefined && ts.isIdentifier(argument)
+              ? declaredObjectLiteral(parsed, argument.text)
+              : undefined;
+        if (options !== undefined) {
           const deadline = propertyNamed(options, 'timeout');
           const signal = propertyNamed(options, 'killSignal');
           // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
@@ -113,6 +144,13 @@ describe('every subprocess deadline is enforceable', () => {
 
   it('accepts a call that sets no deadline at all', () => {
     expect(unboundedSpawnCalls("spawnSync('a', []);\n", 'probe.ts')).toEqual([]);
+  });
+
+  it('resolves options held in a variable', () => {
+    // Looking only for an inline literal found nothing to inspect and called
+    // the deadline compliant.
+    const source = ['const options = { timeout: 10 };', "spawnSync('x', [], options);"].join('\n');
+    expect(unboundedSpawnCalls(source, 'p.ts')).toEqual([2]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

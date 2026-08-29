@@ -565,14 +565,24 @@ export function ciWiringViolations(): Violation[] {
       },
     ];
   }
-  const runCommands = (job.steps ?? []).map((step) => step.run ?? '').join('\n');
-  return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !runCommands.includes(command)).map(
-    (command) => ({
-      fileName: 'ci.yml',
-      rule: 'ci-wiring',
-      message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
-    }),
+  // Each step's `run` is examined line by line, and a line must *be* the
+  // command rather than contain it. Concatenating every step and asking
+  // `includes` accepted a step that merely mentions the command — `run: echo
+  // 'bun run validate:test-runner-imports'` satisfied it while the real step
+  // was deleted, so the guard verified textual presence and not execution.
+  const runLines = (job.steps ?? []).flatMap((step) =>
+    (step.run ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
   );
+  const executes = (command: string): boolean =>
+    runLines.some((line) => line === command || line.startsWith(`${command} `));
+  return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !executes(command)).map((command) => ({
+    fileName: 'ci.yml',
+    rule: 'ci-wiring',
+    message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
+  }));
 }
 
 export function formatViolations(violations: Violation[]): string {

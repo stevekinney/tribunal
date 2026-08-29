@@ -1255,6 +1255,81 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('a Svelte component has two scopes, and markup binds names', () => {
+  it('a module-script binding is not visible to a markup call', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/M.svelte',
+        "<script module>const runner = 'bun:test';</script>\n<script lang=\"ts\">const runner = 'vitest';</script>\n{#await import(runner) then s}<p>a</p>{/await}\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a module script is still analysed for its own imports', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/N.svelte',
+        '<script module>import \'bun:test\';</script>\n<script lang="ts">let x = 1;</script>\n<p>{x}</p>\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('an event handler parameter shadows the loader', () => {
+    // The enclosing arrow is retained whole, so its parameter comes with the
+    // call it shadows.
+    expect(
+      findBannedImportsForPath(
+        'src/O.svelte',
+        '<script lang="ts">let x = 1;</script>\n<button onclick={(require) => require(\'bun:test\')}>{x}</button>\n',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('an each block whose call ignores the binding does not export it', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/P.svelte',
+        "<script lang=\"ts\">const runner = 'vitest';</script>\n{#each ['bun:test'] as runner}{foo()}{/each}\n{#await import(runner) then s}<p>a</p>{/await}\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('values that arrive from a loop or another declaration', () => {
+  it('follows a for-of iterable', () => {
+    expect(
+      findBannedTestRunnerImports("for (const load of [require]) { load('bun:test'); }\n"),
+    ).toHaveLength(1);
+  });
+
+  it('does not report a for-of over something else', () => {
+    expect(
+      findBannedTestRunnerImports("for (const load of [other]) { load('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+
+  it('follows an assignment written inside another declaration', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "let load = other;\nconst configured = (load = require);\nload('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('ignores an array-destructuring assignment to a shadowing parameter', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "let load = custom;\nfunction wire(load) { [load] = [require]; }\nload('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('reads a quoted interpreter from an env split string', () => {
+    expect(hasForeignShebang("#!/usr/bin/env -S 'bun'\n")).toBe(false);
+    expect(hasForeignShebang("#!/usr/bin/env -S 'python3'\n")).toBe(true);
+  });
+});
+
 describe('scope limits on the broader searches', () => {
   it('a nested var shadows, because there is no wrapper binding inside a function', () => {
     // The bare-`var` exception preserves the CommonJS wrapper binding, and that

@@ -704,17 +704,6 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   }
   if (binding === undefined || !ts.isVariableDeclaration(binding)) return [];
 
-  const list = binding.parent;
-  const statement = list.parent;
-  const siblings = ts.isVariableStatement(statement) ? statement.parent : undefined;
-  const statements =
-    siblings !== undefined && (ts.isSourceFile(siblings) || ts.isBlock(siblings))
-      ? siblings.statements
-      : undefined;
-  if (statements === undefined)
-    return binding.initializer === undefined ? [] : [binding.initializer];
-
-  const initializers: ts.Expression[] = [];
   /**
    * The sub-expression a destructuring pattern binds to this name.
    *
@@ -775,6 +764,34 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     return [];
   };
 
+  // `for (const load of [require])` binds each element in turn, and the loop
+  // header is not a `VariableStatement` — so the statement search below finds
+  // nothing and the value has to come from the iterable instead.
+  //
+  // Placed after `throughPattern` rather than with the other early returns: it
+  // calls that helper, and a `const` arrow is in its temporal dead zone until
+  // its own definition is reached. `tsc` accepted the earlier placement and the
+  // validator threw at run time.
+  const loop = binding.parent.parent;
+  if (
+    ts.isForOfStatement(loop) &&
+    ts.isArrayLiteralExpression(unwrapTransparent(loop.expression))
+  ) {
+    const iterable = unwrapTransparent(loop.expression) as ts.ArrayLiteralExpression;
+    return iterable.elements.flatMap((element) => throughPattern(binding.name, element));
+  }
+
+  const list = binding.parent;
+  const statement = list.parent;
+  const siblings = ts.isVariableStatement(statement) ? statement.parent : undefined;
+  const statements =
+    siblings !== undefined && (ts.isSourceFile(siblings) || ts.isBlock(siblings))
+      ? siblings.statements
+      : undefined;
+  if (statements === undefined)
+    return binding.initializer === undefined ? [] : [binding.initializer];
+
+  const initializers: ts.Expression[] = [];
   /**
    * Assignments, in every spelling that gives this name a value.
    *
@@ -815,6 +832,10 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
         for (const [index, element] of target.elements.entries()) {
           const bound = unwrapTransparent(element);
           if (!ts.isIdentifier(bound) || bound.text !== identifier.text) continue;
+          // Same resolution the identifier form needs: the search reaches into
+          // nested functions, so a parameter of the same name is not this
+          // binding.
+          if (innermostBinding(bound, identifier.text, true) !== binding) continue;
           const value = source.elements[index];
           if (value !== undefined) initializers.push(value);
         }
@@ -860,7 +881,9 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   for (const sibling of statements) {
     if (ts.isVariableStatement(sibling)) {
       takeDeclarations(sibling.declarationList);
-      continue;
+      // No `continue`: `const configured = (load = require)` declares one name
+      // and assigns another, so the statement has to go through the assignment
+      // search as well.
     }
     // A classic `for` header declares into this scope when it uses `var`, and
     // its initializer always runs — so it is one of the assignments this
@@ -1317,52 +1340,56 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
 
   const found: BannedImport[] = [];
 
-  // Both scripts and every executable expression in the markup are analysed as
-  // ONE source, not region by region.
+  // Analysed as TWO programs, because Svelte gives a component two scopes.
   //
-  // Markup is executable — `{#await import('bun:test') then suite}` and a
-  // handler calling `require(...)` are real loads in neither `<script>` block —
-  // but analysing each call on its own strips it of the component's bindings,
-  // so `const runner = 'bun:test'` in the instance script left `import(runner)`
-  // with nothing to resolve. Composing them restores every rule already written
-  // — shadowing, aliases, `createRequire`, constant folding — for free.
+  // A `<script module>` binding is not visible to the instance script or to
+  // markup, so composing both into one source let a module-scope value be
+  // considered for a markup call — and the resolver prefers a banned value, so
+  // a valid component was reported. Each scope is masked and analysed on its
+  // own: the module script alone, then the instance script together with the
+  // markup that can see it.
   //
-  // The composition is a mask rather than a concatenation: everything outside a
-  // code region becomes spaces, and newlines are preserved. Offsets therefore
-  // do not move, so reported line numbers need no mapping back and cannot drift.
-  const regions = [
-    ...[root.instance, root.module]
-      .filter((script): script is SvelteScript => Boolean(script))
-      .map((script) => script.content),
+  // Masking rather than concatenating keeps every byte offset, so both passes
+  // report the line the code is actually written on and results merge without
+  // any mapping back.
+  const maskTo = (regions: { start: number; end: number }[], extra: string[] = []): string => {
+    let masked = '';
+    for (let index = 0; index < contents.length; index += 1) {
+      const character = contents.charAt(index);
+      const inRegion = regions.some(({ start, end }) => index >= start && index < end);
+      masked += character === '\n' || inRegion ? character : ' ';
+    }
+    return extra.length > 0 ? `${masked}\n${extra.join('\n')}` : masked;
+  };
+
+  const moduleScript = root.module ? [root.module.content] : [];
+  if (moduleScript.length > 0) {
+    found.push(...findBannedTestRunnerImports(maskTo(moduleScript), 0, 'component.ts'));
+  }
+
+  const instanceScope = [
+    ...(root.instance ? [root.instance.content] : []),
     ...templateCallRanges(root.fragment),
   ];
-  // Indexed by UTF-16 code unit, which is what Svelte's `start`/`end` count.
-  // Spreading the string iterates *code points* instead, so a single astral
-  // character before a region shifted every later offset by one and clipped the
-  // first character off the executable text -- `import` became `mport`.
-  let masked = '';
-  for (let index = 0; index < contents.length; index += 1) {
-    const character = contents.charAt(index);
-    const inRegion = regions.some(({ start, end }) => index >= start && index < end);
-    masked += character === '\n' || inRegion ? character : ' ';
-  }
-  // `{#each ['bun:test'] as runner}` binds `runner` to the array's elements,
-  // and that binding has no declaration anywhere in the source to retain — the
-  // mask can only keep text that exists. So the bindings are *appended* as
-  // synthetic declarations, after every original byte, which leaves the offsets
-  // of real code untouched and therefore its reported line numbers correct.
-  //
-  // One declaration per element rather than an index expression: the resolver
-  // treats every initializer of a name as a candidate, so listing them is the
-  // same answer without teaching it to evaluate subscripts.
-  const bindings = templateEachBindings(root.fragment, contents);
   found.push(
     ...findBannedTestRunnerImports(
-      bindings.length > 0 ? `${masked}\n${bindings.join('\n')}` : masked,
+      maskTo(instanceScope, templateEachBindings(root.fragment, contents)),
       0,
       'component.ts',
     ),
   );
+
+  // Both passes see the same markup offsets, so a finding reachable from either
+  // scope would otherwise appear twice.
+  const seen = new Set<string>();
+  const deduped = found.filter((finding) => {
+    const key = `${finding.line}:${finding.form}:${finding.text}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  found.length = 0;
+  found.push(...deduped);
 
   return found.sort((first, second) => first.line - second.line);
 }
@@ -1373,13 +1400,39 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  * Emitted as text rather than kept as ranges, because the binding is created by
  * the block itself — there is no declaration in the source to preserve.
  */
-/** Whether a template subtree contains a call the ban could care about. */
-function containsCall(node: unknown): boolean {
-  if (node === null || typeof node !== 'object') return false;
-  if (Array.isArray(node)) return node.some((item) => containsCall(item));
-  const record = node as { type?: unknown };
-  if (record.type === 'ImportExpression' || record.type === 'CallExpression') return true;
-  return Object.entries(node).some(([key, value]) => key !== 'parent' && containsCall(value));
+/**
+ * Whether a template subtree contains a call that actually uses this binding.
+ *
+ * Emitting the synthetic declaration for any call in the block was too loose:
+ * a block calling something unrelated exported its local name to the top level,
+ * where it became a candidate for markup outside the block.
+ */
+function referencesName(
+  node: unknown,
+  context: { start?: unknown; end?: unknown } | undefined,
+): boolean {
+  if (context === undefined) return false;
+  let usesName = false;
+  let hasCall = false;
+  const wanted = context;
+  const visit = (candidate: unknown): void => {
+    if (candidate === null || typeof candidate !== 'object') return;
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    const record = candidate as { type?: unknown; name?: unknown };
+    if (record.type === 'ImportExpression' || record.type === 'CallExpression') hasCall = true;
+    if (record.type === 'Identifier' && record.name === (wanted as { name?: unknown }).name) {
+      usesName = true;
+    }
+    for (const [key, value] of Object.entries(candidate)) {
+      if (key === 'parent') continue;
+      visit(value);
+    }
+  };
+  visit(node);
+  return hasCall && usesName;
 }
 
 function templateEachBindings(fragment: unknown, contents: string): string[] {
@@ -1401,7 +1454,7 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
       // appended at top level, so emitting it unconditionally would make the
       // block-local binding a candidate for markup *outside* the block —
       // reporting a component whose outer `runner` names something else.
-      containsCall((node as { body?: unknown }).body) &&
+      referencesName((node as { body?: unknown }).body, record.context) &&
       record.context?.type === 'Identifier' &&
       typeof record.context.start === 'number' &&
       typeof record.context.end === 'number' &&
@@ -1448,6 +1501,12 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
     if (
       (record.type === 'ImportExpression' ||
         record.type === 'CallExpression' ||
+        // A function expression is retained *whole*, before its call. An event
+        // handler binds names — `onclick={(require) => require('bun:test')}` —
+        // and keeping only the inner call masked the parameter that shadows the
+        // loader, so a valid component was reported.
+        record.type === 'ArrowFunctionExpression' ||
+        record.type === 'FunctionExpression' ||
         // `{@const runner = 'bun:test'}` declares a binding a markup call can
         // use. Keeping only calls masked the declaration, so the composed
         // program had the alias but not its definition — the very thing
@@ -1640,7 +1699,13 @@ export function hasForeignShebang(contents: string): boolean {
   // JavaScript, and the recovery parser then turned that script's ordinary hash
   // comments into imports — a false positive on every commit containing it.
   const tokens = firstLine.slice(2).trim().split(/\s+/).filter(Boolean);
-  const commandName = (token: string): string => token.slice(token.lastIndexOf('/') + 1);
+  // `-S` splits its argument, and the pieces may carry quotes: `env -S 'bun'`.
+  // Stripping them before taking the basename keeps a quoted interpreter from
+  // reading as a foreign one.
+  const commandName = (token: string): string => {
+    const unquoted = token.replace(/^['"]|['"]$/g, '');
+    return unquoted.slice(unquoted.lastIndexOf('/') + 1);
+  };
   let interpreter = commandName(tokens[0] ?? '');
   if (interpreter === 'env') {
     // `env` takes options and then environment assignments before the command:
