@@ -257,6 +257,15 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
    * whose execution needs control-flow analysis to establish — a nested block,
    * a different `switch` clause, a conditional.
    */
+  /** The nearest enclosing function, or undefined at the top level. */
+  const enclosingFunction = (from: ts.Node): ts.Node | undefined => {
+    let scope: ts.Node | undefined = from.parent;
+    while (scope !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) {
+      scope = scope.parent;
+    }
+    return scope !== undefined && ts.isFunctionLike(scope) ? scope : undefined;
+  };
+
   const replacesBinding = (declaration: ts.VariableDeclaration): boolean => {
     // `ignoreOrder` asks a different question: not "has this replaced the
     // loader yet" but "is this name bound here at all". Alias resolution needs
@@ -288,6 +297,21 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
     }
 
     if (declaration.initializer === undefined) return false;
+
+    // Source order only tracks execution order within one function body. Across
+    // a function boundary it tracks nothing: a hoisted declaration can be
+    // invoked before an assignment that is written above it, and the call node
+    // still sits textually below.
+    //
+    //   invoke();
+    //   var require = custom;
+    //   function invoke() { require('bun:test'); }   // reaches the real loader
+    //
+    // Verified under Node, where that call loads. So when the call lives in a
+    // function the declaration does not, the comparison is refused and the call
+    // is reported. That over-reports the common case where the function is
+    // called afterwards, which is the safe direction and is taken knowingly.
+    if (enclosingFunction(node) !== enclosingFunction(declaration)) return false;
     return callStart >= declaration.initializer.getEnd();
   };
 
@@ -730,6 +754,62 @@ function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: str
   return target === 'node:module' || target === 'module';
 }
 
+/**
+ * Whether a `namespace module` in scope writes a runtime `require` export.
+ *
+ * Declaration merging is not all-or-nothing. A namespace merged onto the
+ * CommonJS wrapper leaves `module.require` intact when it exports something
+ * else, and *replaces* it when it exports `require` — the emitted
+ * initialization assigns that property. Verified under Bun, where
+ * `module.require('node:path')` returns the namespace's own function.
+ *
+ * Found by walking scopes rather than through `innermostBinding`, because that
+ * deliberately reports a CommonJS namespace as *not* binding — which is the
+ * right answer for the name `module` and the wrong one for this question.
+ */
+function namespaceExportsRequire(from: ts.Node): boolean {
+  const exportsRequire = (body: ts.ModuleBlock): boolean =>
+    body.statements.some((statement) => {
+      // Read the modifiers rather than casting to `Declaration`: a `Statement`
+      // does not overlap it enough for TypeScript to allow the conversion, and
+      // forcing it through `unknown` would be hiding that rather than answering
+      // it.
+      const exported =
+        ts.canHaveModifiers(statement) &&
+        ts
+          .getModifiers(statement)
+          ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+      if (exported !== true) return false;
+      if (ts.isFunctionDeclaration(statement)) {
+        return statement.name?.text === 'require' && statement.body !== undefined;
+      }
+      if (ts.isVariableStatement(statement)) {
+        return statement.declarationList.declarations.some(
+          (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'require',
+        );
+      }
+      return false;
+    });
+
+  for (let scope: ts.Node | undefined = from; scope; scope = scope.parent) {
+    const statements = ts.isSourceFile(scope)
+      ? scope.statements
+      : ts.isBlock(scope)
+        ? scope.statements
+        : ts.isModuleBlock(scope)
+          ? scope.statements
+          : undefined;
+    for (const statement of statements ?? []) {
+      if (!ts.isModuleDeclaration(statement)) continue;
+      if (!ts.isIdentifier(statement.name) || statement.name.text !== 'module') continue;
+      if (statement.body !== undefined && ts.isModuleBlock(statement.body)) {
+        if (exportsRequire(statement.body)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   // `createRequire(import.meta.url)('bun:test')` calls the loader that call
   // returns, so the callee here is itself a call rather than a name.
@@ -758,6 +838,7 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
   if (member === undefined || member.name !== 'require') return false;
 
   if (ts.isIdentifier(member.object) && member.object.text === 'module') {
+    if (namespaceExportsRequire(member.object)) return false;
     return !isLocallyShadowed(member.object, 'module');
   }
   // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
@@ -1053,6 +1134,12 @@ export function isScannableFile(fileName: string): boolean {
   // dotfile variant through.
   const dot = base.indexOf('.', base.startsWith('.') ? 1 : 0);
   const stem = dot === -1 ? base : base.slice(0, dot);
+  // A lone leading-dot name is a *named* format, not an extensionless one:
+  // `.envrc`, `.babelrc`, `.bashrc` are configuration whose format the name
+  // announces. Treating them as extensionless entrypoints handed hash-commented
+  // files to the TypeScript parser. `.eslintrc.js` still scans, because its
+  // second dot gives it a recognised extension.
+  if (base.startsWith('.') && dot === -1) return false;
   // The extension is checked first. A basename exclusion is a heuristic for
   // files whose format nothing else names, and letting it override a
   // recognised extension skipped `runner/Dockerfile.test.mjs` — a file that

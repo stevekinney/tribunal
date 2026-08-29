@@ -150,3 +150,17 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 
 - **A removal proof passed because the test never reached the changed function.** Reordering `isScannableFile` so a recognised extension outranks a basename heuristic left the suite green, because the test exercised `findBannedImportsForPath` — which never consults `isScannableFile`. The candidate filter is what decides whether a path is read at all, so asserting through a different entry point proved only that the other entry point still worked.
 - **Non-language heuristics keep outranking the language.** First a foreign shebang skipped a `.mjs` file, then a recipe-like basename skipped `runner/Dockerfile.test.mjs` — a file `runner/vitest.config.mjs` really does collect as a suite. Both heuristics exist for files whose format nothing else names; both were being consulted before the extension that already named it.
+
+## Source order is only evidence inside one function body
+
+- **A hoisted function can run before an assignment written above its call site.** `invoke(); var require = custom; function invoke() { require('bun:test'); }` reaches the real loader, because `invoke` is hoisted and runs first — while the call node sits textually _below_ the assignment. Every positional comparison this validator makes had been treating AST order as execution order, which holds within one function body and holds nowhere else. The comparison is now refused when the call and the declaration live in different functions, which over-reports the common case where the function is called afterwards; that is the safe direction and it is stated as a choice.
+
+## Merging is not all-or-nothing
+
+- **A namespace merged onto the CommonJS wrapper leaves `module.require` intact only when it exports something else.** Exporting `require` assigns that property, and the call then invokes the namespace's own function — verified under Bun, where `module.require('node:path')` returns it. The previous round's correction ("a namespace never shadows in CommonJS") was right about the general case and wrong about the one that matters, which is the mirror of the mistake it was fixing.
+- **Ask the question the caller is actually asking.** The namespace check walks scopes itself rather than going through `innermostBinding`, because that function deliberately reports a CommonJS namespace as _not_ binding the name `module` — the right answer for shadowing and the wrong one for "does this rewrite `module.require`".
+
+## A local environment can hide a finding
+
+- **A probe came back clean because of a personal global gitignore.** `.envrc` was reported as a false positive; the probe did not reproduce it, because `~/.gitignore` excludes `.envrc` and the collector enumerates through git. Calling `isScannableFile('.envrc')` directly showed the defect immediately. When a probe disagrees with a finding, check whether the probe reached the code at all before concluding the finding is wrong.
+- **A lone leading-dot name is a named format, not an extensionless one.** `.envrc`, `.babelrc`, and `.bashrc` announce what they are; treating them as extensionless entrypoints handed hash-commented files to the TypeScript parser. `.eslintrc.js` still scans, because its second dot names a real extension.

@@ -1149,6 +1149,83 @@ describe('a recognised extension outranks a recipe basename', () => {
   });
 });
 
+describe('declaration merging is not all-or-nothing', () => {
+  it('a namespace exporting a require function DOES replace module.require', () => {
+    // Verified under Bun: `module.require('node:path')` returns the namespace's
+    // own function, so the emitted initialization really does assign the
+    // property. Merging leaves the loader intact only when nothing overwrites
+    // it.
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export function require(n: string) { return n; } }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a namespace exporting a require constant also replaces it', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export const require = (n: string) => n; }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a namespace exporting something else leaves module.require intact', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export const other = 1; }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a namespace exporting a class leaves module.require intact', () => {
+    // Neither a function nor a variable statement — the branch that decides
+    // "this export is not a require" rather than falling through to true.
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export class Other {} }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('a bodyless exported require signature does not replace it', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export function require(n: string): string; }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe('source order says nothing across a function boundary', () => {
+  it('reports a hoisted invocation that runs before the assignment', () => {
+    // `invoke()` runs first, so the call inside it reaches the real loader even
+    // though the call node sits textually below `var require = custom`.
+    // Verified under Node, where the equivalent ordering loads.
+    expect(
+      findBannedTestRunnerImports(
+        "invoke();\nvar require = custom;\nfunction invoke() { require('bun:test'); }\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('still suppresses a straight-line call in the same function body', () => {
+    expect(
+      findBannedTestRunnerImports("function f() { var require = custom; require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);
@@ -1444,8 +1521,20 @@ describe('extensionless entrypoints', () => {
     // extension equality test: case-insensitivity, and extensionless
     // entrypoints, which the shebang decides on once the contents are read.
     expect(isScannableFile('module.TS')).toBe(true);
-    expect(isScannableFile('bin/.run-tests')).toBe(true);
     expect(isScannableFile('bin/run-tests')).toBe(true);
+
+    // `bin/.run-tests` was asserted here as a third extensionless entrypoint.
+    // A lone leading-dot name is not extensionless, though — it is a *named*
+    // format that announces itself: `.envrc`, `.babelrc`, `.bashrc` are
+    // configuration, and treating them as entrypoints handed hash-commented
+    // files to the TypeScript parser, whose recovery turns `# import '...'`
+    // into a real import. The hypothetical dot-prefixed JavaScript entrypoint
+    // loses; the concrete false positives were blocking commits.
+    expect(isScannableFile('bin/.run-tests')).toBe(false);
+    expect(isScannableFile('.envrc')).toBe(false);
+    expect(isScannableFile('.babelrc')).toBe(false);
+    // A dotfile whose second dot names a real extension still scans.
+    expect(isScannableFile('.eslintrc.js')).toBe(true);
   });
 
   it('skips shell, which this test previously asserted was scanned', () => {
