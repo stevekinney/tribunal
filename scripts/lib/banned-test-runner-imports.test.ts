@@ -1392,6 +1392,55 @@ describe('a Svelte component is analysed as one program', () => {
   });
 });
 
+describe('offsets and branches that quietly swallowed findings', () => {
+  it('masks by UTF-16 code unit, so an astral character does not shift the region', () => {
+    // Svelte's `start`/`end` count UTF-16 code units; spreading a string
+    // iterates code points, so one emoji before the script clipped `import`
+    // down to `mport`.
+    expect(
+      findBannedImportsForPath('src/F.svelte', '😀<script>import "bun:test";</script>\n'),
+    ).toHaveLength(1);
+  });
+
+  it('reports a documented import-equals, which a JSDoc branch was consuming', () => {
+    // The JSDoc check was written as an `if` immediately before an `else if`,
+    // so any node merely *owning* a documentation comment skipped every
+    // remaining branch. The import went unreported because it was documented.
+    expect(
+      findBannedTestRunnerImports("/** load the suite */\nimport suite = require('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('still reports an undocumented one', () => {
+    expect(findBannedTestRunnerImports("import suite = require('bun:test');\n")).toHaveLength(1);
+  });
+
+  it('a block-scoped for initializer does not outlive its loop', () => {
+    // Only `var` survives to the enclosing scope. A `let` header binding ceases
+    // to exist at the closing brace, so the later call reaches the loader.
+    expect(
+      findBannedTestRunnerImports("for (let require = custom; false; ) {}\nrequire('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a var for initializer still does outlive it', () => {
+    expect(
+      findBannedTestRunnerImports("for (var require = custom; false; ) {}\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('composes a template-local {@const} declaration into the program', () => {
+    // Keeping only call ranges masked the declaration, so the composed program
+    // held the alias but not its definition.
+    expect(
+      findBannedImportsForPath(
+        'src/G.svelte',
+        '<script lang="ts">let x = 1;</script>\n{#each [1] as _}{@const runner = \'bun:test\'}{#await import(runner) then s}<p>{x}</p>{/await}{/each}\n',
+      ),
+    ).toHaveLength(1);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

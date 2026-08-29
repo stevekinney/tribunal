@@ -189,3 +189,19 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 ## One binding can have several initializers
 
 - **`var` allows the same name to be declared more than once, with separately ordered assignments.** `var load = require; load('bun:test'); var load = custom;` shares one binding; taking the innermost declaration returned the _last_ one and hid a loader that was active at the call. Every initializer of the name is now considered and any match is a match — which fails toward reporting, and avoids the "which assignment is live here" analysis refused everywhere else in this file.
+
+## Two indexes into the same string are not the same index
+
+- **`[...contents]` iterates code points; Svelte's `start`/`end` count UTF-16 code units.** One astral character before a region shifted every later offset by one, so the mask clipped the first character off the executable text — `import` became `mport` and the import vanished. A masking scheme chosen _because_ it preserves offsets was silently not preserving them. Index by `charAt` over `contents.length` when the offsets come from a UTF-16 producer.
+
+## An `if` before an `else if` swallows the chain
+
+- **A branch added at the top of an if/else chain made every later branch its alternate.** The JSDoc check was inserted as `if (...) { ... }` directly above `else if (ts.isImportTypeNode(node))`, so any node that merely _owned_ a documentation comment skipped the remaining branches: `/** ... */ import suite = require('bun:test')` went unreported purely because it was documented. Adding a statement to a chain is not the same as adding a link to it, and the compiler is content either way.
+
+## An exception is scoped to what actually survives
+
+- **Only `var` outlives a loop.** The classic-`for` initializer rule hoisted every header declaration into the enclosing scope, but a `let` or `const` binding ceases to exist at the closing brace, so a call after the loop still reaches the loader. The rule was written for `var` semantics and then applied to all three declaration kinds — the same shape of error as applying the CommonJS merge exception to nested scopes.
+
+## Composing half a program is not composing it
+
+- **Template _declarations_ belong in the composed source, not only template calls.** `{@const runner = 'bun:test'}` defines a binding a markup call uses; keeping only call ranges masked the definition, so the composed program held the alias and not its declaration — the precise problem composition was introduced to fix, one scope further in. When the fix is "analyse it as one program", every part that binds a name has to be in it.

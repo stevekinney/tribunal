@@ -510,7 +510,11 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
         ? statement.declarationList.declarations
         : ts.isForStatement(statement) &&
             statement.initializer !== undefined &&
-            ts.isVariableDeclarationList(statement.initializer)
+            ts.isVariableDeclarationList(statement.initializer) &&
+            // Only `var` outlives the loop. A `let` or `const` header binding
+            // ceases to exist at the closing brace, so hoisting it into the
+            // enclosing scope suppressed calls written after the loop.
+            (statement.initializer.flags & ts.NodeFlags.BlockScoped) === 0
           ? statement.initializer.declarations
           : undefined;
       for (const declaration of declarations ?? []) {
@@ -1007,6 +1011,11 @@ export function findBannedTestRunnerImports(
     // child node, so no visitor branch could ever have reached it. Only nodes
     // that actually own a JSDoc comment are asked, which keeps this off the
     // hot path.
+    // Written as its own statement rather than a link in the chain below. As
+    // an `if` immediately preceding an `else if`, it swallowed every remaining
+    // branch for any node that merely *owns* a documentation comment — so
+    // `/** ... */ import suite = require('bun:test')` went unreported purely
+    // because it was documented.
     if ((node as { jsDoc?: readonly unknown[] }).jsDoc !== undefined) {
       for (const tag of ts.getJSDocTags(node)) {
         if (
@@ -1022,7 +1031,9 @@ export function findBannedTestRunnerImports(
     // neither a declaration nor a call, so nothing above sees it — and the
     // equivalent `import type { X } from '...'` is already banned, so missing
     // this would leave an inconsistent rule.
-    else if (ts.isImportTypeNode(node)) {
+    // A fresh chain: the JSDoc check above is an independent statement, so
+    // these must not be its alternates.
+    if (ts.isImportTypeNode(node)) {
       const argument = node.argument;
       if (
         ts.isLiteralTypeNode(argument) &&
@@ -1114,13 +1125,16 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
       .map((script) => script.content),
     ...templateCallRanges(root.fragment),
   ];
-  const masked = [...contents]
-    .map((character, index) =>
-      character === '\n' || regions.some(({ start, end }) => index >= start && index < end)
-        ? character
-        : ' ',
-    )
-    .join('');
+  // Indexed by UTF-16 code unit, which is what Svelte's `start`/`end` count.
+  // Spreading the string iterates *code points* instead, so a single astral
+  // character before a region shifted every later offset by one and clipped the
+  // first character off the executable text -- `import` became `mport`.
+  let masked = '';
+  for (let index = 0; index < contents.length; index += 1) {
+    const character = contents.charAt(index);
+    const inRegion = regions.some(({ start, end }) => index >= start && index < end);
+    masked += character === '\n' || inRegion ? character : ' ';
+  }
   found.push(...findBannedTestRunnerImports(masked, 0, 'component.ts'));
 
   return found.sort((first, second) => first.line - second.line);
@@ -1150,7 +1164,13 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
     }
     const record = node as { type?: unknown; start?: unknown; end?: unknown };
     if (
-      (record.type === 'ImportExpression' || record.type === 'CallExpression') &&
+      (record.type === 'ImportExpression' ||
+        record.type === 'CallExpression' ||
+        // `{@const runner = 'bun:test'}` declares a binding a markup call can
+        // use. Keeping only calls masked the declaration, so the composed
+        // program had the alias but not its definition — the very thing
+        // composing was meant to fix, one scope further in.
+        record.type === 'VariableDeclaration') &&
       typeof record.start === 'number' &&
       typeof record.end === 'number'
     ) {
