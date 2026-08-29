@@ -581,8 +581,12 @@ export function runLinesExecute(lines: readonly string[], command: string): bool
   // … fi` satisfied every other rule while bash never ran it, so a step could
   // keep the gate's text and lose its execution. Only a line at depth zero is
   // unconditionally executed, which is what "wired" has to mean.
-  const OPENS = /^(if|for|while|until|case)\b/;
-  const CLOSES = /^(fi|done|esac)\b/;
+  // A shell *function definition* also holds commands the shell only defines:
+  // `gate() {` … `}` with nobody calling `gate` keeps the gate's text and loses
+  // its execution just as `if false` does. Braces count as depth too, which is
+  // the third distinct way a step could be un-wired without deleting anything.
+  const OPENS = /^(if|for|while|until|case)\b|(\(\)\s*\{|^\{)$|\{$/;
+  const CLOSES = /^(fi|done|esac|\})/;
   let depth = 0;
   for (const line of lines) {
     if (CLOSES.test(line)) {

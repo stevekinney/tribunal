@@ -92,67 +92,90 @@ export function spawnAliasesIn(
     return specifier.text.startsWith('.') ? exportsOf(specifier.text).has(imported) : false;
   };
 
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) {
-      const clause = node.importClause?.namedBindings;
-      if (clause !== undefined && ts.isNamedImports(clause)) {
-        for (const element of clause.elements) {
-          const imported = element.propertyName?.text ?? element.name.text;
-          if (fromSpecifier(node.moduleSpecifier, imported) === true)
-            direct.set(element.name.text, element.name);
+  // One reader per declaration kind. This began as a single walker and grew a
+  // branch per review finding — named import, namespace import, default
+  // import, `require` destructuring, `require` namespace, identifier alias,
+  // member alias, named re-export, star re-export, exported const — until the
+  // complexity gate rejected it. That gate was right: the shape of the code
+  // had stopped matching the shape of the question.
+  const readImport = (node: ts.ImportDeclaration): void => {
+    const clause = node.importClause?.namedBindings;
+    if (clause !== undefined && ts.isNamedImports(clause)) {
+      for (const element of clause.elements) {
+        const imported = element.propertyName?.text ?? element.name.text;
+        if (fromSpecifier(node.moduleSpecifier, imported) === true) {
+          direct.set(element.name.text, element.name);
         }
       }
-      // `import * as cp from 'node:child_process'` binds the module object, and
-      // `cp.spawnSync(...)` is the same call written through it. So does the
-      // default import Node supports, `import childProcess from …`, which has
-      // no `namedBindings` at all — reading only those left the file with no
-      // spawner binding and dropped it from the scan entirely.
-      const bindsModule =
-        ts.isStringLiteralLike(node.moduleSpecifier) &&
-        NODE_CHILD_PROCESS.has(node.moduleSpecifier.text);
-      if (bindsModule && clause !== undefined && ts.isNamespaceImport(clause)) {
-        namespaces.set(clause.name.text, clause.name);
-      }
-      if (bindsModule && node.importClause?.name !== undefined) {
-        namespaces.set(node.importClause.name.text, node.importClause.name);
-      }
     }
+    // `import * as cp from 'node:child_process'` binds the module object, and
+    // `cp.spawnSync(...)` is the same call written through it. So does Node's
+    // default import, which has no `namedBindings` at all — reading only those
+    // left the file with no spawner binding and dropped it from the scan.
+    if (
+      !ts.isStringLiteralLike(node.moduleSpecifier) ||
+      !NODE_CHILD_PROCESS.has(node.moduleSpecifier.text)
+    ) {
+      return;
+    }
+    if (clause !== undefined && ts.isNamespaceImport(clause)) {
+      namespaces.set(clause.name.text, clause.name);
+    }
+    if (node.importClause?.name !== undefined) {
+      namespaces.set(node.importClause.name.text, node.importClause.name);
+    }
+  };
+
+  /** The property a member read names, in either spelling. */
+  const memberRead = (node: ts.Expression): string | undefined => {
+    if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node))
+      return undefined;
+    if (!ts.isIdentifier(node.expression) || !namespaces.has(node.expression.text))
+      return undefined;
+    return ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : undefined;
+  };
+
+  const readDeclaration = (node: ts.VariableDeclaration): void => {
+    const initializer = node.initializer;
+    if (initializer === undefined) return;
 
     // The CommonJS spellings: `const { spawnSync } = require('node:child_process')`
     // binds the name, and `const cp = require('node:child_process')` binds the
     // module object. Dropping these while tightening provenance would have
     // traded a false positive for a false negative.
-    if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
-      if (loadsChildProcess(node.initializer)) {
-        if (ts.isIdentifier(node.name)) namespaces.set(node.name.text, node.name);
-        if (ts.isObjectBindingPattern(node.name)) {
-          for (const element of node.name.elements) {
-            const key =
-              element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
-                ? element.propertyName.text
-                : ts.isIdentifier(element.name)
-                  ? element.name.text
-                  : undefined;
-            if (key === 'spawnSync' && ts.isIdentifier(element.name))
-              direct.set(element.name.text, element.name);
+    if (loadsChildProcess(initializer)) {
+      if (ts.isIdentifier(node.name)) namespaces.set(node.name.text, node.name);
+      if (ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements) {
+          const key =
+            element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
+              ? element.propertyName.text
+              : ts.isIdentifier(element.name)
+                ? element.name.text
+                : undefined;
+          if (key === 'spawnSync' && ts.isIdentifier(element.name)) {
+            direct.set(element.name.text, element.name);
           }
         }
       }
-      // `const run = spawnSync` — an alias of a name already known to be one.
-      if (
-        ts.isIdentifier(node.name) &&
-        ts.isIdentifier(node.initializer) &&
-        direct.has(node.initializer.text)
-      ) {
-        direct.set(node.name.text, node.name);
-      }
     }
 
-    if (
-      ts.isExportDeclaration(node) &&
-      node.exportClause !== undefined &&
-      ts.isNamedExports(node.exportClause)
-    ) {
+    // `const run = spawnSync` aliases a name already known to be one, and
+    // `const run = childProcess.spawnSync` aliases the same function off the
+    // module object.
+    if (!ts.isIdentifier(node.name)) return;
+    const aliases =
+      (ts.isIdentifier(initializer) && direct.has(initializer.text)) ||
+      memberRead(initializer) === 'spawnSync';
+    if (aliases) direct.set(node.name.text, node.name);
+  };
+
+  const readExport = (node: ts.ExportDeclaration): void => {
+    if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
       for (const element of node.exportClause.elements) {
         const from = element.propertyName?.text ?? element.name.text;
         const viaModule = fromSpecifier(node.moduleSpecifier, from);
@@ -160,10 +183,10 @@ export function spawnAliasesIn(
           exported.add(element.name.text);
         }
       }
+      return;
     }
     // `export * from './spawner'` re-exports every alias that module exports.
     if (
-      ts.isExportDeclaration(node) &&
       node.exportClause === undefined &&
       node.moduleSpecifier !== undefined &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
@@ -171,20 +194,27 @@ export function spawnAliasesIn(
     ) {
       for (const name of exportsOf(node.moduleSpecifier.text)) exported.add(name);
     }
+  };
 
-    if (ts.isVariableStatement(node)) {
-      const shared =
-        node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
-      if (shared) {
-        for (const declaration of node.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name) && direct.has(declaration.name.text)) {
-            exported.add(declaration.name.text);
-          }
-        }
+  const readExportedConst = (node: ts.VariableStatement): void => {
+    const shared =
+      node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+    if (!shared) return;
+    for (const declaration of node.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && direct.has(declaration.name.text)) {
+        exported.add(declaration.name.text);
       }
     }
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) readImport(node);
+    if (ts.isVariableDeclaration(node)) readDeclaration(node);
+    if (ts.isExportDeclaration(node)) readExport(node);
+    if (ts.isVariableStatement(node)) readExportedConst(node);
     ts.forEachChild(node, visit);
   };
+
   // Twice, because `export { local as name }` can be written above the import
   // that binds `local`, and one pass in source order would miss it.
   visit(parsed);
@@ -409,19 +439,26 @@ export function inspectSpawnCalls(
       // `spawnSync.call(thisArg, …)` shifts every argument one place right and
       // `.apply` wraps them in a list. Both really invoke the spawner, so
       // reading the call's own argument list answers the wrong question.
-      const forwarder =
-        ts.isPropertyAccessExpression(callee) &&
-        (callee.name.text === 'call' || callee.name.text === 'apply')
-          ? callee
+      // Both spellings of the forwarder name the same function, so accepting
+      // only the dotted one is bypassed by writing `spawnSync['call']`.
+      const forwarderName = ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)
+          ? callee.argumentExpression.text
           : undefined;
-      const target = forwarder === undefined ? callee : forwarder.expression;
+      const forwarder =
+        (forwarderName === 'call' || forwarderName === 'apply') &&
+        (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
+          ? { receiver: callee.expression, name: forwarderName }
+          : undefined;
+      const target = forwarder === undefined ? callee : forwarder.receiver;
 
       if (isSpawner(target)) {
         calls.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
         const forwarded =
           forwarder === undefined
             ? [...node.arguments]
-            : forwarder.name.text === 'call'
+            : forwarder.name === 'call'
               ? node.arguments.slice(1)
               : (() => {
                   const list = node.arguments[1];
@@ -542,9 +579,25 @@ export function isInspectableSource(path: string, text: string): boolean {
   return !(isExtensionlessPath(path) && hasForeignShebang(text));
 }
 
+// A tracked path can be absent from the worktree: `git ls-files` still lists a
+// file the developer has deleted but not yet staged, and an unconditional read
+// threw `ENOENT` during module initialisation — aborting the scripts suite, the
+// coverage run, and `bun run verify` before a single source was checked. A
+// guard that cannot run is worse than one that misses something.
+const readSource = (path: string): string | undefined => {
+  try {
+    return readFileSync(join(root, path), 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
 const sources = new Map(
   tracked
-    .map((path) => [path, readFileSync(join(root, path), 'utf8')] as const)
+    .flatMap((path) => {
+      const text = readSource(path);
+      return text === undefined ? [] : [[path, text] as const];
+    })
     .filter(([path, text]) => isInspectableSource(path, text)),
 );
 
@@ -723,6 +776,26 @@ describe('every subprocess deadline is enforceable', () => {
         'p.ts',
       ),
     ).toEqual([2]);
+  });
+
+  it('follows an alias taken off the module object', () => {
+    // `const run = childProcess.spawnSync` aliases the same function the
+    // namespace exposes; reading only the identifier form left the route
+    // uncounted, so its calls were never inspected at all.
+    expect(
+      unboundedSpawnCalls(
+        "import * as cp from 'node:child_process';\nconst run = cp.spawnSync;\nrun('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([3]);
+  });
+
+  it('recognises a bracketed call or apply forwarder', () => {
+    expect(unbounded("spawnSync['call'](null, 'x', [], { timeout: 10 });")).toEqual([1]);
+    expect(
+      unbounded("spawnSync['call'](null, 'x', [], { timeout: 10, killSignal: 'SIGKILL' });"),
+    ).toEqual([]);
+    expect(unbounded("spawnSync['apply'](null, ['x', [], { timeout: 10 }]);")).toEqual([1]);
   });
 
   it('recognises a spawner written with a bracketed member read', () => {

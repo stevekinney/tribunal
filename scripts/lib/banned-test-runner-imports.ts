@@ -280,6 +280,23 @@ function constantSpecifier(
 }
 
 /**
+ * The name a property declares, however it is spelled.
+ *
+ * An identifier, a string, a number, and a computed key that folds to a
+ * constant all name the same property. Every reader of a property name asks
+ * this one, because keeping a second identifier-only match is how the
+ * destructuring path stayed blind to `{ 'load': require }` after the member
+ * path had already been corrected for it.
+ */
+function staticPropertyName(name: ts.PropertyName | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return ts.isComputedPropertyName(name) ? constantSpecifier(name.expression) : undefined;
+}
+
+/**
  * The property name a member access reads, when it is statically known.
  *
  * Covers both spellings: `module.require` is a `PropertyAccessExpression`,
@@ -378,21 +395,10 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
         }
         continue;
       }
-      // A key can be written as an identifier, a string, a number, or a
-      // computed expression, and all four name the same property. The computed
-      // form is folded by the same resolver that folds the *access* side, since
-      // reading `h['load']` and writing `{ ['load']: … }` are the same question
-      // asked from opposite ends — answering one and declining the other is the
-      // asymmetry this file keeps being corrected for.
-      if (property.name === undefined) continue;
-      const key = ts.isComputedPropertyName(property.name)
-        ? constantSpecifier(property.name.expression, visited)
-        : ts.isIdentifier(property.name) ||
-            ts.isStringLiteralLike(property.name) ||
-            ts.isNumericLiteral(property.name)
-          ? property.name.text
-          : undefined;
-      if (key !== member.name) continue;
+      // Reading `h['load']` and writing `{ ['load']: … }` are the same question
+      // asked from opposite ends, so both go through the one property-name
+      // reader rather than through two that drift apart.
+      if (staticPropertyName(property.name) !== member.name) continue;
       // A method or an accessor named the same thing is not the value: reading
       // its body is evaluating a function, which is declined here and tested.
       chosen = ts.isPropertyAssignment(property)
@@ -1166,11 +1172,11 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
               ? element.name.text
               : undefined;
         if (key === undefined) continue;
+        // A quoted key names the same property. The member reader already
+        // folded these; this path kept its own identifier-only match, which is
+        // the read-side/write-side asymmetry corrected once more.
         const property = source.properties.find(
-          (candidate) =>
-            candidate.name !== undefined &&
-            ts.isIdentifier(candidate.name) &&
-            candidate.name.text === key,
+          (candidate) => staticPropertyName(candidate.name) === key,
         );
         // `const { load = require } = {}` — no matching property, so the
         // default supplies the value.
@@ -1934,6 +1940,71 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  * loader needs the binding resolver, which runs on the composed program rather
  * than on the template AST.
  */
+/** Every identifier a Svelte each-context binds, pattern or not. */
+function patternNames(context: unknown): string[] {
+  const names: string[] = [];
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const record = node as { type?: unknown; name?: unknown };
+    if (record.type === 'Identifier' && typeof record.name === 'string') names.push(record.name);
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'parent') continue;
+      walk(value);
+    }
+  };
+  walk(context);
+  return names;
+}
+
+/**
+ * Whether a snippet parameter is the *callee* of a call in this range.
+ *
+ * The suppression exists because a snippet's parameters bind names for its
+ * body, so `{#snippet row(require)}{require('bun:test')}` invokes the
+ * parameter rather than the loader. It used `referencesName`, which also
+ * matches an import's *source* — and that was wrong in a way my rebuttal of an
+ * earlier report missed: for `{#snippet render(choice)}{#await import(choice ?
+ * 'vitest' : 'bun:test')}`, the specifier is a ternary over two literals that
+ * the resolver reads perfectly well, and discarding the range hid a real
+ * banned import. The `require(...)` fixture I checked did not exercise that
+ * branch, so the rebuttal was right about the fixture and wrong about the
+ * concern.
+ *
+ * Only the callee counts now. A parameter appearing in a specifier leaves the
+ * call retained, which is harmless when the specifier is unknowable and correct
+ * when it is not.
+ */
+function shadowsLoader(node: unknown, wanted: unknown): boolean {
+  let found = false;
+  const visit = (candidate: unknown): void => {
+    if (found || candidate === null || typeof candidate !== 'object') return;
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    const record = candidate as { type?: unknown; callee?: unknown };
+    const callee = record.callee as { type?: unknown; name?: unknown } | undefined;
+    if (
+      record.type === 'CallExpression' &&
+      callee?.type === 'Identifier' &&
+      callee.name === wanted
+    ) {
+      found = true;
+      return;
+    }
+    for (const [key, value] of Object.entries(candidate)) {
+      if (key === 'parent') continue;
+      visit(value);
+    }
+  };
+  visit(node);
+  return found;
+}
+
 function mentionedInRequireArgument(
   node: unknown,
   context: { start?: unknown; end?: unknown; name?: unknown } | undefined,
@@ -2043,9 +2114,24 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
       // appended at top level, so emitting it unconditionally would make the
       // block-local binding a candidate for markup *outside* the block —
       // reporting a component whose outer `runner` names something else.
-      (referencesName((node as { body?: unknown }).body, record.context) ||
-        mentionedInRequireArgument((node as { body?: unknown }).body, record.context)) &&
-      record.context?.type === 'Identifier' &&
+      // Activation asks about the names the context *binds*, which for a
+      // destructuring pattern is not the context node itself: `referencesName`
+      // reads `.name`, an `ArrayPattern` has none, and the comparison then ran
+      // against `undefined` and never matched. Any bound name being read is
+      // enough.
+      patternNames(record.context).some(
+        (name) =>
+          referencesName((node as { body?: unknown }).body, { name }) ||
+          mentionedInRequireArgument((node as { body?: unknown }).body, { name }),
+      ) &&
+      // An each context can destructure: `{#each [['bun:test']] as [runner]}`
+      // binds through an `ArrayPattern`. The synthetic declaration is written
+      // from the *source text* of the context, so a pattern composes with the
+      // resolver's own destructuring support rather than needing a second
+      // reader here — the identifier case is the degenerate one.
+      (record.context?.type === 'Identifier' ||
+        record.context?.type === 'ArrayPattern' ||
+        record.context?.type === 'ObjectPattern') &&
       typeof record.context.start === 'number' &&
       typeof record.context.end === 'number' &&
       record.expression !== undefined
@@ -2169,7 +2255,7 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
       // has no node to retain, so a call bound by one of its parameters is left
       // out instead. That is the same answer, reached from the other side: the
       // call invokes the parameter, so there is nothing here to report.
-      if (bound.some((name) => referencesName(node, { name }))) return;
+      if (bound.some((name) => shadowsLoader(node, name))) return;
       ranges.push({ start: record.start, end: record.end });
       return;
     }

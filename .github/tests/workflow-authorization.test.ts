@@ -139,6 +139,17 @@ describe('the CI wiring rule rejects what the shell would neutralise', () => {
     ).toBe(true);
   });
 
+  test('rejects a command the shell only defines', () => {
+    // A function body holds commands bash defines rather than runs, so
+    // `gate() { … }` with nobody calling `gate` keeps the gate's text and
+    // loses its execution — the third distinct way to un-wire without
+    // deleting anything.
+    expect(runLinesExecute(shellCommandLines(`gate() {\n${COMMAND}\n}`), COMMAND)).toBe(false);
+    expect(runLinesExecute(shellCommandLines(`gate() {\necho hi\n}\n${COMMAND}`), COMMAND)).toBe(
+      true,
+    );
+  });
+
   test('joins a continuation before judging it, as bash does', () => {
     // The physical first line *is* the command plus a backslash, so a
     // per-line check found nothing objectionable while bash ran the joined,

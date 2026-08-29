@@ -2442,6 +2442,17 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('matches a quoted key when destructuring, as the member reader already did', () => {
+    // The member reader folded quoted keys; this path kept its own
+    // identifier-only match — the read-side/write-side asymmetry once more.
+    expect(
+      findBannedImportsForPath('a.cjs', "const { load } = { 'load': require }; load('bun:test');"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.cjs', "const { load } = { 'load': other }; load('bun:test');"),
+    ).toEqual([]);
+  });
+
   it('reads a value out of an object literal, in both positions', () => {
     for (const source of [
       "const h = { load: require }; h.load('bun:test');",
@@ -2789,6 +2800,36 @@ describe('svelte template block scope', () => {
         "{#snippet render(choice)}{require(choice ? 'vitest' : 'bun:test')}{/snippet}",
       ),
     ).toHaveLength(1);
+  });
+
+  it('suppresses a snippet parameter only in loader position, not in a specifier', () => {
+    // This corrects a rebuttal I made. The suppression used a helper matching
+    // both a callee *and* an import's source, and I argued a report was wrong
+    // because its `require(...)` fixture did not exercise the second branch.
+    // The concern was valid for the import form: the specifier here is a
+    // ternary over two literals the resolver reads perfectly well, and
+    // discarding the range hid a real banned import.
+    expect(
+      findBannedImportsInSvelte(
+        "{#snippet render(choice)}{#await import(choice ? 'vitest' : 'bun:test')}{/await}{/snippet}",
+      ),
+    ).toHaveLength(1);
+    // The callee case still suppresses, which is what the rule is for.
+    expect(
+      findBannedImportsInSvelte("{#snippet row(require)}{require('bun:test')}{/snippet}"),
+    ).toEqual([]);
+  });
+
+  it('reconstructs an each binding that destructures', () => {
+    // `{#each [['bun:test']] as [runner]}` binds through an `ArrayPattern`,
+    // which has no `.name` — so the activation test compared against undefined
+    // and never fired, leaving the call with an unresolved argument.
+    expect(
+      findBannedImportsInSvelte("{#each [['bun:test']] as [runner]}{require(runner)}{/each}"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsInSvelte("{#each [['vitest']] as [runner]}{require(runner)}{/each}"),
+    ).toEqual([]);
   });
 
   it('binds a snippet parameter for calls inside the snippet', () => {
