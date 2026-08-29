@@ -68,11 +68,14 @@ function declaredInitializer(source: ts.SourceFile, name: string): ts.Expression
   let found: ts.Expression | undefined;
   const visit = (candidate: ts.Node): void => {
     if (
-      ts.isVariableDeclaration(candidate) &&
+      (ts.isVariableDeclaration(candidate) || ts.isParameter(candidate)) &&
       ts.isIdentifier(candidate.name) &&
       candidate.name.text === name &&
       candidate.initializer !== undefined
     ) {
+      // A parameter's default is a value the name really holds when the caller
+      // supplies nothing, so `function run(options = { timeout: 10 })` sets a
+      // deadline that a declaration-only lookup could not see.
       found = candidate.initializer;
     }
     ts.forEachChild(candidate, visit);
@@ -94,11 +97,31 @@ function resolveOptions(
   source: ts.SourceFile,
   node: ts.Node | undefined,
   seen: ReadonlySet<ts.Node> = new Set(),
-): ts.ObjectLiteralExpression | undefined {
-  if (node === undefined || seen.has(node)) return undefined;
+): readonly ts.ObjectLiteralExpression[] {
+  if (node === undefined || seen.has(node)) return [];
   const guarded = new Set([...seen, node]);
 
-  if (ts.isObjectLiteralExpression(node)) return node;
+  if (ts.isObjectLiteralExpression(node)) return [node];
+
+  // `flag ? strict : lenient` can be either object, and which one runs is not
+  // knowable here — so both are candidates and an unbounded one is a
+  // violation. Returning a single object silently picked neither.
+  if (ts.isConditionalExpression(node)) {
+    return [
+      ...resolveOptions(source, node.whenTrue, guarded),
+      ...resolveOptions(source, node.whenFalse, guarded),
+    ];
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    return [
+      ...resolveOptions(source, node.left, guarded),
+      ...resolveOptions(source, node.right, guarded),
+    ];
+  }
 
   // `Object.freeze({ ... })` returns the object handed to it, and freezing a
   // shared options preset is the idiomatic way to write one.
@@ -131,22 +154,22 @@ function resolveOptions(
     : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
       ? node.argumentExpression.text
       : undefined;
-  if (key === undefined) return undefined;
+  if (key === undefined) return [];
 
-  const receiver = resolveOptions(
-    source,
-    (node as ts.PropertyAccessExpression).expression,
-    guarded,
-  );
-  const property = receiver?.properties.find(
-    (candidate) =>
-      candidate.name !== undefined &&
-      ts.isIdentifier(candidate.name) &&
-      candidate.name.text === key,
-  );
-  return property !== undefined && ts.isPropertyAssignment(property)
-    ? resolveOptions(source, property.initializer, guarded)
-    : undefined;
+  return resolveOptions(source, (node as ts.PropertyAccessExpression).expression, guarded)
+    .map((receiver) =>
+      receiver.properties.find(
+        (candidate) =>
+          candidate.name !== undefined &&
+          ts.isIdentifier(candidate.name) &&
+          candidate.name.text === key,
+      ),
+    )
+    .flatMap((property) =>
+      property !== undefined && ts.isPropertyAssignment(property)
+        ? resolveOptions(source, property.initializer, guarded)
+        : [],
+    );
 }
 
 /** The array literal an expression names, resolved the same way options are. */
@@ -189,10 +212,10 @@ function flattenedProperties(
       // Resolved by the same reader the options argument goes through, so a
       // spread of `presets.strict` is followed exactly as passing it directly
       // is. Two readers for one question is how the gap above happened.
-      const spread = resolveOptions(source, property.expression);
-      if (spread === undefined) continue;
-      for (const [name, value] of flattenedProperties(source, spread, guarded)) {
-        properties.set(name, value);
+      for (const spread of resolveOptions(source, property.expression)) {
+        for (const [name, value] of flattenedProperties(source, spread, guarded)) {
+          properties.set(name, value);
+        }
       }
       continue;
     }
@@ -327,10 +350,24 @@ export function unboundedSpawnCalls(
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
-      const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee)
-          ? callee.name.text
+      // `spawnSync.call(thisArg, command, args, options)` shifts every argument
+      // one place right and `.apply` wraps them in a list. Both really invoke
+      // the spawner, so reading the call's own argument list answers the wrong
+      // question — the same shape the import matcher already handles.
+      // Keep the narrowed node rather than just its name: reading `.expression`
+      // off the union afterwards does not type-check, because only the
+      // property-access branch has one.
+      const forwarder =
+        ts.isPropertyAccessExpression(callee) &&
+        (callee.name.text === 'call' || callee.name.text === 'apply')
+          ? callee
+          : undefined;
+      const forwarding = forwarder?.name.text;
+      const target = forwarder === undefined ? callee : forwarder.expression;
+      const name = ts.isIdentifier(target)
+        ? target.text
+        : ts.isPropertyAccessExpression(target)
+          ? target.name.text
           : undefined;
       // The local name may be an alias: `import { spawnSync as spawn }`. The
       // file is selected because its import mentions `spawnSync`, so checking
@@ -347,12 +384,22 @@ export function unboundedSpawnCalls(
         // `scripts/validate-test-runner-imports.ts`, which is the very file
         // this invariant was added to protect.
         const isBunApi =
-          ts.isPropertyAccessExpression(callee) &&
-          ts.isIdentifier(callee.expression) &&
-          callee.expression.text === 'Bun';
-        const argument = isBunApi ? node.arguments[1] : node.arguments[2];
-        const options = resolveOptions(parsed, argument);
-        if (options !== undefined) {
+          ts.isPropertyAccessExpression(target) &&
+          ts.isIdentifier(target.expression) &&
+          target.expression.text === 'Bun';
+        const forwarded =
+          forwarding === undefined
+            ? [...node.arguments]
+            : forwarding === 'call'
+              ? node.arguments.slice(1)
+              : (() => {
+                  const list = node.arguments[1];
+                  return list !== undefined && ts.isArrayLiteralExpression(list)
+                    ? [...list.elements]
+                    : [];
+                })();
+        const argument = isBunApi ? forwarded[1] : forwarded[2];
+        for (const options of resolveOptions(parsed, argument)) {
           const resolved = flattenedProperties(parsed, options);
           const deadline = resolved.get('timeout');
           const signal = resolved.get('killSignal');
@@ -370,6 +417,7 @@ export function unboundedSpawnCalls(
           const nonIgnorable = configured === 'SIGKILL';
           if (deadline !== undefined && !nonIgnorable) {
             offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+            break;
           }
         }
       }
@@ -577,6 +625,47 @@ describe('every subprocess deadline is enforceable', () => {
       "spawnSync('x', [], o);",
     ];
     expect(unboundedSpawnCalls(frozenBounded.join('\n'), 'p.ts')).toEqual([]);
+  });
+
+  it('checks every options object a call could pass', () => {
+    // Which branch runs is not knowable here, so both are candidates and an
+    // unbounded one is a violation. Returning a single object silently picked
+    // neither.
+    const branching = [
+      'const lenient = { timeout: 10 };',
+      "const strict = { timeout: 10, killSignal: 'SIGKILL' };",
+      "spawnSync('x', [], flag ? lenient : strict);",
+    ];
+    expect(unboundedSpawnCalls(branching.join('\n'), 'p.ts')).toEqual([3]);
+
+    const bothBounded = [
+      "const a = { timeout: 10, killSignal: 'SIGKILL' };",
+      "const b = { timeout: 20, killSignal: 'SIGKILL' };",
+      "spawnSync('x', [], flag ? a : b);",
+    ];
+    expect(unboundedSpawnCalls(bothBounded.join('\n'), 'p.ts')).toEqual([]);
+  });
+
+  it('follows the spawner through call and apply, and a parameter default', () => {
+    // Both forwarders really invoke the spawner but move its arguments, so
+    // reading the call's own list answers the wrong question.
+    expect(
+      unboundedSpawnCalls("spawnSync.call(null, 'x', [], { timeout: 10 });\n", 'p.ts'),
+    ).toEqual([1]);
+    expect(
+      unboundedSpawnCalls("spawnSync.apply(null, ['x', [], { timeout: 10 }]);\n", 'p.ts'),
+    ).toEqual([1]);
+    expect(
+      unboundedSpawnCalls(
+        "spawnSync.call(null, 'x', [], { timeout: 10, killSignal: 'SIGKILL' });\n",
+        'p.ts',
+      ),
+    ).toEqual([]);
+    // A parameter's default is a value the name really holds when the caller
+    // supplies nothing.
+    expect(
+      unboundedSpawnCalls("function run(o = { timeout: 10 }) { spawnSync('x', [], o); }\n", 'p.ts'),
+    ).toEqual([1]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

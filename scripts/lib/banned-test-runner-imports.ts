@@ -114,6 +114,11 @@ function unwrapTransparent(node: ts.Node): ts.Node {
     else if (ts.isTypeAssertionExpression(current)) current = current.expression;
     else if (ts.isSatisfiesExpression(current)) current = current.expression;
     else if (ts.isNonNullExpression(current)) current = current.expression;
+    // `await x` evaluates to what `x` settles to, and awaiting a non-promise
+    // yields it unchanged — so the await is a wrapper either way. This is what
+    // makes `const { createRequire } = await import('node:module')` reach the
+    // same resolver the unawaited spelling does.
+    else if (ts.isAwaitExpression(current)) current = current.expression;
     // `Object.freeze(x)` and `Object.seal(x)` return the very object handed to
     // them, so they wrap a value rather than producing one — and freezing a
     // holder is the idiomatic way to write it. `Object.assign` is deliberately
@@ -1284,9 +1289,17 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   return initializers;
 }
 
-/** Whether a call is `require('node:module')` with a verified loader callee. */
+/**
+ * Whether a call loads `node:module`, by either spelling.
+ *
+ * `require('node:module')` needs a verified loader callee; `import('node:module')`
+ * is a call whose callee is the `import` keyword rather than a name, so the
+ * loader check rejects it — and that is what hid
+ * `const { createRequire } = await import('node:module')`.
+ */
 function isNodeModuleRequireCall(call: ts.CallExpression): boolean {
-  if (!isModuleLoader(unwrapTransparent(call.expression))) return false;
+  const dynamic = call.expression.kind === ts.SyntaxKind.ImportKeyword;
+  if (!dynamic && !isModuleLoader(unwrapTransparent(call.expression))) return false;
   const target = constantSpecifier(call.arguments[0]);
   return target === 'node:module' || target === 'module';
 }
@@ -1434,10 +1447,9 @@ function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: str
   // The source may be a name already holding the module rather than a call:
   // `import * as Module from 'node:module'; const { createRequire } = Module`.
   if (ts.isIdentifier(required)) return resolvesToNodeModule(required, new Set());
-  if (!ts.isCallExpression(required)) return false;
-  if (!isModuleLoader(unwrapTransparent(required.expression))) return false;
-  const target = constantSpecifier(required.arguments[0]);
-  return target === 'node:module' || target === 'module';
+  // One reader for both spellings, rather than a second copy that would need
+  // the dynamic-import case added to it separately.
+  return ts.isCallExpression(required) && isNodeModuleRequireCall(required);
 }
 
 /**
@@ -1497,6 +1509,25 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
 }
 
 /** Whether an identifier resolves, through any number of aliases, to `module`. */
+/**
+ * Whether an expression is the CommonJS module object, in any spelling.
+ *
+ * `require.main` is Node's own API for the entry module, so `require.main.require`
+ * is a real loader — and it is a member access rather than a name, which is why
+ * the identifier-only resolver could not see it.
+ */
+function isModuleObjectExpression(node: ts.Node, seen: ReadonlySet<ts.Node>): boolean {
+  const current = unwrapTransparent(node);
+  if (ts.isIdentifier(current)) return resolvesToModuleObject(current, seen);
+  const member = staticMemberName(current);
+  return (
+    member?.name === 'main' &&
+    ts.isIdentifier(member.object) &&
+    member.object.text === 'require' &&
+    !isLocallyShadowed(member.object, 'require')
+  );
+}
+
 function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.Node>): boolean {
   if (seen.has(identifier)) return false;
   // A direct, unshadowed `module` is the object. When it *is* shadowed the
@@ -1569,6 +1600,8 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
     return true;
 
   if (member.name !== 'require') return false;
+
+  if (isModuleObjectExpression(member.object, seen)) return true;
 
   if (ts.isIdentifier(member.object)) {
     // Every identifier receiver goes through the one resolver, recursively:

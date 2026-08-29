@@ -2510,6 +2510,29 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it("recognises Node's own require.main, and an awaited node:module import", () => {
+    // `require.main` is the entry Module object, so `require.main.require` is a
+    // real loader — and it is a member access rather than a name, which is why
+    // the identifier-only receiver resolver could not see it.
+    expect(findBannedImportsForPath('a.cjs', "require.main.require('bun:test');")).toHaveLength(1);
+    // `import(...)` is a call whose callee is the `import` keyword rather than
+    // a name, so the loader check rejected it and the awaited spelling of the
+    // factory import went unread.
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const { createRequire } = await import('node:module');\ncreateRequire(import.meta.url)('bun:test');",
+      ),
+    ).toHaveLength(1);
+    // An arbitrary object with a `main.require` chain is still not the loader.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const require = custom; require.main.require('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
   it('sees through Object.freeze, which returns the object handed to it', () => {
     // Freezing a holder is how one is idiomatically written, and it was
     // invisible to every resolver. Answered in `unwrapTransparent` rather than
