@@ -1308,6 +1308,90 @@ describe('Svelte markup is executable', () => {
   });
 });
 
+describe('the CommonJS merge exception is a top-level rule', () => {
+  it('a nested enum DOES shadow, because there is no wrapper binding to merge with', () => {
+    // Verified under Bun: `typeof require` is 'object' inside the function and
+    // 'function' at the top level.
+    expect(
+      findBannedTestRunnerImports(
+        "function f() { enum require { A }; require('bun:test'); }\n",
+        0,
+        'probe.cts',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a top-level enum still merges and still reports', () => {
+    expect(
+      findBannedTestRunnerImports("enum require { A }\nrequire('bun:test');\n", 0, 'probe.cts'),
+    ).toHaveLength(1);
+  });
+});
+
+describe('more routes to the same loader', () => {
+  it('follows createRequire off a require call', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const makeRequire = require('node:module').createRequire;\nmakeRequire(__filename)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('follows a bound loader', () => {
+    expect(
+      findBannedTestRunnerImports("const load = module.require.bind(module);\nload('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('does not follow a bind on anything else', () => {
+    expect(
+      findBannedTestRunnerImports("const load = somethingElse.bind(x);\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('terminates on a circular alias instead of recursing forever', () => {
+    // `const a = b; const b = a;` is invalid at runtime but parses, and without
+    // the visited set the resolver would chase it indefinitely. Nothing
+    // resolves to a loader, so nothing is reported.
+    expect(
+      findBannedTestRunnerImports("const a = b;\nconst b = a;\na('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('checks every initializer a redeclared var is given', () => {
+    // `var` allows several declarations of one binding with separately ordered
+    // assignments. Taking the innermost returned the *last*, so the loader
+    // assigned first — and active at the call — was invisible. Any match is a
+    // match, which fails toward reporting rather than needing order analysis.
+    expect(
+      findBannedTestRunnerImports("var load = require;\nload('bun:test');\nvar load = custom;\n"),
+    ).toHaveLength(1);
+  });
+});
+
+describe('a Svelte component is analysed as one program', () => {
+  it('resolves a markup import against a binding from the instance script', () => {
+    // Analysing each markup call on its own stripped it of the component's
+    // bindings, so this alias had nothing to resolve against.
+    expect(
+      findBannedImportsForPath(
+        'src/D.svelte',
+        '<script lang="ts">\n  const runner = \'bun:test\';\n</script>\n{#await import(runner) then suite}<p>ok</p>{/await}\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('reports the line the call is actually on', () => {
+    // The composition masks non-code rather than concatenating regions, so
+    // offsets never move and line numbers need no mapping back.
+    const found = findBannedImportsForPath(
+      'src/E.svelte',
+      '<script lang="ts">\n  const runner = \'bun:test\';\n</script>\n{#await import(runner) then suite}<p>ok</p>{/await}\n',
+    );
+    expect(found[0]?.line).toBe(4);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

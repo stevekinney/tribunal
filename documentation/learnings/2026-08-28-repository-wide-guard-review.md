@@ -176,3 +176,16 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 - **Reading only `<script>` blocks missed a category, not an edge.** `{#await import('bun:test') then suite}` and an event handler calling `require(...)` are real loads that live in neither script block. The template AST holds ESTree nodes with source offsets, so each call can be handed to the existing detector as text and every rule already written applies to it unchanged.
 - **Collect by what a node _is_, not by enumerating the container grammar.** Only `import(...)` and `require(...)` are gathered — the sole banned shapes reachable from markup, since a static import declaration cannot appear there. Enumerating Svelte's node kinds is precisely the enumeration this module has repeatedly got wrong, and matching on the call itself sidesteps it.
 - **Name the residual.** The regex fallback for components the parser rejects still reads `<script>` blocks only, so a template-expression import in a malformed component stays invisible. Recovering it would need the grammar that fallback exists because it could not use; that limit is now written where someone will find it rather than rediscover it.
+
+## Analyse the program, not fragments of it
+
+- **Handing each call to the detector on its own strips it of the bindings that give it meaning.** A Svelte component with `const runner = 'bun:test'` in its instance script and `{#await import(runner)}` in markup was analysed as two disconnected texts, so the alias had no declaration to resolve. Composing both scripts and every markup expression into one source restores every rule already written — shadowing, aliases, `createRequire`, constant folding — instead of re-implementing them per region.
+- **Compose by masking, not by concatenating.** Everything outside a code region becomes a space and newlines are kept, so byte offsets never move: line numbers need no mapping back and cannot drift. The composed version is also shorter than the per-region loop it replaced.
+
+## An exception is scoped to the thing it excepts
+
+- **The CommonJS merge rule is about the wrapper, so it only applies where the wrapper binding is.** Inside a nested function there is no wrapper parameter to merge with, so `function f() { enum require { A }; require('bun:test'); }` really does shadow — verified under Bun, where `typeof require` is `object` inside the function and `function` at the top level. The exception had been written as a property of the _file_ when it is a property of the _scope_.
+
+## One binding can have several initializers
+
+- **`var` allows the same name to be declared more than once, with separately ordered assignments.** `var load = require; load('bun:test'); var load = custom;` shares one binding; taking the innermost declaration returned the _last_ one and hid a loader that was active at the call. Every initializer of the name is now considered and any match is a match — which fails toward reporting, and avoids the "which assignment is live here" analysis refused everywhere else in this file.

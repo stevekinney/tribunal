@@ -131,9 +131,10 @@ function constantSpecifier(
   // loader uses rather than a second copy of it, so a chain composes with the
   // fold below: `const a = 'bun:'; const b = a + 'test'; import(b)`.
   if (ts.isIdentifier(current) && !seen.has(current)) {
-    const aliased = aliasInitializer(current);
-    if (aliased !== undefined) {
-      return constantSpecifier(aliased, new Set([...seen, current]));
+    const next = new Set([...seen, current]);
+    for (const initializer of aliasInitializers(current)) {
+      const resolved = constantSpecifier(initializer, next);
+      if (resolved !== undefined) return resolved;
     }
   }
 
@@ -200,6 +201,15 @@ function functionBodyOf(node: ts.Node): ts.Block | undefined {
  * file-wide approximation would have been the easy version and would trade
  * this false positive for a false negative.
  */
+/** The nearest enclosing function of a node, or undefined at the top level. */
+function enclosingFunctionOf(from: ts.Node): ts.Node | undefined {
+  let scope: ts.Node | undefined = from.parent;
+  while (scope !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) {
+    scope = scope.parent;
+  }
+  return scope !== undefined && ts.isFunctionLike(scope) ? scope : undefined;
+}
+
 /** Extensions that are ES modules whatever the nearest `package.json` says. */
 function isEsModuleFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
@@ -399,7 +409,13 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
         //
         // A `const enum` never binds at all: its members are inlined and
         // `typeof` the name is `'undefined'`.
-        (isEsModuleFile(candidate.getSourceFile().fileName) &&
+        ((isEsModuleFile(candidate.getSourceFile().fileName) ||
+          // The merge exception exists because the CommonJS *wrapper* binding
+          // is what survives. Inside a nested function there is no wrapper
+          // binding to merge with, so the declaration really does shadow —
+          // verified under Bun, where `typeof require` is `object` inside the
+          // function and `function` at the top level.
+          enclosingFunctionOf(candidate) !== undefined) &&
           ((ts.isEnumDeclaration(candidate) &&
             (ts.getCombinedModifierFlags(candidate) & ts.ModifierFlags.Const) === 0) ||
             (ts.isModuleDeclaration(candidate) && candidate.body !== undefined))) ||
@@ -648,9 +664,52 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * before the call may be reported. That is the safe direction, taken knowingly.
  */
 function aliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
+  return aliasInitializers(identifier)[0];
+}
+
+/**
+ * Every initializer that a name is given in the scope that binds it.
+ *
+ * Usually one. `var` allows several — `var load = require; load('bun:test');
+ * var load = custom;` shares one binding with two separately ordered
+ * assignments, and the first is active at the call. Taking only the innermost
+ * declaration returned the *last* one and suppressed a real load.
+ *
+ * All of them are returned rather than the one active at the call, because
+ * establishing that needs the order analysis this validator refuses elsewhere.
+ * Callers treat any match as a match, which fails toward reporting.
+ */
+function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const binding = innermostBinding(identifier, identifier.text, true);
-  if (binding === undefined || !ts.isVariableDeclaration(binding)) return undefined;
-  return binding.initializer;
+  if (binding === undefined || !ts.isVariableDeclaration(binding)) return [];
+
+  const list = binding.parent;
+  const statement = list.parent;
+  const siblings = ts.isVariableStatement(statement) ? statement.parent : undefined;
+  const statements =
+    siblings !== undefined && (ts.isSourceFile(siblings) || ts.isBlock(siblings))
+      ? siblings.statements
+      : undefined;
+  if (statements === undefined)
+    return binding.initializer === undefined ? [] : [binding.initializer];
+
+  const initializers: ts.Expression[] = [];
+  for (const sibling of statements) {
+    if (!ts.isVariableStatement(sibling)) continue;
+    for (const declaration of sibling.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      if (declaration.name.text !== identifier.text) continue;
+      if (declaration.initializer !== undefined) initializers.push(declaration.initializer);
+    }
+  }
+  return initializers;
+}
+
+/** Whether a call is `require('node:module')` with a verified loader callee. */
+function isNodeModuleRequireCall(call: ts.CallExpression): boolean {
+  if (!isModuleLoader(unwrapTransparent(call.expression))) return false;
+  const target = constantSpecifier(call.arguments[0]);
+  return target === 'node:module' || target === 'module';
 }
 
 /**
@@ -742,7 +801,13 @@ function isCreateRequire(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()
 
   const member = staticMemberName(callee);
   if (member === undefined || member.name !== 'createRequire') return false;
-  return ts.isIdentifier(member.object) && isNodeModuleImport(member.object, '*');
+
+  // `require('node:module').createRequire` reaches the factory without ever
+  // naming the module object, so there is no identifier to resolve — the
+  // receiver is the call itself.
+  const receiver = unwrapTransparent(member.object);
+  if (ts.isCallExpression(receiver)) return isNodeModuleRequireCall(receiver);
+  return ts.isIdentifier(receiver) && isNodeModuleImport(receiver, '*');
 }
 
 /**
@@ -834,8 +899,18 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   // `createRequire(import.meta.url)('bun:test')` calls the loader that call
   // returns, so the callee here is itself a call rather than a name.
-  if (ts.isCallExpression(callee) && isCreateRequire(unwrapTransparent(callee.expression))) {
-    return true;
+  if (ts.isCallExpression(callee)) {
+    const producer = unwrapTransparent(callee.expression);
+    if (isCreateRequire(producer)) return true;
+
+    // `module.require.bind(module)` evaluates to the loader itself, so an alias
+    // holding it is a loader. The `.bind` sits on the call's callee rather than
+    // on the node, and the receiver must resolve as a loader in its own right —
+    // a bind on anything else stays silent.
+    const bound = staticMemberName(producer);
+    if (bound?.name === 'bind' && isModuleLoader(unwrapTransparent(bound.object), seen)) {
+      return true;
+    }
   }
 
   if (ts.isIdentifier(callee)) {
@@ -849,10 +924,10 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
     if (destructuredLoaderProperty(callee)) return true;
 
     if (!seen.has(callee)) {
-      const aliased = aliasInitializer(callee);
-      if (aliased !== undefined) {
-        return isModuleLoader(unwrapTransparent(aliased), new Set([...seen, callee]));
-      }
+      const next = new Set([...seen, callee]);
+      return aliasInitializers(callee).some((initializer) =>
+        isModuleLoader(unwrapTransparent(initializer), next),
+      );
     }
     return false;
   }
@@ -1020,21 +1095,33 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
 
   const found: BannedImport[] = [];
 
-  for (const script of [root.instance, root.module]) {
-    if (!script) continue;
-    const { start, end } = script.content;
-    const lineOffset = contents.slice(0, start).split('\n').length - 1;
-    found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
-  }
-
-  // Markup is executable too. `{#await import('bun:test') then suite}` and an
-  // event handler calling `require(...)` are real loads that live in neither
-  // `<script>` block, so reading only those two missed a whole category rather
-  // than an edge of one.
-  for (const { start, end } of templateCallRanges(root.fragment)) {
-    const lineOffset = contents.slice(0, start).split('\n').length - 1;
-    found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
-  }
+  // Both scripts and every executable expression in the markup are analysed as
+  // ONE source, not region by region.
+  //
+  // Markup is executable — `{#await import('bun:test') then suite}` and a
+  // handler calling `require(...)` are real loads in neither `<script>` block —
+  // but analysing each call on its own strips it of the component's bindings,
+  // so `const runner = 'bun:test'` in the instance script left `import(runner)`
+  // with nothing to resolve. Composing them restores every rule already written
+  // — shadowing, aliases, `createRequire`, constant folding — for free.
+  //
+  // The composition is a mask rather than a concatenation: everything outside a
+  // code region becomes spaces, and newlines are preserved. Offsets therefore
+  // do not move, so reported line numbers need no mapping back and cannot drift.
+  const regions = [
+    ...[root.instance, root.module]
+      .filter((script): script is SvelteScript => Boolean(script))
+      .map((script) => script.content),
+    ...templateCallRanges(root.fragment),
+  ];
+  const masked = [...contents]
+    .map((character, index) =>
+      character === '\n' || regions.some(({ start, end }) => index >= start && index < end)
+        ? character
+        : ' ',
+    )
+    .join('');
+  found.push(...findBannedTestRunnerImports(masked, 0, 'component.ts'));
 
   return found.sort((first, second) => first.line - second.line);
 }
