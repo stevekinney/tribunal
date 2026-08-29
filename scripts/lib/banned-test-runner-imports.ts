@@ -118,6 +118,46 @@ function unwrapTransparent(node: ts.Node): ts.Node {
   }
 }
 
+/**
+ * The operands a value may arrive from, when an expression chooses among
+ * several.
+ *
+ * Which one runs is the control-flow question this module declines everywhere
+ * else, so every operand is a candidate and any match is a match.
+ *
+ * Answered once here because it was previously answered twice. The specifier
+ * resolver and the loader resolver each carried their own copy covering
+ * conditionals and arrays, and when the conditional case was added it went
+ * into both by hand — but `||`, `&&`, and `??` make exactly the same choice a
+ * ternary makes and went into neither. A rule two resolvers each own drifts
+ * the moment one of them is corrected alone, which is how three separate
+ * findings on this branch happened.
+ *
+ * The comma operator is deliberately absent: it evaluates to its final operand
+ * only, so it is a transparent wrapper rather than a choice, and
+ * `unwrapTransparent` already resolves it.
+ */
+function alternativeOperands(node: ts.Node): readonly ts.Expression[] {
+  if (ts.isConditionalExpression(node)) return [node.whenTrue, node.whenFalse];
+  if (ts.isBinaryExpression(node)) {
+    const chooses =
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken;
+    return chooses ? [node.left, node.right] : [];
+  }
+  // An array is a container rather than a choice, but the rule a reader applies
+  // to it is the same: any element counts. This is what lets an each block bind
+  // from a named list — `{#each [require] as load}` — and following a spread
+  // keeps `[...others]` from being a hole in it.
+  if (ts.isArrayLiteralExpression(node)) {
+    return node.elements.flatMap((element) =>
+      ts.isSpreadElement(element) ? [element.expression] : [element],
+    );
+  }
+  return [];
+}
+
 function constantSpecifier(
   node: ts.Node | undefined,
   seen: ReadonlySet<ts.Node> = new Set(),
@@ -126,24 +166,33 @@ function constantSpecifier(
   const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
 
-  // An array names every module it holds. Reading through it is what lets an
-  // each block bind from a named list, and it follows the same any-match rule
-  // as the alias resolution below.
-  // `import(useBun ? 'bun:test' : 'vitest')` names the runner down one branch.
-  if (ts.isConditionalExpression(current)) {
-    const branches = [current.whenTrue, current.whenFalse]
-      .map((branch) => constantSpecifier(branch, seen))
-      .filter((value): value is string => value !== undefined);
-    if (branches.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
-    return branches[0];
-  }
-
-  if (ts.isArrayLiteralExpression(current)) {
-    const resolved = current.elements
-      .map((element) => constantSpecifier(element, seen))
+  // `import(useBun ? 'bun:test' : 'vitest')` names the runner down one branch,
+  // and so do `a || 'bun:test'`, `a ?? 'bun:test'`, and an array of specifiers.
+  // All of them are the same question, asked through the shared helper rather
+  // than through a copy that has to be corrected here as well.
+  const alternatives = alternativeOperands(current);
+  if (alternatives.length > 0) {
+    const resolved = alternatives
+      .map((operand) => constantSpecifier(operand, seen))
       .filter((value): value is string => value !== undefined);
     if (resolved.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
     return resolved[0];
+  }
+
+  // A template names the same module the literal does. The unsubstituted form
+  // is already a string literal to `isStringLiteralLike`; this is the
+  // substituted one, folded through this same resolver so `` `bun:${part}` ``
+  // composes with alias resolution. One unresolvable span makes the whole
+  // template unknowable rather than partially known — a half-folded specifier
+  // would name a module nobody wrote.
+  if (ts.isTemplateExpression(current)) {
+    let folded = current.head.text;
+    for (const span of current.templateSpans) {
+      const value = constantSpecifier(span.expression, seen);
+      if (value === undefined) return undefined;
+      folded += value + span.literal.text;
+    }
+    return folded;
   }
 
   // `const runner = 'bun:test'; import(runner)` names the module as statically
@@ -167,6 +216,16 @@ function constantSpecifier(
     if (resolutions.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
     return resolutions[0];
   }
+
+  // `const modules = { tests: 'bun:test' }; import(modules.tests)` names the
+  // module as statically as writing the literal does — a routine configuration
+  // object, read at a key this file can compute. Shared with the loader
+  // resolver, which needs the same read for `holder.load('bun:test')`.
+  const fromMember = memberValues(current, seen)
+    .map((value) => constantSpecifier(value, new Set([...seen, current])))
+    .filter((value): value is string => value !== undefined);
+  if (fromMember.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
+  if (fromMember.length > 0) return fromMember[0];
 
   // `import('bun:' + 'test')` names the same module as `import('bun:test')`.
   // Only `+` over operands that are themselves constant is folded — anything
@@ -203,6 +262,74 @@ function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | un
     }
   }
   return undefined;
+}
+
+/**
+ * Every value a statically known member read can yield.
+ *
+ * `const holder = { load: require }; holder.load('bun:test')` reaches the real
+ * loader, and `const modules = { tests: 'bun:test' }; import(modules.tests)`
+ * reaches the real specifier. Those are one shape, not two: a receiver bound to
+ * a declaration this file can see, read at a key it can compute. Answered once
+ * so neither resolver grows its own copy — the duplicated "either branch
+ * counts" rule next door is what that costs.
+ *
+ * The boundary is deliberate rather than incidental. A receiver resolves when
+ * it is an object literal, or a name bound to one, or a `new` of a class whose
+ * property initializer is written in the class body. Values that arrive
+ * through construction side effects (`this.load = require` in a constructor),
+ * a factory's return, `Object.assign`, a getter, or a key that does not fold
+ * to a constant are declined — those are the object-identity and control-flow
+ * questions this module declines everywhere else, and answering them by
+ * guessing would report calls that load something else entirely.
+ */
+function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Expression[] {
+  // The receiver can be the very member read being resolved — `const holder =
+  // { load: holder.load }` is legal to parse — so the node guards itself.
+  if (seen.has(node)) return [];
+  const member = staticMemberName(node);
+  if (member === undefined) return [];
+
+  const fromObjectLiteral = (literal: ts.ObjectLiteralExpression): ts.Expression[] =>
+    literal.properties.flatMap((property) => {
+      if (property.name === undefined || !ts.isIdentifier(property.name)) return [];
+      if (property.name.text !== member.name) return [];
+      if (ts.isPropertyAssignment(property)) return [property.initializer];
+      // `{ require }` is shorthand for `{ require: require }`, so the name
+      // itself is the value.
+      if (ts.isShorthandPropertyAssignment(property)) return [property.name];
+      return [];
+    });
+
+  const fromClass = (declaration: ts.ClassLikeDeclaration): ts.Expression[] =>
+    declaration.members.flatMap((element) =>
+      ts.isPropertyDeclaration(element) &&
+      ts.isIdentifier(element.name) &&
+      element.name.text === member.name &&
+      element.initializer !== undefined
+        ? [element.initializer]
+        : [],
+    );
+
+  const readFrom = (candidate: ts.Node, visited: ReadonlySet<ts.Node>): ts.Expression[] => {
+    const current = unwrapTransparent(candidate);
+    if (ts.isObjectLiteralExpression(current)) return fromObjectLiteral(current);
+    // `new Holder().load('bun:test')` reads the initializer the class writes
+    // for that property. Resolved through the same binding walk every other
+    // name goes through, so a shadowed or locally rebound class name answers
+    // the same way it does everywhere else.
+    if (ts.isNewExpression(current) && ts.isIdentifier(current.expression)) {
+      const bound = innermostBinding(current.expression, current.expression.text, true);
+      return bound !== undefined && ts.isClassDeclaration(bound) ? fromClass(bound) : [];
+    }
+    if (ts.isIdentifier(current) && !visited.has(current)) {
+      const next = new Set([...visited, current]);
+      return aliasInitializers(current).flatMap((initializer) => readFrom(initializer, next));
+    }
+    return [];
+  };
+
+  return readFrom(member.object, new Set([...seen, node]));
 }
 
 /**
@@ -876,7 +1003,17 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const list = binding.parent;
   const statement = list.parent;
   const siblings = ts.isVariableStatement(statement) ? statement.parent : undefined;
-  const statements = siblings === undefined ? undefined : scopeStatements(siblings);
+  // A binding declared in a loop header is scoped to that loop, and a loop is
+  // not a `VariableStatement` — so the scope search found nothing and this
+  // returned the declaration's own initializer, losing every assignment the
+  // body makes: `for (let load; ; ) { load = require; load('bun:test'); }`.
+  // The loop *is* that binding's scope, so the loop is what gets searched, and
+  // the traversal below reaches its body like any other statement's.
+  const enclosingLoop =
+    ts.isForStatement(statement) || ts.isForOfStatement(statement) || ts.isForInStatement(statement)
+      ? [statement]
+      : undefined;
+  const statements = siblings === undefined ? enclosingLoop : scopeStatements(siblings);
   if (statements === undefined)
     return binding.initializer === undefined ? [] : [binding.initializer];
 
@@ -1244,21 +1381,15 @@ function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   // `createRequire(import.meta.url)('bun:test')` calls the loader that call
   // returns, so the callee here is itself a call rather than a name.
-  // An array holds a loader if any element is one, matching how
-  // `constantSpecifier` reads a list of specifiers. This is what lets an each
-  // block bind the loader itself: `{#each [require] as load}{load('bun:test')}`.
-  if (ts.isArrayLiteralExpression(callee)) {
-    return callee.elements.some((element) => isModuleLoader(unwrapTransparent(element), seen));
-  }
-
-  // `useBun ? require : custom` is a loader down one branch, and which branch
-  // runs is the control-flow question declined everywhere else — so either
-  // being a loader is enough.
-  if (ts.isConditionalExpression(callee)) {
-    return (
-      isModuleLoader(unwrapTransparent(callee.whenTrue), seen) ||
-      isModuleLoader(unwrapTransparent(callee.whenFalse), seen)
-    );
+  // `useBun ? require : custom` is a loader down one branch, and so are
+  // `custom || require`, `custom ?? require`, and `[require]`. Which one runs
+  // is the control-flow question declined everywhere else, so any of them
+  // being a loader is enough. Read through the shared helper rather than a
+  // second copy — the copy that lived here covered conditionals and arrays and
+  // silently did not cover the logical operators.
+  const alternatives = alternativeOperands(callee);
+  if (alternatives.length > 0) {
+    return alternatives.some((operand) => isModuleLoader(unwrapTransparent(operand), seen));
   }
 
   if (ts.isCallExpression(callee)) {
@@ -1295,7 +1426,17 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
   }
 
   const member = staticMemberName(callee);
-  if (member === undefined || member.name !== 'require') return false;
+  if (member === undefined) return false;
+
+  // `const holder = { load: require }; holder.load('bun:test')` reaches the
+  // real loader through a property whose name is arbitrary, so the
+  // `require`-named check below cannot see it. Read through the same helper
+  // the specifier resolver uses.
+  const guarded = new Set([...seen, callee]);
+  if (memberValues(callee, seen).some((value) => isModuleLoader(unwrapTransparent(value), guarded)))
+    return true;
+
+  if (member.name !== 'require') return false;
 
   if (ts.isIdentifier(member.object)) {
     // Every identifier receiver goes through the one resolver, recursively:
@@ -1647,13 +1788,43 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
  */
 function templateCallRanges(fragment: unknown): { start: number; end: number }[] {
   const ranges: { start: number; end: number }[] = [];
-  const visit = (node: unknown): void => {
+  const visit = (node: unknown, block: unknown): void => {
     if (node === null || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const item of node) visit(item);
+      for (const item of node) visit(item, block);
       return;
     }
-    const record = node as { type?: unknown; start?: unknown; end?: unknown };
+    const record = node as {
+      type?: unknown;
+      start?: unknown;
+      end?: unknown;
+      declarations?: unknown;
+    };
+    // Every retained range is emitted at the top level of one composed
+    // program, which flattens the template's scopes. For a *call* that costs
+    // nothing — a call means the same thing wherever it is written. For a
+    // `{@const}` it is wrong: the declaration is visible only inside its own
+    // block, so hoisting it let an outer call resolve to the inner value, and
+    // the resolver prefers a banned one. A template declaration is therefore
+    // retained only when a call inside its own block actually reads it, which
+    // is the test the each-block binding next door already applies for the
+    // same reason.
+    //
+    // Residual, stated rather than left to be found: when calls both inside
+    // and outside the block read the name, the declaration is retained and the
+    // outer call is reported too. That is a precision loss on a component that
+    // already reports for the inner call — it can neither pass a banned import
+    // nor block a component that has none.
+    if (
+      record.type === 'VariableDeclaration' &&
+      block !== undefined &&
+      Array.isArray(record.declarations) &&
+      !record.declarations.some((declaration) =>
+        referencesName(block, (declaration as { id?: { start?: unknown; end?: unknown } }).id),
+      )
+    ) {
+      return;
+    }
     if (
       (record.type === 'ImportExpression' ||
         record.type === 'CallExpression' ||
@@ -1674,12 +1845,17 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
       ranges.push({ start: record.start, end: record.end });
       return;
     }
+    // Svelte names every template block `*Block` — `IfBlock`, `EachBlock`,
+    // `AwaitBlock`, `KeyBlock`, `SnippetBlock`. Matching the suffix rather than
+    // listing them avoids the node-kind enumeration this module has repeatedly
+    // got wrong, and a block kind added later is covered by the same rule.
+    const nested = typeof record.type === 'string' && record.type.endsWith('Block') ? node : block;
     for (const [key, value] of Object.entries(node)) {
       if (key === 'parent') continue;
-      visit(value);
+      visit(value, nested);
     }
   };
-  visit(fragment);
+  visit(fragment, undefined);
   return ranges;
 }
 

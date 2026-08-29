@@ -2358,3 +2358,165 @@ describe('extensionless entrypoints', () => {
     expect(looksBinary('\u0000\u0001binary')).toBe(true);
   });
 });
+
+describe('choices, templates, and member reads', () => {
+  // Every route below reaches the banned thing on some execution, and each has
+  // a counterpart that must stay silent. The pairing is the point: widening
+  // what a resolver follows is how this validator once blocked every commit in
+  // the repository, so a new route without its safe twin is half a change.
+
+  it('follows every choice expression, not only the ternary', () => {
+    // The ternary was added on its own, and `||`, `&&`, and `??` make exactly
+    // the same choice. They were missing from both resolvers because each
+    // resolver carried its own copy of the rule; there is now one.
+    for (const source of [
+      "const load = custom || require; load('bun:test');",
+      "const load = custom && require; load('bun:test');",
+      "const load = custom ?? require; load('bun:test');",
+    ]) {
+      expect(findBannedImportsForPath('a.cjs', source), source).toHaveLength(1);
+    }
+    for (const source of [
+      "declare const s: string | undefined; await import(s ?? 'bun:test');",
+      "declare const s: string | undefined; await import(s || 'bun:test');",
+      "declare const ok: boolean; await import(ok && 'bun:test');",
+    ]) {
+      expect(findBannedImportsForPath('a.ts', source), source).toHaveLength(1);
+    }
+  });
+
+  it('stays silent when no operand of a choice is banned', () => {
+    expect(
+      findBannedImportsForPath('a.cjs', "const load = custom || other; load('bun:test');"),
+    ).toEqual([]);
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "declare const s: string | undefined; await import(s ?? 'vitest');",
+      ),
+    ).toEqual([]);
+  });
+
+  it('folds a template specifier through the same resolver a literal uses', () => {
+    // The unsubstituted form was already covered, because TypeScript treats it
+    // as a string literal. The substituted one was not, in either spelling.
+    expect(findBannedImportsForPath('a.ts', "await import(`bun:${'test'}`);")).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.ts', "const part = 'test'; await import(`bun:${part}`);"),
+    ).toHaveLength(1);
+  });
+
+  it('leaves a template naming a permitted runner alone, and one it cannot fold', () => {
+    expect(findBannedImportsForPath('a.ts', "await import(`vite${'st'}`);")).toEqual([]);
+    // A span that does not resolve makes the whole template unknowable. Half a
+    // fold would name a module nobody wrote.
+    expect(
+      findBannedImportsForPath('a.ts', 'declare const p: string; await import(`bun:${p}`);'),
+    ).toEqual([]);
+  });
+
+  it('reads a value out of an object literal, in both positions', () => {
+    for (const source of [
+      "const h = { load: require }; h.load('bun:test');",
+      "const h = { require }; h.require('bun:test');",
+    ]) {
+      expect(findBannedImportsForPath('a.cjs', source), source).toHaveLength(1);
+    }
+    for (const source of [
+      "const modules = { tests: 'bun:test' }; await import(modules.tests);",
+      "const modules = { tests: 'bun:test' }; await import(modules['tests']);",
+      "const modules = { tests: 'bun:test' }; const alias = modules; await import(alias.tests);",
+    ]) {
+      expect(findBannedImportsForPath('a.ts', source), source).toHaveLength(1);
+    }
+  });
+
+  it('reads a class property initializer through a construction', () => {
+    expect(
+      findBannedImportsForPath('a.cjs', "class C { load = require; }\nnew C().load('bun:test');"),
+    ).toHaveLength(1);
+  });
+
+  it('declines the receivers it cannot see, rather than guessing at them', () => {
+    // The boundary is a declaration this file can read. A value that arrives
+    // through a constructor's side effect, a factory's return, or a key that
+    // does not fold is a control-flow question, and answering it by guessing
+    // would report calls that load something else.
+    for (const source of [
+      "const h = { load: other }; h.load('bun:test');",
+      "class C { constructor() { this.load = require; } }\nnew C().load('bun:test');",
+      "const make = () => ({ load: require }); make().load('bun:test');",
+      "declare const key: string; const h = { load: require }; h[key]('bun:test');",
+      // A method named `load` is not the loader — it is a function that runs
+      // and does something. Reading its body would be evaluating a function,
+      // which is the same thing the factory case above declines.
+      "const h = { load() { return 1; } }; h.load('bun:test');",
+    ]) {
+      expect(findBannedImportsForPath('a.cjs', source), source).toEqual([]);
+    }
+  });
+
+  it('declines a getter, which is the one declined case that can really load', () => {
+    // Stated plainly rather than filed under the same heading as the others:
+    // `get load() { return require }` makes `h.load` the real loader, so this
+    // silence is a true negative, not a safe one.
+    //
+    // It is declined for consistency, not convenience. Resolving it means
+    // reading a function body for its return value, and the moment that is on
+    // the table `function make() { return require } make()('bun:test')` is the
+    // same question — a far larger surface than the one it closes, and one
+    // this module already declines and tests above. Widening to function
+    // bodies is a deliberate change to make on its own evidence, not a side
+    // effect of covering a member read.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const h = { get load() { return require; } }; h.load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
+  it('searches the body of a loop that declares the binding in its own header', () => {
+    // The binding's scope is the loop, and a loop is not a `VariableStatement`
+    // — so the scope search found nothing and returned the declaration's own
+    // (absent) initializer, losing every assignment the body makes. Traversing
+    // loop bodies for *outer* bindings, fixed a round earlier, did not reach
+    // this one.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "for (let load; condition; ) { load = require; load('bun:test'); break; }",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "for (let load; condition; ) { load = other; load('bun:test'); break; }",
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('svelte template block scope', () => {
+  const component = (inner: string, outer: string): string =>
+    `<script>\n  const runner = 'vitest';\n</script>\n{#if flag}\n  {@const runner = 'bun:test'}\n${inner}\n{/if}\n${outer}\n`;
+
+  it('keeps a {@const} inside the block that declares it', () => {
+    // Retained ranges are composed into one flat program, which hoisted a
+    // block-local `{@const}` to the top level. The call outside the block runs
+    // with the instance script's binding, but the flattened program offered it
+    // the inner value — and the resolver prefers a banned one, so a valid
+    // component was rejected by an always-on hook.
+    expect(
+      findBannedImportsInSvelte(
+        component('  <p>{runner}</p>', '{#await import(runner)}<p/>{/await}'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports a call inside the block that reads it', () => {
+    expect(
+      findBannedImportsInSvelte(component('  {#await import(runner)}<p/>{/await}', '')),
+    ).toHaveLength(1);
+  });
+});

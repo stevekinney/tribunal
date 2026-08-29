@@ -55,33 +55,164 @@ function declaredObjectLiteral(
   return found;
 }
 
-export function unboundedSpawnCalls(source: string, fileName: string): number[] {
-  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
-  const offenders: number[] = [];
+/**
+ * The properties an options object actually has at run time, spreads resolved.
+ *
+ * `const deadline = { timeout: 10 }; spawnSync('x', [], { ...deadline })` sets
+ * a deadline the previous reader could not see, because it looked only at
+ * properties written in place and concluded there was none to bound. Later
+ * properties win, exactly as they do at run time, so
+ * `{ ...deadline, killSignal: 'SIGTERM' }` reads as SIGTERM rather than as
+ * whatever the spread supplied.
+ */
+function flattenedProperties(
+  source: ts.SourceFile,
+  options: ts.ObjectLiteralExpression,
+  seen: ReadonlySet<ts.Node> = new Set(),
+): Map<string, ts.ObjectLiteralElementLike> {
+  const properties = new Map<string, ts.ObjectLiteralElementLike>();
+  if (seen.has(options)) return properties;
+  const guarded = new Set([...seen, options]);
+  for (const property of options.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      const spread = ts.isObjectLiteralExpression(property.expression)
+        ? property.expression
+        : ts.isIdentifier(property.expression)
+          ? declaredObjectLiteral(source, property.expression.text)
+          : undefined;
+      if (spread === undefined) continue;
+      for (const [name, value] of flattenedProperties(source, spread, guarded)) {
+        properties.set(name, value);
+      }
+      continue;
+    }
+    if (property.name !== undefined && ts.isIdentifier(property.name)) {
+      properties.set(property.name.text, property);
+    }
+  }
+  return properties;
+}
 
-  const propertyNamed = (options: ts.ObjectLiteralExpression, name: string) =>
-    options.properties.find(
-      (property) =>
-        property.name !== undefined &&
-        ts.isIdentifier(property.name) &&
-        property.name.text === name,
-    );
+/** Whether a specifier names Node's spawner, or a module inside this repository. */
+function spawnOrigin(specifier: ts.Expression | undefined): 'node' | 'repository' | undefined {
+  if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
+  if (specifier.text === 'node:child_process' || specifier.text === 'child_process') return 'node';
+  return specifier.text.startsWith('.') ? 'repository' : undefined;
+}
 
-  // Local names bound to the `spawnSync` import, however it was spelled.
-  const aliases = new Set<string>();
-  const collectAliases = (node: ts.Node): void => {
+/**
+ * The names in one file that refer to `spawnSync`, and the ones it re-exports.
+ *
+ * `known` carries the names other tracked modules already export as aliases,
+ * which is what lets a caller be recognised across a module boundary:
+ * `export { spawnSync as spawn } from 'node:child_process'` in one file makes
+ * `import { spawn } from './spawner'` a spawner in another, though that second
+ * file contains the string `spawnSync` nowhere.
+ *
+ * Visited twice because `export { local as name }` can be written above the
+ * import that binds `local`, and one pass in source order would miss it.
+ */
+export function spawnAliasesIn(
+  parsed: ts.SourceFile,
+  known: ReadonlySet<string>,
+): { local: Set<string>; exported: Set<string> } {
+  const local = new Set<string>();
+  const exported = new Set<string>();
+
+  const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node)) {
+      const origin = spawnOrigin(node.moduleSpecifier);
       const named = node.importClause?.namedBindings;
-      if (named !== undefined && ts.isNamedImports(named)) {
+      if (origin !== undefined && named !== undefined && ts.isNamedImports(named)) {
         for (const element of named.elements) {
           const imported = element.propertyName?.text ?? element.name.text;
-          if (imported === 'spawnSync') aliases.add(element.name.text);
+          const refers = origin === 'node' ? imported === 'spawnSync' : known.has(imported);
+          if (refers) local.add(element.name.text);
         }
       }
     }
-    ts.forEachChild(node, collectAliases);
+    if (
+      ts.isExportDeclaration(node) &&
+      node.exportClause !== undefined &&
+      ts.isNamedExports(node.exportClause)
+    ) {
+      const origin = spawnOrigin(node.moduleSpecifier);
+      for (const element of node.exportClause.elements) {
+        const from = element.propertyName?.text ?? element.name.text;
+        const refers =
+          origin === 'node'
+            ? from === 'spawnSync'
+            : origin === 'repository'
+              ? known.has(from)
+              : local.has(from);
+        if (refers) exported.add(element.name.text);
+      }
+    }
+    if (ts.isVariableStatement(node)) {
+      const shared =
+        node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+      for (const declaration of node.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        const initializer = declaration.initializer;
+        if (initializer === undefined || !ts.isIdentifier(initializer)) continue;
+        if (initializer.text !== 'spawnSync' && !local.has(initializer.text)) continue;
+        local.add(declaration.name.text);
+        if (shared) exported.add(declaration.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
   };
-  collectAliases(parsed);
+  visit(parsed);
+  visit(parsed);
+  return { local, exported };
+}
+
+/**
+ * Every name any tracked module exports as a `spawnSync` alias.
+ *
+ * Selecting files by whether their text mentions `spawnSync` was itself a hole
+ * in this guard: a module can re-export the spawner under another name, and
+ * its caller then mentions the spawner nowhere and was excluded before any AST
+ * was built. The set is grown to a fixpoint so a chain of re-exports is
+ * followed rather than only the first hop; it only ever grows and is bounded
+ * by the number of exported names, so it terminates.
+ */
+export function exportedSpawnAliases(files: ReadonlyMap<string, string>): Set<string> {
+  const aliases = new Set<string>();
+  const mentionsAny = (text: string): boolean =>
+    text.includes('spawnSync') || [...aliases].some((name) => mentionsName(text, name));
+
+  for (;;) {
+    let grew = false;
+    for (const [path, text] of files) {
+      if (!mentionsAny(text)) continue;
+      const parsed = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+      for (const name of spawnAliasesIn(parsed, aliases).exported) {
+        if (aliases.has(name)) continue;
+        aliases.add(name);
+        grew = true;
+      }
+    }
+    if (!grew) return aliases;
+  }
+}
+
+/** A whole-word mention, so `spawnable` does not select a file for `spawn`. */
+function mentionsName(text: string, name: string): boolean {
+  return new RegExp(`\\b${name}\\b`).test(text);
+}
+
+export function unboundedSpawnCalls(
+  source: string,
+  fileName: string,
+  known: ReadonlySet<string> = new Set(),
+): number[] {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const offenders: number[] = [];
+
+  // Local names bound to the spawner, however it was spelled and wherever it
+  // was imported from.
+  const aliases = spawnAliasesIn(parsed, known).local;
 
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -117,8 +248,9 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
               ? declaredObjectLiteral(parsed, argument.text)
               : undefined;
         if (options !== undefined) {
-          const deadline = propertyNamed(options, 'timeout');
-          const signal = propertyNamed(options, 'killSignal');
+          const resolved = flattenedProperties(parsed, options);
+          const deadline = resolved.get('timeout');
+          const signal = resolved.get('killSignal');
           // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
           // the default a child can trap, so accepting any signal accepts the
           // very thing the rule exists to prevent.
@@ -147,8 +279,20 @@ const tracked = execFileSync('git', ['ls-files', '-z'], {
   .split('\0')
   .filter((path) => path.length > 0 && SOURCE.test(path));
 
-const spawners = tracked
-  .filter((path) => readFileSync(join(root, path), 'utf8').includes('spawnSync'))
+const sources = new Map(tracked.map((path) => [path, readFileSync(join(root, path), 'utf8')]));
+const repositoryAliases = exportedSpawnAliases(sources);
+
+// A file is inspected when it mentions the spawner *or* any name the
+// repository exports as an alias of it. The previous filter asked only the
+// first question, so a caller reached through a re-export was excluded before
+// its AST was ever built.
+const spawners = [...sources]
+  .filter(
+    ([, text]) =>
+      text.includes('spawnSync') ||
+      [...repositoryAliases].some((name) => new RegExp(`\\b${name}\\b`).test(text)),
+  )
+  .map(([path]) => path)
   .sort();
 
 describe('every subprocess deadline is enforceable', () => {
@@ -157,8 +301,8 @@ describe('every subprocess deadline is enforceable', () => {
   });
 
   it.each(spawners)('%s bounds every deadline it sets', (relativePath) => {
-    const source = readFileSync(join(root, relativePath), 'utf8');
-    expect(unboundedSpawnCalls(source, relativePath)).toEqual([]);
+    const source = sources.get(relativePath) ?? '';
+    expect(unboundedSpawnCalls(source, relativePath, repositoryAliases)).toEqual([]);
   });
 
   it('catches an unbounded call sitting beside a compliant one', () => {
@@ -199,6 +343,65 @@ describe('every subprocess deadline is enforceable', () => {
     // the deadline compliant.
     const source = ['const options = { timeout: 10 };', "spawnSync('x', [], options);"].join('\n');
     expect(unboundedSpawnCalls(source, 'p.ts')).toEqual([2]);
+  });
+
+  it('resolves a deadline supplied through a spread', () => {
+    // `propertyNamed` read only properties written in place, so a spread
+    // carried the deadline past it and the call was called compliant because
+    // there appeared to be nothing to bound.
+    const spread = ['const deadline = { timeout: 10 };', "spawnSync('x', [], { ...deadline });"];
+    expect(unboundedSpawnCalls(spread.join('\n'), 'p.ts')).toEqual([2]);
+
+    const bounded = [
+      "const deadline = { timeout: 10, killSignal: 'SIGKILL' };",
+      "spawnSync('x', [], { ...deadline });",
+    ];
+    expect(unboundedSpawnCalls(bounded.join('\n'), 'p.ts')).toEqual([]);
+  });
+
+  it('lets a later property override what a spread supplied, as the runtime does', () => {
+    const overridden = [
+      "const deadline = { timeout: 10, killSignal: 'SIGKILL' };",
+      "spawnSync('x', [], { ...deadline, killSignal: 'SIGTERM' });",
+    ];
+    expect(unboundedSpawnCalls(overridden.join('\n'), 'p.ts')).toEqual([2]);
+  });
+
+  it('recognises a spawner reached through another module', () => {
+    // The caller mentions `spawnSync` nowhere, so the text filter excluded it
+    // before any AST was built — an unbounded deadline behind one re-export
+    // passed a guard whose whole purpose is that none can.
+    const files = new Map([
+      ['spawner.ts', "export { spawnSync as spawn } from 'node:child_process';"],
+      ['caller.ts', "import { spawn } from './spawner';\nspawn('x', [], { timeout: 10 });"],
+    ]);
+    const aliases = exportedSpawnAliases(files);
+    expect([...aliases]).toEqual(['spawn']);
+    expect(unboundedSpawnCalls(files.get('caller.ts') ?? '', 'caller.ts', aliases)).toEqual([2]);
+    // Without the index the caller is invisible, which is precisely the state
+    // this guard was in.
+    expect(unboundedSpawnCalls(files.get('caller.ts') ?? '', 'caller.ts')).toEqual([]);
+  });
+
+  it('follows a chain of re-exports rather than only the first hop', () => {
+    const files = new Map([
+      ['a.ts', "export { spawnSync as spawn } from 'node:child_process';"],
+      ['b.ts', "export { spawn as launch } from './a';"],
+      ['c.ts', "import { launch } from './b';\nlaunch('x', [], { timeout: 10 });"],
+    ]);
+    const aliases = exportedSpawnAliases(files);
+    expect([...aliases].sort()).toEqual(['launch', 'spawn']);
+    expect(unboundedSpawnCalls(files.get('c.ts') ?? '', 'c.ts', aliases)).toEqual([2]);
+  });
+
+  it('does not treat an unrelated import of the same name as the spawner', () => {
+    // The alias index answers which *names* alias the spawner, not which
+    // module a name came from. A name imported from a module that exports no
+    // alias is not one.
+    const files = new Map([
+      ['only.ts', "import { spawn } from './pty';\nspawn('x', [], { timeout: 10 });"],
+    ]);
+    expect([...exportedSpawnAliases(files)]).toEqual([]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {
