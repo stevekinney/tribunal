@@ -677,10 +677,6 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * A later reassignment is still not tracked, so an alias pointed elsewhere
  * before the call may be reported. That is the safe direction, taken knowingly.
  */
-function aliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
-  return aliasInitializers(identifier)[0];
-}
-
 /**
  * Every initializer that a name is given in the scope that binds it.
  *
@@ -796,10 +792,23 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     const target = unwrapTransparent(expression.left);
     if (ts.isIdentifier(target) && target.text === identifier.text) {
       initializers.push(expression.right);
-    } else if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target)) {
+    } else if (ts.isArrayLiteralExpression(target)) {
+      // `[load] = [require]` — the assignment form of array destructuring. The
+      // declaration form goes through `throughPattern`; this one has literals
+      // on both sides, so the positions are matched directly.
+      const source = unwrapTransparent(expression.right);
+      if (ts.isArrayLiteralExpression(source)) {
+        for (const [index, element] of target.elements.entries()) {
+          const bound = unwrapTransparent(element);
+          if (!ts.isIdentifier(bound) || bound.text !== identifier.text) continue;
+          const value = source.elements[index];
+          if (value !== undefined) initializers.push(value);
+        }
+      }
+    } else if (ts.isObjectLiteralExpression(target)) {
       // `({ load } = { load: require })` — a destructuring *assignment*, whose
       // left side parses as a literal rather than a binding pattern.
-      for (const property of ts.isObjectLiteralExpression(target) ? target.properties : []) {
+      for (const property of target.properties) {
         const key =
           property.name !== undefined && ts.isIdentifier(property.name)
             ? property.name.text
@@ -952,10 +961,14 @@ function isCreateRequire(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()
     // createRequire`. Following it costs one recursion and closes the whole
     // family, rather than the one spelling that happened to be reported.
     if (!seen.has(callee)) {
-      const aliased = aliasInitializer(callee);
-      if (aliased !== undefined) {
-        return isCreateRequire(unwrapTransparent(aliased), new Set([...seen, callee]));
-      }
+      // Every candidate, not the first. The collector can return several — a
+      // declaration and a later assignment — and `isModuleLoader` already tests
+      // them all; stopping at the first let `let factory = other; factory =
+      // createRequire` resolve to `other` and pass.
+      const next = new Set([...seen, callee]);
+      return aliasInitializers(callee).some((initializer) =>
+        isCreateRequire(unwrapTransparent(initializer), next),
+      );
     }
     return false;
   }
@@ -1096,8 +1109,21 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
   const member = staticMemberName(callee);
   if (member === undefined || member.name !== 'require') return false;
 
-  if (ts.isIdentifier(member.object) && member.object.text === 'module') {
-    return !isLocallyShadowed(member.object, 'module');
+  if (ts.isIdentifier(member.object)) {
+    if (member.object.text === 'module') return !isLocallyShadowed(member.object, 'module');
+    // `const commonjsModule = module; commonjsModule.require(...)` keeps the
+    // module object and reaches its property later. Followed by resolving the
+    // receiver, so an arbitrary object carrying a `require` method still fails.
+    // No visited set here, unlike the callee path: this inspects each
+    // initializer directly and never recurses back into `isModuleLoader`, so
+    // it cannot cycle. A guard was written anyway and the coverage gate showed
+    // its fallback unreachable.
+    return aliasInitializers(member.object).some((initializer) => {
+      const source = unwrapTransparent(initializer);
+      return (
+        ts.isIdentifier(source) && source.text === 'module' && !isLocallyShadowed(source, 'module')
+      );
+    });
   }
   // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
   // `new.target`, whose `require` is a method on an arbitrary object.

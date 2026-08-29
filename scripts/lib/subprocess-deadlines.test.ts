@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -11,47 +12,43 @@ import { resolveRepositoryRoot } from './repository-root';
 // at 4019ms against 400ms. `.claude/rules/scripts.md` states the rule; this is
 // the check that makes it hold, because the rule alone did not.
 //
-// The cases are DERIVED, not listed. A hand-maintained list is the defect this
-// whole guard exists to remove: the first version of this test named two files
-// and silently omitted `scripts/validate-test-runner-imports.ts`, which uses a
-// deadline of its own — so the test called "every subprocess deadline is
-// enforceable" would have stayed green with that file's `killSignal` deleted.
+// Two things this test has already got wrong, both recorded because the fix is
+// the interesting part:
+//
+//  1. It named its files. A hand-maintained list is the defect this whole guard
+//     exists to remove, and it silently omitted a spawner.
+//  2. It then walked the filesystem, which the same rules file forbids: a
+//     recursive walk enters ignored directories — a nested worktree under
+//     `.worktrees/` — and fails the current repository over a stale copy git
+//     would never commit.
+//
+// The enumeration is git's. It honours `.gitignore` with no skip list to
+// maintain, and it sees exactly what would be committed.
 const here = dirname(fileURLToPath(import.meta.url));
 const root =
   typeof (import.meta as { dir?: string }).dir === 'string'
     ? resolveRepositoryRoot()
     : join(here, '..', '..');
 
-const SKIP = new Set(['node_modules', '.git', 'dist', 'coverage', '.tmp', '.svelte-kit', 'build']);
 const SOURCE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
-function sourceFilesUnder(directory: string): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(directory)) {
-    if (SKIP.has(entry)) continue;
-    const path = join(directory, entry);
-    if (statSync(path).isDirectory()) {
-      found.push(...sourceFilesUnder(path));
-    } else if (SOURCE.test(entry)) {
-      found.push(path);
-    }
-  }
-  return found;
-}
-
-/** Files that spawn a subprocess with a deadline, whatever they are called. */
-const spawnersWithDeadlines = sourceFilesUnder(root)
+const spawnersWithDeadlines = execFileSync('git', ['ls-files', '-z'], {
+  cwd: root,
+  encoding: 'utf8',
+  maxBuffer: 32 * 1024 * 1024,
+})
+  .split('\0')
+  .filter((path) => path.length > 0 && SOURCE.test(path))
   .filter((path) => {
-    const source = readFileSync(path, 'utf8');
+    const source = readFileSync(join(root, path), 'utf8');
     return source.includes('spawnSync') && source.includes('timeout:');
   })
-  .map((path) => relative(root, path))
   .sort();
 
 describe('every subprocess deadline is enforceable', () => {
-  it('finds the spawners rather than trusting a list', () => {
-    // Guards against the walk silently matching nothing, which would make
-    // every assertion below vacuous.
+  it('enumerates the spawners rather than trusting a list', () => {
+    // Guards against the enumeration silently matching nothing, which would
+    // make every assertion below vacuous while still reading as thorough.
     expect(spawnersWithDeadlines.length).toBeGreaterThan(0);
   });
 

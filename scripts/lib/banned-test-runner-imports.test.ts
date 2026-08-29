@@ -1255,6 +1255,58 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('the module object can be held in an alias', () => {
+  it('follows `const commonjsModule = module`', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const commonjsModule = module;\ncommonjsModule.require('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('terminates on a circular receiver alias', () => {
+    expect(
+      findBannedTestRunnerImports("const a = b;\nconst b = a;\na.require('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('does not follow an arbitrary object carrying a require method', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const notModule = someObject;\nnotModule.require('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('createRequire resolution tests every candidate', () => {
+  it('finds the factory in a later assignment', () => {
+    // The collector returns a declaration and a later assignment; stopping at
+    // the first resolved `factory` to the innocuous one.
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from 'node:module';\nlet factory = other;\nfactory = createRequire;\nfactory(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('terminates on a circular factory alias', () => {
+    // Invalid at runtime but it parses; without the visited set the resolver
+    // would chase it indefinitely.
+    expect(
+      findBannedTestRunnerImports("const a = b;\nconst b = a;\na(import.meta.url)('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('stays silent when no candidate is the factory', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "let factory = other;\nfactory = alsoOther;\nfactory(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('a destructuring default supplies a specifier too', () => {
   it('resolves `const { runner = "bun:test" } = {}`', () => {
     // Loader resolution and specifier resolution share the pattern walk, so a
@@ -1530,6 +1582,7 @@ describe('every route a value reaches a binding by', () => {
     ['parameter default', "function f(load = require) { load('bun:test'); }\n"],
     ['object destructuring default', "const { load = require } = {};\nload('bun:test');\n"],
     ['array destructuring default', "const [load = require] = [];\nload('bun:test');\n"],
+    ['array destructuring assignment', "let load;\n[load] = [require];\nload('bun:test');\n"],
   ];
 
   it.each(loads)('reports a loader reaching the binding by %s', (_label, source) => {
@@ -1546,6 +1599,7 @@ describe('every route a value reaches a binding by', () => {
     ['chained assignment', "let a, load;\na = load = other;\nload('bun:test');\n"],
     ['parameter default', "function f(load = other) { load('bun:test'); }\n"],
     ['object destructuring default', "const { load = other } = {};\nload('bun:test');\n"],
+    ['array destructuring assignment', "let load;\n[load] = [other];\nload('bun:test');\n"],
     ['the wrong array index', "const [x, load] = [require, other];\nload('bun:test');\n"],
     [
       'the wrong object key',
