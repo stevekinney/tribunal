@@ -1002,6 +1002,74 @@ describe('more shapes of the same loaders', () => {
   });
 });
 
+describe('node:module reached the CommonJS way', () => {
+  it('accepts `import M = require("node:module")`', () => {
+    // TypeScript syntax rather than a call: the `ExternalModuleReference`
+    // holds the specifier directly, so treating it as a CallExpression missed
+    // it entirely.
+    expect(
+      findBannedTestRunnerImports(
+        "import Module = require('node:module');\nModule.createRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('accepts `const M = require("node:module")`', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const Module = require('node:module');\nModule.createRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('rejects the same shapes pointed at another module', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import Module = require('./helpers');\nModule.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('rejects a call whose callee is not a loader', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const Module = load('node:module');\nModule.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('TypeScript declarations that emit a runtime value', () => {
+  it('a plain enum shadows, because it emits an object', () => {
+    // Verified under Bun: `typeof E` is 'object'.
+    expect(findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n')).toHaveLength(
+      0,
+    );
+  });
+
+  it('a namespace with a body shadows', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "namespace module { export function require(n: string) { return n; } }\nmodule.require('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a const enum does NOT shadow, because its members are inlined', () => {
+    // Verified under Bun: `typeof F` is 'undefined'. It binds nothing, so a
+    // call still reaches the loader.
+    expect(
+      findBannedTestRunnerImports("const enum require { A }\nrequire('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a declared enum does NOT shadow, being ambient', () => {
+    expect(
+      findBannedTestRunnerImports("declare enum require { A }\nrequire('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

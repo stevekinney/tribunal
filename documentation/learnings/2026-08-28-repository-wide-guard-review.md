@@ -125,3 +125,12 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 ## Do not merge on the first green reading
 
 - **Four findings landed in the four minutes between two readings.** A settle window after the checks went terminal reported zero unresolved threads; a re-fetch before merging reported four. The rule that a first green reading is not merge authority is not a formality — this pull request would have merged with four unaddressed findings, two of them P1.
+
+## Ask the runtime which declarations emit a value
+
+- **`enum` and `const enum` differ, and the difference decides the answer.** Verified under Bun: a plain `enum require { A }` makes `typeof require` `'object'` — a real binding that shadows — while a `const enum` inlines its members and leaves `typeof` as `'undefined'`, so it binds nothing and a call still reaches the loader. Treating both as declarations would have suppressed a genuine finding; treating neither reported valid code. Running the two-line probe cost less than reasoning about emit semantics.
+- **A namespace is a value declaration when it has a body.** `namespace module { export function require(...) {} }` emits an object holding its value members, so it shadows; an ambient one is erased and does not. The same body-versus-signature distinction as a bodyless function overload, one node kind over.
+
+## The same import has several syntaxes, and one of them is not a call
+
+- **`import M = require('node:module')` is TypeScript syntax, not a call expression.** Its `ExternalModuleReference` holds the specifier directly, so code written to unwrap a `CallExpression` finds nothing there — the first version of this fix handled `const M = require(...)` correctly and silently missed the `import =` form beside it. `const M = require(...)` really is a call, and its callee still has to be verified as a loader, which the probe `const M = load('node:module')` pins.

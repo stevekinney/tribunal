@@ -338,6 +338,15 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
       // — emits nothing, so it introduces no runtime binding even without a
       // `declare` modifier. Only the implementation binds.
       ((ts.isFunctionDeclaration(candidate) && candidate.body !== undefined) ||
+        // A plain `enum` emits a real object — verified under Bun, where
+        // `typeof E` is `'object'`. A `const enum` does not: its members are
+        // inlined and `typeof` the name is `'undefined'`, so it binds nothing
+        // and must not shadow.
+        (ts.isEnumDeclaration(candidate) &&
+          (ts.getCombinedModifierFlags(candidate) & ts.ModifierFlags.Const) === 0) ||
+        // A `namespace` with a body emits an object holding its value members.
+        // An ambient one is already excluded above.
+        (ts.isModuleDeclaration(candidate) && candidate.body !== undefined) ||
         ts.isParameter(candidate) ||
         ts.isClassDeclaration(candidate) ||
         ts.isBindingElement(candidate)) &&
@@ -598,7 +607,29 @@ function aliasInitializer(identifier: ts.Identifier): ts.Expression | undefined 
  */
 function isNodeModuleImport(identifier: ts.Identifier, exportName: string): boolean {
   const binding = innermostBinding(identifier, identifier.text, true);
-  if (binding === undefined || !ts.isImportDeclaration(binding)) return false;
+  if (binding === undefined) return false;
+
+  // The CommonJS spellings bind the module object itself, so they answer only
+  // the '*' question. Bun supports both, and both load:
+  //   import Module = require('node:module')
+  //   const Module = require('node:module')
+  if (!ts.isImportDeclaration(binding)) {
+    if (exportName !== '*') return false;
+    // `import M = require('x')` is TypeScript syntax, not a call: its
+    // `ExternalModuleReference` holds the specifier directly. `const M =
+    // require('x')` really is a call, and its callee still has to be a loader.
+    if (ts.isImportEqualsDeclaration(binding)) {
+      if (!ts.isExternalModuleReference(binding.moduleReference)) return false;
+      const target = constantSpecifier(binding.moduleReference.expression);
+      return target === 'node:module' || target === 'module';
+    }
+    if (!ts.isVariableDeclaration(binding) || binding.initializer === undefined) return false;
+    const required = unwrapTransparent(binding.initializer);
+    if (!ts.isCallExpression(required)) return false;
+    if (!isModuleLoader(unwrapTransparent(required.expression))) return false;
+    const target = constantSpecifier(required.arguments[0]);
+    return target === 'node:module' || target === 'module';
+  }
 
   const from = constantSpecifier(binding.moduleSpecifier);
   if (from !== 'node:module' && from !== 'module') return false;
