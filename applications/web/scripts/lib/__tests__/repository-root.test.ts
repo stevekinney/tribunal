@@ -23,6 +23,11 @@ describe('resolveRepositoryRoot from applications/web/scripts/lib', () => {
     const result = spawnSync('bun', [join(testDirectory, 'repository-root.bun-fixture.ts')], {
       encoding: 'utf8',
       timeout: 30_000,
+      // Paired with the deadline, never written alone: `spawnSync`'s timeout
+      // signals the child and then *waits* for it, so a child that traps or
+      // ignores SIGTERM leaves the deadline unenforced. This repository has
+      // measured that before — 4019ms against a 400ms budget.
+      killSignal: 'SIGKILL',
     });
     expect(result.stderr ?? '').toBe('');
     expect(result.status).toBe(0);

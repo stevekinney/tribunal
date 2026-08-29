@@ -762,6 +762,85 @@ describe('erased declarations are not runtime bindings', () => {
   });
 });
 
+describe("Node's createRequire returns a real loader", () => {
+  it('catches a call on the loader it returns', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('catches the conventional `const require = createRequire(...)` spelling', () => {
+    // This is how `packages/test/src/database.ts` reaches CommonJS from ESM, so
+    // it is the ordinary spelling rather than an evasive one. The name is bound
+    // by that `const`, so the plain shadow check says "not the CommonJS
+    // wrapper" and the alias resolution has to carry it from there.
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nrequire('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('catches it through a namespace import', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import * as m from 'node:module';\nm.createRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not treat an unrelated createRequire from another module as a loader', () => {
+    // The binding is inspected rather than counted: a plain shadow check gets
+    // this backwards, because the name is always bound — it has to be imported
+    // to be used, and that import is what identifies it.
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from './mine';\ncreateRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('alias resolution stops at every nearer binding', () => {
+  it('a loop header binding shadows an outer alias', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\nfor (const load of loaders) { load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a hoisted local var shadows an outer alias even before its assignment', () => {
+    // This is the case that distinguishes naming from replacement. `var load`
+    // is hoisted through the whole function, so inside `f` the name refers to
+    // the local no matter where the call sits — verified under Node, where the
+    // call throws TypeError rather than loading anything:
+    //
+    //     throws: TypeError
+    //
+    // Shadow resolution asks whether the assignment has run, and would answer
+    // "not yet" and reach past to the outer alias. Alias resolution asks only
+    // whether the binding exists, which is why it passes `ignoreOrder`.
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\nfunction f() { load('bun:test'); var load = other; }\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a catch parameter shadows an outer alias', () => {
+    // These two were reachable because the alias resolver had its own partial
+    // copy of binding resolution. There is one resolver now.
+    expect(
+      findBannedTestRunnerImports(
+        "const load = require;\ntry { go(); } catch (load) { load('bun:test'); }\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

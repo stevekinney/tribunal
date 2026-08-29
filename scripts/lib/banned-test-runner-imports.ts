@@ -179,7 +179,7 @@ function functionBodyOf(node: ts.Node): ts.Block | undefined {
  * file-wide approximation would have been the easy version and would trade
  * this false positive for a false negative.
  */
-function isLocallyShadowed(node: ts.Node, name: string): boolean {
+function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.Node | undefined {
   /** A binding introduced by this node, if it names `name`. */
   /**
    * Whether a binding name introduces `name`, following destructuring.
@@ -252,6 +252,11 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * a different `switch` clause, a conditional.
    */
   const replacesBinding = (declaration: ts.VariableDeclaration): boolean => {
+    // `ignoreOrder` asks a different question: not "has this replaced the
+    // loader yet" but "is this name bound here at all". Alias resolution needs
+    // the second, because any nearer binding — even a `var` whose assignment
+    // has not run — is what the call actually names.
+    if (ignoreOrder) return true;
     const list = declaration.parent;
     if ((list.flags & ts.NodeFlags.BlockScoped) !== 0) return true;
 
@@ -360,8 +365,8 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    */
   const callClause = enclosingClause(node);
 
-  const declaredDirectlyIn = (scope: ts.Node): boolean => {
-    let found = false;
+  const declaredDirectlyIn = (scope: ts.Node): ts.Node | undefined => {
+    let found: ts.Node | undefined;
     // A `switch` body is a `CaseBlock`, not a `Block`, and its clauses share
     // one block scope — `case 'a': const require = x;` binds for every later
     // clause too. An unbraced clause therefore has no `Block` for the walk to
@@ -390,13 +395,13 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
           : functionBodyOf(scope)?.statements;
 
     if (ts.isFunctionLike(scope)) {
-      for (const parameter of scope.parameters) if (bindsName(parameter)) found = true;
+      for (const parameter of scope.parameters) if (bindsName(parameter)) found = parameter;
     }
     for (const statement of statements ?? []) {
-      if (bindsName(statement) || importBinds(statement)) found = true;
+      if (bindsName(statement) || importBinds(statement)) found = statement;
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
-          if (bindsName(declaration)) found = true;
+          if (bindsName(declaration)) found = declaration;
         }
       }
     }
@@ -437,36 +442,40 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
    * catch clause binds its parameter for the catch block, and a loop header
    * binds for the loop body.
    */
-  const bindsOutsideStatementList = (scope: ts.Node): boolean => {
+  const bindsOutsideStatementList = (scope: ts.Node): ts.Node | undefined => {
     if (ts.isFunctionExpression(scope) || ts.isClassExpression(scope)) {
-      return nameBinds(scope.name);
+      return nameBinds(scope.name) ? scope : undefined;
     }
     if (ts.isCatchClause(scope)) {
-      return nameBinds(scope.variableDeclaration?.name);
+      return nameBinds(scope.variableDeclaration?.name) ? scope.variableDeclaration : undefined;
     }
     if (ts.isForStatement(scope) || ts.isForOfStatement(scope) || ts.isForInStatement(scope)) {
       const initializer = scope.initializer;
-      return (
-        initializer !== undefined &&
-        ts.isVariableDeclarationList(initializer) &&
-        initializer.declarations.some((declaration) => bindsName(declaration))
-      );
+      if (initializer === undefined || !ts.isVariableDeclarationList(initializer)) return undefined;
+      return initializer.declarations.find((declaration) => bindsName(declaration));
     }
-    return false;
+    return undefined;
   };
 
   for (let scope = node.parent; scope !== undefined; scope = scope.parent) {
-    if (bindsOutsideStatementList(scope)) return true;
+    const outside = bindsOutsideStatementList(scope);
+    if (outside !== undefined) return outside;
     if (
       ts.isBlock(scope) ||
       ts.isCaseBlock(scope) ||
       ts.isFunctionLike(scope) ||
       ts.isSourceFile(scope)
     ) {
-      if (declaredDirectlyIn(scope)) return true;
+      const inside = declaredDirectlyIn(scope);
+      if (inside !== undefined) return inside;
     }
   }
-  return false;
+  return undefined;
+}
+
+/** Whether a nearer binding of `name` stands between this node and the loader. */
+function isLocallyShadowed(node: ts.Node, name: string): boolean {
+  return innermostBinding(node, name) !== undefined;
 }
 
 /**
@@ -516,66 +525,80 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * `const load = require; load('bun:test')` loads the runner by a spelling that
  * is ordinary rather than evasive, and a name-only check never saw it.
  *
- * Resolving the innermost binding is the part that matters. Taking any
- * enclosing `const load = require` would report
- * `{ const load = somethingElse; load('bun:test'); }`, where the inner binding
- * wins — a false positive of exactly the kind this gate keeps paying for. So
- * the walk stops at the first scope that binds the name at all, and answers
- * only for a `const`.
+ * Resolving the innermost binding is the part that matters, and it reuses
+ * `innermostBinding` rather than re-deriving scoping a second time. An earlier
+ * version walked its own scopes and knew about parameters, function
+ * declarations, and variable statements — but not loop headers, catch
+ * parameters, named function expressions, or class declarations, so
+ * `const load = require; for (const load of loaders) { load('bun:test'); }`
+ * reached past the loop binding to the outer alias and reported valid code.
+ * Two partial copies of binding resolution is the defect; there is one now.
  *
- * No ordering check is needed, unlike `var`: `const` is in its temporal dead
- * zone before the declaration, so a call above it throws rather than loads.
+ * `ignoreOrder` is passed because this asks a different question from
+ * shadowing. Shadowing needs to know whether a `var` assignment has executed
+ * yet; naming needs only to know that the binding exists, since that is what
+ * the call refers to either way.
  */
 function constAliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
-  const wanted = identifier.text;
-  const namesIt = (name: ts.BindingName): boolean => ts.isIdentifier(name) && name.text === wanted;
+  const binding = innermostBinding(identifier, identifier.text, true);
+  if (binding === undefined || !ts.isVariableDeclaration(binding)) return undefined;
+  return (binding.parent.flags & ts.NodeFlags.Const) !== 0 ? binding.initializer : undefined;
+}
 
-  for (let scope: ts.Node | undefined = identifier.parent; scope; scope = scope.parent) {
-    if (ts.isFunctionLike(scope)) {
-      for (const parameter of scope.parameters) {
-        if (namesIt(parameter.name)) return undefined;
-      }
-    }
-    const statements = ts.isSourceFile(scope)
-      ? scope.statements
-      : ts.isBlock(scope)
-        ? scope.statements
-        : ts.isCaseBlock(scope)
-          ? scope.clauses.flatMap((clause) => [...clause.statements])
-          : ts.isFunctionLike(scope)
-            ? functionBodyOf(scope)?.statements
-            : undefined;
-    for (const statement of statements ?? []) {
-      if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
-        if (statement.name.text === wanted) return undefined;
-      }
-      if (!ts.isVariableStatement(statement)) continue;
-      for (const declaration of statement.declarationList.declarations) {
-        if (!namesIt(declaration.name)) continue;
-        // A binding of this name exists here, so the search ends whatever it
-        // is. Only an immutable one can be followed.
-        return (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
-          ? declaration.initializer
-          : undefined;
-      }
-    }
+/**
+ * Whether an expression is Node's `createRequire`, which returns a real loader.
+ *
+ * Not a hypothetical spelling: this repository already calls it in
+ * `packages/test/src/database.ts` and `packages/mcp/src/logger.ts`, and
+ * `const require = createRequire(import.meta.url)` is *the* conventional way to
+ * reach CommonJS from an ES module. Without modelling it, the most ordinary ESM
+ * spelling of the banned import passed both the hook and CI.
+ *
+ * Recognised by name, and only when that name is not itself locally bound, so a
+ * project's own unrelated `createRequire` helper does not become a loader.
+ */
+function isCreateRequire(callee: ts.Node): boolean {
+  if (!ts.isIdentifier(callee)) {
+    // `module.createRequire(...)`, where `module` is the imported namespace.
+    const member = staticMemberName(callee);
+    return member !== undefined && member.name === 'createRequire';
   }
-  return undefined;
+  if (callee.text !== 'createRequire') return false;
+
+  // A plain shadow check is wrong here, and gets the answer backwards: the name
+  // is *always* bound, because it has to be imported to be used, and that
+  // import is exactly what identifies it. So the binding is inspected rather
+  // than merely counted — an import of it qualifies, a local declaration of
+  // something else by the same name does not.
+  const binding = innermostBinding(callee, 'createRequire', true);
+  if (binding === undefined) return false;
+  if (!ts.isImportDeclaration(binding)) return false;
+  const from = constantSpecifier(binding.moduleSpecifier);
+  return from === 'node:module' || from === 'module';
 }
 
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
-  if (ts.isIdentifier(callee) && callee.text === 'require') {
-    return !isLocallyShadowed(callee, 'require');
+  // `createRequire(import.meta.url)('bun:test')` calls the loader that call
+  // returns, so the callee here is itself a call rather than a name.
+  if (ts.isCallExpression(callee) && isCreateRequire(unwrapTransparent(callee.expression))) {
+    return true;
   }
 
-  // Follow an immutable alias, and its aliases. `seen` guards against a cycle
-  // that only invalid source could produce, but which would otherwise recurse
-  // forever.
-  if (ts.isIdentifier(callee) && !seen.has(callee)) {
-    const aliased = constAliasInitializer(callee);
-    if (aliased !== undefined) {
-      return isModuleLoader(unwrapTransparent(aliased), new Set([...seen, callee]));
+  if (ts.isIdentifier(callee)) {
+    if (callee.text === 'require' && !isLocallyShadowed(callee, 'require')) return true;
+
+    // Follow an immutable alias, and its aliases. This runs for `require` too,
+    // because `const require = createRequire(import.meta.url)` shadows the name
+    // with a binding that is still a loader — the shadow check above correctly
+    // says "not the CommonJS wrapper" and would otherwise end the enquiry.
+    // `seen` guards against a cycle only invalid source could produce.
+    if (!seen.has(callee)) {
+      const aliased = constAliasInitializer(callee);
+      if (aliased !== undefined) {
+        return isModuleLoader(unwrapTransparent(aliased), new Set([...seen, callee]));
+      }
     }
+    return false;
   }
 
   const member = staticMemberName(callee);
