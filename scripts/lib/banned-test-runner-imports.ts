@@ -569,7 +569,21 @@ function scopeStatements(scope: ts.Node): readonly ts.Statement[] | undefined {
   return undefined;
 }
 
-function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.Node | undefined {
+/**
+ * Exported for `subprocess-deadlines.test.ts`.
+ *
+ * That guard resolved names by searching the whole file for matching text,
+ * which made its answer depend on unrelated declaration order and let a
+ * shadowed name in another scope supply the value. Lexical binding resolution
+ * already exists here and is exercised by hundreds of tests; a second, weaker
+ * copy of it next door is the duplication this module keeps being corrected
+ * for.
+ */
+export function innermostBinding(
+  node: ts.Node,
+  name: string,
+  ignoreOrder = false,
+): ts.Node | undefined {
   /** A binding introduced by this node, if it names `name`. */
   /**
    * Whether a binding name introduces `name`, following destructuring.
@@ -1071,7 +1085,7 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * establishing that needs the order analysis this validator refuses elsewhere.
  * Callers treat any match as a match, which fails toward reporting.
  */
-function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
+export function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const binding = innermostBinding(identifier, identifier.text, true);
   // A default gives a parameter its value exactly as an initializer gives one
   // to a declaration: `function f(load = require) { load('bun:test') }` loads.
@@ -1885,6 +1899,69 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  * a block calling something unrelated exported its local name to the top level,
  * where it became a candidate for markup outside the block.
  */
+/**
+ * Whether a name is passed as the specifier to a call written `require(...)`.
+ *
+ * `{#each ['bun:test'] as runner}{require(runner)}{/each}` executes the real
+ * loader with the each binding, but the binding is in *argument* position, and
+ * `referencesName` deliberately looks only at a callee or an import's source.
+ *
+ * Kept as its own predicate rather than folded into that one, because the two
+ * callers need different rules. Emitting the synthetic each declaration wants
+ * this wider view; suppressing a call bound by a snippet parameter must not
+ * have it, or `{#snippet render(choice)}{require(choice ? 'vitest' : 'bun:test')}`
+ * would be discarded whole and a real banned import would go unreported.
+ *
+ * Narrow on purpose: only a callee literally named `require`. Anything looser
+ * re-creates the `{foo(runner)}` false positive `referencesName` exists to
+ * prevent, and over-emission plus the resolver's banned-value preference is
+ * how the `{@const}` false positive happened. Residual, stated rather than
+ * left to be found: a loader reached through an *alias* in markup —
+ * `{load(runner)}` — is not covered here, because deciding that `load` is a
+ * loader needs the binding resolver, which runs on the composed program rather
+ * than on the template AST.
+ */
+function mentionedInRequireArgument(
+  node: unknown,
+  context: { start?: unknown; end?: unknown; name?: unknown } | undefined,
+): boolean {
+  if (context === undefined) return false;
+  const wanted = (context as { name?: unknown }).name;
+
+  const mentions = (candidate: unknown): boolean => {
+    if (candidate === null || typeof candidate !== 'object') return false;
+    const record = candidate as { type?: unknown; name?: unknown };
+    if (record.type === 'Identifier' && record.name === wanted) return true;
+    return Object.entries(candidate).some(([key, value]) => key !== 'parent' && mentions(value));
+  };
+
+  let found = false;
+  const visit = (candidate: unknown): void => {
+    if (found || candidate === null || typeof candidate !== 'object') return;
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
+    const record = candidate as { type?: unknown; callee?: unknown; arguments?: unknown };
+    const callee = record.callee as { type?: unknown; name?: unknown } | undefined;
+    if (
+      record.type === 'CallExpression' &&
+      callee?.type === 'Identifier' &&
+      callee.name === 'require' &&
+      mentions(record.arguments)
+    ) {
+      found = true;
+      return;
+    }
+    for (const [key, value] of Object.entries(candidate)) {
+      if (key === 'parent') continue;
+      visit(value);
+    }
+  };
+  visit(node);
+  return found;
+}
+
 function referencesName(
   node: unknown,
   context: { start?: unknown; end?: unknown; name?: unknown } | undefined,
@@ -1953,7 +2030,8 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
       // appended at top level, so emitting it unconditionally would make the
       // block-local binding a candidate for markup *outside* the block —
       // reporting a component whose outer `runner` names something else.
-      referencesName((node as { body?: unknown }).body, record.context) &&
+      (referencesName((node as { body?: unknown }).body, record.context) ||
+        mentionedInRequireArgument((node as { body?: unknown }).body, record.context)) &&
       record.context?.type === 'Identifier' &&
       typeof record.context.start === 'number' &&
       typeof record.context.end === 'number' &&

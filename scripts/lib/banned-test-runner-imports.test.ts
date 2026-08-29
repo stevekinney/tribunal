@@ -2742,6 +2742,28 @@ describe('svelte template block scope', () => {
     ).toEqual([]);
   });
 
+  it('emits an each binding used as a loader specifier, not only as a callee', () => {
+    // `{#each [require] as load}{load(...)}` was covered because the binding is
+    // the *callee*; this is the binding in argument position to a real loader,
+    // which the callee-or-import-source test deliberately does not see.
+    expect(
+      findBannedImportsInSvelte("{#each ['bun:test'] as runner}{require(runner)}{/each}"),
+    ).toHaveLength(1);
+    // Narrow on purpose: a name merely passed to something else does not
+    // activate the binding, which is the false positive the callee test exists
+    // to prevent.
+    expect(findBannedImportsInSvelte("{#each ['bun:test'] as runner}{foo(runner)}{/each}")).toEqual(
+      [],
+    );
+    // A snippet parameter used only as a specifier must still leave the call
+    // reportable — suppressing the whole range there would hide a real import.
+    expect(
+      findBannedImportsInSvelte(
+        "{#snippet render(choice)}{require(choice ? 'vitest' : 'bun:test')}{/snippet}",
+      ),
+    ).toHaveLength(1);
+  });
+
   it('binds a snippet parameter for calls inside the snippet', () => {
     // A snippet's parameters live on the Svelte block rather than on a
     // JavaScript function, so masking the markup around a call dropped them
