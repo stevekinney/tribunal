@@ -1441,6 +1441,53 @@ describe('offsets and branches that quietly swallowed findings', () => {
   });
 });
 
+describe('an alias receives its value from more than declarations', () => {
+  it('follows a deferred assignment', () => {
+    // `let load; load = require;` splits declaration from initialization, so
+    // the assignment is where the value arrives.
+    expect(
+      findBannedTestRunnerImports("let load;\nload = require;\nload('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('follows a classic-for var initializer that shares the binding', () => {
+    // The loop initializer always runs and its `var` outlives the loop, so it
+    // is one of the assignments the binding receives — alongside the later
+    // redeclaration, which was the only one previously considered.
+    expect(
+      findBannedTestRunnerImports(
+        "for (var load = require; false; ) {}\nload('bun:test');\nvar load = custom;\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report an assignment of something else', () => {
+    expect(
+      findBannedTestRunnerImports("let load;\nload = other;\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('the shebang interpreter is parsed, not searched for', () => {
+  it('does not classify a shell script as JavaScript because it mentions node', () => {
+    expect(hasForeignShebang('#!/bin/sh # invoke node below\n')).toBe(true);
+  });
+
+  it('reads the command after env', () => {
+    expect(hasForeignShebang('#!/usr/bin/env bun\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env python3\n')).toBe(true);
+  });
+
+  it('skips env options before the command', () => {
+    expect(hasForeignShebang('#!/usr/bin/env -S bun run\n')).toBe(false);
+  });
+
+  it('reads a direct interpreter path', () => {
+    expect(hasForeignShebang('#!/usr/local/bin/node\n')).toBe(false);
+    expect(hasForeignShebang('#!/bin/bash\n')).toBe(true);
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

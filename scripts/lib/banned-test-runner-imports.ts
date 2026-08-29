@@ -698,12 +698,45 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     return binding.initializer === undefined ? [] : [binding.initializer];
 
   const initializers: ts.Expression[] = [];
-  for (const sibling of statements) {
-    if (!ts.isVariableStatement(sibling)) continue;
-    for (const declaration of sibling.declarationList.declarations) {
+  const takeDeclarations = (list: ts.VariableDeclarationList): void => {
+    for (const declaration of list.declarations) {
       if (!ts.isIdentifier(declaration.name)) continue;
       if (declaration.name.text !== identifier.text) continue;
       if (declaration.initializer !== undefined) initializers.push(declaration.initializer);
+    }
+  };
+
+  for (const sibling of statements) {
+    if (ts.isVariableStatement(sibling)) {
+      takeDeclarations(sibling.declarationList);
+      continue;
+    }
+    // A classic `for` header declares into this scope when it uses `var`, and
+    // its initializer always runs — so it is one of the assignments this
+    // binding receives, alongside any plain declaration of the same name.
+    if (
+      ts.isForStatement(sibling) &&
+      sibling.initializer !== undefined &&
+      ts.isVariableDeclarationList(sibling.initializer) &&
+      (sibling.initializer.flags & ts.NodeFlags.BlockScoped) === 0
+    ) {
+      takeDeclarations(sibling.initializer);
+      continue;
+    }
+    // `let load; load = require;` splits declaration from initialization, so
+    // the assignment is where the value arrives. Which assignment is live at
+    // the call is not established — every one is a candidate and any match is a
+    // match, which fails toward reporting.
+    if (ts.isExpressionStatement(sibling)) {
+      const expression = unwrapTransparent(sibling.expression);
+      if (
+        ts.isBinaryExpression(expression) &&
+        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(expression.left) &&
+        expression.left.text === identifier.text
+      ) {
+        initializers.push(expression.right);
+      }
     }
   }
   return initializers;
@@ -1352,7 +1385,20 @@ export function hasForeignShebang(contents: string): boolean {
   const newline = contents.indexOf('\n');
   const firstLine = newline === -1 ? contents : contents.slice(0, newline);
   if (!firstLine.startsWith('#!')) return false;
-  return !/\b(node|bun|deno)\b/.test(firstLine);
+
+  // The interpreter is parsed rather than searched for. Matching `node`
+  // anywhere on the line classified `#!/bin/sh # invoke node below` as
+  // JavaScript, and the recovery parser then turned that script's ordinary hash
+  // comments into imports — a false positive on every commit containing it.
+  const tokens = firstLine.slice(2).trim().split(/\s+/).filter(Boolean);
+  const commandName = (token: string): string => token.slice(token.lastIndexOf('/') + 1);
+  let interpreter = commandName(tokens[0] ?? '');
+  if (interpreter === 'env') {
+    // `env` may carry its own options before the command, as in `env -S bun`.
+    const command = tokens.slice(1).find((token) => !token.startsWith('-'));
+    interpreter = commandName(command ?? '');
+  }
+  return interpreter !== 'node' && interpreter !== 'bun' && interpreter !== 'deno';
 }
 
 /**

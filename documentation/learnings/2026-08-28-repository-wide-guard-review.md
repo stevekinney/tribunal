@@ -205,3 +205,16 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 ## Composing half a program is not composing it
 
 - **Template _declarations_ belong in the composed source, not only template calls.** `{@const runner = 'bun:test'}` defines a binding a markup call uses; keeping only call ranges masked the definition, so the composed program held the alias and not its declaration — the precise problem composition was introduced to fix, one scope further in. When the fix is "analyse it as one program", every part that binds a name has to be in it.
+
+## A value arrives by more routes than a declaration
+
+- **`let load; load = require;` splits declaration from initialization**, so a resolver that reads only declaration initializers found nothing and reported nothing. A classic-`for` header is a third route: its `var` initializer always runs and outlives the loop, so it is one of the assignments the binding receives. All of them are gathered and any match is a match — the same fail-toward-reporting rule already used for redeclared `var`, extended rather than duplicated.
+- **A stated boundary can be wrong about its own failure direction — again.** The scope note posted on the pull request said unmodelled reassignment fails toward reporting. For a deferred _initializing_ assignment it failed toward silence, which is the second time a boundary claim has been backwards in the direction that matters. Claims about which way something fails need the same probe as the behaviour itself.
+
+## Match the token, not the line
+
+- **`#!/bin/sh # invoke node below` is a shell script.** Searching the whole shebang line for `node`, `bun`, or `deno` classified it as JavaScript, and the recovery parser then turned its ordinary hash comments into imports — blocking every commit containing the file. The interpreter is a token in a known position: the command after `#!`, or the first non-option argument when that command is `env`. Parsing it is barely more code than the regex and cannot be fooled by a comment.
+
+## A guard's CI step needs its own guard
+
+- **Enforcement that lives in one workflow step can be removed by deleting that step.** The repository already had an invariant asserting that each workflow-security command stays wired into `ci.yml`, precisely so a check cannot be switched off by editing the workflow — and the new validator step was not on that list. Adding it there is the difference between a guard and a guard that happens to be running. Verified by deleting the step: `audit:workflows` exits 1 with it gone and 0 with it present.

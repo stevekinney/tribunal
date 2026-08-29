@@ -528,6 +528,10 @@ export function auditWorkflows(): Violation[] {
 // `lint-format` job (see `ciWiringViolations` below).
 const REQUIRED_CI_SECURITY_COMMANDS = [
   'bun run audit:workflows',
+  // TRI-34: the repository-wide `bun:test` ban. Listed for the same reason as
+  // the workflow-security commands below — a guard whose only CI enforcement is
+  // a step that nothing checks for can be switched off by deleting that step.
+  'bun run validate:test-runner-imports',
   'bun run test:workflow-authorization',
   'bun run test:workflow-prompt-injection',
   'bun run test:production-migration-gate',
