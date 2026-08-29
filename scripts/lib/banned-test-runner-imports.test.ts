@@ -1149,60 +1149,67 @@ describe('a recognised extension outranks a recipe basename', () => {
   });
 });
 
-describe('declaration merging is not all-or-nothing', () => {
-  it('a namespace exporting a require function DOES replace module.require', () => {
-    // Verified under Bun: `module.require('node:path')` returns the namespace's
-    // own function, so the emitted initialization really does assign the
-    // property. Merging leaves the loader intact only when nothing overwrites
-    // it.
+describe('a CommonJS namespace never suppresses module.require', () => {
+  // Third disposition of this one assertion, so the history is the point:
+  //
+  //   round 21  a namespace shadows          — wrong: declarations MERGE with
+  //                                            the wrapper, they do not replace it
+  //   round 23  it shadows when it exports
+  //             `require`                    — right about the emit, wrong as a
+  //                                            suppression rule: scope-wide, so it
+  //                                            also suppressed calls written above
+  //                                            the namespace, and it recognised only
+  //                                            functions and variables
+  //   round 24  it never suppresses          — fails toward the ban
+  //
+  // Getting round 23's version right needs the position of a namespace's
+  // generated initializer against the call, which is the same emit-order
+  // analysis refused for hoisted function invocations one rule over. The cost
+  // is a false positive on code that shadows the CommonJS module object and
+  // re-exports `require` from it, which nobody writes by accident.
+  it('reports even when the namespace exports a require function', () => {
     expect(
       findBannedTestRunnerImports(
         "namespace module { export function require(n: string) { return n; } }\nmodule.require('bun:test');\n",
         0,
         'probe.cts',
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
-  it('a namespace exporting a require constant also replaces it', () => {
+  it('reports when the call precedes the namespace, where the old rule did not', () => {
+    // The false negative that scope-wide suppression created.
     expect(
       findBannedTestRunnerImports(
-        "namespace module { export const require = (n: string) => n; }\nmodule.require('bun:test');\n",
-        0,
-        'probe.cts',
-      ),
-    ).toHaveLength(0);
-  });
-
-  it('a namespace exporting something else leaves module.require intact', () => {
-    expect(
-      findBannedTestRunnerImports(
-        "namespace module { export const other = 1; }\nmodule.require('bun:test');\n",
+        "module.require('bun:test');\nnamespace module { export function require(n: string) { return n; } }\n",
         0,
         'probe.cts',
       ),
     ).toHaveLength(1);
   });
 
-  it('a namespace exporting a class leaves module.require intact', () => {
-    // Neither a function nor a variable statement — the branch that decides
-    // "this export is not a require" rather than falling through to true.
+  it('reports for an exported class, where the old rule did not', () => {
     expect(
       findBannedTestRunnerImports(
-        "namespace module { export class Other {} }\nmodule.require('bun:test');\n",
+        "namespace module { export class require {} }\nmodule.require('bun:test');\n",
         0,
         'probe.cts',
       ),
     ).toHaveLength(1);
   });
 
-  it('a bodyless exported require signature does not replace it', () => {
+  it('still lets an enum shadow in an ES module, which is a different rule', () => {
+    // The round-22 finding stands: in an ES module there is nothing to merge
+    // with, so the declaration really does win. Removing the namespace
+    // machinery must not disturb that half.
     expect(
-      findBannedTestRunnerImports(
-        "namespace module { export function require(n: string): string; }\nmodule.require('bun:test');\n",
-        0,
-        'probe.cts',
-      ),
+      findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n', 0, 'probe.mts'),
+    ).toHaveLength(0);
+  });
+
+  it('still reports an enum in CommonJS, where it merges', () => {
+    expect(
+      findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n', 0, 'probe.cts'),
     ).toHaveLength(1);
   });
 });
@@ -1222,6 +1229,81 @@ describe('source order says nothing across a function boundary', () => {
   it('still suppresses a straight-line call in the same function body', () => {
     expect(
       findBannedTestRunnerImports("function f() { var require = custom; require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('a destructured loader property', () => {
+  it('catches `const { require: load } = module`', () => {
+    // Following the alias alone asks "is `module` a loader"; the property the
+    // binding element selects is what makes this one.
+    expect(
+      findBannedTestRunnerImports("const { require: load } = module;\nload('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('ignores a different property of module', () => {
+    expect(
+      findBannedTestRunnerImports("const { other: load } = module;\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('ignores `require` destructured from something else', () => {
+    expect(
+      findBannedTestRunnerImports("const { require: load } = somethingElse;\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('an immutable specifier alias is still a constant', () => {
+  it('follows `const runner = "bun:test"; import(runner)`', () => {
+    expect(
+      findBannedTestRunnerImports("const runner = 'bun:test';\nconst t = await import(runner);\n"),
+    ).toHaveLength(1);
+  });
+
+  it('composes with constant folding through a chain', () => {
+    // Resolved through the same alias machinery the loader uses, so this falls
+    // out rather than needing its own case.
+    expect(
+      findBannedTestRunnerImports(
+        "const a = 'bun:';\nconst b = a + 'test';\nconst t = await import(b);\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report an alias naming another module', () => {
+    expect(
+      findBannedTestRunnerImports("const runner = 'vitest';\nconst t = await import(runner);\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('Svelte markup is executable', () => {
+  it('catches a dynamic import in an await block', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/A.svelte',
+        '<script lang="ts">let x = 1;</script>\n{#await import(\'bun:test\') then suite}<p>{x}</p>{/await}\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('catches a require call in an event handler', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/B.svelte',
+        '<script lang="ts">let x = 1;</script>\n<button on:click={() => require(\'bun:test\')}>{x}</button>\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report a template import of another module', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/C.svelte',
+        '<script lang="ts">let x = 1;</script>\n{#await import(\'vitest\') then suite}<p>{x}</p>{/await}\n',
+      ),
     ).toHaveLength(0);
   });
 });

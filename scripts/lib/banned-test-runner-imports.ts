@@ -3,7 +3,14 @@ import { parse as parseSvelte } from 'svelte/compiler';
 
 /** The parts of Svelte's AST this module reads. */
 type SvelteScript = { content: { start: number; end: number } };
-type SvelteRoot = { instance?: SvelteScript | null; module?: SvelteScript | null };
+type SvelteRoot = {
+  instance?: SvelteScript | null;
+  module?: SvelteScript | null;
+  // The parsed markup. Typed as `unknown` because it is walked structurally
+  // rather than by node kind — see `templateCallRanges`, which deliberately
+  // does not enumerate Svelte's grammar.
+  fragment?: unknown;
+};
 
 /**
  * Detect `bun:test` imports in source text.
@@ -111,18 +118,32 @@ function unwrapTransparent(node: ts.Node): ts.Node {
   }
 }
 
-function constantSpecifier(node: ts.Node | undefined): string | undefined {
+function constantSpecifier(
+  node: ts.Node | undefined,
+  seen: ReadonlySet<ts.Node> = new Set(),
+): string | undefined {
   if (node === undefined) return undefined;
   const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
+
+  // `const runner = 'bun:test'; import(runner)` names the module as statically
+  // as writing the literal does. Resolved through the same alias machinery the
+  // loader uses rather than a second copy of it, so a chain composes with the
+  // fold below: `const a = 'bun:'; const b = a + 'test'; import(b)`.
+  if (ts.isIdentifier(current) && !seen.has(current)) {
+    const aliased = aliasInitializer(current);
+    if (aliased !== undefined) {
+      return constantSpecifier(aliased, new Set([...seen, current]));
+    }
+  }
 
   // `import('bun:' + 'test')` names the same module as `import('bun:test')`.
   // Only `+` over operands that are themselves constant is folded — anything
   // involving a variable is not knowable here, and guessing would produce
   // findings nobody can act on.
   if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = constantSpecifier(current.left);
-    const right = constantSpecifier(current.right);
+    const left = constantSpecifier(current.left, seen);
+    const right = constantSpecifier(current.right, seen);
     if (left !== undefined && right !== undefined) return left + right;
   }
 
@@ -755,59 +776,59 @@ function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: str
 }
 
 /**
- * Whether a `namespace module` in scope writes a runtime `require` export.
+ * There is deliberately no check for a `namespace module` that re-exports
+ * `require`, and this is the third disposition of that question.
  *
- * Declaration merging is not all-or-nothing. A namespace merged onto the
- * CommonJS wrapper leaves `module.require` intact when it exports something
- * else, and *replaces* it when it exports `require` — the emitted
- * initialization assigns that property. Verified under Bun, where
- * `module.require('node:path')` returns the namespace's own function.
+ * An earlier round treated every enum and namespace as shadowing. That was
+ * wrong: TypeScript emits `(function (X) { ... })(X || (X = {}))`, so the
+ * declaration *merges* with the CommonJS wrapper rather than replacing it.
  *
- * Found by walking scopes rather than through `innermostBinding`, because that
- * deliberately reports a CommonJS namespace as *not* binding — which is the
- * right answer for the name `module` and the wrong one for this question.
+ * The next round noticed merging is not all-or-nothing — a namespace exporting
+ * `require` really does assign `module.require`, verified under Bun — and
+ * suppressed the call in that case. That was right about the emit and wrong as
+ * a suppression rule: it searched the whole scope, so it also suppressed a call
+ * written *above* the namespace, where the assignment has not run; and it
+ * recognised only functions and variables, so `export class require {}` still
+ * reported. Two false negatives and a false positive, in the round after it
+ * landed.
+ *
+ * Getting it right needs emit-order reasoning — the position of a namespace's
+ * generated initializer against the call — which is the same analysis refused
+ * for hoisted function invocations one rule over, and for the same reason. So
+ * a CommonJS `namespace module` no longer suppresses anything. The cost is a
+ * false positive on code that shadows the CommonJS module object and re-exports
+ * `require` from it, which is not something written by accident; this validator
+ * is a lint against accidents, and reporting deliberate weirdness is the
+ * direction it should fail in.
  */
-function namespaceExportsRequire(from: ts.Node): boolean {
-  const exportsRequire = (body: ts.ModuleBlock): boolean =>
-    body.statements.some((statement) => {
-      // Read the modifiers rather than casting to `Declaration`: a `Statement`
-      // does not overlap it enough for TypeScript to allow the conversion, and
-      // forcing it through `unknown` would be hiding that rather than answering
-      // it.
-      const exported =
-        ts.canHaveModifiers(statement) &&
-        ts
-          .getModifiers(statement)
-          ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
-      if (exported !== true) return false;
-      if (ts.isFunctionDeclaration(statement)) {
-        return statement.name?.text === 'require' && statement.body !== undefined;
-      }
-      if (ts.isVariableStatement(statement)) {
-        return statement.declarationList.declarations.some(
-          (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'require',
-        );
-      }
-      return false;
-    });
+/**
+ * Whether a name was destructured off a loader-bearing object, as in
+ * `const { require: load } = module`.
+ *
+ * Alias following cannot answer this on its own: the declaration's initializer
+ * is the whole object, so following it asks "is `module` a loader" rather than
+ * "is `module.require` one". The property the binding element selects is what
+ * matters, and it is only visible on the element.
+ */
+function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
+  const binding = innermostBinding(identifier, identifier.text, true);
+  if (binding === undefined || !ts.isVariableDeclaration(binding)) return false;
+  if (!ts.isObjectBindingPattern(binding.name) || binding.initializer === undefined) return false;
 
-  for (let scope: ts.Node | undefined = from; scope; scope = scope.parent) {
-    const statements = ts.isSourceFile(scope)
-      ? scope.statements
-      : ts.isBlock(scope)
-        ? scope.statements
-        : ts.isModuleBlock(scope)
-          ? scope.statements
-          : undefined;
-    for (const statement of statements ?? []) {
-      if (!ts.isModuleDeclaration(statement)) continue;
-      if (!ts.isIdentifier(statement.name) || statement.name.text !== 'module') continue;
-      if (statement.body !== undefined && ts.isModuleBlock(statement.body)) {
-        if (exportsRequire(statement.body)) return true;
-      }
-    }
-  }
-  return false;
+  const takesRequire = binding.name.elements.some(
+    (element) =>
+      ts.isIdentifier(element.name) &&
+      element.name.text === identifier.text &&
+      (element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
+        ? element.propertyName.text
+        : element.name.text) === 'require',
+  );
+  if (!takesRequire) return false;
+
+  const source = unwrapTransparent(binding.initializer);
+  return (
+    ts.isIdentifier(source) && source.text === 'module' && !isLocallyShadowed(source, 'module')
+  );
 }
 
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
@@ -825,6 +846,8 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
     // with a binding that is still a loader — the shadow check above correctly
     // says "not the CommonJS wrapper" and would otherwise end the enquiry.
     // `seen` guards against a cycle only invalid source could produce.
+    if (destructuredLoaderProperty(callee)) return true;
+
     if (!seen.has(callee)) {
       const aliased = aliasInitializer(callee);
       if (aliased !== undefined) {
@@ -838,7 +861,6 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
   if (member === undefined || member.name !== 'require') return false;
 
   if (ts.isIdentifier(member.object) && member.object.text === 'module') {
-    if (namespaceExportsRequire(member.object)) return false;
     return !isLocallyShadowed(member.object, 'module');
   }
   // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
@@ -1005,7 +1027,56 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
     found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
   }
 
+  // Markup is executable too. `{#await import('bun:test') then suite}` and an
+  // event handler calling `require(...)` are real loads that live in neither
+  // `<script>` block, so reading only those two missed a whole category rather
+  // than an edge of one.
+  for (const { start, end } of templateCallRanges(root.fragment)) {
+    const lineOffset = contents.slice(0, start).split('\n').length - 1;
+    found.push(...findBannedTestRunnerImports(contents.slice(start, end), lineOffset));
+  }
+
   return found.sort((first, second) => first.line - second.line);
+}
+
+/**
+ * Source ranges of the calls embedded in a component's markup.
+ *
+ * The template AST holds ESTree expression nodes with `start`/`end` offsets
+ * into the original source, so each call can be handed to the TypeScript
+ * detector as text and every existing rule applies to it unchanged.
+ *
+ * Only `import(...)` and `require(...)` are collected, rather than every
+ * expression. Those are the sole banned shapes reachable from markup — a
+ * static `import` declaration cannot appear there — and collecting them by
+ * *what they are* avoids enumerating Svelte's node kinds, which is the
+ * enumeration this module has repeatedly got wrong. Matching stops descending
+ * at the outermost call so a nested one is not reported twice.
+ */
+function templateCallRanges(fragment: unknown): { start: number; end: number }[] {
+  const ranges: { start: number; end: number }[] = [];
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const record = node as { type?: unknown; start?: unknown; end?: unknown };
+    if (
+      (record.type === 'ImportExpression' || record.type === 'CallExpression') &&
+      typeof record.start === 'number' &&
+      typeof record.end === 'number'
+    ) {
+      ranges.push({ start: record.start, end: record.end });
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'parent') continue;
+      visit(value);
+    }
+  };
+  visit(fragment);
+  return ranges;
 }
 
 /**
@@ -1015,6 +1086,12 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  */
 function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] {
   const found: BannedImport[] = [];
+  // Known residual: this reads `<script>` blocks only, so a banned call written
+  // in *markup* — `{#await import('bun:test')}` — is invisible when the parser
+  // has failed. The real path covers it; recovering template expressions from
+  // unparseable markup would need the grammar this fallback exists because it
+  // could not use. Named here rather than left to be rediscovered.
+  //
   // Deliberately does NOT try to skip commented-out markup.
   //
   // A previous round blanked `<!-- ... -->` spans here, so a commented-out
