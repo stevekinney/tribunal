@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
+  aliasInitializers,
   hasForeignShebang,
   innermostBinding,
   isExtensionlessPath,
@@ -60,11 +61,31 @@ const NODE_CHILD_PROCESS = new Set(['node:child_process', 'child_process']);
 const SYNC_SPAWNERS = new Set(['spawnSync', 'execFileSync', 'execSync']);
 
 /** Whether a call loads `node:child_process`, by either loader spelling. */
-function loadsChildProcess(node: ts.Node): boolean {
+function loadsChildProcess(candidate: ts.Node): boolean {
+  // `const cp = await import('node:child_process')` is the ordinary ESM form,
+  // and the awaited value is what the name holds.
+  const node = unwrapTransparent(candidate);
   if (!ts.isCallExpression(node)) return false;
   const dynamic = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-  const required = ts.isIdentifier(node.expression) && node.expression.text === 'require';
-  if (!dynamic && !required) return false;
+  // `const load = require; load('node:child_process')` reaches the same loader,
+  // so the callee is asked the same question the import matcher asks rather
+  // than compared against a spelling.
+  const callee = unwrapTransparent(node.expression);
+  const required =
+    ts.isIdentifier(callee) &&
+    callee.text === 'require' &&
+    innermostBinding(callee, callee.text, true) === undefined;
+  const aliased =
+    ts.isIdentifier(callee) &&
+    aliasInitializers(callee).some((initializer) => {
+      const source = unwrapTransparent(initializer);
+      return (
+        ts.isIdentifier(source) &&
+        source.text === 'require' &&
+        innermostBinding(source, source.text, true) === undefined
+      );
+    });
+  if (!dynamic && !required && !aliased) return false;
   const specifier = node.arguments[0];
   return specifier !== undefined && ts.isStringLiteralLike(specifier)
     ? NODE_CHILD_PROCESS.has(specifier.text)
@@ -480,7 +501,9 @@ export function inspectSpawnCalls(
         (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
           ? { receiver: callee.expression, name: forwarderName }
           : undefined;
-      const target = forwarder === undefined ? callee : forwarder.receiver;
+      // `spawnSync!(…)` and `(0, spawnSync)(…)` are the same call wearing a
+      // wrapper this module already knows how to remove.
+      const target = unwrapTransparent(forwarder === undefined ? callee : forwarder.receiver);
 
       if (isSpawner(target)) {
         calls.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
@@ -845,6 +868,30 @@ describe('every subprocess deadline is enforceable', () => {
     }
     // Bun's namespace carries `spawnSync` only; the exec family is Node's.
     expect(unboundedSpawnCalls("Bun.execSync('x', { timeout: 10 });\n", 'p.ts')).toEqual([]);
+  });
+
+  it('unwraps a transparent wrapper on the callee before asking provenance', () => {
+    expect(unbounded("spawnSync!('x', [], { timeout: 10 });")).toEqual([1]);
+    expect(unbounded("(0, spawnSync)('x', [], { timeout: 10 });")).toEqual([1]);
+  });
+
+  it('recognises an awaited or aliased child_process load', () => {
+    // `const cp = await import('node:child_process')` is the ordinary ESM
+    // form, and `const load = require; load('node:child_process')` reaches the
+    // same loader — the callee is asked the question rather than compared
+    // against a spelling.
+    expect(
+      unboundedSpawnCalls(
+        "const cp = await import('node:child_process');\ncp.spawnSync('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([2]);
+    expect(
+      unboundedSpawnCalls(
+        "const load = require;\nconst { spawnSync } = load('node:child_process');\nspawnSync('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([3]);
   });
 
   it('recognises a loader call used directly as the receiver', () => {

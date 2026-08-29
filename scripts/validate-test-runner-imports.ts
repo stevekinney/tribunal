@@ -157,6 +157,15 @@ function collectSourceEntries(): SourceEntry[] {
     // gitlink; the submodule's own repository is where its source lives.
     if (mode === '160000') continue;
 
+    // Mode 120000 is a symlink, whose *blob* is the target pathname while a
+    // later worktree read follows the link. A candidate-named symlink pointing
+    // at JavaScript in an ignored or external location therefore let this
+    // always-on gate reject a commit over imports that exist in no committed
+    // blob — and, as the sibling scanner found the hard way, a symlink to a
+    // directory throws `EISDIR` outright. The link's target is scanned on its
+    // own account when it is itself tracked.
+    if (mode === '120000') continue;
+
     // Stage 0 is the ordinary, unconflicted entry. During a merge conflict a
     // path instead has stages 1-3; taking the first seen would arbitrarily
     // pick one side, so a conflicted path falls through to a worktree read

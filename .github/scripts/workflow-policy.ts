@@ -556,10 +556,19 @@ export function shellCommandLines(run: string): string[] {
   // `true` fails. An explicit backslash and an implicit operator continuation
   // are the same thing to the shell and are joined the same way here.
   const CONTINUES = /(\|\||&&|\||&)$/;
+  // A here-document body is *data*: `cat <<'EOF'` … `EOF` passes those lines to
+  // the command's stdin rather than executing them, so a required gate written
+  // inside one was accepted while every real step could be deleted.
+  const HEREDOC = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
   const joined: string[] = [];
   let pending = '';
+  let heredoc: string | undefined;
   for (const raw of run.split('\n')) {
     const line = raw.trim();
+    if (heredoc !== undefined) {
+      if (line === heredoc) heredoc = undefined;
+      continue;
+    }
     if (line.endsWith('\\')) {
       pending += `${line.slice(0, -1).trim()} `;
       continue;
@@ -570,6 +579,8 @@ export function shellCommandLines(run: string): string[] {
     }
     joined.push(`${pending}${line}`.trim());
     pending = '';
+    const opened = HEREDOC.exec(line);
+    if (opened?.[2] !== undefined) heredoc = opened[2];
   }
   // A trailing backslash on the final line continues into nothing; keep what it
   // accumulated rather than dropping the command entirely.
@@ -627,7 +638,19 @@ export function runLinesExecute(lines: readonly string[], command: string): bool
  */
 export function stepCanFailTheJob(step: WorkflowStep): boolean {
   const continues = step['continue-on-error'];
-  return continues === undefined || continues === false || continues === 'false';
+  if (continues !== undefined && continues !== false && continues !== 'false') return false;
+  // A step with an `if:` may not run at all, so its command is wired only when
+  // the condition is present and definitely true. `if: ${{ false }}` skips the
+  // step while leaving the flattened command list unchanged — the same
+  // "keeps the text, loses the execution" shape as the shell cases, one level
+  // up in the workflow rather than inside the script.
+  const condition = step.if;
+  if (condition === undefined) return true;
+  const normalised = String(condition)
+    .trim()
+    .replace(/^\$\{\{|\}\}$/g, '')
+    .trim();
+  return normalised === 'true' || normalised === 'always()';
 }
 
 /**

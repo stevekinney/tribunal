@@ -2703,6 +2703,69 @@ describe('choices, templates, and member reads', () => {
     );
   });
 
+  it('selects a literal index, and takes every element only when it is dynamic', () => {
+    // A literal index is deterministic, not a control-flow question, so
+    // reading every element reported a value the code never has. The
+    // any-match rule belongs to the dynamic case — the same boundary this
+    // module draws between an override and a branch.
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const runners = ['bun:test', 'vitest']; await import(runners[1]);",
+      ),
+    ).toEqual([]);
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const runners = ['bun:test', 'vitest']; await import(runners[0]);",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "declare const i: number; const runners = ['bun:test', 'vitest']; await import(runners[i]);",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('treats Object.freeze as transparent only for the unshadowed global', () => {
+    // `function run(Object) { … }` binds an arbitrary object whose `freeze`
+    // returns whatever it likes, so the identity assumption reported a loader
+    // the code never produced.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "function run(Object) { Object.freeze(require)('bun:test'); }",
+      ),
+    ).toEqual([]);
+    expect(findBannedImportsForPath('a.cjs', "Object.freeze(require)('bun:test');")).toHaveLength(
+      1,
+    );
+  });
+
+  it('resolves a class expression bound to a name, and its computed keys', () => {
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const Holder = class { load = require };\nnew Holder().load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "class Holder { ['load'] = require }\nnew Holder().load('bun:test');",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('folds a quoted key wherever a property name is read', () => {
+    // The last two identifier-only reads: a binding pattern's property name,
+    // and the loader-destructuring check.
+    expect(
+      findBannedImportsForPath('a.cjs', "const { 'require': load } = module; load('bun:test');"),
+    ).toHaveLength(1);
+  });
+
   it('reads an element out of a list the file can see', () => {
     // A list is read by the any-match rule everywhere else here, so reading
     // one through an index and getting silence was an inconsistency rather
@@ -2847,6 +2910,19 @@ describe('svelte template block scope', () => {
     ).toHaveLength(1);
     expect(
       findBannedImportsInSvelte("{#each [['vitest']] as [runner]}{require(runner)}{/each}"),
+    ).toEqual([]);
+  });
+
+  it('collects only the names a snippet parameter binds, not property keys', () => {
+    // `{#snippet row({ require: load })}` binds `load` and merely *names*
+    // `require`, so walking every identifier recorded a shadow that does not
+    // exist and discarded a real banned call.
+    expect(
+      findBannedImportsInSvelte("{#snippet row({ require: load })}{require('bun:test')}{/snippet}"),
+    ).toHaveLength(1);
+    // The binding itself still shadows.
+    expect(
+      findBannedImportsInSvelte("{#snippet row({ load: require })}{require('bun:test')}{/snippet}"),
     ).toEqual([]);
   });
 

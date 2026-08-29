@@ -51,6 +51,31 @@ type SvelteRoot = {
  * module's own tests hold import syntax inside string literals, which a
  * parser correctly does not treat as imports, so **no file is excluded from
  * the scan at all.**
+
+
+ * ## What this is for, and where it stops
+ *
+ * The threat is habit, not adversarial obfuscation: a contributor writing
+ * `import { test } from 'bun:test'` out of muscle memory, or example code
+ * arriving with a future dependency. Every resolution route here exists
+ * because a real reviewer filed a real shape, and roughly a hundred have been
+ * closed — aliases, destructuring with defaults, deferred assignment, choice
+ * expressions, template folding, member reads through objects and classes,
+ * `require.main`, awaited `node:module` imports, Svelte template scopes, and
+ * both spellings of every one of them.
+ *
+ * That set is broad enough to catch anything a developer writes by accident,
+ * and it is not a sandbox. Someone determined to smuggle the import past it
+ * can: a value that arrives through a function's return, a getter, an
+ * `Object.assign`, `eval`, or a cross-module re-export is out of scope, and
+ * those boundaries are stated where each resolver declines them and pinned by
+ * tests asserting silence. Widening any of them is a decision to make on its
+ * own evidence — the lint rule is the primary control, and this is the
+ * backstop for the paths lint cannot reach.
+ *
+ * Stated because the alternative is treating each newly imagined shape as a
+ * defect. A guard whose scope is written down can be reasoned about; one whose
+ * scope is "whatever has been thought of so far" cannot.
  */
 
 /** A banned import found in one file. */
@@ -189,6 +214,12 @@ function isObjectPassthrough(callee: ts.Node): boolean {
     ts.isPropertyAccessExpression(callee) &&
     ts.isIdentifier(callee.expression) &&
     callee.expression.text === 'Object' &&
+    // `function run(Object) { Object.freeze(require)(…) }` binds an arbitrary
+    // object whose `freeze` returns whatever it likes, so treating the call as
+    // an identity operation reported a loader the code never produced. Only the
+    // unshadowed global is transparent — the same binding question every other
+    // receiver in this module goes through.
+    innermostBinding(callee.expression, callee.expression.text, true) === undefined &&
     (callee.name.text === 'freeze' || callee.name.text === 'seal')
   );
 }
@@ -354,18 +385,34 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
   // by that same any-match rule everywhere else here, and an index that does
   // not fold to a constant is not knowable at all.
   if (ts.isElementAccessExpression(node)) {
-    const arraysOf = (candidate: ts.Node, visited: ReadonlySet<ts.Node>): ts.Expression[] => {
+    const listsOf = (
+      candidate: ts.Node,
+      visited: ReadonlySet<ts.Node>,
+    ): ts.ArrayLiteralExpression[] => {
       const current = unwrapTransparent(candidate);
-      if (ts.isArrayLiteralExpression(current)) return [...alternativeOperands(current)];
+      if (ts.isArrayLiteralExpression(current)) return [current];
       if (ts.isIdentifier(current) && !visited.has(current)) {
         const next = new Set([...visited, current]);
-        return aliasInitializers(current).flatMap((initializer) => arraysOf(initializer, next));
+        return aliasInitializers(current).flatMap((initializer) => listsOf(initializer, next));
       }
       // `holder.list[0]` — the list is itself behind a member read, resolved by
       // the same function rather than by a second copy of it.
-      return memberValues(current, visited).flatMap((value) => arraysOf(value, visited));
+      return memberValues(current, visited).flatMap((value) => listsOf(value, visited));
     };
-    const elements = arraysOf(node.expression, guarded);
+    // A literal index selects one element and is not a control-flow question,
+    // so reading every element there reported a value the code never has:
+    // `import(runners[1])` where element one is permitted. The any-match rule
+    // belongs to a *dynamic* index, where which element is read is genuinely
+    // unknowable — the same boundary this file draws between an override and a
+    // branch.
+    const index = unwrapTransparent(node.argumentExpression);
+    const selected = ts.isNumericLiteral(index) ? Number(index.text) : undefined;
+    const elements = listsOf(node.expression, guarded).flatMap((list) => {
+      const operands = [...alternativeOperands(list)];
+      if (selected === undefined) return operands;
+      const element = operands[selected];
+      return element === undefined ? [] : [element];
+    });
     if (elements.length > 0) return elements;
   }
 
@@ -428,9 +475,19 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
   }
 
   /** The class a name is bound to, if it is bound to one. */
-  const classNamed = (identifier: ts.Identifier): ts.ClassDeclaration | undefined => {
+  const classNamed = (identifier: ts.Identifier): ts.ClassLikeDeclaration | undefined => {
     const bound = innermostBinding(identifier, identifier.text, true);
-    return bound !== undefined && ts.isClassDeclaration(bound) ? bound : undefined;
+    if (bound === undefined) return undefined;
+    if (ts.isClassDeclaration(bound)) return bound;
+    // `const Holder = class { load = require }` binds a *variable* whose
+    // initializer is the class. The declaration form was handled and the
+    // expression form was not, which is the same statement-versus-expression
+    // pair this module has been corrected for elsewhere.
+    if (ts.isVariableDeclaration(bound) && bound.initializer !== undefined) {
+      const initializer = unwrapTransparent(bound.initializer);
+      if (ts.isClassExpression(initializer)) return initializer;
+    }
+    return undefined;
   };
 
   const propertiesOfClass = (
@@ -440,7 +497,9 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
   ): ts.Expression[] => {
     const own = declaration.members.flatMap((element) => {
       if (!ts.isPropertyDeclaration(element)) return [];
-      if (!ts.isIdentifier(element.name) || element.name.text !== member.name) return [];
+      // Class property keys follow the same rules object property keys do; an
+      // identifier-only check discarded `['load'] = require`.
+      if (staticPropertyName(element.name) !== member.name) return [];
       // `C.load` reads a static property and `new C().load` an instance one.
       // Reading both for either spelling would report a class that declares
       // the name on the other side.
@@ -1104,7 +1163,7 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * establishing that needs the order analysis this validator refuses elsewhere.
  * Callers treat any match as a match, which fails toward reporting.
  */
-function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
+export function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const binding = innermostBinding(identifier, identifier.text, true);
   // A default gives a parameter its value exactly as an initializer gives one
   // to a declaration: `function f(load = require) { load('bun:test') }` loads.
@@ -1165,9 +1224,11 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     }
     if (ts.isObjectBindingPattern(pattern) && ts.isObjectLiteralExpression(source)) {
       for (const element of pattern.elements) {
+        // `const { 'require': load } = module` is valid and selects the real
+        // loader; an identifier-only read of the property name rejected it.
         const key =
-          element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
-            ? element.propertyName.text
+          element.propertyName !== undefined
+            ? staticPropertyName(element.propertyName)
             : ts.isIdentifier(element.name)
               ? element.name.text
               : undefined;
@@ -1565,12 +1626,15 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
   if (binding === undefined || !ts.isVariableDeclaration(binding)) return false;
   if (!ts.isObjectBindingPattern(binding.name) || binding.initializer === undefined) return false;
 
+  // `const { 'require': load } = module` selects the same property an
+  // identifier key does. Every read of a property name in this module goes
+  // through the one folder; this was the last that did not.
   const takesRequire = binding.name.elements.some(
     (element) =>
       ts.isIdentifier(element.name) &&
       element.name.text === identifier.text &&
-      (element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
-        ? element.propertyName.text
+      (element.propertyName !== undefined
+        ? staticPropertyName(element.propertyName)
         : element.name.text) === 'require',
   );
   if (!takesRequire) return false;
@@ -2182,8 +2246,18 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
         for (const item of node) walk(item);
         return;
       }
-      const record = node as { type?: unknown; name?: unknown };
-      if (record.type === 'Identifier' && typeof record.name === 'string') names.push(record.name);
+      const record = node as { type?: unknown; name?: unknown; key?: unknown; value?: unknown };
+      if (record.type === 'Identifier' && typeof record.name === 'string') {
+        names.push(record.name);
+        return;
+      }
+      // A property's *key* is not a binding: `{#snippet row({ require: load })}`
+      // binds `load` and merely names `require`, so walking every identifier
+      // recorded a shadow that does not exist and discarded a real banned call.
+      if (record.type === 'Property') {
+        walk(record.value);
+        return;
+      }
       for (const [key, value] of Object.entries(node)) {
         if (key === 'parent') continue;
         walk(value);

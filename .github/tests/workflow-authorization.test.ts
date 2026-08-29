@@ -112,6 +112,12 @@ describe('ciWiringViolations: the real ci.yml has every root security gate wired
     // Not knowable here, so not counted — guessing permissively is the failure
     // this rule prevents.
     expect(stepCanFailTheJob({ run, 'continue-on-error': '${{ github.event_name }}' })).toBe(false);
+    // A step that may not run at all is not wired either: `if: ${{ false }}`
+    // skips it while leaving the flattened command list unchanged.
+    expect(stepCanFailTheJob({ run, if: '${{ false }}' })).toBe(false);
+    expect(stepCanFailTheJob({ run, if: "github.event_name == 'push'" })).toBe(false);
+    expect(stepCanFailTheJob({ run, if: '${{ always() }}' })).toBe(true);
+    expect(stepCanFailTheJob({ run, if: 'true' })).toBe(true);
   });
 });
 
@@ -161,6 +167,15 @@ describe('the CI wiring rule rejects what the shell would neutralise', () => {
     expect(runLinesExecute(shellCommandLines(`true ||\n${COMMAND}`), COMMAND)).toBe(false);
     expect(runLinesExecute(shellCommandLines(`true &&\n${COMMAND}`), COMMAND)).toBe(false);
     expect(runLinesExecute(shellCommandLines(`true\n${COMMAND}`), COMMAND)).toBe(true);
+  });
+
+  test('ignores a here-document body, which bash passes as data', () => {
+    expect(runLinesExecute(shellCommandLines(`cat <<'EOF'\n${COMMAND}\nEOF`), COMMAND)).toBe(false);
+    expect(runLinesExecute(shellCommandLines(`cat <<EOF\n${COMMAND}\nEOF`), COMMAND)).toBe(false);
+    // The command after a closed here-document is executed normally.
+    expect(runLinesExecute(shellCommandLines(`cat <<'EOF'\nhello\nEOF\n${COMMAND}`), COMMAND)).toBe(
+      true,
+    );
   });
 
   test('rejects a command the shell only defines', () => {
