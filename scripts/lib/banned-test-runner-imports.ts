@@ -287,9 +287,28 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
   // The receiver can be the very member read being resolved — `const holder =
   // { load: holder.load }` is legal to parse — so the node guards itself.
   if (seen.has(node)) return [];
+  const guarded = new Set([...seen, node]);
+
+  // `const list = ['bun:test']; import(list[0])` reads out of a list this file
+  // can see. Every element counts rather than the indexed one: a list is read
+  // by that same any-match rule everywhere else here, and an index that does
+  // not fold to a constant is not knowable at all.
+  if (ts.isElementAccessExpression(node)) {
+    const arraysOf = (candidate: ts.Node, visited: ReadonlySet<ts.Node>): ts.Expression[] => {
+      const current = unwrapTransparent(candidate);
+      if (ts.isArrayLiteralExpression(current)) return [...alternativeOperands(current)];
+      if (ts.isIdentifier(current) && !visited.has(current)) {
+        const next = new Set([...visited, current]);
+        return aliasInitializers(current).flatMap((initializer) => arraysOf(initializer, next));
+      }
+      return [];
+    };
+    const elements = arraysOf(node.expression, guarded);
+    if (elements.length > 0) return elements;
+  }
+
   const member = staticMemberName(node);
   if (member === undefined) return [];
-  const guarded = new Set([...seen, node]);
 
   /**
    * The value a key actually has, spreads flattened in order and later
@@ -344,11 +363,18 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
     return memberValues(current, visited).flatMap((value) => objectsOf(value, visited));
   }
 
+  /** The class a name is bound to, if it is bound to one. */
+  const classNamed = (identifier: ts.Identifier): ts.ClassDeclaration | undefined => {
+    const bound = innermostBinding(identifier, identifier.text, true);
+    return bound !== undefined && ts.isClassDeclaration(bound) ? bound : undefined;
+  };
+
   const propertiesOfClass = (
     declaration: ts.ClassLikeDeclaration,
     wantStatic: boolean,
-  ): ts.Expression[] =>
-    declaration.members.flatMap((element) => {
+    visitedClasses: ReadonlySet<ts.Node> = new Set(),
+  ): ts.Expression[] => {
+    const own = declaration.members.flatMap((element) => {
       if (!ts.isPropertyDeclaration(element)) return [];
       if (!ts.isIdentifier(element.name) || element.name.text !== member.name) return [];
       // `C.load` reads a static property and `new C().load` an instance one.
@@ -360,11 +386,22 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
       if (isStatic !== wantStatic) return [];
       return element.initializer === undefined ? [] : [element.initializer];
     });
+    if (own.length > 0 || visitedClasses.has(declaration)) return own;
 
-  /** The class a name is bound to, if it is bound to one. */
-  const classNamed = (identifier: ts.Identifier): ts.ClassDeclaration | undefined => {
-    const bound = innermostBinding(identifier, identifier.text, true);
-    return bound !== undefined && ts.isClassDeclaration(bound) ? bound : undefined;
+    // A subclass inherits both halves: `class B extends A {}` gives `new B()`
+    // A's instance properties and `B` its static ones. Stopping at the class
+    // named in the call answers "not declared here" for a property that is
+    // declared, one link up.
+    const base = declaration.heritageClauses
+      ?.filter((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword)
+      .flatMap((clause) => clause.types)
+      .map((type) => unwrapTransparent(type.expression))
+      .find((expression) => ts.isIdentifier(expression));
+    if (base === undefined || !ts.isIdentifier(base)) return own;
+    const inherited = classNamed(base);
+    return inherited === undefined
+      ? own
+      : propertiesOfClass(inherited, wantStatic, new Set([...visitedClasses, declaration]));
   };
 
   const receiver = unwrapTransparent(member.object);

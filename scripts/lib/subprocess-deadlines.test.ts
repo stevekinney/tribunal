@@ -93,22 +93,28 @@ function resolveOptions(
   if (ts.isObjectLiteralExpression(node)) return node;
   if (ts.isIdentifier(node)) return declaredObjectLiteral(source, node.text);
   // `spawnSync('x', [], presets.strict)` — the options live behind a key on a
-  // declared object, which is as statically known as a name is.
-  if (ts.isPropertyAccessExpression(node)) {
-    const receiver = resolveOptions(source, node.expression);
-    const property = receiver?.properties.find(
-      (candidate) =>
-        candidate.name !== undefined &&
-        ts.isIdentifier(candidate.name) &&
-        candidate.name.text === node.name.text,
-    );
-    return property !== undefined &&
-      ts.isPropertyAssignment(property) &&
-      ts.isObjectLiteralExpression(property.initializer)
-      ? property.initializer
+  // declared object, which is as statically known as a name is. Both spellings
+  // of that read call the same function, so recognising only the dotted one is
+  // bypassed by writing the bracketed one.
+  const key = ts.isPropertyAccessExpression(node)
+    ? node.name.text
+    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+      ? node.argumentExpression.text
       : undefined;
-  }
-  return undefined;
+  if (key === undefined) return undefined;
+
+  const receiver = resolveOptions(source, (node as ts.PropertyAccessExpression).expression);
+  const property = receiver?.properties.find(
+    (candidate) =>
+      candidate.name !== undefined &&
+      ts.isIdentifier(candidate.name) &&
+      candidate.name.text === key,
+  );
+  return property !== undefined &&
+    ts.isPropertyAssignment(property) &&
+    ts.isObjectLiteralExpression(property.initializer)
+    ? property.initializer
+    : undefined;
 }
 
 /**
@@ -131,11 +137,10 @@ function flattenedProperties(
   const guarded = new Set([...seen, options]);
   for (const property of options.properties) {
     if (ts.isSpreadAssignment(property)) {
-      const spread = ts.isObjectLiteralExpression(property.expression)
-        ? property.expression
-        : ts.isIdentifier(property.expression)
-          ? declaredObjectLiteral(source, property.expression.text)
-          : undefined;
+      // Resolved by the same reader the options argument goes through, so a
+      // spread of `presets.strict` is followed exactly as passing it directly
+      // is. Two readers for one question is how the gap above happened.
+      const spread = resolveOptions(source, property.expression);
       if (spread === undefined) continue;
       for (const [name, value] of flattenedProperties(source, spread, guarded)) {
         properties.set(name, value);
@@ -488,6 +493,24 @@ describe('every subprocess deadline is enforceable', () => {
       "spawnSync('x', [], presets.strict);",
     ];
     expect(unboundedSpawnCalls(source.join('\n'), 'p.ts')).toEqual([2]);
+  });
+
+  it('resolves options behind a bracketed key, and a spread of one', () => {
+    // Both spellings of a member read call the same function, so recognising
+    // only the dotted one is bypassed by writing the bracketed one. And a
+    // spread now goes through the same reader the options argument does —
+    // two readers for one question is what left the gap it closes.
+    const bracketed = [
+      'const presets = { strict: { timeout: 10 } };',
+      "spawnSync('x', [], presets['strict']);",
+    ];
+    expect(unboundedSpawnCalls(bracketed.join('\n'), 'p.ts')).toEqual([2]);
+
+    const spreadOfMember = [
+      'const presets = { strict: { timeout: 10 } };',
+      "spawnSync('x', [], { ...presets.strict });",
+    ];
+    expect(unboundedSpawnCalls(spreadOfMember.join('\n'), 'p.ts')).toEqual([2]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

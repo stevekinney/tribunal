@@ -2487,6 +2487,41 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('follows a class up its extends chain, on both sides', () => {
+    // Stopping at the class named in the call answers "not declared here" for
+    // a property that is declared, one link up.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "class A { load = require; }\nclass B extends A {}\nnew B().load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "class A { static load = require; }\nclass B extends A {}\nB.load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "class A { load = other; }\nclass B extends A {}\nnew B().load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
+  it('reads an element out of a list the file can see', () => {
+    // A list is read by the any-match rule everywhere else here, so reading
+    // one through an index and getting silence was an inconsistency rather
+    // than a decision: `import(list)` already reported.
+    expect(
+      findBannedImportsForPath('a.ts', "const list = ['bun:test']; await import(list[0]);"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.ts', "const list = ['vitest']; await import(list[0]);"),
+    ).toEqual([]);
+  });
+
   it('reads a class property initializer through a construction', () => {
     expect(
       findBannedImportsForPath('a.cjs', "class C { load = require; }\nnew C().load('bun:test');"),
