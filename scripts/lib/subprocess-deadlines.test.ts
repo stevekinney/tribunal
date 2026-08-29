@@ -67,6 +67,22 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
         property.name.text === name,
     );
 
+  // Local names bound to the `spawnSync` import, however it was spelled.
+  const aliases = new Set<string>();
+  const collectAliases = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const named = node.importClause?.namedBindings;
+      if (named !== undefined && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          const imported = element.propertyName?.text ?? element.name.text;
+          if (imported === 'spawnSync') aliases.add(element.name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, collectAliases);
+  };
+  collectAliases(parsed);
+
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
@@ -75,7 +91,12 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
         : ts.isPropertyAccessExpression(callee)
           ? callee.name.text
           : undefined;
-      if (name === 'spawnSync') {
+      // The local name may be an alias: `import { spawnSync as spawn }`. The
+      // file is selected because its import mentions `spawnSync`, so checking
+      // only the callee's text found no calls at all and reported the file
+      // clean — the guard was silent about exactly what it selected the file
+      // for.
+      if (name !== undefined && (name === 'spawnSync' || aliases.has(name))) {
         // The options may be held in a variable: `const options = { timeout: 10 };
         // spawnSync('x', [], options)`. Looking only for an inline literal
         // treated that call as compliant because it found nothing to inspect.
@@ -144,6 +165,14 @@ describe('every subprocess deadline is enforceable', () => {
 
   it('accepts a call that sets no deadline at all', () => {
     expect(unboundedSpawnCalls("spawnSync('a', []);\n", 'probe.ts')).toEqual([]);
+  });
+
+  it('follows an aliased spawnSync import', () => {
+    const source = [
+      "import { spawnSync as spawn } from 'node:child_process';",
+      "spawn('x', [], { timeout: 10 });",
+    ].join('\n');
+    expect(unboundedSpawnCalls(source, 'p.ts')).toEqual([2]);
   });
 
   it('resolves options held in a variable', () => {

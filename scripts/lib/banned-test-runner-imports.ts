@@ -126,6 +126,17 @@ function constantSpecifier(
   const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
 
+  // An array names every module it holds. Reading through it is what lets an
+  // each block bind from a named list, and it follows the same any-match rule
+  // as the alias resolution below.
+  if (ts.isArrayLiteralExpression(current)) {
+    const resolved = current.elements
+      .map((element) => constantSpecifier(element, seen))
+      .filter((value): value is string => value !== undefined);
+    if (resolved.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
+    return resolved[0];
+  }
+
   // `const runner = 'bun:test'; import(runner)` names the module as statically
   // as writing the literal does. Resolved through the same alias machinery the
   // loader uses rather than a second copy of it, so a chain composes with the
@@ -224,6 +235,25 @@ function enclosingFunctionOf(from: ts.Node): ts.Node | undefined {
 function isEsModuleFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   return lower.endsWith('.mjs') || lower.endsWith('.mts');
+}
+
+/**
+ * The statement list a scope owns, whatever kind of scope it is.
+ *
+ * Shared by the shadow walk and the alias collector. They enumerated scopes
+ * separately and drifted: `ModuleBlock` and `CaseBlock` were added to one and
+ * not the other, so a binding inside a `namespace` resolved for shadowing and
+ * not for aliasing.
+ */
+function scopeStatements(scope: ts.Node): readonly ts.Statement[] | undefined {
+  if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope))
+    return scope.statements;
+  if (ts.isCaseBlock(scope)) return scope.clauses.flatMap((clause) => [...clause.statements]);
+  // A statement written directly in a clause has the *clause* as its parent,
+  // not the block. The shadow walk reaches the block by climbing; the alias
+  // collector arrives from a statement and would stop one level short.
+  if (ts.isCaseClause(scope) || ts.isDefaultClause(scope)) return scopeStatements(scope.parent);
+  return undefined;
 }
 
 function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.Node | undefined {
@@ -487,29 +517,23 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
     // clause too. An unbraced clause therefore has no `Block` for the walk to
     // find, which is why a braced `case 'x': { ... }` already worked and a bare
     // one did not.
-    const statements = ts.isSourceFile(scope)
-      ? scope.statements
-      : ts.isBlock(scope)
-        ? scope.statements
-        : ts.isModuleBlock(scope)
-          ? scope.statements
-          : ts.isCaseBlock(scope)
-            ? // Clauses share one block scope, so a `const` in any clause binds
-              // for the whole switch. A `var` does not get the same treatment:
-              // control flow enters at one clause, so an initializer in another
-              // one need never have run. Restricting `var` to its own clause is
-              // sound because there is no `goto` — fall-through enters a clause
-              // at its top, so statements within one clause do run in order.
-              scope.clauses.flatMap((clause) =>
-                clause === callClause
-                  ? [...clause.statements]
-                  : clause.statements.filter(
-                      (statement) =>
-                        !ts.isVariableStatement(statement) ||
-                        (statement.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0,
-                    ),
-              )
-            : functionBodyOf(scope)?.statements;
+    // Only the `CaseBlock` reading differs from the shared enumeration: clauses
+    // share one block scope, so a `const` in any clause binds for the whole
+    // switch — but a `var` does not, because control flow enters at one clause
+    // and an initializer in another need never have run. Restricting `var` to
+    // its own clause is sound because there is no `goto`; fall-through enters a
+    // clause at its top, so statements within one clause run in order.
+    const statements = ts.isCaseBlock(scope)
+      ? scope.clauses.flatMap((clause) =>
+          clause === callClause
+            ? [...clause.statements]
+            : clause.statements.filter(
+                (statement) =>
+                  !ts.isVariableStatement(statement) ||
+                  (statement.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0,
+              ),
+        )
+      : (scopeStatements(scope) ?? functionBodyOf(scope)?.statements);
 
     if (ts.isFunctionLike(scope)) {
       for (const parameter of scope.parameters) if (bindsName(parameter)) found = parameter;
@@ -628,9 +652,48 @@ function isLocallyShadowed(node: ts.Node, name: string): boolean {
  * is not statically knowable, and guessing would report calls that load
  * something else.
  */
+/**
+ * The first argument a loader was bound with, if it reached the call through
+ * `.bind`.
+ *
+ * Partial application moves the specifier off the call site, so reading the
+ * call's own first argument answers the wrong question in both directions —
+ * missing a bound banned specifier, and reporting a bound innocuous one.
+ */
+function boundFirstArgument(
+  callee: ts.Node,
+  seen: ReadonlySet<ts.Node> = new Set(),
+): ts.Node | undefined {
+  const fromBindCall = (candidate: ts.Node): ts.Node | undefined => {
+    if (!ts.isCallExpression(candidate)) return undefined;
+    const member = staticMemberName(unwrapTransparent(candidate.expression));
+    if (member?.name !== 'bind') return undefined;
+    return candidate.arguments[1];
+  };
+
+  const direct = fromBindCall(callee);
+  if (direct !== undefined) return direct;
+
+  if (ts.isIdentifier(callee) && !seen.has(callee)) {
+    const next = new Set([...seen, callee]);
+    for (const initializer of aliasInitializers(callee)) {
+      const found = boundFirstArgument(unwrapTransparent(initializer), next);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
 function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
   const callee = unwrapTransparent(node.expression);
-  if (isModuleLoader(callee)) return node.arguments[0];
+  if (isModuleLoader(callee)) {
+    // `.bind` can pre-apply the specifier, so the effective first argument may
+    // not be at the call site at all: `require.bind(null, 'vitest')('bun:test')`
+    // loads *vitest*, and `module.require.bind(module, 'bun:test')()` loads the
+    // runner from a call with no arguments.
+    const preApplied = boundFirstArgument(callee);
+    return preApplied ?? node.arguments[0];
+  }
 
   const invoker = staticMemberName(callee);
   if (invoker === undefined) return undefined;
@@ -784,10 +847,7 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const list = binding.parent;
   const statement = list.parent;
   const siblings = ts.isVariableStatement(statement) ? statement.parent : undefined;
-  const statements =
-    siblings !== undefined && (ts.isSourceFile(siblings) || ts.isBlock(siblings))
-      ? siblings.statements
-      : undefined;
+  const statements = siblings === undefined ? undefined : scopeStatements(siblings);
   if (statements === undefined)
     return binding.initializer === undefined ? [] : [binding.initializer];
 
@@ -815,13 +875,19 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     // A branch for it was written, and the coverage gate showed it unreachable.
     if (!assigns) return;
 
+    // One resolver for every target form. Name matching is not enough — the
+    // search covers nested functions, so `function wire(load) { ... }` assigns
+    // that function's own parameter — and the identifier, array, and object
+    // forms each need the same check. They were written separately and each was
+    // corrected in a different round.
+    const writesThisBinding = (candidate: ts.Node): boolean =>
+      ts.isIdentifier(candidate) &&
+      candidate.text === identifier.text &&
+      innermostBinding(candidate, identifier.text, true) === binding;
+
     const target = unwrapTransparent(expression.left);
-    if (ts.isIdentifier(target) && target.text === identifier.text) {
-      // The name matching is not enough: the search covers nested functions, so
-      // `function wire(load) { load = require; }` assigns that function's
-      // *parameter*, not the outer binding. Resolving the target confirms which
-      // binding it writes to.
-      if (innermostBinding(target, identifier.text, true) !== binding) return;
+    if (ts.isIdentifier(target)) {
+      if (!writesThisBinding(target)) return;
       initializers.push(expression.right);
     } else if (ts.isArrayLiteralExpression(target)) {
       // `[load] = [require]` — the assignment form of array destructuring. The
@@ -831,11 +897,7 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
       if (ts.isArrayLiteralExpression(source)) {
         for (const [index, element] of target.elements.entries()) {
           const bound = unwrapTransparent(element);
-          if (!ts.isIdentifier(bound) || bound.text !== identifier.text) continue;
-          // Same resolution the identifier form needs: the search reaches into
-          // nested functions, so a parameter of the same name is not this
-          // binding.
-          if (innermostBinding(bound, identifier.text, true) !== binding) continue;
+          if (!writesThisBinding(bound)) continue;
           const value = source.elements[index];
           if (value !== undefined) initializers.push(value);
         }
@@ -848,12 +910,12 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
           property.name !== undefined && ts.isIdentifier(property.name)
             ? property.name.text
             : undefined;
-        const bound =
-          ts.isShorthandPropertyAssignment(property) ||
-          (ts.isPropertyAssignment(property) && ts.isIdentifier(property.initializer)
-            ? property.initializer.text === identifier.text
-            : false);
-        if (key === undefined || !bound) continue;
+        const written = ts.isShorthandPropertyAssignment(property)
+          ? property.name
+          : ts.isPropertyAssignment(property)
+            ? unwrapTransparent(property.initializer)
+            : undefined;
+        if (key === undefined || written === undefined || !writesThisBinding(written)) continue;
         const source = unwrapTransparent(expression.right);
         if (!ts.isObjectLiteralExpression(source)) continue;
         const value = source.properties.find(
@@ -1143,6 +1205,23 @@ function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   // `createRequire(import.meta.url)('bun:test')` calls the loader that call
   // returns, so the callee here is itself a call rather than a name.
+  // An array holds a loader if any element is one, matching how
+  // `constantSpecifier` reads a list of specifiers. This is what lets an each
+  // block bind the loader itself: `{#each [require] as load}{load('bun:test')}`.
+  if (ts.isArrayLiteralExpression(callee)) {
+    return callee.elements.some((element) => isModuleLoader(unwrapTransparent(element), seen));
+  }
+
+  // `useBun ? require : custom` is a loader down one branch, and which branch
+  // runs is the control-flow question declined everywhere else — so either
+  // being a loader is enough.
+  if (ts.isConditionalExpression(callee)) {
+    return (
+      isModuleLoader(unwrapTransparent(callee.whenTrue), seen) ||
+      isModuleLoader(unwrapTransparent(callee.whenFalse), seen)
+    );
+  }
+
   if (ts.isCallExpression(callee)) {
     const producer = unwrapTransparent(callee.expression);
     if (isCreateRequire(producer)) return true;
@@ -1426,19 +1505,40 @@ function referencesName(
   context: { start?: unknown; end?: unknown } | undefined,
 ): boolean {
   if (context === undefined) return false;
-  let usesName = false;
-  let hasCall = false;
-  const wanted = context;
+  const wanted = (context as { name?: unknown }).name;
+
+  const mentions = (candidate: unknown): boolean => {
+    if (candidate === null || typeof candidate !== 'object') return false;
+    // No array case: `Object.entries` yields an array's indices, so the generic
+    // recursion below already walks one. An explicit branch was written anyway
+    // and the coverage gate showed it unreached — removing it leaves the suite
+    // green, which is what makes it redundant rather than merely untested.
+    const record = candidate as { type?: unknown; name?: unknown };
+    if (record.type === 'Identifier' && record.name === wanted) return true;
+    return Object.entries(candidate).some(([key, value]) => key !== 'parent' && mentions(value));
+  };
+
+  // The *call* has to use the name. Asking whether the block contains a call
+  // and separately whether it mentions the name let an unrelated `{foo(runner)}`
+  // satisfy both halves and export the binding to the top level.
+  let found = false;
   const visit = (candidate: unknown): void => {
-    if (candidate === null || typeof candidate !== 'object') return;
+    if (found || candidate === null || typeof candidate !== 'object') return;
     if (Array.isArray(candidate)) {
       for (const item of candidate) visit(item);
       return;
     }
-    const record = candidate as { type?: unknown; name?: unknown };
-    if (record.type === 'ImportExpression' || record.type === 'CallExpression') hasCall = true;
-    if (record.type === 'Identifier' && record.name === (wanted as { name?: unknown }).name) {
-      usesName = true;
+    const record = candidate as { type?: unknown; callee?: unknown; source?: unknown };
+    // The name has to be used *as* a loader or *as* an import's specifier.
+    // Asking only whether some call mentions it let an unrelated `{foo(runner)}`
+    // activate the binding — the name was an argument to something else.
+    if (record.type === 'ImportExpression' && mentions(record.source)) {
+      found = true;
+      return;
+    }
+    if (record.type === 'CallExpression' && mentions(record.callee)) {
+      found = true;
+      return;
     }
     for (const [key, value] of Object.entries(candidate)) {
       if (key === 'parent') continue;
@@ -1446,7 +1546,7 @@ function referencesName(
     }
   };
   visit(node);
-  return hasCall && usesName;
+  return found;
 }
 
 function templateEachBindings(fragment: unknown, contents: string): string[] {
@@ -1472,12 +1572,17 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
       record.context?.type === 'Identifier' &&
       typeof record.context.start === 'number' &&
       typeof record.context.end === 'number' &&
-      record.expression?.type === 'ArrayExpression'
+      record.expression !== undefined
     ) {
       const name = contents.slice(record.context.start, record.context.end);
-      for (const element of record.expression.elements ?? []) {
-        if (typeof element?.start !== 'number' || typeof element.end !== 'number') continue;
-        declarations.push(`const ${name} = ${contents.slice(element.start, element.end)};`);
+      const iterable = record.expression as { start?: unknown; end?: unknown };
+      if (typeof iterable.start === 'number' && typeof iterable.end === 'number') {
+        // The iterable is emitted whole rather than element by element, so a
+        // *named* one works too: `const runners = ['bun:test']` in the instance
+        // script is reached by following the alias, which is machinery that
+        // already exists. Element extraction only handled a literal written in
+        // the markup.
+        declarations.push(`const ${name} = ${contents.slice(iterable.start, iterable.end)};`);
       }
     }
     for (const [key, value] of Object.entries(node)) {

@@ -1255,6 +1255,92 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('round thirty-five: shapes the shared resolvers now cover', () => {
+  it('a conditional initializer is a loader down one branch', () => {
+    expect(
+      findBannedTestRunnerImports("const load = useBun ? require : custom;\nload('bun:test');\n"),
+    ).toHaveLength(1);
+  });
+
+  it('a conditional with no loader branch stays silent', () => {
+    expect(
+      findBannedTestRunnerImports("const load = useBun ? other : custom;\nload('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('a deferred alias inside a namespace resolves', () => {
+    // The shadow walk knew about `ModuleBlock`; the alias collector did not.
+    // Both share one scope enumeration now.
+    expect(
+      findBannedTestRunnerImports("namespace N { let load; load = require; load('bun:test'); }\n"),
+    ).toHaveLength(1);
+  });
+
+  it('an object-destructuring assignment to a shadowing parameter is ignored', () => {
+    // Third target form to need the same resolution; all three share it now.
+    expect(
+      findBannedTestRunnerImports(
+        "let load = custom;\nfunction wire(load) { ({ load } = { load: require }); }\nload('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('reads a specifier bound ahead of the call', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const load = module.require.bind(module, 'bun:test');\nload();\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report when the bound specifier names another module', () => {
+    // The same omission failed both ways: the call's own first argument is not
+    // the effective one.
+    expect(findBannedTestRunnerImports("require.bind(null, 'vitest')('bun:test');\n")).toHaveLength(
+      0,
+    );
+  });
+
+  it('resolves an each block over a named list', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/Q.svelte',
+        '<script lang="ts">const runners = [\'bun:test\'];</script>\n{#each runners as runner}{#await import(runner) then s}<p>a</p>{/await}{/each}\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('resolves a deferred alias declared in a switch clause', () => {
+    // Clauses share one block scope, and the alias collector reads it through
+    // the same enumeration the shadow walk uses.
+    expect(
+      findBannedTestRunnerImports(
+        "switch (x) { case 0: let load; load = require; load('bun:test'); }\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('activates an each binding used as the loader itself', () => {
+    // The other activation position: the name is the callee rather than an
+    // import's specifier.
+    expect(
+      findBannedImportsForPath(
+        'src/S.svelte',
+        '<script lang="ts">let x = 1;</script>\n{#each [require] as load}{load(\'bun:test\')}{/each}\n',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not activate an each binding for a call that merely mentions it', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/R.svelte',
+        "<script lang=\"ts\">const runner = 'vitest';</script>\n{#each ['bun:test'] as runner}{foo(runner)}{/each}\n{#await import(runner) then s}<p>a</p>{/await}\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('a node:module namespace can be held in an alias', () => {
   it('follows an alias of the namespace import', () => {
     expect(
