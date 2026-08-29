@@ -1026,7 +1026,21 @@ function isCreateRequire(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()
   // receiver is the call itself.
   const receiver = unwrapTransparent(member.object);
   if (ts.isCallExpression(receiver)) return isNodeModuleRequireCall(receiver);
-  return ts.isIdentifier(receiver) && isNodeModuleImport(receiver, '*');
+  // Followed through aliases, exactly as the CommonJS `module` receiver is.
+  // These two paths reach the same kind of object and had drifted apart: one
+  // resolved a chain, the other compared against the import directly.
+  return ts.isIdentifier(receiver) && resolvesToNodeModule(receiver, new Set());
+}
+
+/** Whether an identifier resolves, through any number of aliases, to `node:module`. */
+function resolvesToNodeModule(identifier: ts.Identifier, seen: ReadonlySet<ts.Node>): boolean {
+  if (seen.has(identifier)) return false;
+  if (isNodeModuleImport(identifier, '*')) return true;
+  const next = new Set([...seen, identifier]);
+  return aliasInitializers(identifier).some((initializer) => {
+    const source = unwrapTransparent(initializer);
+    return ts.isIdentifier(source) && resolvesToNodeModule(source, next);
+  });
 }
 
 /**

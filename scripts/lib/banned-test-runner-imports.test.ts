@@ -1255,6 +1255,24 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('a node:module namespace can be held in an alias', () => {
+  it('follows an alias of the namespace import', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import * as Module from 'node:module';\nconst M = Module;\nM.createRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not follow an alias of an unrelated namespace', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import * as Helpers from './helpers';\nconst M = Helpers;\nM.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('a Svelte component has two scopes, and markup binds names', () => {
   it('a module-script binding is not visible to a markup call', () => {
     expect(
