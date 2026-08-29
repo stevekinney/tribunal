@@ -1812,7 +1812,7 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  */
 function referencesName(
   node: unknown,
-  context: { start?: unknown; end?: unknown } | undefined,
+  context: { start?: unknown; end?: unknown; name?: unknown } | undefined,
 ): boolean {
   if (context === undefined) return false;
   const wanted = (context as { name?: unknown }).name;
@@ -1920,10 +1920,31 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
  */
 function templateCallRanges(fragment: unknown): { start: number; end: number }[] {
   const ranges: { start: number; end: number }[] = [];
-  const visit = (node: unknown, block: unknown): void => {
+
+  /** Every name a snippet's parameter list binds, destructuring included. */
+  const parameterNames = (parameters: unknown): string[] => {
+    const names: string[] = [];
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item);
+        return;
+      }
+      const record = node as { type?: unknown; name?: unknown };
+      if (record.type === 'Identifier' && typeof record.name === 'string') names.push(record.name);
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'parent') continue;
+        walk(value);
+      }
+    };
+    walk(parameters);
+    return names;
+  };
+
+  const visit = (node: unknown, block: unknown, bound: readonly string[]): void => {
     if (node === null || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const item of node) visit(item, block);
+      for (const item of node) visit(item, block, bound);
       return;
     }
     const record = node as {
@@ -1974,6 +1995,15 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
       typeof record.start === 'number' &&
       typeof record.end === 'number'
     ) {
+      // A snippet's parameters bind names for its body, and they live on the
+      // Svelte block rather than on a JavaScript function — so masking the
+      // markup around a call dropped them, and `{#snippet row(require)}` then
+      // read as the unshadowed CommonJS loader. Retaining an arrow function
+      // whole solves the same problem for `onclick={(require) => …}`; a snippet
+      // has no node to retain, so a call bound by one of its parameters is left
+      // out instead. That is the same answer, reached from the other side: the
+      // call invokes the parameter, so there is nothing here to report.
+      if (bound.some((name) => referencesName(node, { name }))) return;
       ranges.push({ start: record.start, end: record.end });
       return;
     }
@@ -1982,12 +2012,16 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
     // listing them avoids the node-kind enumeration this module has repeatedly
     // got wrong, and a block kind added later is covered by the same rule.
     const nested = typeof record.type === 'string' && record.type.endsWith('Block') ? node : block;
+    const inner =
+      record.type === 'SnippetBlock'
+        ? [...bound, ...parameterNames((node as { parameters?: unknown }).parameters)]
+        : bound;
     for (const [key, value] of Object.entries(node)) {
       if (key === 'parent') continue;
-      visit(value, nested);
+      visit(value, nested, inner);
     }
   };
-  visit(fragment, undefined);
+  visit(fragment, undefined, []);
   return ranges;
 }
 

@@ -2692,6 +2692,26 @@ describe('svelte template block scope', () => {
     ).toEqual([]);
   });
 
+  it('binds a snippet parameter for calls inside the snippet', () => {
+    // A snippet's parameters live on the Svelte block rather than on a
+    // JavaScript function, so masking the markup around a call dropped them
+    // and `{#snippet row(require)}` read as the unshadowed CommonJS loader.
+    // Retaining an arrow function whole solves the same problem for
+    // `onclick={(require) => …}`; a snippet has no node to retain, so a call
+    // bound by one of its parameters is left out instead.
+    expect(
+      findBannedImportsInSvelte("{#snippet row(require)}{require('bun:test')}{/snippet}"),
+    ).toEqual([]);
+    // Only calls that actually invoke the parameter. A literal banned import
+    // inside a snippet is still banned.
+    expect(
+      findBannedImportsInSvelte("{#snippet row(x)}{import('bun:test')}{/snippet}"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsInSvelte("{#snippet row(require)}{import('bun:test')}{/snippet}"),
+    ).toHaveLength(1);
+  });
+
   it('still reports a call inside the block that reads it', () => {
     expect(
       findBannedImportsInSvelte(component('  {#await import(runner)}<p/>{/await}', '')),
