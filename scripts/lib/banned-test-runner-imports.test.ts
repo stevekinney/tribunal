@@ -1468,6 +1468,30 @@ describe('an alias receives its value from more than declarations', () => {
   });
 });
 
+describe('an inner binding is not masked by an outer one', () => {
+  it('reports a banned template-local value even when the script declares a safe one first', () => {
+    // The composed program flattens Svelte block scope, and the resolver does
+    // not model which binding a given call sees. Returning the first
+    // resolution therefore let the instance script's innocuous value mask the
+    // template-local banned one for a call inside that same block.
+    expect(
+      findBannedImportsForPath(
+        'src/H.svelte',
+        "<script lang=\"ts\">\n  const runner = 'vitest';\n</script>\n{#if true}{@const runner = 'bun:test'}{#await import(runner) then s}<p>a</p>{/await}{/if}\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('stays silent when every binding of the name is safe', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/I.svelte',
+        "<script lang=\"ts\">\n  const runner = 'vitest';\n</script>\n{#if true}{@const runner = 'vitest'}<p>a</p>{/if}\n{#await import(runner) then s}<p>b</p>{/await}\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('a for header can assign instead of declare', () => {
   it('follows an assignment in a classic-for header', () => {
     // Combines two routes already handled separately: a loop initializer that

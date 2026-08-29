@@ -132,10 +132,20 @@ function constantSpecifier(
   // fold below: `const a = 'bun:'; const b = a + 'test'; import(b)`.
   if (ts.isIdentifier(current) && !seen.has(current)) {
     const next = new Set([...seen, current]);
-    for (const initializer of aliasInitializers(current)) {
-      const resolved = constantSpecifier(initializer, next);
-      if (resolved !== undefined) return resolved;
-    }
+    const resolutions = aliasInitializers(current)
+      .map((initializer) => constantSpecifier(initializer, next))
+      .filter((resolved): resolved is string => resolved !== undefined);
+    // Any match is a match, rather than the first resolution winning.
+    //
+    // A name can hold different values in different scopes, and the collector
+    // deliberately does not model which binding a given call sees. Returning
+    // the first resolution therefore let an outer, innocuous value mask an
+    // inner banned one — a Svelte component declaring `const runner = 'vitest'`
+    // in its instance script hid `{@const runner = 'bun:test'}` from a call
+    // inside that same block. Preferring the banned value is the same
+    // fail-toward-reporting rule the loader resolution already uses.
+    if (resolutions.includes(BANNED_SPECIFIER)) return BANNED_SPECIFIER;
+    return resolutions[0];
   }
 
   // `import('bun:' + 'test')` names the same module as `import('bun:test')`.
