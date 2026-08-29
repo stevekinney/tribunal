@@ -1648,6 +1648,18 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
   if (!takesRequire) return false;
 
   const source = unwrapTransparent(binding.initializer);
+  // `import.meta` carries `require` under Bun, and `import.meta.require(…)` is
+  // already recognised as a loader — so destructuring the same property off it
+  // reaches the same function. The member-access path accepted it and this one
+  // did not, which is the same asymmetry between reading a property and
+  // destructuring it that this module keeps being corrected for.
+  if (
+    ts.isMetaProperty(source) &&
+    source.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    source.name.text === 'meta'
+  ) {
+    return true;
+  }
   // Resolved through the alias chain, as the member-access path already is:
   // `const commonjsModule = module; const { require: load } = commonjsModule`.
   return ts.isIdentifier(source) && resolvesToModuleObject(source, new Set());

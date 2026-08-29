@@ -598,12 +598,18 @@ export function stepWiresCommand(step: WorkflowStep, command: string): boolean {
   if (step.shell !== undefined) return false;
   if (!executesAndCanFail(step)) return false;
 
-  const run = (step.run ?? '').trim();
-  if (run === command) return true;
-  if (!run.startsWith(`${command} `)) return false;
-  // Arguments are allowed; anything that could redirect, chain, background, or
-  // continue the command is not.
-  return !/[|&;<>()`$\\\n]/.test(run.slice(command.length));
+  // The `run` must *be* the command, with nothing after it.
+  //
+  // Plain arguments were allowed until `bun run test:workflow-authorization
+  // --help` turned up: Bun forwards suffix arguments to the script, so Vitest
+  // printed usage and exited zero while the audit reported the gate as wired.
+  // There is no useful line between an argument that changes what a command
+  // does and one that does not — `--help`, `--reporter`, `--run`, a path
+  // filter — so the rule stops trying to draw one. A gate that needs arguments
+  // gets them in its package script, where they are visible and reviewable,
+  // and all four of this repository's real gate steps are already bare
+  // commands.
+  return (step.run ?? '').trim() === command;
 }
 
 /**

@@ -115,10 +115,20 @@ describe('ciWiringViolations: the real ci.yml has every root security gate wired
 describe('the CI wiring rule certifies only a bare, unconditional command step', () => {
   const COMMAND = 'bun run validate:test-runner-imports';
 
-  test('accepts the command alone, or with plain arguments', () => {
+  test('accepts the command alone, and nothing after it', () => {
     expect(stepWiresCommand({ run: COMMAND }, COMMAND)).toBe(true);
     expect(stepWiresCommand({ run: `  ${COMMAND}  ` }, COMMAND)).toBe(true);
-    expect(stepWiresCommand({ run: `${COMMAND} --strict` }, COMMAND)).toBe(true);
+
+    // This previously asserted that plain arguments were accepted, on the
+    // reasoning that a suffix without shell metacharacters cannot change the
+    // exit status. That reasoning was wrong: `bun run test:workflow-authorization
+    // --help` forwards `--help` to the script, so Vitest prints usage and exits
+    // zero while the audit reports the gate as wired. There is no useful line
+    // between an argument that changes what a command does and one that does
+    // not, so the rule stops trying to draw one — a gate needing arguments puts
+    // them in its package script, where they are visible and reviewable.
+    expect(stepWiresCommand({ run: `${COMMAND} --strict` }, COMMAND)).toBe(false);
+    expect(stepWiresCommand({ run: `${COMMAND} --help` }, COMMAND)).toBe(false);
   });
 
   test('rejects every shape that keeps the text and loses the execution', () => {

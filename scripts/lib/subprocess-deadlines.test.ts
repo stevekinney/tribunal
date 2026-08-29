@@ -71,10 +71,19 @@ function loadsChildProcess(candidate: ts.Node): boolean {
   // so the callee is asked the same question the import matcher asks rather
   // than compared against a spelling.
   const callee = unwrapTransparent(node.expression);
+  // `module.require('node:child_process')` reaches the same loader as a bare
+  // `require`, and the CommonJS wrapper binds `module` alongside it.
+  const throughModule =
+    ts.isPropertyAccessExpression(callee) &&
+    callee.name.text === 'require' &&
+    ts.isIdentifier(callee.expression) &&
+    callee.expression.text === 'module' &&
+    innermostBinding(callee.expression, 'module', true) === undefined;
   const required =
-    ts.isIdentifier(callee) &&
-    callee.text === 'require' &&
-    innermostBinding(callee, callee.text, true) === undefined;
+    throughModule ||
+    (ts.isIdentifier(callee) &&
+      callee.text === 'require' &&
+      innermostBinding(callee, callee.text, true) === undefined);
   // Follow the alias chain rather than one hop of it: `const first = require;
   // const load = first` reaches the same loader, and stopping at the first
   // initializer meant the second name was never recognised. `seen` guards the
@@ -391,8 +400,10 @@ function readOptions(options: ts.ObjectLiteralExpression): OptionsReading {
       return { kind: 'unreadable', because: 'a computed key that is not a constant' };
     }
     if (key === 'timeout') {
-      // An accessor counts: Node reads it and applies whatever it returns, so
-      // a `get timeout()` is a deadline even though its value is not knowable.
+      // An accessor is a deadline Node reads and this guard cannot: a
+      // `get timeout() { return 0 }` returns no deadline at all, so treating
+      // presence as sufficient certified a call that can still hang. Unreadable
+      // is unreadable, whichever side of the property it is on.
       //
       // A value that *is* readable has to bound something. `timeout: 0` states
       // a deadline and imposes none — a Node 24 child with it runs to normal
@@ -401,8 +412,7 @@ function readOptions(options: ts.ObjectLiteralExpression): OptionsReading {
       // is a deadline; zero, a negative, or anything unreadable is not one this
       // guard can certify, and unreadable means report.
       if (!ts.isPropertyAssignment(property)) {
-        deadline = true;
-        continue;
+        return { kind: 'unreadable', because: 'a timeout this guard cannot read as a number' };
       }
       const value = unwrapTransparent(property.initializer);
       // A type guard as much as a check: `.text` exists only on a literal. Its
@@ -575,9 +585,18 @@ export function inspectSpawnCalls(
           (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
           ts.isIdentifier(target.expression) &&
           target.expression.text === 'Bun';
+        // Bun also accepts one object carrying both the command and the
+        // options: `Bun.spawnSync({ cmd: ['tool'], timeout: 10 })`. Reading
+        // only arguments one and two certified it by finding nothing.
+        const zeroth = forwarded[0] === undefined ? undefined : unwrapTransparent(forwarded[0]);
+        const bunObjectForm =
+          isBun && zeroth !== undefined && ts.isObjectLiteralExpression(zeroth)
+            ? zeroth
+            : undefined;
         const first = forwarded[1] === undefined ? undefined : unwrapTransparent(forwarded[1]);
         const second = forwarded[2] === undefined ? undefined : unwrapTransparent(forwarded[2]);
         const optionsArgument =
+          bunObjectForm ??
           second ??
           (isBun || (first !== undefined && ts.isObjectLiteralExpression(first))
             ? first
@@ -793,6 +812,29 @@ describe('every subprocess deadline is enforceable', () => {
     expect(unbounded("spawnSync('a', [], { get timeout() { return 10; } });")).toEqual([1]);
   });
 
+  it("reads Bun's single-object overload, where the command carries the options", () => {
+    // `Bun.spawnSync({ cmd: [...], timeout: 10 })` puts both in argument zero,
+    // so reading only arguments one and two certified it by finding nothing.
+    expect(unboundedSpawnCalls("Bun.spawnSync({ cmd: ['tool'], timeout: 10 });\n", 'p.ts')).toEqual(
+      [1],
+    );
+    expect(
+      unboundedSpawnCalls(
+        "Bun.spawnSync({ cmd: ['tool'], timeout: 10, killSignal: 'SIGKILL' });\n",
+        'p.ts',
+      ),
+    ).toEqual([]);
+  });
+
+  it('recognises module.require as a loader of child_process', () => {
+    expect(
+      unboundedSpawnCalls(
+        "const cp = module.require('node:child_process');\ncp.spawnSync('tool', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([2]);
+  });
+
   it('requires a timeout value that actually bounds something', () => {
     // `timeout: 0` states a deadline and imposes none — a Node 24 child with
     // it runs to normal completion — so certifying the call because the
@@ -810,6 +852,12 @@ describe('every subprocess deadline is enforceable', () => {
     expect(unbounded("spawnSync('x', [], { timeout: 30_000, killSignal: 'SIGKILL' });")).toEqual(
       [],
     );
+    // An accessor is a deadline Node reads and this guard cannot:
+    // `get timeout() { return 0 }` returns no deadline at all, so treating its
+    // presence as sufficient certified a call that can still hang.
+    expect(
+      unbounded("spawnSync('x', [], { get timeout() { return 0; }, killSignal: 'SIGKILL' });"),
+    ).toEqual([1]);
   });
 
   it('accepts a call that sets no deadline at all', () => {

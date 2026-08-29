@@ -2453,6 +2453,19 @@ describe('choices, templates, and member reads', () => {
     ).toHaveLength(1);
   });
 
+  it('destructures a loader off import.meta, as the member read already did', () => {
+    // `import.meta.require('bun:test')` was recognised; destructuring the same
+    // property off it was not — the same read-versus-destructure asymmetry
+    // this module keeps being corrected for.
+    expect(
+      findBannedImportsForPath('a.ts', "const { require: load } = import.meta; load('bun:test');"),
+    ).toHaveLength(1);
+    // An arbitrary object carrying a `require` property is still not a loader.
+    expect(
+      findBannedImportsForPath('a.ts', "const { require: load } = settings; load('bun:test');"),
+    ).toEqual([]);
+  });
+
   it('folds a quoted key selecting a node:module export', () => {
     expect(
       findBannedImportsForPath(
