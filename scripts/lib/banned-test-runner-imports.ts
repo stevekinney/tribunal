@@ -1343,10 +1343,11 @@ export function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
       // `({ load } = { load: require })` — a destructuring *assignment*, whose
       // left side parses as a literal rather than a binding pattern.
       for (const property of target.properties) {
-        const key =
-          property.name !== undefined && ts.isIdentifier(property.name)
-            ? property.name.text
-            : undefined;
+        // The *target* key folds like every other property name. The right-hand
+        // lookup below already did; this side did not, which is the read/write
+        // asymmetry corrected once more and, this time, on both halves of the
+        // same statement.
+        const key = staticPropertyName(property.name);
         const written = ts.isShorthandPropertyAssignment(property)
           ? property.name
           : ts.isPropertyAssignment(property)
@@ -1571,8 +1572,8 @@ function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: str
     (element) =>
       ts.isIdentifier(element.name) &&
       element.name.text === identifier.text &&
-      (element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
-        ? element.propertyName.text
+      (element.propertyName !== undefined
+        ? staticPropertyName(element.propertyName)
         : element.name.text) === exportName,
   );
   if (!takesExport) return false;

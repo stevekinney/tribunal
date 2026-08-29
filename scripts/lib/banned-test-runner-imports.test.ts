@@ -2442,6 +2442,26 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('folds a quoted key on both halves of a destructuring assignment', () => {
+    // The right-hand lookup folded; the *target* key did not — the read/write
+    // asymmetry once more, this time on the two halves of one statement.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "let load; ({ 'load': load } = { load: require }); load('bun:test');",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('folds a quoted key selecting a node:module export', () => {
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const { 'createRequire': makeRequire } = require('node:module'); makeRequire(__filename)('bun:test');",
+      ),
+    ).toHaveLength(1);
+  });
+
   it('matches a quoted key in the assignment form too, not only the declaration', () => {
     // The declaration form was corrected to fold quoted keys; the assignment
     // form kept its own identifier-only match. Same pair of paths, same

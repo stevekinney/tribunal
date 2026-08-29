@@ -75,16 +75,20 @@ function loadsChildProcess(candidate: ts.Node): boolean {
     ts.isIdentifier(callee) &&
     callee.text === 'require' &&
     innermostBinding(callee, callee.text, true) === undefined;
-  const aliased =
-    ts.isIdentifier(callee) &&
-    aliasInitializers(callee).some((initializer) => {
-      const source = unwrapTransparent(initializer);
-      return (
-        ts.isIdentifier(source) &&
-        source.text === 'require' &&
-        innermostBinding(source, source.text, true) === undefined
-      );
-    });
+  // Follow the alias chain rather than one hop of it: `const first = require;
+  // const load = first` reaches the same loader, and stopping at the first
+  // initializer meant the second name was never recognised. `seen` guards the
+  // cycle only invalid source could produce.
+  const reachesRequire = (node: ts.Node, seen: ReadonlySet<ts.Node>): boolean => {
+    const source = unwrapTransparent(node);
+    if (!ts.isIdentifier(source) || seen.has(source)) return false;
+    if (source.text === 'require' && innermostBinding(source, source.text, true) === undefined) {
+      return true;
+    }
+    const next = new Set([...seen, source]);
+    return aliasInitializers(source).some((initializer) => reachesRequire(initializer, next));
+  };
+  const aliased = ts.isIdentifier(callee) && reachesRequire(callee, new Set());
   if (!dynamic && !required && !aliased) return false;
   const specifier = node.arguments[0];
   return specifier !== undefined && ts.isStringLiteralLike(specifier)
@@ -919,6 +923,19 @@ describe('every subprocess deadline is enforceable', () => {
   it('unwraps a transparent wrapper on the callee before asking provenance', () => {
     expect(unbounded("spawnSync!('x', [], { timeout: 10 });")).toEqual([1]);
     expect(unbounded("(0, spawnSync)('x', [], { timeout: 10 });")).toEqual([1]);
+  });
+
+  it('follows a loader alias chain, not one hop of it', () => {
+    // `const first = require; const load = first` reaches the same loader, and
+    // stopping at the first initializer meant the second name was never
+    // recognised — so the module it loaded was never recorded and its calls
+    // were never inspected.
+    expect(
+      unboundedSpawnCalls(
+        "const first = require;\nconst load = first;\nconst cp = load('node:child_process');\ncp.spawnSync('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([4]);
   });
 
   it('folds a quoted key when destructuring the spawner', () => {
