@@ -1294,11 +1294,11 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
         if (key === undefined || written === undefined || !writesThisBinding(written)) continue;
         const source = unwrapTransparent(expression.right);
         if (!ts.isObjectLiteralExpression(source)) continue;
+        // The declaration form was corrected to fold quoted keys and this,
+        // the assignment form, kept its own identifier-only match — the same
+        // pair of paths, the same asymmetry, one round apart.
         const value = source.properties.find(
-          (candidate) =>
-            candidate.name !== undefined &&
-            ts.isIdentifier(candidate.name) &&
-            candidate.name.text === key,
+          (candidate) => staticPropertyName(candidate.name) === key,
         );
         if (value !== undefined && ts.isPropertyAssignment(value))
           initializers.push(value.initializer);

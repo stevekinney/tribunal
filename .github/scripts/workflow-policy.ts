@@ -550,12 +550,22 @@ const REQUIRED_CI_SECURITY_COMMANDS = [
  * against the real `ci.yml`, which has no injectable form.
  */
 export function shellCommandLines(run: string): string[] {
+  // A trailing control operator continues implicitly: bash reads `true ||` and
+  // a newline as one command list, so splitting on the newline presented the
+  // gate as an isolated, unconditionally executed line when it runs only if
+  // `true` fails. An explicit backslash and an implicit operator continuation
+  // are the same thing to the shell and are joined the same way here.
+  const CONTINUES = /(\|\||&&|\||&)$/;
   const joined: string[] = [];
   let pending = '';
   for (const raw of run.split('\n')) {
     const line = raw.trim();
     if (line.endsWith('\\')) {
       pending += `${line.slice(0, -1).trim()} `;
+      continue;
+    }
+    if (CONTINUES.test(line)) {
+      pending += `${line} `;
       continue;
     }
     joined.push(`${pending}${line}`.trim());
@@ -604,6 +614,23 @@ export function runLinesExecute(lines: readonly string[], command: string): bool
 }
 
 /**
+ * Whether a step's failure can fail its job.
+ *
+ * A gate inside a `continue-on-error` step is wired in appearance only: GitHub
+ * keeps the job green when the command fails, so the audit reported a gate that
+ * no longer gates. Flattening every step's `run` discarded exactly the metadata
+ * that decides whether a failure counts.
+ *
+ * Anything other than a definite false is treated as continuing. An expression
+ * like `${{ … }}` is not knowable here, and guessing in the permissive
+ * direction is the failure this rule exists to prevent.
+ */
+export function stepCanFailTheJob(step: WorkflowStep): boolean {
+  const continues = step['continue-on-error'];
+  return continues === undefined || continues === false || continues === 'false';
+}
+
+/**
  * TRI-28 B11: this invariant ("every root workflow-security command stays
  * wired into ci.yml") used to live INSIDE `test:workflow-authorization`
  * itself. That is self-defeating: if `test:workflow-authorization`'s own
@@ -636,7 +663,16 @@ export function ciWiringViolations(): Violation[] {
   // `includes` accepted a step that merely mentions the command — `run: echo
   // 'bun run validate:test-runner-imports'` satisfied it while the real step
   // was deleted, so the guard verified textual presence and not execution.
-  const runLines = (job.steps ?? []).flatMap((step) => shellCommandLines(step.run ?? ''));
+  // A step marked `continue-on-error` cannot fail the job, so a gate inside one
+  // is wired in appearance only — GitHub keeps the job green when the command
+  // fails. Flattening every step's `run` discarded exactly the metadata that
+  // decides whether a failure counts, so the steps are filtered before their
+  // lines are read. Anything other than a definite false is treated as
+  // continuing: an expression like `${{ ... }}` is not knowable here, and
+  // guessing in the permissive direction is what this rule exists to prevent.
+  const runLines = (job.steps ?? [])
+    .filter((step) => stepCanFailTheJob(step))
+    .flatMap((step) => shellCommandLines(step.run ?? ''));
   return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !runLinesExecute(runLines, command)).map(
     (command) => ({
       fileName: 'ci.yml',

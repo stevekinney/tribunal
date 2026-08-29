@@ -2442,6 +2442,24 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('matches a quoted key in the assignment form too, not only the declaration', () => {
+    // The declaration form was corrected to fold quoted keys; the assignment
+    // form kept its own identifier-only match. Same pair of paths, same
+    // asymmetry, one round apart.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "let load; ({ load } = { 'load': require }); load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "let load; ({ load } = { 'load': other }); load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
   it('matches a quoted key when destructuring, as the member reader already did', () => {
     // The member reader folded quoted keys; this path kept its own
     // identifier-only match — the read-side/write-side asymmetry once more.

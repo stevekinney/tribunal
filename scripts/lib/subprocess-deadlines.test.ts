@@ -43,6 +43,22 @@ const root =
 
 const NODE_CHILD_PROCESS = new Set(['node:child_process', 'child_process']);
 
+/**
+ * The synchronous spawners this invariant covers.
+ *
+ * `AGENTS.md` requires orchestration scripts to "enforce explicit subprocess
+ * timeouts and terminate hung child processes" — subprocesses, not
+ * `spawnSync` specifically. Checking only the one name was a scope hole in a
+ * documented rule, and it was hiding a live defect: `runner/run-agent.mjs`
+ * read git objects through an unbounded `execFileSync` during a review run.
+ *
+ * All three take the same `timeout`/`killSignal` pair with the same defect —
+ * `timeout` alone signals and then *waits* — and all three put options either
+ * last or second, which the reader already handles without knowing which is
+ * which.
+ */
+const SYNC_SPAWNERS = new Set(['spawnSync', 'execFileSync', 'execSync']);
+
 /** Whether a call loads `node:child_process`, by either loader spelling. */
 function loadsChildProcess(node: ts.Node): boolean {
   if (!ts.isCallExpression(node)) return false;
@@ -88,7 +104,7 @@ export function spawnAliasesIn(
     imported: string,
   ): boolean | undefined => {
     if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
-    if (NODE_CHILD_PROCESS.has(specifier.text)) return imported === 'spawnSync';
+    if (NODE_CHILD_PROCESS.has(specifier.text)) return SYNC_SPAWNERS.has(imported);
     return specifier.text.startsWith('.') ? exportsOf(specifier.text).has(imported) : false;
   };
 
@@ -157,7 +173,7 @@ export function spawnAliasesIn(
               : ts.isIdentifier(element.name)
                 ? element.name.text
                 : undefined;
-          if (key === 'spawnSync' && ts.isIdentifier(element.name)) {
+          if (key !== undefined && SYNC_SPAWNERS.has(key) && ts.isIdentifier(element.name)) {
             direct.set(element.name.text, element.name);
           }
         }
@@ -170,7 +186,7 @@ export function spawnAliasesIn(
     if (!ts.isIdentifier(node.name)) return;
     const aliases =
       (ts.isIdentifier(initializer) && direct.has(initializer.text)) ||
-      memberRead(initializer) === 'spawnSync';
+      SYNC_SPAWNERS.has(memberRead(initializer) ?? '');
     if (aliases) direct.set(node.name.text, node.name);
   };
 
@@ -421,10 +437,23 @@ export function inspectSpawnCalls(
         ? { receiver: callee.expression, name: callee.argumentExpression.text }
         : undefined;
     if (member === undefined) return false;
-    if (member.name !== 'spawnSync') return false;
+    if (!SYNC_SPAWNERS.has(member.name)) return false;
+    // `require('node:child_process').spawnSync(...)` needs no name at all: the
+    // receiver is the loader call itself, which the identifier-only check
+    // rejected before the options were ever read.
+    if (loadsChildProcess(member.receiver)) return true;
     if (!ts.isIdentifier(member.receiver)) return false;
     const receiver = member.receiver;
-    if (receiver.text === 'Bun') return true;
+    // `function run(Bun) { Bun.spawnSync(…) }` is an arbitrary object's method,
+    // not the global — so the global is recognised only where nothing binds the
+    // name, which is the same binding question every other receiver goes
+    // through rather than a shortcut beside it.
+    // Bun's namespace carries `spawnSync` only; the exec family is Node's.
+    if (receiver.text === 'Bun') {
+      return (
+        member.name === 'spawnSync' && innermostBinding(receiver, receiver.text, true) === undefined
+      );
+    }
     const bound = namespaces.get(receiver.text);
     return (
       bound !== undefined &&
@@ -531,8 +560,26 @@ export function unboundedSpawnCalls(
 }
 
 const READABLE_MODES = new Set(['100644', '100755']);
+/**
+ * The guard's own subprocesses, bounded — which they were not.
+ *
+ * These run during module initialisation, before Vitest's per-test timeout
+ * exists, so a stalled git or filesystem hung `bun run verify` with nothing to
+ * interrupt it. A guard that enforces subprocess deadlines while setting none
+ * of its own is not a subtle inconsistency; it is the invariant failing on its
+ * author. `timeout` alone signals and then waits, so the non-ignorable signal
+ * is what makes it a deadline — the same pairing this file exists to require,
+ * and the same one `validate-test-runner-imports.ts` already uses.
+ */
+const GIT_TIMEOUT_MS = 30_000;
 const git = (...args: string[]): string[] =>
-  execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  })
     .split('\0')
     .filter((entry) => entry.length > 0);
 
@@ -776,6 +823,56 @@ describe('every subprocess deadline is enforceable', () => {
         'p.ts',
       ),
     ).toEqual([2]);
+  });
+
+  it('covers the whole synchronous spawner family, not one name', () => {
+    // `AGENTS.md` requires orchestration scripts to enforce subprocess
+    // timeouts — subprocesses, not `spawnSync` specifically. Checking one name
+    // was a scope hole in a documented rule, and `execFileSync`/`execSync`
+    // carry the same `timeout`-without-`killSignal` defect.
+    for (const spawner of ['spawnSync', 'execFileSync', 'execSync']) {
+      const unbounded = [
+        `import { ${spawner} } from 'node:child_process';`,
+        `${spawner}('x', [], { timeout: 10 });`,
+      ].join('\n');
+      expect(unboundedSpawnCalls(unbounded, 'p.ts'), spawner).toEqual([2]);
+
+      const bounded = [
+        `import { ${spawner} } from 'node:child_process';`,
+        `${spawner}('x', [], { timeout: 10, killSignal: 'SIGKILL' });`,
+      ].join('\n');
+      expect(unboundedSpawnCalls(bounded, 'p.ts'), spawner).toEqual([]);
+    }
+    // Bun's namespace carries `spawnSync` only; the exec family is Node's.
+    expect(unboundedSpawnCalls("Bun.execSync('x', { timeout: 10 });\n", 'p.ts')).toEqual([]);
+  });
+
+  it('recognises a loader call used directly as the receiver', () => {
+    // `require('node:child_process').spawnSync(…)` needs no name at all, and
+    // the identifier-only receiver check rejected it before the options were
+    // read.
+    expect(
+      unboundedSpawnCalls(
+        "require('node:child_process').spawnSync('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([1]);
+    expect(
+      unboundedSpawnCalls(
+        "require('node:child_process').spawnSync('x', [], { timeout: 10, killSignal: 'SIGKILL' });\n",
+        'p.ts',
+      ),
+    ).toEqual([]);
+  });
+
+  it('treats Bun as the global only where nothing binds the name', () => {
+    // `function run(Bun) { … }` is an arbitrary object's method, and reporting
+    // it fails the repository over ordinary application code. The receiver goes
+    // through the same binding question every other one does.
+    expect(
+      unboundedSpawnCalls("function run(Bun) { Bun.spawnSync('x', { timeout: 10 }); }\n", 'p.ts'),
+    ).toEqual([]);
+    expect(unboundedSpawnCalls("Bun.spawnSync('x', { timeout: 10 });\n", 'p.ts')).toEqual([1]);
   });
 
   it('follows an alias taken off the module object', () => {

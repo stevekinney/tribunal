@@ -3,6 +3,7 @@ import {
   ciWiringViolations,
   runLinesExecute,
   shellCommandLines,
+  stepCanFailTheJob,
   isAuthorizationGated,
   jobGrantsWrite,
   jobUsesSecrets,
@@ -98,6 +99,20 @@ describe('ciWiringViolations: the real ci.yml has every root security gate wired
   test('reports no violations against the real ci.yml', () => {
     expect(ciWiringViolations()).toEqual([]);
   });
+
+  test('a continue-on-error step cannot wire a gate', () => {
+    // GitHub keeps the job green when such a step fails, so a gate inside one
+    // is wired in appearance only.
+    const run = 'bun run validate:test-runner-imports';
+    expect(stepCanFailTheJob({ run })).toBe(true);
+    expect(stepCanFailTheJob({ run, 'continue-on-error': false })).toBe(true);
+    expect(stepCanFailTheJob({ run, 'continue-on-error': 'false' })).toBe(true);
+    expect(stepCanFailTheJob({ run, 'continue-on-error': true })).toBe(false);
+    expect(stepCanFailTheJob({ run, 'continue-on-error': 'true' })).toBe(false);
+    // Not knowable here, so not counted — guessing permissively is the failure
+    // this rule prevents.
+    expect(stepCanFailTheJob({ run, 'continue-on-error': '${{ github.event_name }}' })).toBe(false);
+  });
 });
 
 /**
@@ -137,6 +152,15 @@ describe('the CI wiring rule rejects what the shell would neutralise', () => {
     expect(
       runLinesExecute(shellCommandLines(`if false; then\necho hi\nfi\n${COMMAND}`), COMMAND),
     ).toBe(true);
+  });
+
+  test('joins an implicit operator continuation, as bash does', () => {
+    // Bash reads `true ||` plus a newline as one command list, so splitting on
+    // the newline presented the gate as an isolated unconditional line when it
+    // runs only if `true` fails.
+    expect(runLinesExecute(shellCommandLines(`true ||\n${COMMAND}`), COMMAND)).toBe(false);
+    expect(runLinesExecute(shellCommandLines(`true &&\n${COMMAND}`), COMMAND)).toBe(false);
+    expect(runLinesExecute(shellCommandLines(`true\n${COMMAND}`), COMMAND)).toBe(true);
   });
 
   test('rejects a command the shell only defines', () => {
