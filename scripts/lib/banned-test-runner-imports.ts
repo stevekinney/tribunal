@@ -114,7 +114,20 @@ function unwrapTransparent(node: ts.Node): ts.Node {
     else if (ts.isTypeAssertionExpression(current)) current = current.expression;
     else if (ts.isSatisfiesExpression(current)) current = current.expression;
     else if (ts.isNonNullExpression(current)) current = current.expression;
-    else return current;
+    // `Object.freeze(x)` and `Object.seal(x)` return the very object handed to
+    // them, so they wrap a value rather than producing one — and freezing a
+    // holder is the idiomatic way to write it. `Object.assign` is deliberately
+    // absent: it merges into a target, which is a different value and a
+    // different question.
+    else if (
+      ts.isCallExpression(current) &&
+      current.arguments.length === 1 &&
+      isObjectPassthrough(current.expression)
+    ) {
+      const [only] = current.arguments;
+      if (only === undefined) return current;
+      current = only;
+    } else return current;
   }
 }
 
@@ -158,11 +171,25 @@ function alternativeOperands(node: ts.Node): readonly ts.Expression[] {
   return [];
 }
 
+/** Whether a callee is `Object.freeze` or `Object.seal`, which return their argument. */
+function isObjectPassthrough(callee: ts.Node): boolean {
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    ts.isIdentifier(callee.expression) &&
+    callee.expression.text === 'Object' &&
+    (callee.name.text === 'freeze' || callee.name.text === 'seal')
+  );
+}
+
 function constantSpecifier(
   node: ts.Node | undefined,
   seen: ReadonlySet<ts.Node> = new Set(),
 ): string | undefined {
   if (node === undefined) return undefined;
+  // `require(...specifiers)` puts the specifier in a list rather than at the
+  // call site. The list is read by the same any-match rule every other list
+  // here is.
+  if (ts.isSpreadElement(node)) return constantSpecifier(node.expression, seen);
   const current = unwrapTransparent(node);
   if (ts.isStringLiteralLike(current)) return current.text;
 
@@ -255,8 +282,12 @@ function staticMemberName(node: ts.Node): { object: ts.Node; name: string } | un
   if (ts.isElementAccessExpression(node)) {
     // Folded the same way a specifier is: the validator already evaluates
     // `'bun:' + 'test'`, and applying a different standard to the member name
-    // would be an inconsistency rather than a decision.
-    const name = constantSpecifier(node.argumentExpression);
+    // would be an inconsistency rather than a decision. A numeric key is read
+    // too, because `{ 0: require }` is an object and `h[0]` reads it.
+    const indexed = unwrapTransparent(node.argumentExpression);
+    const name = ts.isNumericLiteral(indexed)
+      ? indexed.text
+      : constantSpecifier(node.argumentExpression);
     if (name !== undefined) {
       return { object: unwrapTransparent(node.expression), name };
     }
@@ -301,7 +332,9 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
         const next = new Set([...visited, current]);
         return aliasInitializers(current).flatMap((initializer) => arraysOf(initializer, next));
       }
-      return [];
+      // `holder.list[0]` — the list is itself behind a member read, resolved by
+      // the same function rather than by a second copy of it.
+      return memberValues(current, visited).flatMap((value) => arraysOf(value, visited));
     };
     const elements = arraysOf(node.expression, guarded);
     if (elements.length > 0) return elements;
@@ -333,8 +366,21 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
         }
         continue;
       }
-      if (property.name === undefined || !ts.isIdentifier(property.name)) continue;
-      if (property.name.text !== member.name) continue;
+      // A key can be written as an identifier, a string, a number, or a
+      // computed expression, and all four name the same property. The computed
+      // form is folded by the same resolver that folds the *access* side, since
+      // reading `h['load']` and writing `{ ['load']: … }` are the same question
+      // asked from opposite ends — answering one and declining the other is the
+      // asymmetry this file keeps being corrected for.
+      if (property.name === undefined) continue;
+      const key = ts.isComputedPropertyName(property.name)
+        ? constantSpecifier(property.name.expression, visited)
+        : ts.isIdentifier(property.name) ||
+            ts.isStringLiteralLike(property.name) ||
+            ts.isNumericLiteral(property.name)
+          ? property.name.text
+          : undefined;
+      if (key !== member.name) continue;
       // A method or an accessor named the same thing is not the value: reading
       // its body is evaluating a function, which is declined here and tested.
       chosen = ts.isPropertyAssignment(property)

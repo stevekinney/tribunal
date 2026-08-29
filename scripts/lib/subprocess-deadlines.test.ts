@@ -33,27 +33,6 @@ const root =
 const SOURCE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
 /** Every `spawnSync` call in a source text that sets a `timeout`. */
-/** The object literal a name is declared with in this file, if any. */
-function declaredObjectLiteral(
-  source: ts.SourceFile,
-  name: string,
-): ts.ObjectLiteralExpression | undefined {
-  let found: ts.ObjectLiteralExpression | undefined;
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === name &&
-      node.initializer !== undefined &&
-      ts.isObjectLiteralExpression(node.initializer)
-    ) {
-      found = node.initializer;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found;
-}
 
 /**
  * A string constant, resolved through a name when it is held in one.
@@ -84,18 +63,69 @@ function constantString(source: ts.SourceFile, node: ts.Node | undefined): strin
   return found;
 }
 
-/** The object literal an options argument names, however it was reached. */
+/** The initializer a name is declared with in this file, if any. */
+function declaredInitializer(source: ts.SourceFile, name: string): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (candidate: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(candidate) &&
+      ts.isIdentifier(candidate.name) &&
+      candidate.name.text === name &&
+      candidate.initializer !== undefined
+    ) {
+      found = candidate.initializer;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/**
+ * The object literal an options argument names, however it was reached.
+ *
+ * One reader for every spelling: a literal, a name bound to one, either
+ * spelling of a member read, an index into a list, and `Object.freeze` around
+ * any of them. Each of those was added after the previous reader missed it,
+ * which is the argument for resolving them in one place rather than at each
+ * call site.
+ */
 function resolveOptions(
   source: ts.SourceFile,
   node: ts.Node | undefined,
+  seen: ReadonlySet<ts.Node> = new Set(),
 ): ts.ObjectLiteralExpression | undefined {
-  if (node === undefined) return undefined;
+  if (node === undefined || seen.has(node)) return undefined;
+  const guarded = new Set([...seen, node]);
+
   if (ts.isObjectLiteralExpression(node)) return node;
-  if (ts.isIdentifier(node)) return declaredObjectLiteral(source, node.text);
-  // `spawnSync('x', [], presets.strict)` — the options live behind a key on a
-  // declared object, which is as statically known as a name is. Both spellings
-  // of that read call the same function, so recognising only the dotted one is
-  // bypassed by writing the bracketed one.
+
+  // `Object.freeze({ ... })` returns the object handed to it, and freezing a
+  // shared options preset is the idiomatic way to write one.
+  if (
+    ts.isCallExpression(node) &&
+    node.arguments.length === 1 &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === 'Object' &&
+    (node.expression.name.text === 'freeze' || node.expression.name.text === 'seal')
+  ) {
+    return resolveOptions(source, node.arguments[0], guarded);
+  }
+
+  if (ts.isIdentifier(node)) {
+    return resolveOptions(source, declaredInitializer(source, node.text), guarded);
+  }
+
+  // `presets[0]` reads out of a list rather than off an object — the same
+  // statically known read written against the other container.
+  if (ts.isElementAccessExpression(node) && ts.isNumericLiteral(node.argumentExpression)) {
+    const list = resolveList(source, node.expression, guarded);
+    return resolveOptions(source, list?.elements[Number(node.argumentExpression.text)], guarded);
+  }
+
+  // Both spellings of a member read call the same function, so recognising
+  // only the dotted one is bypassed by writing the bracketed one.
   const key = ts.isPropertyAccessExpression(node)
     ? node.name.text
     : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
@@ -103,18 +133,37 @@ function resolveOptions(
       : undefined;
   if (key === undefined) return undefined;
 
-  const receiver = resolveOptions(source, (node as ts.PropertyAccessExpression).expression);
+  const receiver = resolveOptions(
+    source,
+    (node as ts.PropertyAccessExpression).expression,
+    guarded,
+  );
   const property = receiver?.properties.find(
     (candidate) =>
       candidate.name !== undefined &&
       ts.isIdentifier(candidate.name) &&
       candidate.name.text === key,
   );
-  return property !== undefined &&
-    ts.isPropertyAssignment(property) &&
-    ts.isObjectLiteralExpression(property.initializer)
-    ? property.initializer
+  return property !== undefined && ts.isPropertyAssignment(property)
+    ? resolveOptions(source, property.initializer, guarded)
     : undefined;
+}
+
+/** The array literal an expression names, resolved the same way options are. */
+function resolveList(
+  source: ts.SourceFile,
+  node: ts.Node,
+  seen: ReadonlySet<ts.Node>,
+): ts.ArrayLiteralExpression | undefined {
+  if (seen.has(node)) return undefined;
+  if (ts.isArrayLiteralExpression(node)) return node;
+  if (ts.isIdentifier(node)) {
+    const initializer = declaredInitializer(source, node.text);
+    return initializer === undefined
+      ? undefined
+      : resolveList(source, initializer, new Set([...seen, node]));
+  }
+  return undefined;
 }
 
 /**
@@ -511,6 +560,23 @@ describe('every subprocess deadline is enforceable', () => {
       "spawnSync('x', [], { ...presets.strict });",
     ];
     expect(unboundedSpawnCalls(spreadOfMember.join('\n'), 'p.ts')).toEqual([2]);
+  });
+
+  it('resolves frozen options and options held in a list', () => {
+    // Both readers grew one spelling at a time until they were rewritten as
+    // one: a literal, a name, either member spelling, a list index, and
+    // `Object.freeze` around any of them.
+    const frozen = ['const o = Object.freeze({ timeout: 10 });', "spawnSync('x', [], o);"];
+    expect(unboundedSpawnCalls(frozen.join('\n'), 'p.ts')).toEqual([2]);
+
+    const listed = ['const presets = [{ timeout: 10 }];', "spawnSync('x', [], presets[0]);"];
+    expect(unboundedSpawnCalls(listed.join('\n'), 'p.ts')).toEqual([2]);
+
+    const frozenBounded = [
+      "const o = Object.freeze({ timeout: 10, killSignal: 'SIGKILL' });",
+      "spawnSync('x', [], o);",
+    ];
+    expect(unboundedSpawnCalls(frozenBounded.join('\n'), 'p.ts')).toEqual([]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

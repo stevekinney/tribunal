@@ -2510,6 +2510,93 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('sees through Object.freeze, which returns the object handed to it', () => {
+    // Freezing a holder is how one is idiomatically written, and it was
+    // invisible to every resolver. Answered in `unwrapTransparent` rather than
+    // in each of them, so the loader position, the specifier position, and the
+    // receiver of a member read all got it at once. `Object.assign` stays out:
+    // it merges into a target and is a different value.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const h = Object.freeze({ load: require }); h.load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const m = Object.freeze({ t: 'bun:test' }); await import(m.t);",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const h = Object.freeze({ load: other }); h.load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
+  it('matches a key however it is spelled', () => {
+    // An identifier, a string, and a number all name the same property, and
+    // only the first was matched.
+    expect(
+      findBannedImportsForPath('a.cjs', "const h = { 0: require }; h[0]('bun:test');"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const m = { 'run-with': 'bun:test' }; await import(m['run-with']);",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('folds a computed key, and declines one that will not fold', () => {
+    // Reading `h['load']` and writing `{ ['load']: … }` are the same question
+    // from opposite ends. The access side already folded; the declaration side
+    // did not, which is the asymmetry this file keeps being corrected for.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const k = 'load'; const h = { [k]: require }; h.load('bun:test');",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.cjs', "const h = { ['load']: require }; h.load('bun:test');"),
+    ).toHaveLength(1);
+    // A key that names something else is not this property, and one that does
+    // not fold is not knowable — declined in the same way the access side
+    // declines `h[key]`.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const k = 'other'; const h = { [k]: require }; h.load('bun:test');",
+      ),
+    ).toEqual([]);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "declare const k: string; const h = { [k]: require }; h.load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
+  it('reads a list held behind a member, and a spread call argument', () => {
+    expect(
+      findBannedImportsForPath(
+        'a.ts',
+        "const m = { list: ['bun:test'] }; await import(m.list[0]);",
+      ),
+    ).toHaveLength(1);
+    // `require(...specifiers)` puts the specifier in a list rather than at the
+    // call site.
+    expect(
+      findBannedImportsForPath('a.cjs', "const args = ['bun:test']; require(...args);"),
+    ).toHaveLength(1);
+    expect(findBannedImportsForPath('a.cjs', "const args = ['vitest']; require(...args);")).toEqual(
+      [],
+    );
+  });
+
   it('reads an element out of a list the file can see', () => {
     // A list is read by the any-match rule everywhere else here, so reading
     // one through an index and getting silence was an inconsistency rather
