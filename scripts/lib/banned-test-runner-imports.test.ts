@@ -1040,19 +1040,43 @@ describe('node:module reached the CommonJS way', () => {
 });
 
 describe('TypeScript declarations that emit a runtime value', () => {
-  it('a plain enum shadows, because it emits an object', () => {
-    // Verified under Bun: `typeof E` is 'object'.
-    expect(findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n')).toHaveLength(
-      0,
-    );
+  it('an enum does NOT shadow in CommonJS, because it merges with the wrapper', () => {
+    // This asserted the opposite, on evidence that was real but about the
+    // wrong thing: `typeof E` is 'object', so an enum does emit a binding.
+    // What went unchecked is whether an enum named `require` *replaces* the
+    // loader, and it does not. TypeScript emits
+    // `(function (X) { ... })(X || (X = {}))`, and in CommonJS `require` is
+    // already a truthy wrapper parameter, so the enum augments it.
+    //
+    // Verified under Bun, same source, two extensions:
+    //
+    //   .cts  typeof require after enum: function   STILL LOADS
+    //   .mts  typeof require after enum: object     throws TypeError
+    expect(
+      findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n', 0, 'probe.cts'),
+    ).toHaveLength(1);
   });
 
-  it('a namespace with a body shadows', () => {
+  it('an enum DOES shadow in an ES module, where there is nothing to merge with', () => {
+    expect(
+      findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n', 0, 'probe.mts'),
+    ).toHaveLength(0);
+  });
+
+  it('a namespace does not shadow in CommonJS either', () => {
     expect(
       findBannedTestRunnerImports(
-        "namespace module { export function require(n: string) { return n; } }\nmodule.require('bun:test');\n",
+        "namespace module { export const other = 1; }\nmodule.require('bun:test');\n",
+        0,
+        'probe.cts',
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+  });
+
+  it('keeps the CommonJS reading for an ambiguous extension', () => {
+    expect(
+      findBannedTestRunnerImports('enum require { A }\nrequire("bun:test");\n', 0, 'probe.ts'),
+    ).toHaveLength(1);
   });
 
   it('a const enum does NOT shadow, because its members are inlined', () => {
@@ -1067,6 +1091,61 @@ describe('TypeScript declarations that emit a runtime value', () => {
     expect(
       findBannedTestRunnerImports("declare enum require { A }\nrequire('bun:test');\n"),
     ).toHaveLength(1);
+  });
+});
+
+describe('createRequire followed through local rebindings', () => {
+  it('follows a local alias of the imported factory', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from 'node:module';\nconst makeRequire = createRequire;\nmakeRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('follows a destructured `const { createRequire } = require("node:module")`', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const { createRequire } = require('node:module');\ncreateRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not follow a destructure from an unrelated module', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const { createRequire } = require('./helpers');\ncreateRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('does not follow a destructure of a different export renamed to createRequire', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const { other: createRequire } = require('node:module');\ncreateRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('a recognised extension outranks a recipe basename', () => {
+  it('scans a collected suite whose stem looks like a build recipe', () => {
+    // `runner/vitest.config.mjs` really does collect `*.test.mjs`, so this file
+    // executes as a suite while the basename heuristic was skipping it.
+    //
+    // Asserted on `isScannableFile` rather than through
+    // `findBannedImportsForPath`, which never consults it — the candidate
+    // filter is what the validator uses to decide whether to read a path at
+    // all, so a test routed around it passed either way and pinned nothing.
+    expect(isScannableFile('runner/Dockerfile.test.mjs')).toBe(true);
+    expect(
+      findBannedImportsForPath('runner/Dockerfile.test.mjs', "import 'bun:test';\n"),
+    ).toHaveLength(1);
+  });
+
+  it('still skips a genuine Dockerfile', () => {
+    expect(isScannableFile('Dockerfile')).toBe(false);
+    expect(isScannableFile('deployment/Dockerfile.production')).toBe(false);
   });
 });
 

@@ -338,15 +338,26 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
       // — emits nothing, so it introduces no runtime binding even without a
       // `declare` modifier. Only the implementation binds.
       ((ts.isFunctionDeclaration(candidate) && candidate.body !== undefined) ||
-        // A plain `enum` emits a real object — verified under Bun, where
-        // `typeof E` is `'object'`. A `const enum` does not: its members are
-        // inlined and `typeof` the name is `'undefined'`, so it binds nothing
-        // and must not shadow.
-        (ts.isEnumDeclaration(candidate) &&
-          (ts.getCombinedModifierFlags(candidate) & ts.ModifierFlags.Const) === 0) ||
-        // A `namespace` with a body emits an object holding its value members.
-        // An ambient one is already excluded above.
-        (ts.isModuleDeclaration(candidate) && candidate.body !== undefined) ||
+        // An `enum` or `namespace` **merges** with an existing binding rather
+        // than replacing it: TypeScript emits `(function (X) { ... })(X || (X = {}))`,
+        // and in CommonJS `require` is already a truthy wrapper parameter, so
+        // the declaration augments the loader and the call still loads.
+        //
+        // Verified under Bun, same source, two extensions:
+        //
+        //   .cts  typeof require after enum: function   STILL LOADS
+        //   .mts  typeof require after enum: object     throws TypeError
+        //
+        // So these shadow only where there is nothing to merge with. Ambiguous
+        // extensions keep the CommonJS reading, the one that reports — exactly
+        // as the `var` rule does, and for the same reason.
+        //
+        // A `const enum` never binds at all: its members are inlined and
+        // `typeof` the name is `'undefined'`.
+        (isEsModuleFile(candidate.getSourceFile().fileName) &&
+          ((ts.isEnumDeclaration(candidate) &&
+            (ts.getCombinedModifierFlags(candidate) & ts.ModifierFlags.Const) === 0) ||
+            (ts.isModuleDeclaration(candidate) && candidate.body !== undefined))) ||
         ts.isParameter(candidate) ||
         ts.isClassDeclaration(candidate) ||
         ts.isBindingElement(candidate)) &&
@@ -667,12 +678,56 @@ function isNodeModuleImport(identifier: ts.Identifier, exportName: string): bool
  * import slipped past, and it accepted any `.createRequire` member, so an
  * unrelated `helpers.createRequire` was reported as a loader.
  */
-function isCreateRequire(callee: ts.Node): boolean {
-  if (ts.isIdentifier(callee)) return isNodeModuleImport(callee, 'createRequire');
+function isCreateRequire(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
+  if (ts.isIdentifier(callee)) {
+    if (isNodeModuleImport(callee, 'createRequire')) return true;
+    if (isDestructuredFromNodeModule(callee, 'createRequire')) return true;
+
+    // A local rebinding is still the same factory: `const makeRequire =
+    // createRequire`. Following it costs one recursion and closes the whole
+    // family, rather than the one spelling that happened to be reported.
+    if (!seen.has(callee)) {
+      const aliased = aliasInitializer(callee);
+      if (aliased !== undefined) {
+        return isCreateRequire(unwrapTransparent(aliased), new Set([...seen, callee]));
+      }
+    }
+    return false;
+  }
 
   const member = staticMemberName(callee);
   if (member === undefined || member.name !== 'createRequire') return false;
   return ts.isIdentifier(member.object) && isNodeModuleImport(member.object, '*');
+}
+
+/**
+ * Whether a name was destructured out of `node:module`, as in
+ * `const { createRequire } = require('node:module')`.
+ *
+ * A separate question from an import binding: the declaration is a variable
+ * whose name is a binding pattern, so there is no import node to inspect and
+ * the provenance lives in the initializer instead.
+ */
+function isDestructuredFromNodeModule(identifier: ts.Identifier, exportName: string): boolean {
+  const binding = innermostBinding(identifier, identifier.text, true);
+  if (binding === undefined || !ts.isVariableDeclaration(binding)) return false;
+  if (!ts.isObjectBindingPattern(binding.name) || binding.initializer === undefined) return false;
+
+  const takesExport = binding.name.elements.some(
+    (element) =>
+      ts.isIdentifier(element.name) &&
+      element.name.text === identifier.text &&
+      (element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
+        ? element.propertyName.text
+        : element.name.text) === exportName,
+  );
+  if (!takesExport) return false;
+
+  const required = unwrapTransparent(binding.initializer);
+  if (!ts.isCallExpression(required)) return false;
+  if (!isModuleLoader(unwrapTransparent(required.expression))) return false;
+  const target = constantSpecifier(required.arguments[0]);
+  return target === 'node:module' || target === 'module';
 }
 
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
@@ -998,8 +1053,14 @@ export function isScannableFile(fileName: string): boolean {
   // dotfile variant through.
   const dot = base.indexOf('.', base.startsWith('.') ? 1 : 0);
   const stem = dot === -1 ? base : base.slice(0, dot);
-  if (NON_SOURCE_BASENAMES.includes(stem)) return false;
+  // The extension is checked first. A basename exclusion is a heuristic for
+  // files whose format nothing else names, and letting it override a
+  // recognised extension skipped `runner/Dockerfile.test.mjs` — a file that
+  // `runner/vitest.config.mjs` really does collect as a suite. Same mistake as
+  // applying the foreign-shebang rule to files whose extension already settled
+  // the language.
   if (JAVASCRIPT_EXTENSIONS.some((extension) => lower.endsWith(extension))) return true;
+  if (NON_SOURCE_BASENAMES.includes(stem)) return false;
   // No extension at all, so the shebang decides once the contents are read.
   return dot === -1;
 }

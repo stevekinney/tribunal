@@ -134,3 +134,19 @@ Recorded per `AGENTS.md`: when compiling review feedback, record learnings in `d
 ## The same import has several syntaxes, and one of them is not a call
 
 - **`import M = require('node:module')` is TypeScript syntax, not a call expression.** Its `ExternalModuleReference` holds the specifier directly, so code written to unwrap a `CallExpression` finds nothing there — the first version of this fix handled `const M = require(...)` correctly and silently missed the `import =` form beside it. `const M = require(...)` really is a call, and its callee still has to be verified as a loader, which the probe `const M = load('node:module')` pins.
+
+## Verify the case, not a case that resembles it
+
+- **The evidence was real and about the wrong thing.** A round established that a plain `enum` emits a runtime object by checking `typeof E`, and concluded that `enum require { A }` therefore shadows the loader. It does not. TypeScript emits `(function (X) { … })(X || (X = {}))`, so the declaration **merges** with an existing binding — and in CommonJS `require` is already a truthy wrapper parameter, so the enum augments the loader and the call still loads. The probe used a different name than the case, which is exactly where it stopped being evidence:
+
+  ```
+  .cts  typeof require after enum: function   STILL LOADS
+  .mts  typeof require after enum: object     throws TypeError
+  ```
+
+- **The correction lands on a rule that already existed.** Enums and namespaces shadow only where there is nothing to merge with, which is the same module-format split the `var` rule needed, for the same reason: CommonJS supplies a live binding that survives, an ES module does not. Ambiguous extensions keep the reading that reports.
+
+## A test routed around the code under test pins nothing
+
+- **A removal proof passed because the test never reached the changed function.** Reordering `isScannableFile` so a recognised extension outranks a basename heuristic left the suite green, because the test exercised `findBannedImportsForPath` — which never consults `isScannableFile`. The candidate filter is what decides whether a path is read at all, so asserting through a different entry point proved only that the other entry point still worked.
+- **Non-language heuristics keep outranking the language.** First a foreign shebang skipped a `.mjs` file, then a recipe-like basename skipped `runner/Dockerfile.test.mjs` — a file `runner/vitest.config.mjs` really does collect as a suite. Both heuristics exist for files whose format nothing else names; both were being consulted before the extension that already named it.
