@@ -203,8 +203,8 @@ function flattenedProperties(
   source: ts.SourceFile,
   options: ts.ObjectLiteralExpression,
   seen: ReadonlySet<ts.Node> = new Set(),
-): Map<string, ts.ObjectLiteralElementLike> {
-  const properties = new Map<string, ts.ObjectLiteralElementLike>();
+): Map<string, ts.Expression> {
+  const properties = new Map<string, ts.Expression>();
   if (seen.has(options)) return properties;
   const guarded = new Set([...seen, options]);
   for (const property of options.properties) {
@@ -219,10 +219,43 @@ function flattenedProperties(
       }
       continue;
     }
-    if (property.name !== undefined && ts.isIdentifier(property.name)) {
-      properties.set(property.name.text, property);
-    }
+    if (property.name === undefined || !ts.isIdentifier(property.name)) continue;
+    // The *value* is what the checks below read, so it is resolved here rather
+    // than at each of them. A method or accessor named `timeout` is not a
+    // deadline.
+    const value = ts.isPropertyAssignment(property)
+      ? property.initializer
+      : ts.isShorthandPropertyAssignment(property)
+        ? property.name
+        : undefined;
+    if (value !== undefined) properties.set(property.name.text, value);
   }
+  return properties;
+}
+
+/**
+ * Properties written onto a named options object after it was created.
+ *
+ * `const options = {}; options.timeout = 10` sets a deadline that reading the
+ * literal alone cannot see — the same shape the import matcher collects for
+ * `holder.load = require`. Every assignment in the file is a candidate,
+ * because which one ran is control flow.
+ */
+function assignedProperties(source: ts.SourceFile, name: string): Map<string, ts.Expression> {
+  const properties = new Map<string, ts.Expression>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      ts.isIdentifier(node.left.expression) &&
+      node.left.expression.text === name
+    ) {
+      properties.set(node.left.name.text, node.right);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
   return properties;
 }
 
@@ -399,22 +432,23 @@ export function unboundedSpawnCalls(
                     : [];
                 })();
         const argument = isBunApi ? forwarded[1] : forwarded[2];
-        for (const options of resolveOptions(parsed, argument)) {
-          const resolved = flattenedProperties(parsed, options);
+        // A name can also be written to after it was created, so its
+        // assignments are merged over the literal's own properties.
+        const written =
+          argument !== undefined && ts.isIdentifier(argument)
+            ? assignedProperties(parsed, argument.text)
+            : new Map<string, ts.Expression>();
+        const candidates = resolveOptions(parsed, argument);
+        for (const options of candidates.length > 0 || written.size === 0
+          ? candidates
+          : [ts.factory.createObjectLiteralExpression([])]) {
+          const resolved = new Map([...flattenedProperties(parsed, options), ...written]);
           const deadline = resolved.get('timeout');
           const signal = resolved.get('killSignal');
           // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
           // the default a child can trap, so accepting any signal accepts the
           // very thing the rule exists to prevent.
-          const configured =
-            signal === undefined
-              ? undefined
-              : ts.isPropertyAssignment(signal)
-                ? constantString(parsed, signal.initializer)
-                : ts.isShorthandPropertyAssignment(signal)
-                  ? constantString(parsed, signal.name)
-                  : undefined;
-          const nonIgnorable = configured === 'SIGKILL';
+          const nonIgnorable = constantString(parsed, signal) === 'SIGKILL';
           if (deadline !== undefined && !nonIgnorable) {
             offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
             break;
@@ -666,6 +700,26 @@ describe('every subprocess deadline is enforceable', () => {
     expect(
       unboundedSpawnCalls("function run(o = { timeout: 10 }) { spawnSync('x', [], o); }\n", 'p.ts'),
     ).toEqual([1]);
+  });
+
+  it('collects options written onto a name after it was created', () => {
+    // Reading the literal alone cannot see a deadline assigned afterwards —
+    // the same shape the import matcher collects for `holder.load = require`.
+    const assigned = ['const o = {};', 'o.timeout = 10;', "spawnSync('x', [], o);"];
+    expect(unboundedSpawnCalls(assigned.join('\n'), 'p.ts')).toEqual([3]);
+
+    const bounded = [
+      'const o = {};',
+      'o.timeout = 10;',
+      "o.killSignal = 'SIGKILL';",
+      "spawnSync('x', [], o);",
+    ];
+    expect(unboundedSpawnCalls(bounded.join('\n'), 'p.ts')).toEqual([]);
+
+    // A name with no literal to resolve at all — a parameter written to before
+    // the call — is still read through its assignments.
+    const parameter = "function run(o) { o.timeout = 10; spawnSync('x', [], o); }";
+    expect(unboundedSpawnCalls(parameter + '\n', 'p.ts')).toEqual([1]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

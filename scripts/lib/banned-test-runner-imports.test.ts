@@ -2510,11 +2510,38 @@ describe('choices, templates, and member reads', () => {
     ).toEqual([]);
   });
 
+  it('collects a property written onto a holder after it was created', () => {
+    // The member-access twin of `let load; load = require`, which the name
+    // resolver has collected since an early round. Any-match rather than
+    // last-wins: property order *within* a literal is deterministic, but which
+    // of several statements ran is control flow.
+    expect(
+      findBannedImportsForPath('a.cjs', "const h = {}; h.load = require; h.load('bun:test');"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.ts', "const m = {}; m.t = 'bun:test'; await import(m.t);"),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsForPath('a.cjs', "const h = {}; h.load = other; h.load('bun:test');"),
+    ).toEqual([]);
+    // A different binding of the same name contributes nothing.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "function other() { const h = {}; h.load = require; }\nconst h = { load: custom };\nh.load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
   it("recognises Node's own require.main, and an awaited node:module import", () => {
     // `require.main` is the entry Module object, so `require.main.require` is a
     // real loader — and it is a member access rather than a name, which is why
     // the identifier-only receiver resolver could not see it.
     expect(findBannedImportsForPath('a.cjs', "require.main.require('bun:test');")).toHaveLength(1);
+    // `process.mainModule` is the same object under Node's other name for it.
+    expect(
+      findBannedImportsForPath('a.cjs', "process.mainModule.require('bun:test');"),
+    ).toHaveLength(1);
     // `import(...)` is a call whose callee is the `import` keyword rather than
     // a name, so the loader check rejected it and the awaited spelling of the
     // factory import went unread.

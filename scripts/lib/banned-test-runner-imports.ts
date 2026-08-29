@@ -466,7 +466,47 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
     if (declaration !== undefined) return propertiesOfClass(declaration, true);
   }
 
-  return objectsOf(receiver, guarded).flatMap((literal) => effectiveValue(literal, guarded));
+  /**
+   * Values written onto the receiver after it was created.
+   *
+   * `const holder = {}; holder.load = require` is the member-access twin of
+   * `let load; load = require`, which the name resolver has collected since an
+   * early round. Any-match rather than last-wins, and the difference is not
+   * arbitrary: property order *within* a literal is deterministic and visible,
+   * so an override there wins outright, while which of several statements ran
+   * is the control-flow question this module declines everywhere.
+   *
+   * Every assignment in the file is a candidate, filtered by whether its
+   * receiver resolves to this same binding — so a different `holder` in
+   * another scope contributes nothing.
+   */
+  const assignedValues = (): readonly ts.Expression[] => {
+    if (!ts.isIdentifier(receiver)) return [];
+    const binding = innermostBinding(receiver, receiver.text, true);
+    if (binding === undefined) return [];
+    const values: ts.Expression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const target = staticMemberName(unwrapTransparent(node.left));
+        if (
+          target?.name === member.name &&
+          ts.isIdentifier(target.object) &&
+          target.object.text === receiver.text &&
+          innermostBinding(target.object, receiver.text, true) === binding
+        ) {
+          values.push(node.right);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(receiver.getSourceFile());
+    return values;
+  };
+
+  return [
+    ...objectsOf(receiver, guarded).flatMap((literal) => effectiveValue(literal, guarded)),
+    ...assignedValues(),
+  ];
 }
 
 /**
@@ -1520,12 +1560,14 @@ function isModuleObjectExpression(node: ts.Node, seen: ReadonlySet<ts.Node>): bo
   const current = unwrapTransparent(node);
   if (ts.isIdentifier(current)) return resolvesToModuleObject(current, seen);
   const member = staticMemberName(current);
-  return (
-    member?.name === 'main' &&
-    ts.isIdentifier(member.object) &&
-    member.object.text === 'require' &&
-    !isLocallyShadowed(member.object, 'require')
-  );
+  if (member === undefined || !ts.isIdentifier(member.object)) return false;
+  // `require.main` and `process.mainModule` are the same object under two of
+  // Node's own names, so a `.require` on either is the real loader.
+  const owner = member.object.text;
+  const named =
+    (member.name === 'main' && owner === 'require') ||
+    (member.name === 'mainModule' && owner === 'process');
+  return named && !isLocallyShadowed(member.object, owner);
 }
 
 function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.Node>): boolean {
