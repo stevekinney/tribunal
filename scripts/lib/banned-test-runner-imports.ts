@@ -1335,9 +1335,66 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
     const inRegion = regions.some(({ start, end }) => index >= start && index < end);
     masked += character === '\n' || inRegion ? character : ' ';
   }
-  found.push(...findBannedTestRunnerImports(masked, 0, 'component.ts'));
+  // `{#each ['bun:test'] as runner}` binds `runner` to the array's elements,
+  // and that binding has no declaration anywhere in the source to retain — the
+  // mask can only keep text that exists. So the bindings are *appended* as
+  // synthetic declarations, after every original byte, which leaves the offsets
+  // of real code untouched and therefore its reported line numbers correct.
+  //
+  // One declaration per element rather than an index expression: the resolver
+  // treats every initializer of a name as a candidate, so listing them is the
+  // same answer without teaching it to evaluate subscripts.
+  const bindings = templateEachBindings(root.fragment, contents);
+  found.push(
+    ...findBannedTestRunnerImports(
+      bindings.length > 0 ? `${masked}\n${bindings.join('\n')}` : masked,
+      0,
+      'component.ts',
+    ),
+  );
 
   return found.sort((first, second) => first.line - second.line);
+}
+
+/**
+ * Declarations standing in for the bindings an `{#each}` introduces.
+ *
+ * Emitted as text rather than kept as ranges, because the binding is created by
+ * the block itself — there is no declaration in the source to preserve.
+ */
+function templateEachBindings(fragment: unknown, contents: string): string[] {
+  const declarations: string[] = [];
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const record = node as {
+      type?: unknown;
+      expression?: { type?: unknown; elements?: { start?: unknown; end?: unknown }[] };
+      context?: { type?: unknown; start?: unknown; end?: unknown };
+    };
+    if (
+      record.type === 'EachBlock' &&
+      record.context?.type === 'Identifier' &&
+      typeof record.context.start === 'number' &&
+      typeof record.context.end === 'number' &&
+      record.expression?.type === 'ArrayExpression'
+    ) {
+      const name = contents.slice(record.context.start, record.context.end);
+      for (const element of record.expression.elements ?? []) {
+        if (typeof element?.start !== 'number' || typeof element.end !== 'number') continue;
+        declarations.push(`const ${name} = ${contents.slice(element.start, element.end)};`);
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'parent') continue;
+      visit(value);
+    }
+  };
+  visit(fragment);
+  return declarations;
 }
 
 /**

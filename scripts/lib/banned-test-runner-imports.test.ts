@@ -1255,6 +1255,29 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('an each block binds a name the markup can use', () => {
+  it('resolves a specifier taken from the iterated array', () => {
+    // The binding is created by the block, so there is no declaration in the
+    // source to keep. It is appended as a synthetic one after every original
+    // byte, which leaves real offsets — and reported line numbers — untouched.
+    const found = findBannedImportsForPath(
+      'src/J.svelte',
+      '<script lang="ts">let x = 1;</script>\n{#each [\'bun:test\'] as runner}{#await import(runner) then s}<p>{x}</p>{/await}{/each}\n',
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.line).toBe(2);
+  });
+
+  it('stays silent when the iterated array names another module', () => {
+    expect(
+      findBannedImportsForPath(
+        'src/K.svelte',
+        '<script lang="ts">let x = 1;</script>\n{#each [\'vitest\'] as runner}{#await import(runner) then s}<p>{x}</p>{/await}{/each}\n',
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('a module-object alias is followed as far as it goes', () => {
   it('follows two hops', () => {
     expect(
