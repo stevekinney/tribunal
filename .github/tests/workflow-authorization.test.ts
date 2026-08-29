@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   ciWiringViolations,
+  executesAndCanFail,
   stepWiresCommand,
   isAuthorizationGated,
   jobGrantsWrite,
@@ -170,6 +171,44 @@ describe('the CI wiring rule certifies only a bare, unconditional command step',
     // default interpreter counts.
     expect(stepWiresCommand({ run: COMMAND, shell: 'cat {0}' }, COMMAND)).toBe(false);
     expect(stepWiresCommand({ run: COMMAND, shell: 'bash' }, COMMAND)).toBe(false);
+  });
+
+  test('a disabled lint-format job wires nothing, however its steps read', () => {
+    // Two words on the job disable every required gate — including
+    // `audit:workflows` itself, the check that would have caught it — while
+    // each individual step still looks perfectly wired.
+    //
+    // Built from the real `ci.yml` rather than a hand-written step list, so the
+    // fixture cannot drift from whatever the required-command set becomes.
+    const real = loadAllWorkflows().find((entry) => entry.fileName === 'ci.yml');
+    expect(real, 'ci.yml should load').toBeDefined();
+    const withJob = (extra: Record<string, unknown>): Workflow =>
+      ({
+        ...real!.workflow,
+        jobs: {
+          ...real!.workflow.jobs,
+          'lint-format': { ...real!.workflow.jobs['lint-format'], ...extra },
+        },
+      }) as Workflow;
+
+    expect(ciWiringViolations(withJob({}))).toEqual([]);
+    expect(ciWiringViolations(withJob({ if: '${{ false }}' }))).not.toEqual([]);
+    expect(ciWiringViolations(withJob({ 'continue-on-error': true }))).not.toEqual([]);
+  });
+
+  test('the same metadata rule applies to the job, not only its steps', () => {
+    // GitHub skips a job with a false `if:` and lets the workflow pass when a
+    // `continue-on-error` job fails, so two words on the job disable every
+    // required gate — including this audit itself — while each individual step
+    // still looks perfectly wired.
+    expect(executesAndCanFail({})).toBe(true);
+    expect(executesAndCanFail({ if: '${{ false }}' })).toBe(false);
+    expect(executesAndCanFail({ if: "github.ref == 'refs/heads/main'" })).toBe(false);
+    expect(executesAndCanFail({ if: '${{ always() }}' })).toBe(true);
+    expect(executesAndCanFail({ 'continue-on-error': true })).toBe(false);
+    expect(executesAndCanFail({ 'continue-on-error': 'true' })).toBe(false);
+    expect(executesAndCanFail({ 'continue-on-error': false })).toBe(true);
+    expect(executesAndCanFail({ 'continue-on-error': '${{ github.event_name }}' })).toBe(false);
   });
 
   test('rejects a step that merely mentions the command', () => {

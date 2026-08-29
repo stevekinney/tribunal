@@ -562,25 +562,41 @@ const REQUIRED_CI_SECURITY_COMMANDS = [
  * gate, and the remedy is to write the gate as its own step. All three of this
  * repository's real gate steps already take exactly that form.
  */
+/**
+ * Whether a job or a step runs, and whether its failure counts.
+ *
+ * The same two fields decide this at both levels, and GitHub applies them at
+ * both: a job with `if: ${{ false }}` is skipped entirely, and a job with
+ * `continue-on-error: true` lets the workflow pass when the job fails. Checking
+ * them only on steps meant every required gate — including this audit itself —
+ * could be disabled by two words on the job, with each individual step still
+ * looking perfectly wired.
+ */
+export function executesAndCanFail(node: {
+  if?: string;
+  'continue-on-error'?: boolean | string;
+}): boolean {
+  const continues = node['continue-on-error'];
+  // Anything other than a definite false is treated as continuing: an
+  // expression is not knowable here, and guessing permissively is the failure
+  // this rule prevents.
+  if (continues !== undefined && continues !== false && continues !== 'false') return false;
+
+  const condition = node.if;
+  if (condition === undefined) return true;
+  const normalised = String(condition)
+    .trim()
+    .replace(/^\$\{\{|\}\}$/g, '')
+    .trim();
+  return normalised === 'true' || normalised === 'always()';
+}
+
 export function stepWiresCommand(step: WorkflowStep, command: string): boolean {
   // A custom shell decides the interpreter: `shell: cat {0}` prints the script
   // and exits zero. Only the runner's default is accepted, because anything
   // else has to be reasoned about and that is the reasoning this rule removes.
   if (step.shell !== undefined) return false;
-
-  const continues = step['continue-on-error'];
-  if (continues !== undefined && continues !== false && continues !== 'false') return false;
-
-  // A step with a condition may not run at all. `if: ${{ false }}` skips it
-  // while leaving its `run` text untouched.
-  const condition = step.if;
-  if (condition !== undefined) {
-    const normalised = String(condition)
-      .trim()
-      .replace(/^\$\{\{|\}\}$/g, '')
-      .trim();
-    if (normalised !== 'true' && normalised !== 'always()') return false;
-  }
+  if (!executesAndCanFail(step)) return false;
 
   const run = (step.run ?? '').trim();
   if (run === command) return true;
@@ -605,8 +621,13 @@ export function stepWiresCommand(step: WorkflowStep, command: string): boolean {
  * the other three gates remains wired in and independently checks that all
  * four are present.
  */
-export function ciWiringViolations(): Violation[] {
-  const { workflow } = loadWorkflow('ci.yml');
+export function ciWiringViolations(injected?: Workflow): Violation[] {
+  // The workflow is injectable so the rule can be asserted against fixtures.
+  // Reading `ci.yml` unconditionally meant the only way to test a bypass was to
+  // edit the file the guard exists to protect — and a rule that can only be
+  // tested by mutating its own subject is one nobody tests. Production callers
+  // pass nothing.
+  const workflow = injected ?? loadWorkflow('ci.yml').workflow;
   const job = workflow.jobs['lint-format'];
   if (!job) {
     return [
@@ -618,19 +639,11 @@ export function ciWiringViolations(): Violation[] {
       },
     ];
   }
-  // Each step's `run` is examined line by line, and a line must *be* the
-  // command rather than contain it. Concatenating every step and asking
-  // `includes` accepted a step that merely mentions the command — `run: echo
-  // 'bun run validate:test-runner-imports'` satisfied it while the real step
-  // was deleted, so the guard verified textual presence and not execution.
-  // A step marked `continue-on-error` cannot fail the job, so a gate inside one
-  // is wired in appearance only — GitHub keeps the job green when the command
-  // fails. Flattening every step's `run` discarded exactly the metadata that
-  // decides whether a failure counts, so the steps are filtered before their
-  // lines are read. Anything other than a definite false is treated as
-  // continuing: an expression like `${{ ... }}` is not knowable here, and
-  // guessing in the permissive direction is what this rule exists to prevent.
-  const steps = job.steps ?? [];
+  // The job's own metadata decides before any step is read. A skipped or
+  // non-failing job wires nothing however its steps are written — and since
+  // `audit:workflows` is itself one of the required gates, two words on the job
+  // would disable the check that would have caught it.
+  const steps = executesAndCanFail(job) ? (job.steps ?? []) : [];
   return REQUIRED_CI_SECURITY_COMMANDS.filter(
     (command) => !steps.some((step) => stepWiresCommand(step, command)),
   ).map((command) => ({

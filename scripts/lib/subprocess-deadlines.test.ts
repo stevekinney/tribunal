@@ -389,6 +389,29 @@ function readOptions(options: ts.ObjectLiteralExpression): OptionsReading {
     if (key === 'timeout') {
       // An accessor counts: Node reads it and applies whatever it returns, so
       // a `get timeout()` is a deadline even though its value is not knowable.
+      //
+      // A value that *is* readable has to bound something. `timeout: 0` states
+      // a deadline and imposes none — a Node 24 child with it runs to normal
+      // completion — so certifying the call because the property exists
+      // approves a subprocess that can still hang. A positive finite literal
+      // is a deadline; zero, a negative, or anything unreadable is not one this
+      // guard can certify, and unreadable means report.
+      if (!ts.isPropertyAssignment(property)) {
+        deadline = true;
+        continue;
+      }
+      const value = unwrapTransparent(property.initializer);
+      // A type guard as much as a check: `.text` exists only on a literal. Its
+      // runtime effect overlaps the finite test below — a non-literal would
+      // yield `NaN` there and report anyway — so the two together say the same
+      // thing twice, and only the message differs.
+      if (!ts.isNumericLiteral(value)) {
+        return { kind: 'unreadable', because: 'a timeout that is not written as a number' };
+      }
+      const milliseconds = Number(value.text);
+      if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+        return { kind: 'unbounded', because: 'a timeout that imposes no deadline' };
+      }
       deadline = true;
       continue;
     }
@@ -597,13 +620,14 @@ const READABLE_MODES = new Set(['100644', '100755']);
  * is what makes it a deadline — the same pairing this file exists to require,
  * and the same one `validate-test-runner-imports.ts` already uses.
  */
-const GIT_TIMEOUT_MS = 30_000;
 const git = (...args: string[]): string[] =>
   execFileSync('git', args, {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
-    timeout: GIT_TIMEOUT_MS,
+    // Written at the call rather than behind a name, because that is what
+    // this guard requires of every other deadline: a value it can read.
+    timeout: 30_000,
     killSignal: 'SIGKILL',
   })
     .split('\0')
@@ -763,6 +787,25 @@ describe('every subprocess deadline is enforceable', () => {
     // Node reads a `get timeout()` and applies what it returns, so an accessor
     // is a deadline even though its value is not knowable here.
     expect(unbounded("spawnSync('a', [], { get timeout() { return 10; } });")).toEqual([1]);
+  });
+
+  it('requires a timeout value that actually bounds something', () => {
+    // `timeout: 0` states a deadline and imposes none — a Node 24 child with
+    // it runs to normal completion — so certifying the call because the
+    // property exists approves a subprocess that can still hang.
+    expect(unbounded("spawnSync('x', [], { timeout: 0, killSignal: 'SIGKILL' });")).toEqual([1]);
+    expect(unbounded("spawnSync('x', [], { timeout: -1, killSignal: 'SIGKILL' });")).toEqual([1]);
+    // A value the guard cannot read is not one it can certify. The remedy is
+    // the contract's remedy everywhere: write it at the call.
+    expect(
+      unbounded([
+        'const ms = 30_000;',
+        "spawnSync('x', [], { timeout: ms, killSignal: 'SIGKILL' });",
+      ]),
+    ).toEqual([2]);
+    expect(unbounded("spawnSync('x', [], { timeout: 30_000, killSignal: 'SIGKILL' });")).toEqual(
+      [],
+    );
   });
 
   it('accepts a call that sets no deadline at all', () => {

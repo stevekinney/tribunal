@@ -42,14 +42,6 @@ import { resolveRepositoryRoot } from './lib/repository-root';
 const repositoryRoot = resolveRepositoryRoot();
 
 /**
- * Every git invocation here runs inside a pre-commit hook, so none of them may
- * hang the commit. A stalled child (a filesystem that stops responding, a
- * credential prompt on a misconfigured remote) would otherwise block
- * indefinitely, because `spawnSync` has no deadline of its own.
- */
-const GIT_TIMEOUT_MS = 30_000;
-
-/**
  * No path is excluded from this scan.
  *
  * The regex implementation needed an allowlist for its own test file, whose
@@ -107,7 +99,16 @@ type SourceEntry = {
 function runGit(args: string[], stdin?: string): Buffer {
   const result = Bun.spawnSync(['git', ...args], {
     cwd: repositoryRoot,
-    timeout: GIT_TIMEOUT_MS,
+    // Every git invocation here runs inside a pre-commit hook, so none of them
+    // may hang the commit: a filesystem that stops responding or a credential
+    // prompt on a misconfigured remote would otherwise block indefinitely,
+    // because `spawnSync` has no deadline of its own.
+    //
+    // Written at the call rather than behind a name because the deadline
+    // invariant requires a value it can read, exactly as it does for
+    // `killSignal`. The failure below reports the signal rather than repeating
+    // the number, so there is nothing here to drift.
+    timeout: 30_000,
     // `timeout` alone signals the child and then waits for it to exit, so a
     // child that traps or ignores SIGTERM is not bounded at all. Measured: a
     // TERM-trapping child ran the full 5s against a 500ms timeout, while the
@@ -121,7 +122,7 @@ function runGit(args: string[], stdin?: string): Buffer {
   // A timeout kills the child, leaving a null exit code and a signal.
   if (result.exitCode === null) {
     throw new Error(
-      `git ${args[0]} did not finish within ${GIT_TIMEOUT_MS}ms (killed with ${result.signalCode ?? 'unknown signal'}).`,
+      `git ${args[0]} did not finish within its deadline (killed with ${result.signalCode ?? 'unknown signal'}).`,
     );
   }
   if (result.exitCode !== 0) {
