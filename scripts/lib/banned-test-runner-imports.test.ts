@@ -2431,6 +2431,62 @@ describe('choices, templates, and member reads', () => {
     }
   });
 
+  it('reads through a nested member access and through a spread', () => {
+    // Both are siblings of the member read added alongside them, and both were
+    // silent when that read first landed — found here rather than in review,
+    // by probing the shape space the new helper opened instead of only the
+    // shape that was reported.
+    for (const source of [
+      "const c = { a: { load: require } }; c.a.load('bun:test');",
+      "const base = { load: require }; const h = { ...base }; h.load('bun:test');",
+    ]) {
+      expect(findBannedImportsForPath('a.cjs', source), source).toHaveLength(1);
+    }
+    for (const source of [
+      "const c = { a: { t: 'bun:test' } }; await import(c.a.t);",
+      "const b = { t: 'bun:test' }; const m = { ...b }; await import(m.t);",
+    ]) {
+      expect(findBannedImportsForPath('a.ts', source), source).toHaveLength(1);
+    }
+  });
+
+  it('lets a later property override a spread, because that is what runs', () => {
+    // The any-match rule belongs to *branches*, where control flow is unknown.
+    // An override is deterministic and statically visible, so preferring the
+    // banned value here would report a loader the code never holds.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const base = { load: require }; const h = { ...base, load: other }; h.load('bun:test');",
+      ),
+    ).toEqual([]);
+    // Written the other way round, the spread is what survives.
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "const base = { load: require }; const h = { load: other, ...base }; h.load('bun:test');",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('separates a static property from an instance one', () => {
+    expect(
+      findBannedImportsForPath('a.cjs', "class C { static load = require; }\nC.load('bun:test');"),
+    ).toHaveLength(1);
+    // `C.load` does not read an instance property, and `new C().load` does not
+    // read a static one. Reading both for either spelling would report a class
+    // that declares the name on the other side.
+    expect(
+      findBannedImportsForPath('a.cjs', "class C { load = require; }\nC.load('bun:test');"),
+    ).toEqual([]);
+    expect(
+      findBannedImportsForPath(
+        'a.cjs',
+        "class C { static load = require; }\nnew C().load('bun:test');",
+      ),
+    ).toEqual([]);
+  });
+
   it('reads a class property initializer through a construction', () => {
     expect(
       findBannedImportsForPath('a.cjs', "class C { load = require; }\nnew C().load('bun:test');"),

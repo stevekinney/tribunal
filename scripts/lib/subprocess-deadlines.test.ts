@@ -56,6 +56,62 @@ function declaredObjectLiteral(
 }
 
 /**
+ * A string constant, resolved through a name when it is held in one.
+ *
+ * `const killSignal = 'SIGKILL'; spawnSync(..., { timeout, killSignal })` is
+ * compliant code, and reading only an inline literal called it unbounded — a
+ * false positive in a guard, which fails the suite over correct source rather
+ * than letting a bad call through.
+ */
+function constantString(source: ts.SourceFile, node: ts.Node | undefined): string | undefined {
+  if (node === undefined) return undefined;
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (!ts.isIdentifier(node)) return undefined;
+  let found: string | undefined;
+  const visit = (candidate: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(candidate) &&
+      ts.isIdentifier(candidate.name) &&
+      candidate.name.text === node.text &&
+      candidate.initializer !== undefined &&
+      ts.isStringLiteralLike(candidate.initializer)
+    ) {
+      found = candidate.initializer.text;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** The object literal an options argument names, however it was reached. */
+function resolveOptions(
+  source: ts.SourceFile,
+  node: ts.Node | undefined,
+): ts.ObjectLiteralExpression | undefined {
+  if (node === undefined) return undefined;
+  if (ts.isObjectLiteralExpression(node)) return node;
+  if (ts.isIdentifier(node)) return declaredObjectLiteral(source, node.text);
+  // `spawnSync('x', [], presets.strict)` — the options live behind a key on a
+  // declared object, which is as statically known as a name is.
+  if (ts.isPropertyAccessExpression(node)) {
+    const receiver = resolveOptions(source, node.expression);
+    const property = receiver?.properties.find(
+      (candidate) =>
+        candidate.name !== undefined &&
+        ts.isIdentifier(candidate.name) &&
+        candidate.name.text === node.name.text,
+    );
+    return property !== undefined &&
+      ts.isPropertyAssignment(property) &&
+      ts.isObjectLiteralExpression(property.initializer)
+      ? property.initializer
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
  * The properties an options object actually has at run time, spreads resolved.
  *
  * `const deadline = { timeout: 10 }; spawnSync('x', [], { ...deadline })` sets
@@ -241,12 +297,7 @@ export function unboundedSpawnCalls(
           ts.isIdentifier(callee.expression) &&
           callee.expression.text === 'Bun';
         const argument = isBunApi ? node.arguments[1] : node.arguments[2];
-        const options =
-          argument !== undefined && ts.isObjectLiteralExpression(argument)
-            ? argument
-            : argument !== undefined && ts.isIdentifier(argument)
-              ? declaredObjectLiteral(parsed, argument.text)
-              : undefined;
+        const options = resolveOptions(parsed, argument);
         if (options !== undefined) {
           const resolved = flattenedProperties(parsed, options);
           const deadline = resolved.get('timeout');
@@ -254,11 +305,15 @@ export function unboundedSpawnCalls(
           // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
           // the default a child can trap, so accepting any signal accepts the
           // very thing the rule exists to prevent.
-          const nonIgnorable =
-            signal !== undefined &&
-            ts.isPropertyAssignment(signal) &&
-            ts.isStringLiteralLike(signal.initializer) &&
-            signal.initializer.text === 'SIGKILL';
+          const configured =
+            signal === undefined
+              ? undefined
+              : ts.isPropertyAssignment(signal)
+                ? constantString(parsed, signal.initializer)
+                : ts.isShorthandPropertyAssignment(signal)
+                  ? constantString(parsed, signal.name)
+                  : undefined;
+          const nonIgnorable = configured === 'SIGKILL';
           if (deadline !== undefined && !nonIgnorable) {
             offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
           }
@@ -402,6 +457,37 @@ describe('every subprocess deadline is enforceable', () => {
       ['only.ts', "import { spawn } from './pty';\nspawn('x', [], { timeout: 10 });"],
     ]);
     expect([...exportedSpawnAliases(files)]).toEqual([]);
+  });
+
+  it('reads a signal held in a name, or written in shorthand', () => {
+    // Both are compliant code the previous reader called unbounded. A guard
+    // that fails the suite over correct source is worse than one that misses a
+    // call, because it teaches people to route around it.
+    const shorthand = [
+      "const killSignal = 'SIGKILL';",
+      "spawnSync('x', [], { timeout: 10, killSignal });",
+    ];
+    expect(unboundedSpawnCalls(shorthand.join('\n'), 'p.ts')).toEqual([]);
+
+    const named = [
+      "const signal = 'SIGKILL';",
+      "spawnSync('x', [], { timeout: 10, killSignal: signal });",
+    ];
+    expect(unboundedSpawnCalls(named.join('\n'), 'p.ts')).toEqual([]);
+
+    const ignorable = [
+      "const signal = 'SIGTERM';",
+      "spawnSync('x', [], { timeout: 10, killSignal: signal });",
+    ];
+    expect(unboundedSpawnCalls(ignorable.join('\n'), 'p.ts')).toEqual([2]);
+  });
+
+  it('resolves options reached through a key on a declared object', () => {
+    const source = [
+      'const presets = { strict: { timeout: 10 } };',
+      "spawnSync('x', [], presets.strict);",
+    ];
+    expect(unboundedSpawnCalls(source.join('\n'), 'p.ts')).toEqual([2]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

@@ -289,47 +289,96 @@ function memberValues(node: ts.Node, seen: ReadonlySet<ts.Node>): readonly ts.Ex
   if (seen.has(node)) return [];
   const member = staticMemberName(node);
   if (member === undefined) return [];
+  const guarded = new Set([...seen, node]);
 
-  const fromObjectLiteral = (literal: ts.ObjectLiteralExpression): ts.Expression[] =>
-    literal.properties.flatMap((property) => {
-      if (property.name === undefined || !ts.isIdentifier(property.name)) return [];
-      if (property.name.text !== member.name) return [];
-      if (ts.isPropertyAssignment(property)) return [property.initializer];
-      // `{ require }` is shorthand for `{ require: require }`, so the name
-      // itself is the value.
-      if (ts.isShorthandPropertyAssignment(property)) return [property.name];
-      return [];
-    });
-
-  const fromClass = (declaration: ts.ClassLikeDeclaration): ts.Expression[] =>
-    declaration.members.flatMap((element) =>
-      ts.isPropertyDeclaration(element) &&
-      ts.isIdentifier(element.name) &&
-      element.name.text === member.name &&
-      element.initializer !== undefined
-        ? [element.initializer]
-        : [],
-    );
-
-  const readFrom = (candidate: ts.Node, visited: ReadonlySet<ts.Node>): ts.Expression[] => {
-    const current = unwrapTransparent(candidate);
-    if (ts.isObjectLiteralExpression(current)) return fromObjectLiteral(current);
-    // `new Holder().load('bun:test')` reads the initializer the class writes
-    // for that property. Resolved through the same binding walk every other
-    // name goes through, so a shadowed or locally rebound class name answers
-    // the same way it does everywhere else.
-    if (ts.isNewExpression(current) && ts.isIdentifier(current.expression)) {
-      const bound = innermostBinding(current.expression, current.expression.text, true);
-      return bound !== undefined && ts.isClassDeclaration(bound) ? fromClass(bound) : [];
+  /**
+   * The value a key actually has, spreads flattened in order and later
+   * properties winning.
+   *
+   * Not the any-match rule the choice resolver uses, and deliberately so. A
+   * branch is a control-flow question this module declines, so either operand
+   * counts; an override is deterministic and statically visible, so
+   * `{ ...base, load: other }` holds `other` and nothing else. Preferring the
+   * banned one here would report a value the code never has.
+   */
+  const effectiveValue = (
+    literal: ts.ObjectLiteralExpression,
+    visited: ReadonlySet<ts.Node>,
+  ): ts.Expression[] => {
+    let chosen: ts.Expression[] = [];
+    for (const property of literal.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        for (const source of objectsOf(property.expression, visited)) {
+          const inherited = effectiveValue(source, visited);
+          if (inherited.length > 0) chosen = inherited;
+        }
+        continue;
+      }
+      if (property.name === undefined || !ts.isIdentifier(property.name)) continue;
+      if (property.name.text !== member.name) continue;
+      // A method or an accessor named the same thing is not the value: reading
+      // its body is evaluating a function, which is declined here and tested.
+      chosen = ts.isPropertyAssignment(property)
+        ? [property.initializer]
+        : // `{ require }` is shorthand for `{ require: require }`.
+          ts.isShorthandPropertyAssignment(property)
+          ? [property.name]
+          : [];
     }
-    if (ts.isIdentifier(current) && !visited.has(current)) {
-      const next = new Set([...visited, current]);
-      return aliasInitializers(current).flatMap((initializer) => readFrom(initializer, next));
-    }
-    return [];
+    return chosen;
   };
 
-  return readFrom(member.object, new Set([...seen, node]));
+  /** Every object literal a receiver expression can be. */
+  function objectsOf(
+    candidate: ts.Node,
+    visited: ReadonlySet<ts.Node>,
+  ): readonly ts.ObjectLiteralExpression[] {
+    const current = unwrapTransparent(candidate);
+    if (ts.isObjectLiteralExpression(current)) return [current];
+    if (ts.isIdentifier(current) && !visited.has(current)) {
+      const next = new Set([...visited, current]);
+      return aliasInitializers(current).flatMap((initializer) => objectsOf(initializer, next));
+    }
+    // `container.holder.load` — the receiver is itself a member read, resolved
+    // by the same function rather than by a second copy of it.
+    return memberValues(current, visited).flatMap((value) => objectsOf(value, visited));
+  }
+
+  const propertiesOfClass = (
+    declaration: ts.ClassLikeDeclaration,
+    wantStatic: boolean,
+  ): ts.Expression[] =>
+    declaration.members.flatMap((element) => {
+      if (!ts.isPropertyDeclaration(element)) return [];
+      if (!ts.isIdentifier(element.name) || element.name.text !== member.name) return [];
+      // `C.load` reads a static property and `new C().load` an instance one.
+      // Reading both for either spelling would report a class that declares
+      // the name on the other side.
+      const isStatic =
+        element.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+        true;
+      if (isStatic !== wantStatic) return [];
+      return element.initializer === undefined ? [] : [element.initializer];
+    });
+
+  /** The class a name is bound to, if it is bound to one. */
+  const classNamed = (identifier: ts.Identifier): ts.ClassDeclaration | undefined => {
+    const bound = innermostBinding(identifier, identifier.text, true);
+    return bound !== undefined && ts.isClassDeclaration(bound) ? bound : undefined;
+  };
+
+  const receiver = unwrapTransparent(member.object);
+
+  if (ts.isNewExpression(receiver) && ts.isIdentifier(receiver.expression)) {
+    const declaration = classNamed(receiver.expression);
+    return declaration === undefined ? [] : propertiesOfClass(declaration, false);
+  }
+  if (ts.isIdentifier(receiver)) {
+    const declaration = classNamed(receiver);
+    if (declaration !== undefined) return propertiesOfClass(declaration, true);
+  }
+
+  return objectsOf(receiver, guarded).flatMap((literal) => effectiveValue(literal, guarded));
 }
 
 /**
