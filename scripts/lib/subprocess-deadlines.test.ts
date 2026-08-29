@@ -6,7 +6,6 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
-  aliasInitializers,
   hasForeignShebang,
   innermostBinding,
   isExtensionlessPath,
@@ -30,265 +29,17 @@ import { resolveRepositoryRoot } from './repository-root';
 //  2. It then walked the filesystem, which the same rules file forbids: a walk
 //     enters ignored directories and fails the repository over a stale copy
 //     git would never commit. The enumeration is git's now.
-//  3. It asserted on the file's *text*, so a file containing one compliant call
-//     and one unbounded call passed — both strings were present somewhere. Each
-//     call is inspected on its own now.
+//  3. It asserted on the file's *text*, so a file containing one compliant and
+//     one unbounded call passed — both strings were present somewhere.
+//  4. It then resolved options through a dataflow reader, and every resolver
+//     added to read one more route became the surface for the next one to be
+//     missing. It refuses to guess now: options it cannot read inline are
+//     reported rather than resolved.
 const here = dirname(fileURLToPath(import.meta.url));
 const root =
   typeof (import.meta as { dir?: string }).dir === 'string'
     ? resolveRepositoryRoot()
     : join(here, '..', '..');
-
-/**
- * Names are resolved through their lexical binding, not by searching the file
- * for matching text.
- *
- * The text search this replaces made the answer depend on unrelated
- * declaration order: an outer `const options` written *after* a function that
- * declares its own could supply the value for the inner call. Binding
- * resolution already exists in `banned-test-runner-imports.ts`, is exercised by
- * hundreds of tests there, and is imported rather than reimplemented — a
- * second, weaker copy of a rule the sibling module already owns is the
- * duplication this pair of guards keeps being corrected for.
- */
-
-/**
- * The property name a literal declares, however it is spelled.
- *
- * `{ 'timeout': 10 }` creates the same property as `{ timeout: 10 }`, and
- * matching only an `Identifier` broke both ways: a quoted `timeout` hid a real
- * deadline, and a quoted `killSignal` made a compliant call read as unbounded.
- * The same folding the sibling module applies to member names.
- */
-function staticPropertyName(name: ts.PropertyName | undefined): string | undefined {
-  if (name === undefined) return undefined;
-  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
-    return name.text;
-  }
-  return ts.isComputedPropertyName(name) ? constantString(name.expression) : undefined;
-}
-
-/** A string constant, resolved through the binding when it is held in a name. */
-function constantString(
-  node: ts.Node | undefined,
-  seen: ReadonlySet<ts.Node> = new Set(),
-): string | undefined {
-  if (node === undefined || seen.has(node)) return undefined;
-  if (ts.isStringLiteralLike(node)) return node.text;
-  if (!ts.isIdentifier(node)) return undefined;
-  const guarded = new Set([...seen, node]);
-  for (const initializer of aliasInitializers(node)) {
-    const resolved = constantString(initializer, guarded);
-    if (resolved !== undefined) return resolved;
-  }
-  return undefined;
-}
-
-/**
- * Every object literal an options argument can be.
- *
- * A list rather than one answer, because `flag ? strict : lenient` can be
- * either and which runs is not knowable — so both are candidates and an
- * unbounded one is a violation.
- */
-function resolveOptions(
-  candidate: ts.Node | undefined,
-  seen: ReadonlySet<ts.Node> = new Set(),
-): readonly ts.ObjectLiteralExpression[] {
-  if (candidate === undefined || seen.has(candidate)) return [];
-  const guarded = new Set([...seen, candidate]);
-  // `{ timeout: 10 } satisfies SpawnSyncOptions` is erased at run time and the
-  // child receives the timed object, but a reader recognising only a bare
-  // literal saw no deadline. Parentheses and `as` had the same gap. Which forms
-  // are transparent is a property of the node rather than of the guard reading
-  // it, so this asks the sibling module's function instead of listing them
-  // again here.
-  const node = unwrapTransparent(candidate);
-
-  if (ts.isObjectLiteralExpression(node)) return [node];
-
-  if (ts.isConditionalExpression(node)) {
-    return [...resolveOptions(node.whenTrue, guarded), ...resolveOptions(node.whenFalse, guarded)];
-  }
-  if (
-    ts.isBinaryExpression(node) &&
-    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
-      node.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-  ) {
-    return [...resolveOptions(node.left, guarded), ...resolveOptions(node.right, guarded)];
-  }
-
-  // `Object.freeze({ ... })` returns the object handed to it, and freezing a
-  // shared options preset is the idiomatic way to write one.
-  if (
-    ts.isCallExpression(node) &&
-    node.arguments.length === 1 &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    ts.isIdentifier(node.expression.expression) &&
-    node.expression.expression.text === 'Object' &&
-    (node.expression.name.text === 'freeze' || node.expression.name.text === 'seal')
-  ) {
-    return resolveOptions(node.arguments[0], guarded);
-  }
-
-  // A name yields every value its binding receives — the declaration's
-  // initializer, a deferred assignment, a parameter default — because that is
-  // what `aliasInitializers` already collects, scope-correctly.
-  if (ts.isIdentifier(node)) {
-    return aliasInitializers(node).flatMap((initializer) => resolveOptions(initializer, guarded));
-  }
-
-  if (ts.isElementAccessExpression(node) && ts.isNumericLiteral(node.argumentExpression)) {
-    const index = Number(node.argumentExpression.text);
-    return resolveList(node.expression, guarded).flatMap((list) =>
-      resolveOptions(list.elements[index], guarded),
-    );
-  }
-
-  // Both spellings of a member read call the same function, so recognising
-  // only the dotted one is bypassed by writing the bracketed one.
-  const key = ts.isPropertyAccessExpression(node)
-    ? node.name.text
-    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
-      ? node.argumentExpression.text
-      : undefined;
-  if (key === undefined) return [];
-
-  return resolveOptions((node as ts.PropertyAccessExpression).expression, guarded)
-    .map((receiver) =>
-      receiver.properties.find((property) => staticPropertyName(property.name) === key),
-    )
-    .flatMap((property) =>
-      property !== undefined && ts.isPropertyAssignment(property)
-        ? resolveOptions(property.initializer, guarded)
-        : [],
-    );
-}
-
-/** The array literals an expression names, resolved the same way options are. */
-function resolveList(
-  node: ts.Node,
-  seen: ReadonlySet<ts.Node>,
-): readonly ts.ArrayLiteralExpression[] {
-  if (seen.has(node)) return [];
-  if (ts.isArrayLiteralExpression(node)) return [node];
-  if (ts.isIdentifier(node)) {
-    const guarded = new Set([...seen, node]);
-    return aliasInitializers(node).flatMap((initializer) => resolveList(initializer, guarded));
-  }
-  return [];
-}
-
-/**
- * The properties an options object actually has at run time, spreads resolved.
- *
- * Later properties win, exactly as they do at run time, so
- * `{ ...deadline, killSignal: 'SIGTERM' }` reads as SIGTERM rather than as
- * whatever the spread supplied.
- */
-function flattenedProperties(
-  options: ts.ObjectLiteralExpression,
-  seen: ReadonlySet<ts.Node> = new Set(),
-): Map<string, ts.Expression> {
-  const properties = new Map<string, ts.Expression>();
-  if (seen.has(options)) return properties;
-  const guarded = new Set([...seen, options]);
-  for (const property of options.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      for (const spread of resolveOptions(property.expression, guarded)) {
-        for (const [name, value] of flattenedProperties(spread, guarded))
-          properties.set(name, value);
-      }
-      continue;
-    }
-    const key = staticPropertyName(property.name);
-    if (key === undefined) continue;
-    // A method or accessor named `timeout` is not a deadline; the value is what
-    // the checks read, so it is resolved once here.
-    const value = ts.isPropertyAssignment(property)
-      ? property.initializer
-      : ts.isShorthandPropertyAssignment(property)
-        ? property.name
-        : undefined;
-    if (value !== undefined) properties.set(key, value);
-  }
-  return properties;
-}
-
-/**
- * Properties written onto a named options object after it was created.
- *
- * `const options = {}; options.timeout = 10` sets a deadline that reading the
- * literal alone cannot see. The search covers the whole file and is filtered by
- * *binding identity*, not by spelling — otherwise a parameter named `options`
- * inside an unrelated function merges its `killSignal` into the outer object
- * and an unbounded call reads as compliant. Both spellings of the write are
- * accepted, since `options['timeout'] = 10` sets the same property.
- */
-function assignedProperties(receiver: ts.Identifier, call: ts.Node): Map<string, ts.Expression> {
-  const properties = new Map<string, ts.Expression>();
-  const binding = innermostBinding(receiver, receiver.text, true);
-
-  /** The nearest function body or source file a node sits in. */
-  const enclosingScope = (node: ts.Node): ts.Node => {
-    for (
-      let current: ts.Node | undefined = node.parent;
-      current !== undefined;
-      current = current.parent
-    ) {
-      if (ts.isFunctionLike(current) || ts.isSourceFile(current)) return current;
-    }
-    return node.getSourceFile();
-  };
-  const contains = (ancestor: ts.Node, node: ts.Node): boolean => {
-    for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
-      if (current === ancestor) return true;
-    }
-    return false;
-  };
-
-  /**
-   * Whether a write can have run before this call.
-   *
-   * Collecting every write in the file made `spawnSync('x', [], options);
-   * options.killSignal = 'SIGKILL';` read as compliant, though the subprocess
-   * starts before the signal is ever assigned — and a write inside a function
-   * nothing invokes had the same effect. A write counts only when it precedes
-   * the call in source order *and* sits in a scope enclosing it. That is the
-   * conservative half of the question: it can drop a write that really did run
-   * through some call path, and that direction fails toward reporting.
-   */
-  const canPrecede = (write: ts.Node): boolean =>
-    write.end <= call.getStart() && contains(enclosingScope(write), call);
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const target = node.left;
-      const owner =
-        ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)
-          ? target.expression
-          : undefined;
-      const key = ts.isPropertyAccessExpression(target)
-        ? target.name.text
-        : ts.isElementAccessExpression(target) && ts.isStringLiteralLike(target.argumentExpression)
-          ? target.argumentExpression.text
-          : undefined;
-      if (
-        key !== undefined &&
-        owner !== undefined &&
-        ts.isIdentifier(owner) &&
-        owner.text === receiver.text &&
-        innermostBinding(owner, owner.text, true) === binding &&
-        canPrecede(node)
-      ) {
-        properties.set(key, node.right);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(receiver.getSourceFile());
-  return properties;
-}
 
 const NODE_CHILD_PROCESS = new Set(['node:child_process', 'child_process']);
 
@@ -320,9 +71,16 @@ function loadsChildProcess(node: ts.Node): boolean {
 export function spawnAliasesIn(
   parsed: ts.SourceFile,
   exportsOf: (specifier: string) => ReadonlySet<string>,
-): { direct: Set<string>; namespaces: Set<string>; exported: Set<string> } {
-  const direct = new Set<string>();
-  const namespaces = new Set<string>();
+): {
+  direct: Map<string, ts.Identifier>;
+  namespaces: Map<string, ts.Identifier>;
+  exported: Set<string>;
+} {
+  // Keyed to the identifier that *binds* the name, so a call can be checked
+  // against the binding rather than against the spelling: a file that really
+  // imports `spawnSync` can still shadow it in a nested scope.
+  const direct = new Map<string, ts.Identifier>();
+  const namespaces = new Map<string, ts.Identifier>();
   const exported = new Set<string>();
 
   const fromSpecifier = (
@@ -340,7 +98,8 @@ export function spawnAliasesIn(
       if (clause !== undefined && ts.isNamedImports(clause)) {
         for (const element of clause.elements) {
           const imported = element.propertyName?.text ?? element.name.text;
-          if (fromSpecifier(node.moduleSpecifier, imported) === true) direct.add(element.name.text);
+          if (fromSpecifier(node.moduleSpecifier, imported) === true)
+            direct.set(element.name.text, element.name);
         }
       }
       // `import * as cp from 'node:child_process'` binds the module object, and
@@ -351,7 +110,7 @@ export function spawnAliasesIn(
         ts.isStringLiteralLike(node.moduleSpecifier) &&
         NODE_CHILD_PROCESS.has(node.moduleSpecifier.text)
       ) {
-        namespaces.add(clause.name.text);
+        namespaces.set(clause.name.text, clause.name);
       }
     }
 
@@ -361,7 +120,7 @@ export function spawnAliasesIn(
     // traded a false positive for a false negative.
     if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
       if (loadsChildProcess(node.initializer)) {
-        if (ts.isIdentifier(node.name)) namespaces.add(node.name.text);
+        if (ts.isIdentifier(node.name)) namespaces.set(node.name.text, node.name);
         if (ts.isObjectBindingPattern(node.name)) {
           for (const element of node.name.elements) {
             const key =
@@ -370,7 +129,8 @@ export function spawnAliasesIn(
                 : ts.isIdentifier(element.name)
                   ? element.name.text
                   : undefined;
-            if (key === 'spawnSync' && ts.isIdentifier(element.name)) direct.add(element.name.text);
+            if (key === 'spawnSync' && ts.isIdentifier(element.name))
+              direct.set(element.name.text, element.name);
           }
         }
       }
@@ -380,7 +140,7 @@ export function spawnAliasesIn(
         ts.isIdentifier(node.initializer) &&
         direct.has(node.initializer.text)
       ) {
-        direct.add(node.name.text);
+        direct.set(node.name.text, node.name);
       }
     }
 
@@ -494,6 +254,90 @@ export function exportedSpawnAliases(files: ReadonlyMap<string, string>): Map<st
   }
 }
 
+/**
+ * The options a call passes must be written where this guard can read them.
+ *
+ * This replaces a dataflow resolver, and the replacement is a *contract*
+ * change rather than a refactor: options reached through a name, a spread, a
+ * preset, a branch, or an accessor are now **rejected** rather than resolved.
+ * The remedy is to write the object inline at the call, which is the form all
+ * seven of this repository's real spawn calls already use.
+ *
+ * The reasoning, recorded because the previous approach was defended for
+ * several rounds before it was abandoned. Resolving "what does this options
+ * value hold" is open-ended in JavaScript — a value can arrive through
+ * bindings, spreads, member reads, branches, writes after creation, and
+ * accessors — and each resolver added to read one more route became surface
+ * for the next one to be missing. Fifteen findings against that resolver were
+ * filed and fixed on this branch, and the last cycle produced six more in the
+ * code written to close the previous six. The fix surface *was* the finding
+ * surface.
+ *
+ * A guard that refuses to guess has neither problem. Anything it cannot read
+ * is reported, so a false negative is impossible by construction rather than
+ * by exhaustion; the cost is that a legitimate shared preset is rejected, and
+ * that cost is paid by inlining the literal. What was bought with a hundred
+ * lines and fifteen findings is now bought with a rule.
+ */
+type OptionsReading =
+  | { kind: 'compliant' }
+  | { kind: 'unreadable'; because: string }
+  | { kind: 'unbounded'; because: string };
+
+const SIGKILL = 'SIGKILL';
+
+/** The name a property declares, when it is written as a constant. */
+function staticPropertyName(name: ts.PropertyName | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  if (!ts.isComputedPropertyName(name)) return undefined;
+  const key = unwrapTransparent(name.expression);
+  return ts.isStringLiteralLike(key) || ts.isNumericLiteral(key) ? key.text : undefined;
+}
+
+/** Whether an options literal pairs its deadline with a non-ignorable signal. */
+function readOptions(options: ts.ObjectLiteralExpression): OptionsReading {
+  let deadline = false;
+  let signal: string | undefined;
+
+  for (const property of options.properties) {
+    // A spread can carry a `timeout` in from anywhere, so an object containing
+    // one cannot be certified at all.
+    if (ts.isSpreadAssignment(property)) {
+      return { kind: 'unreadable', because: 'a spread can carry a deadline in from elsewhere' };
+    }
+    const key = staticPropertyName(property.name);
+    if (key === undefined) {
+      return { kind: 'unreadable', because: 'a computed key that is not a constant' };
+    }
+    if (key === 'timeout') {
+      // An accessor counts: Node reads it and applies whatever it returns, so
+      // a `get timeout()` is a deadline even though its value is not knowable.
+      deadline = true;
+      continue;
+    }
+    if (key !== 'killSignal') continue;
+    // The *value* matters, not the property. `killSignal: 'SIGTERM'` is the
+    // default a child can trap, which is the exact failure the rule prevents.
+    // `'SIGKILL' as const` is the same literal wearing a wrapper.
+    if (!ts.isPropertyAssignment(property)) {
+      return { kind: 'unreadable', because: 'a killSignal that is not written as a literal' };
+    }
+    const value = unwrapTransparent(property.initializer);
+    if (!ts.isStringLiteralLike(value)) {
+      return { kind: 'unreadable', because: 'a killSignal that is not written as a literal' };
+    }
+    signal = value.text;
+  }
+
+  if (!deadline) return { kind: 'compliant' };
+  return signal === SIGKILL
+    ? { kind: 'compliant' }
+    : { kind: 'unbounded', because: `timeout without killSignal: '${SIGKILL}'` };
+}
+
 export function unboundedSpawnCalls(
   source: string,
   fileName: string,
@@ -509,13 +353,34 @@ export function unboundedSpawnCalls(
   };
   const { direct, namespaces } = spawnAliasesIn(parsed, exportsOf);
 
-  /** Whether a callee really is Node's spawner, by provenance rather than spelling. */
+  /**
+   * Whether a callee really is Node's spawner, by provenance and by binding.
+   *
+   * Provenance alone was not enough: a file that genuinely imports `spawnSync`
+   * can shadow the name in a nested scope, and `function run(spawnSync) { … }`
+   * is then ordinary application code. The callee's binding has to be the
+   * binding the import created, which both sides resolve through the same
+   * function so they agree by construction.
+   */
   const isSpawner = (callee: ts.Node): boolean => {
-    if (ts.isIdentifier(callee)) return direct.has(callee.text);
+    if (ts.isIdentifier(callee)) {
+      const bound = direct.get(callee.text);
+      return (
+        bound !== undefined &&
+        innermostBinding(callee, callee.text, true) === innermostBinding(bound, callee.text, true)
+      );
+    }
     if (!ts.isPropertyAccessExpression(callee)) return false;
     if (callee.name.text !== 'spawnSync') return false;
     if (!ts.isIdentifier(callee.expression)) return false;
-    return callee.expression.text === 'Bun' || namespaces.has(callee.expression.text);
+    const receiver = callee.expression;
+    if (receiver.text === 'Bun') return true;
+    const bound = namespaces.get(receiver.text);
+    return (
+      bound !== undefined &&
+      innermostBinding(receiver, receiver.text, true) ===
+        innermostBinding(bound, receiver.text, true)
+    );
   };
 
   const visit = (node: ts.Node): void => {
@@ -544,39 +409,39 @@ export function unboundedSpawnCalls(
                     : [];
                 })();
 
-        // Node accepts both `spawnSync(command, args, options)` and
-        // `spawnSync(command, options)`; Bun's only form is the second. Rather
-        // than classify the argument list, both positions are read and every
-        // object literal either resolves to is a candidate — an args array
-        // never resolves to one, so it contributes nothing. That collapses
-        // three overloads into one reader with no signature table to keep
-        // correct.
-        const candidateArguments = [forwarded[1], forwarded[2]];
-        const written = candidateArguments
-          .filter(
-            (argument): argument is ts.Identifier =>
-              argument !== undefined && ts.isIdentifier(argument),
-          )
-          .map((argument) => assignedProperties(argument, node));
-        const resolved = candidateArguments.flatMap((argument) => resolveOptions(argument));
-        const objects: (ts.ObjectLiteralExpression | undefined)[] =
-          resolved.length > 0 ? resolved : written.some((map) => map.size > 0) ? [undefined] : [];
+        // Where the options sit. Node accepts `(command, args, options)` and
+        // `(command, options)`; Bun's only form is the second, and its first
+        // argument is the command rather than an argument list.
+        //
+        // Index one is read as options only when it is written as an object
+        // literal, because `spawnSync(command, args)` with a *named* argument
+        // list is ordinary code and reporting it would be a false positive on
+        // the common shape. The residual is stated rather than left to be
+        // found: Node's two-argument overload with a *named* options object —
+        // `spawnSync('tool', settings)` — is read as an argument list and so
+        // passes. Closing it would report every `spawnSync(command, args)`,
+        // which is the worse trade.
+        const isBun =
+          ts.isPropertyAccessExpression(target) &&
+          ts.isIdentifier(target.expression) &&
+          target.expression.text === 'Bun';
+        const first = forwarded[1] === undefined ? undefined : unwrapTransparent(forwarded[1]);
+        const second = forwarded[2] === undefined ? undefined : unwrapTransparent(forwarded[2]);
+        const optionsArgument =
+          second ??
+          (isBun || (first !== undefined && ts.isObjectLiteralExpression(first))
+            ? first
+            : undefined);
 
-        for (const options of objects) {
-          const properties = new Map<string, ts.Expression>([
-            ...(options === undefined ? [] : flattenedProperties(options)),
-            ...written.flatMap((map) => [...map]),
-          ]);
-          const deadline = properties.get('timeout');
-          // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
-          // the default a child can trap, so accepting any signal accepts the
-          // very thing the rule exists to prevent.
-          if (
-            deadline !== undefined &&
-            constantString(properties.get('killSignal')) !== 'SIGKILL'
-          ) {
+        if (optionsArgument !== undefined) {
+          const reading = ts.isObjectLiteralExpression(optionsArgument)
+            ? readOptions(optionsArgument)
+            : ({
+                kind: 'unreadable',
+                because: 'options that are not written inline at the call',
+              } as const);
+          if (reading.kind !== 'compliant') {
             offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
-            break;
           }
         }
       }
@@ -587,13 +452,6 @@ export function unboundedSpawnCalls(
   return offenders;
 }
 
-// `--stage` so entries can be filtered by mode rather than by guessing from
-// the path. This repository tracks `.claude/skills/tensorlake` as a symlink
-// (mode 120000) pointing at a directory, and reading it follows the link and
-// throws EISDIR. Gitlinks (160000) have no file behind them at all. The
-// previous extension filter hid both by excluding every extensionless path,
-// which is exactly the exclusion this guard is removing — so widening the
-// selection means handling what the wider set actually contains.
 const READABLE_MODES = new Set(['100644', '100755']);
 const tracked = execFileSync('git', ['ls-files', '-z', '--stage'], {
   cwd: root,
@@ -667,6 +525,14 @@ function unboundedSpawnCallsFinds(path: string, text: string): boolean {
  * and the prefix is subtracted from the reported lines so the expectations
  * below still read against the source as written.
  */
+
+/**
+ * A fixture with provenance, reported in the fixture's own line numbers.
+ *
+ * A callee merely *spelled* `spawnSync` is ordinary application code, so each
+ * fixture carries the import that makes it the spawner and the prefix is
+ * subtracted from the reported lines.
+ */
 const IMPORTED = "import { spawnSync } from 'node:child_process';";
 const unbounded = (source: string | string[], fileName = 'p.ts'): number[] =>
   unboundedSpawnCalls(
@@ -679,13 +545,16 @@ describe('every subprocess deadline is enforceable', () => {
     expect(spawners.length).toBeGreaterThan(0);
   });
 
+  it.each(spawners)('%s bounds every deadline it sets', (relativePath) => {
+    const source = sources.get(relativePath) ?? '';
+    expect(unboundedSpawnCalls(source, relativePath, repositoryAliases, trackedPaths)).toEqual([]);
+  });
+
   it('admits runnable extensionless entrypoints, not only known extensions', () => {
     // An extension regex dropped every extensionless path, so `bin/release`
-    // could set a deadline without `SIGKILL` and never reach this invariant —
-    // while the companion scanner supports those files and documents that
-    // `bun bin/run-tests` is one. This repository currently tracks none, so the
-    // widening is unprovable against the tree itself; the predicate is asserted
-    // directly instead of leaving it untested.
+    // could set a deadline without `SIGKILL` and never reach this invariant.
+    // This repository tracks none, so the widening is unprovable against the
+    // tree; the predicate is asserted directly instead.
     expect(isInspectableSource('bin/release', '#!/usr/bin/env bun\nspawnSync();\n')).toBe(true);
     expect(isInspectableSource('bin/deploy.sh', '#!/bin/sh\necho hi\n')).toBe(false);
     expect(isInspectableSource('bin/tool', '#!/usr/bin/env python3\nprint(1)\n')).toBe(false);
@@ -693,24 +562,60 @@ describe('every subprocess deadline is enforceable', () => {
     expect(isInspectableSource('logo.svg', '<svg/>\n')).toBe(false);
   });
 
-  it.each(spawners)('%s bounds every deadline it sets', (relativePath) => {
-    const source = sources.get(relativePath) ?? '';
-    expect(unboundedSpawnCalls(source, relativePath, repositoryAliases, trackedPaths)).toEqual([]);
+  it('accepts an inline deadline paired with a non-ignorable signal', () => {
+    expect(unbounded("spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' });")).toEqual([]);
+    // The wrappers that erase at run time leave the same literal behind.
+    expect(
+      unbounded("spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' as const });"),
+    ).toEqual([]);
+    expect(
+      unbounded("spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' } satisfies object);"),
+    ).toEqual([]);
+    // A key names the same property however it is spelled.
+    expect(unbounded("spawnSync('a', [], { 'timeout': 10, ['killSignal']: 'SIGKILL' });")).toEqual(
+      [],
+    );
   });
 
-  it('catches an unbounded call sitting beside a compliant one', () => {
-    // The failure the original text-based version missed: both strings are
-    // present in the file, so a whole-file assertion passed.
-    expect(
-      unbounded([
-        "spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' });",
-        "spawnSync('b', [], { timeout: 10 });",
-      ]),
-    ).toEqual([2]);
+  it('reports a deadline that is unpaired or paired with an ignorable signal', () => {
+    expect(unbounded("spawnSync('a', [], { timeout: 10 });")).toEqual([1]);
+    // SIGTERM is the default a child can trap — the exact failure the rule
+    // exists to prevent.
+    expect(unbounded("spawnSync('a', [], { timeout: 10, killSignal: 'SIGTERM' });")).toEqual([1]);
+    // Node reads a `get timeout()` and applies what it returns, so an accessor
+    // is a deadline even though its value is not knowable here.
+    expect(unbounded("spawnSync('a', [], { get timeout() { return 10; } });")).toEqual([1]);
   });
 
   it('accepts a call that sets no deadline at all', () => {
     expect(unbounded("spawnSync('a', []);")).toEqual([]);
+    expect(unbounded("spawnSync('a', [], { stdio: 'inherit' });")).toEqual([]);
+  });
+
+  it('refuses to certify options it cannot read, rather than guessing', () => {
+    // This is the contract, not an accident. Every one of these was previously
+    // resolved by a dataflow reader, and each resolver added to read one more
+    // route became the surface for the next one to be missing. Fifteen
+    // findings against that reader were filed and fixed on this branch, and
+    // the last cycle produced six more inside the code written to close the
+    // previous six. Refusing to guess makes a false negative impossible by
+    // construction; the remedy for a rejection is to write the object inline.
+    for (const fixture of [
+      // Held in a name.
+      ['const options = { timeout: 10, killSignal: SIG };', "spawnSync('a', [], options);"],
+      // Assembled by spreading.
+      ['const base = { timeout: 10 };', "spawnSync('a', [], { ...base, killSignal: 'SIGKILL' });"],
+      // Chosen by a branch.
+      ["spawnSync('a', [], flag ? { timeout: 10, killSignal: 'SIGKILL' } : other);"],
+      // A signal that is not written as a literal.
+      ["const signal = 'SIGKILL';", "spawnSync('a', [], { timeout: 10, killSignal: signal });"],
+      // A signal behind an accessor.
+      ["spawnSync('a', [], { timeout: 10, get killSignal() { return 'SIGKILL'; } });"],
+      // A key that is not a constant.
+      ['declare const key: string;', "spawnSync('a', [], { timeout: 10, [key]: 'SIGKILL' });"],
+    ]) {
+      expect(unbounded(fixture), fixture.join(' ')).not.toEqual([]);
+    }
   });
 
   it('requires provenance, not a matching name', () => {
@@ -723,6 +628,11 @@ describe('every subprocess deadline is enforceable', () => {
         'p.ts',
       ),
     ).toEqual([]);
+    // A real import shadowed in a nested scope is that scope's binding, not
+    // the spawner — so the check is on the binding, not on the spelling.
+    expect(unbounded("function run(spawnSync) { spawnSync('x', [], { timeout: 10 }); }")).toEqual(
+      [],
+    );
     // Every route that really is Node's spawner still counts.
     expect(
       unboundedSpawnCalls(
@@ -742,72 +652,45 @@ describe('every subprocess deadline is enforceable', () => {
         'p.ts',
       ),
     ).toEqual([2]);
+    expect(
+      unboundedSpawnCalls(
+        "import { spawnSync as spawn } from 'node:child_process';\nspawn('x', [], { timeout: 10 });\n",
+        'p.ts',
+      ),
+    ).toEqual([2]);
     expect(unbounded(['const run = spawnSync;', "run('x', [], { timeout: 10 });"])).toEqual([2]);
   });
 
   it('reads both spawnSync signatures rather than classifying the argument list', () => {
     // Node takes `(command, args, options)` *and* `(command, options)`; Bun
-    // takes only the second. Always reading index 2 meant this guard never
-    // inspected the repository's own spawner, which is a `Bun.spawnSync` call,
-    // and reading index 1 only for Bun missed Node's own optional-args
-    // overload. Both positions are read and every object literal either
-    // resolves to is a candidate — an args array never resolves to one, so it
-    // contributes nothing.
+    // takes only the second, and its first argument is the command rather than
+    // an argument list.
     expect(unboundedSpawnCalls('Bun.spawnSync(cmd, { timeout: 10 });\n', 'p.ts')).toEqual([1]);
     expect(
       unboundedSpawnCalls("Bun.spawnSync(cmd, { timeout: 10, killSignal: 'SIGKILL' });\n", 'p.ts'),
     ).toEqual([]);
+    // Bun's options position is unambiguous, so a name there is unreadable.
+    expect(unboundedSpawnCalls('Bun.spawnSync(cmd, options);\n', 'p.ts')).toEqual([1]);
     expect(unbounded("spawnSync('tool', { timeout: 10 });")).toEqual([1]);
     expect(unbounded("spawnSync('tool', { timeout: 10, killSignal: 'SIGKILL' });")).toEqual([]);
-    expect(unbounded("spawnSync('tool', [], { timeout: 10 });")).toEqual([1]);
+    // A *named* argument list is an argument list, not unreadable options —
+    // reporting it would be a false positive on the common shape.
+    expect(unbounded("spawnSync('tool', args);")).toEqual([]);
   });
 
-  it('follows an aliased spawnSync import', () => {
-    const source = [
-      "import { spawnSync as spawn } from 'node:child_process';",
-      "spawn('x', [], { timeout: 10 });",
-    ].join('\n');
-    expect(unboundedSpawnCalls(source, 'p.ts')).toEqual([2]);
-  });
-
-  it('resolves options held in a variable, and through its lexical binding', () => {
-    // Looking only for an inline literal found nothing to inspect and called
-    // the deadline compliant.
-    expect(unbounded(['const options = { timeout: 10 };', "spawnSync('x', [], options);"])).toEqual(
-      [2],
-    );
-    // Resolving by *text* made the answer depend on unrelated declaration
-    // order: an outer object written after the function supplied the value for
-    // a call that JavaScript resolves to the function-local one.
+  it('follows the spawner through call and apply', () => {
+    expect(unbounded("spawnSync.call(null, 'x', [], { timeout: 10 });")).toEqual([1]);
+    expect(unbounded("spawnSync.apply(null, ['x', [], { timeout: 10 }]);")).toEqual([1]);
     expect(
-      unbounded([
-        "function run() { const options = { timeout: 10 }; spawnSync('x', [], options); }",
-        "const options = { timeout: 10, killSignal: 'SIGKILL' };",
-      ]),
-    ).toEqual([1]);
-    // A name that receives its value later is still that name's value.
-    expect(
-      unbounded(['let options;', 'options = { timeout: 10 };', "spawnSync('x', [], options);"]),
-    ).toEqual([3]);
-  });
-
-  it('resolves a deadline supplied through a spread', () => {
-    expect(
-      unbounded(['const deadline = { timeout: 10 };', "spawnSync('x', [], { ...deadline });"]),
-    ).toEqual([2]);
-    expect(
-      unbounded([
-        "const deadline = { timeout: 10, killSignal: 'SIGKILL' };",
-        "spawnSync('x', [], { ...deadline });",
-      ]),
+      unbounded("spawnSync.call(null, 'x', [], { timeout: 10, killSignal: 'SIGKILL' });"),
     ).toEqual([]);
   });
 
-  it('lets a later property override what a spread supplied, as the runtime does', () => {
+  it('catches an unbounded call sitting beside a compliant one', () => {
     expect(
       unbounded([
-        "const deadline = { timeout: 10, killSignal: 'SIGKILL' };",
-        "spawnSync('x', [], { ...deadline, killSignal: 'SIGTERM' });",
+        "spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' });",
+        "spawnSync('b', [], { timeout: 10 });",
       ]),
     ).toEqual([2]);
   });
@@ -824,8 +707,6 @@ describe('every subprocess deadline is enforceable', () => {
     expect(
       unboundedSpawnCalls(files.get('caller.ts') ?? '', 'caller.ts', index, new Set(files.keys())),
     ).toEqual([2]);
-    // Without the index the caller is invisible, which is the state this guard
-    // was in.
     expect(unboundedSpawnCalls(files.get('caller.ts') ?? '', 'caller.ts')).toEqual([]);
   });
 
@@ -845,9 +726,7 @@ describe('every subprocess deadline is enforceable', () => {
 
   it('keeps alias provenance attached to the exporting module', () => {
     // A global set of alias *spellings* made every relative import of a common
-    // name look like the spawner once any module anywhere exported it, so an
-    // unrelated helper taking a `timeout` option failed the repository. The
-    // index is keyed by exporting module instead.
+    // name look like the spawner once any module anywhere exported it.
     const files = new Map([
       ['spawner.ts', "export { spawnSync as spawn } from 'node:child_process';"],
       ['pty.ts', 'export function spawn(cmd, args, options) { return cmd; }'],
@@ -860,180 +739,5 @@ describe('every subprocess deadline is enforceable', () => {
     expect(
       unboundedSpawnCalls(files.get('unrelated.ts') ?? '', 'unrelated.ts', index, tracked),
     ).toEqual([]);
-  });
-
-  it('reads a signal held in a name, or written in shorthand', () => {
-    // Both are compliant code the earlier reader called unbounded. A guard that
-    // fails the suite over correct source teaches people to route around it.
-    expect(
-      unbounded([
-        "const killSignal = 'SIGKILL';",
-        "spawnSync('x', [], { timeout: 10, killSignal });",
-      ]),
-    ).toEqual([]);
-    expect(
-      unbounded([
-        "const signal = 'SIGKILL';",
-        "spawnSync('x', [], { timeout: 10, killSignal: signal });",
-      ]),
-    ).toEqual([]);
-    expect(
-      unbounded([
-        "const signal = 'SIGTERM';",
-        "spawnSync('x', [], { timeout: 10, killSignal: signal });",
-      ]),
-    ).toEqual([2]);
-  });
-
-  it('resolves options reached through a key, in either spelling', () => {
-    expect(
-      unbounded([
-        'const presets = { strict: { timeout: 10 } };',
-        "spawnSync('x', [], presets.strict);",
-      ]),
-    ).toEqual([2]);
-    expect(
-      unbounded([
-        'const presets = { strict: { timeout: 10 } };',
-        "spawnSync('x', [], presets['strict']);",
-      ]),
-    ).toEqual([2]);
-    expect(
-      unbounded([
-        'const presets = { strict: { timeout: 10 } };',
-        "spawnSync('x', [], { ...presets.strict });",
-      ]),
-    ).toEqual([2]);
-  });
-
-  it('resolves frozen options and options held in a list', () => {
-    expect(
-      unbounded(['const o = Object.freeze({ timeout: 10 });', "spawnSync('x', [], o);"]),
-    ).toEqual([2]);
-    expect(
-      unbounded(['const presets = [{ timeout: 10 }];', "spawnSync('x', [], presets[0]);"]),
-    ).toEqual([2]);
-    expect(
-      unbounded([
-        "const o = Object.freeze({ timeout: 10, killSignal: 'SIGKILL' });",
-        "spawnSync('x', [], o);",
-      ]),
-    ).toEqual([]);
-  });
-
-  it('checks every options object a call could pass', () => {
-    // Which branch runs is not knowable, so both are candidates and an
-    // unbounded one is a violation. Returning a single object picked neither.
-    expect(
-      unbounded([
-        'const lenient = { timeout: 10 };',
-        "const strict = { timeout: 10, killSignal: 'SIGKILL' };",
-        "spawnSync('x', [], flag ? lenient : strict);",
-      ]),
-    ).toEqual([3]);
-    expect(
-      unbounded([
-        "const a = { timeout: 10, killSignal: 'SIGKILL' };",
-        "const b = { timeout: 20, killSignal: 'SIGKILL' };",
-        "spawnSync('x', [], flag ? a : b);",
-      ]),
-    ).toEqual([]);
-  });
-
-  it('follows the spawner through call and apply, and a parameter default', () => {
-    expect(unbounded("spawnSync.call(null, 'x', [], { timeout: 10 });")).toEqual([1]);
-    expect(unbounded("spawnSync.apply(null, ['x', [], { timeout: 10 }]);")).toEqual([1]);
-    expect(
-      unbounded("spawnSync.call(null, 'x', [], { timeout: 10, killSignal: 'SIGKILL' });"),
-    ).toEqual([]);
-    expect(unbounded("function run(o = { timeout: 10 }) { spawnSync('x', [], o); }")).toEqual([1]);
-  });
-
-  it('collects options written onto a name after it was created', () => {
-    expect(unbounded(['const o = {};', 'o.timeout = 10;', "spawnSync('x', [], o);"])).toEqual([3]);
-    expect(
-      unbounded([
-        'const o = {};',
-        'o.timeout = 10;',
-        "o.killSignal = 'SIGKILL';",
-        "spawnSync('x', [], o);",
-      ]),
-    ).toEqual([]);
-    // Either spelling of the write sets the same property.
-    expect(unbounded(['const o = {};', "o['timeout'] = 10;", "spawnSync('x', [], o);"])).toEqual([
-      3,
-    ]);
-    // A name with no literal to resolve at all — a parameter written to before
-    // the call — is still read through its assignments.
-    expect(unbounded("function run(o) { o.timeout = 10; spawnSync('x', [], o); }")).toEqual([1]);
-    // Filtered by binding identity, not by spelling: a parameter named `o`
-    // inside an unrelated function must not merge its signal into this object.
-    expect(
-      unbounded([
-        'const o = {};',
-        'o.timeout = 10;',
-        "function configure(o) { o.killSignal = 'SIGKILL'; }",
-        "spawnSync('x', [], o);",
-      ]),
-    ).toEqual([4]);
-  });
-
-  it('matches a deadline key however it is spelled', () => {
-    // `{ 'timeout': 10 }` creates the same property, and matching only an
-    // identifier broke both ways: a quoted `timeout` hid a real deadline, and a
-    // quoted `killSignal` made a compliant call read as unbounded.
-    expect(unbounded("spawnSync('x', [], { 'timeout': 10 });")).toEqual([1]);
-    expect(unbounded("spawnSync('x', [], { timeout: 10, 'killSignal': 'SIGKILL' });")).toEqual([]);
-  });
-
-  it('sees through the TypeScript wrappers that erase at run time', () => {
-    // The child receives the timed object either way, but a reader recognising
-    // only a bare literal saw no deadline at all.
-    expect(
-      unbounded("spawnSync('x', [], { timeout: 10 } satisfies Record<string, number>);"),
-    ).toEqual([1]);
-    expect(unbounded("spawnSync('x', [], { timeout: 10 } as Record<string, number>);")).toEqual([
-      1,
-    ]);
-    expect(unbounded("spawnSync('x', [], ({ timeout: 10 }));")).toEqual([1]);
-  });
-
-  it('counts only writes that can have run before the call', () => {
-    // The subprocess starts before a signal assigned afterwards exists, and a
-    // write inside a function nothing invokes never runs at all — yet
-    // collecting every write in the file let both exempt the call.
-    expect(
-      unbounded([
-        'const o = { timeout: 10 };',
-        "spawnSync('x', [], o);",
-        "o.killSignal = 'SIGKILL';",
-      ]),
-    ).toEqual([2]);
-    expect(
-      unbounded([
-        'const o = { timeout: 10 };',
-        "function later() { o.killSignal = 'SIGKILL'; }",
-        "spawnSync('x', [], o);",
-      ]),
-    ).toEqual([3]);
-    // A write that precedes the call in a scope enclosing it still counts.
-    expect(
-      unbounded([
-        'const o = { timeout: 10 };',
-        "o.killSignal = 'SIGKILL';",
-        "spawnSync('x', [], o);",
-      ]),
-    ).toEqual([]);
-    expect(
-      unbounded(
-        "function run(o) { o.timeout = 10; o.killSignal = 'SIGKILL'; spawnSync('x', [], o); }",
-      ),
-    ).toEqual([]);
-  });
-
-  it('rejects an ignorable signal, not merely a missing property', () => {
-    // SIGTERM is the default a child can trap — accepting any `killSignal`
-    // accepts the exact failure the rule exists to prevent.
-    expect(unbounded("spawnSync('a', [], { timeout: 10, killSignal: 'SIGTERM' });")).toEqual([1]);
   });
 });

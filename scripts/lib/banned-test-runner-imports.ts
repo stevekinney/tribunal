@@ -579,12 +579,18 @@ function scopeStatements(scope: ts.Node): readonly ts.Statement[] | undefined {
 /**
  * Exported for `subprocess-deadlines.test.ts`.
  *
- * That guard resolved names by searching the whole file for matching text,
- * which made its answer depend on unrelated declaration order and let a
- * shadowed name in another scope supply the value. Lexical binding resolution
+ * That guard once resolved names by searching the whole file for matching
+ * text, which made its answer depend on unrelated declaration order. It no
+ * longer resolves values at all — it reports options it cannot read inline —
+ * but it still has to decide whether a callee named `spawnSync` is the import
+ * or a nested shadow, and that is this question. Lexical binding resolution
  * already exists here and is exercised by hundreds of tests; a second, weaker
  * copy of it next door is the duplication this module keeps being corrected
  * for.
+ *
+ * `aliasInitializers` was exported alongside it for the value resolver and is
+ * private again now that the resolver is gone: an export with no caller is
+ * API surface pretending to be a contract.
  */
 export function innermostBinding(
   node: ts.Node,
@@ -1092,7 +1098,7 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * establishing that needs the order analysis this validator refuses elsewhere.
  * Callers treat any match as a match, which fails toward reporting.
  */
-export function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
+function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const binding = innermostBinding(identifier, identifier.text, true);
   // A default gives a parameter its value exactly as an initializer gives one
   // to a declaration: `function f(load = require) { load('bun:test') }` loads.

@@ -538,6 +538,53 @@ const REQUIRED_CI_SECURITY_COMMANDS = [
 ];
 
 /**
+ * The commands a `run:` block actually executes, one per logical line.
+ *
+ * Continuations are joined because the shell joins them: a step written as
+ * `bun run validate:test-runner-imports \` followed by `|| true` presents a
+ * first line that *is* the command plus a trailing backslash, and a
+ * per-physical-line suffix check sees nothing objectionable in it. What bash
+ * executes is the joined line, so that is what gets checked.
+ *
+ * Exported so the rule can be asserted against fixtures rather than only
+ * against the real `ci.yml`, which has no injectable form.
+ */
+export function shellCommandLines(run: string): string[] {
+  const joined: string[] = [];
+  let pending = '';
+  for (const raw of run.split('\n')) {
+    const line = raw.trim();
+    if (line.endsWith('\\')) {
+      pending += `${line.slice(0, -1).trim()} `;
+      continue;
+    }
+    joined.push(`${pending}${line}`.trim());
+    pending = '';
+  }
+  // A trailing backslash on the final line continues into nothing; keep what it
+  // accumulated rather than dropping the command entirely.
+  if (pending.length > 0) joined.push(pending.trim());
+  return joined.filter((line) => line.length > 0);
+}
+
+/**
+ * Whether a set of run lines executes `command` in a way that can fail the job.
+ *
+ * A suffix must not be able to change the command's exit status. Accepting any
+ * suffix let `bun run validate:test-runner-imports || true` count as wired
+ * while the shell made its failure non-gating — the check verified the command
+ * was *present*, not that it *gates*.
+ */
+export function runLinesExecute(lines: readonly string[], command: string): boolean {
+  const NEUTRALIZING = /(\|\||&&|;|\||>|&)/;
+  return lines.some((line) => {
+    if (line === command) return true;
+    if (!line.startsWith(`${command} `)) return false;
+    return !NEUTRALIZING.test(line.slice(command.length));
+  });
+}
+
+/**
  * TRI-28 B11: this invariant ("every root workflow-security command stays
  * wired into ci.yml") used to live INSIDE `test:workflow-authorization`
  * itself. That is self-defeating: if `test:workflow-authorization`'s own
@@ -570,28 +617,14 @@ export function ciWiringViolations(): Violation[] {
   // `includes` accepted a step that merely mentions the command — `run: echo
   // 'bun run validate:test-runner-imports'` satisfied it while the real step
   // was deleted, so the guard verified textual presence and not execution.
-  const runLines = (job.steps ?? []).flatMap((step) =>
-    (step.run ?? '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0),
+  const runLines = (job.steps ?? []).flatMap((step) => shellCommandLines(step.run ?? ''));
+  return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !runLinesExecute(runLines, command)).map(
+    (command) => ({
+      fileName: 'ci.yml',
+      rule: 'ci-wiring',
+      message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
+    }),
   );
-  // A suffix must not be able to change the command's exit status. Accepting
-  // any suffix let `bun run validate:test-runner-imports || true` count as
-  // wired while the shell made its failure non-gating — the check verified the
-  // command was *present*, not that it *gates*.
-  const NEUTRALIZING = /(\|\||&&|;|\||>|&)/;
-  const executes = (command: string): boolean =>
-    runLines.some((line) => {
-      if (line === command) return true;
-      if (!line.startsWith(`${command} `)) return false;
-      return !NEUTRALIZING.test(line.slice(command.length));
-    });
-  return REQUIRED_CI_SECURITY_COMMANDS.filter((command) => !executes(command)).map((command) => ({
-    fileName: 'ci.yml',
-    rule: 'ci-wiring',
-    message: `"${command}" is missing from ci.yml's lint-format job; a root workflow-security gate has been silently un-wired.`,
-  }));
 }
 
 export function formatViolations(violations: Violation[]): string {

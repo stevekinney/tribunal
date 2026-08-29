@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   ciWiringViolations,
+  runLinesExecute,
+  shellCommandLines,
   isAuthorizationGated,
   jobGrantsWrite,
   jobUsesSecrets,
@@ -95,6 +97,41 @@ describe('every workflow: least-privilege scaffolding', () => {
 describe('ciWiringViolations: the real ci.yml has every root security gate wired in', () => {
   test('reports no violations against the real ci.yml', () => {
     expect(ciWiringViolations()).toEqual([]);
+  });
+});
+
+/**
+ * The wiring rule itself, against fixtures rather than the real file.
+ *
+ * `ciWiringViolations` reads `ci.yml` and takes no injectable workflow, so the
+ * shapes that bypass it can only be pinned by testing the rule directly. Both
+ * of these were real bypasses: a suffix that neutralises the exit status, and
+ * the same suffix hidden behind a shell line continuation, which a
+ * per-physical-line check reads as a bare command with a trailing backslash.
+ */
+describe('the CI wiring rule rejects what the shell would neutralise', () => {
+  const COMMAND = 'bun run validate:test-runner-imports';
+
+  test('accepts the command standing alone, or with gating arguments', () => {
+    expect(runLinesExecute(shellCommandLines(COMMAND), COMMAND)).toBe(true);
+    expect(runLinesExecute(shellCommandLines(`${COMMAND} --strict`), COMMAND)).toBe(true);
+  });
+
+  test('rejects a suffix that can change the exit status', () => {
+    for (const suffix of ['|| true', '; true', '| cat', '& disown', '&& echo ok', '> /dev/null']) {
+      const line = `${COMMAND} ${suffix}`;
+      expect(runLinesExecute(shellCommandLines(line), COMMAND), line).toBe(false);
+    }
+  });
+
+  test('joins a continuation before judging it, as bash does', () => {
+    // The physical first line *is* the command plus a backslash, so a
+    // per-line check found nothing objectionable while bash ran the joined,
+    // neutralised command.
+    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n  || true`), COMMAND)).toBe(false);
+    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n  --strict`), COMMAND)).toBe(true);
+    // A trailing backslash continuing into nothing still runs the command.
+    expect(runLinesExecute(shellCommandLines(`${COMMAND} \\\n`), COMMAND)).toBe(true);
   });
 });
 
