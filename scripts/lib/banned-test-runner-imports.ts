@@ -419,10 +419,21 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
     }
     for (const statement of statements ?? []) {
       if (bindsName(statement) || importBinds(statement)) found = statement;
-      if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations) {
-          if (bindsName(declaration)) found = declaration;
-        }
+      // A classic `for` header's initializer always runs once, before the
+      // condition is ever tested, and its `var` outlives the loop — so
+      // `for (var require = custom; false; ) {}` really does replace the
+      // binding for everything after it. Those declarations sit on the
+      // statement rather than in the scope's own list, so they need reaching
+      // explicitly; `bindsName` still applies the ordering rule to them.
+      const declarations = ts.isVariableStatement(statement)
+        ? statement.declarationList.declarations
+        : ts.isForStatement(statement) &&
+            statement.initializer !== undefined &&
+            ts.isVariableDeclarationList(statement.initializer)
+          ? statement.initializer.declarations
+          : undefined;
+      for (const declaration of declarations ?? []) {
+        if (bindsName(declaration)) found = declaration;
       }
     }
     return found;
@@ -561,11 +572,20 @@ function loaderSpecifierArgument(node: ts.CallExpression): ts.Node | undefined {
  * shadowing. Shadowing needs to know whether a `var` assignment has executed
  * yet; naming needs only to know that the binding exists, since that is what
  * the call refers to either way.
+ *
+ * Immutability is deliberately NOT required, and an earlier version requiring
+ * it was wrong. `let load = require; load('bun:test')` is ordinary JavaScript
+ * that loads the runner — verified under Node — so refusing to follow it fails
+ * toward *not* reporting, which is the unsafe direction for a ban. A note in
+ * the learnings document claimed the opposite; it was wrong and is corrected.
+ *
+ * A later reassignment is still not tracked, so an alias pointed elsewhere
+ * before the call may be reported. That is the safe direction, taken knowingly.
  */
-function constAliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
+function aliasInitializer(identifier: ts.Identifier): ts.Expression | undefined {
   const binding = innermostBinding(identifier, identifier.text, true);
   if (binding === undefined || !ts.isVariableDeclaration(binding)) return undefined;
-  return (binding.parent.flags & ts.NodeFlags.Const) !== 0 ? binding.initializer : undefined;
+  return binding.initializer;
 }
 
 /**
@@ -583,7 +603,17 @@ function isNodeModuleImport(identifier: ts.Identifier, exportName: string): bool
   const from = constantSpecifier(binding.moduleSpecifier);
   if (from !== 'node:module' && from !== 'module') return false;
 
-  const named = binding.importClause?.namedBindings;
+  const clause = binding.importClause;
+  if (clause === undefined) return false;
+
+  // `import Module from 'node:module'` — both Node and Bun expose the loader
+  // factory on the default export, so a default import is provenance for the
+  // module object just as a namespace import is.
+  if (exportName === '*' && clause.name !== undefined && clause.name.text === identifier.text) {
+    return true;
+  }
+
+  const named = clause.namedBindings;
   if (named === undefined) return false;
   if (ts.isNamespaceImport(named)) return exportName === '*';
   return named.elements.some(
@@ -630,7 +660,7 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
     // says "not the CommonJS wrapper" and would otherwise end the enquiry.
     // `seen` guards against a cycle only invalid source could produce.
     if (!seen.has(callee)) {
-      const aliased = constAliasInitializer(callee);
+      const aliased = aliasInitializer(callee);
       if (aliased !== undefined) {
         return isModuleLoader(unwrapTransparent(aliased), new Set([...seen, callee]));
       }
@@ -706,6 +736,24 @@ export function findBannedTestRunnerImports(
         record(node, isDynamicImport ? 'dynamic' : 'require');
       }
     }
+    // `/** @import { test } from 'bun:test' */`, TypeScript's JSDoc import
+    // form, which is how a plain `.js` file writes what `import type` writes in
+    // TypeScript. Handled separately from everything else here because
+    // `ts.forEachChild` does not descend into JSDoc at all — the tag is not a
+    // child node, so no visitor branch could ever have reached it. Only nodes
+    // that actually own a JSDoc comment are asked, which keeps this off the
+    // hot path.
+    if ((node as { jsDoc?: readonly unknown[] }).jsDoc !== undefined) {
+      for (const tag of ts.getJSDocTags(node)) {
+        if (
+          ts.isJSDocImportTag(tag) &&
+          constantSpecifier(tag.moduleSpecifier) === BANNED_SPECIFIER
+        ) {
+          record(tag, 'static');
+        }
+      }
+    }
+
     // `type T = import('...').X`, TypeScript's import-type expression. It is
     // neither a declaration nor a call, so nothing above sees it — and the
     // equivalent `import type { X } from '...'` is already banned, so missing

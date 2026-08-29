@@ -737,10 +737,20 @@ describe('immutable aliases of a loader', () => {
     ).toHaveLength(1);
   });
 
-  it('does not follow a `let` alias, which is not immutable', () => {
-    // Out of scope deliberately, and it fails toward not reporting. This is a
-    // lint against accidents, not a boundary against deliberate evasion.
-    expect(findBannedTestRunnerImports("let load = require;\nload('bun:test');\n")).toHaveLength(0);
+  it('follows a `let` alias too, which an earlier version wrongly refused to', () => {
+    // This asserted the opposite: that a `let` alias is out of scope, "and it
+    // fails toward not reporting", described as an acceptable boundary.
+    //
+    // The description was self-contradictory and the second half was simply
+    // wrong about which direction that fails in. `let load = require;
+    // load('bun:test')` is ordinary JavaScript that loads the runner —
+    // confirmed under Node — so declining to follow it is a false *negative*,
+    // the unsafe direction for a ban, not a conservative boundary.
+    //
+    // Mutability is no longer required. A later reassignment is still not
+    // tracked, so an alias pointed elsewhere before the call may be reported,
+    // which is the safe direction and is the trade made knowingly.
+    expect(findBannedTestRunnerImports("let load = require;\nload('bun:test');\n")).toHaveLength(1);
   });
 });
 
@@ -934,6 +944,61 @@ describe('a shebang decides the language only when nothing else does', () => {
     expect(findBannedImportsForPath('bin/tool', "#!/bin/sh\n# import 'bun:test'\n")).toHaveLength(
       0,
     );
+  });
+});
+
+describe('more shapes of the same loaders', () => {
+  it('accepts createRequire on the default export of node:module', () => {
+    // Both Node and Bun expose the factory there, so a default import is
+    // provenance for the module object just as a namespace import is.
+    expect(
+      findBannedTestRunnerImports(
+        "import Module from 'node:module';\nModule.createRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not accept a default import from an unrelated module', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import Module from './helpers';\nModule.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('honours a classic for initializer, which always runs once', () => {
+    // `for (var require = custom; false; ) {}` never enters the body, but the
+    // initializer has already executed and its `var` outlives the loop.
+    expect(
+      findBannedTestRunnerImports("for (var require = custom; false; ) {}\nrequire('bun:test');\n"),
+    ).toHaveLength(0);
+  });
+
+  it('still reports a call before a classic for initializer', () => {
+    expect(
+      findBannedTestRunnerImports("require('bun:test');\nfor (var require = custom; false; ) {}\n"),
+    ).toHaveLength(1);
+  });
+
+  it("catches TypeScript's JSDoc @import tag", () => {
+    // How a plain `.js` file writes what `import type` writes in TypeScript.
+    // `ts.forEachChild` does not descend into JSDoc, so no visitor branch could
+    // reach it — the tags have to be asked for.
+    expect(
+      findBannedImportsForPath(
+        'probe.js',
+        "/** @import { test } from 'bun:test' */\nexport const x = 1;\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report a JSDoc import of something else', () => {
+    expect(
+      findBannedImportsForPath(
+        'probe.js',
+        "/** @import { test } from 'vitest' */\nexport const x = 1;\n",
+      ),
+    ).toHaveLength(0);
   });
 });
 
