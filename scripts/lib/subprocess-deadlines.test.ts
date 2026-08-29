@@ -12,6 +12,7 @@ import {
   isExtensionlessPath,
   isScannableFile,
   looksBinary,
+  unwrapTransparent,
 } from './banned-test-runner-imports';
 import { resolveRepositoryRoot } from './repository-root';
 
@@ -51,6 +52,22 @@ const root =
  * duplication this pair of guards keeps being corrected for.
  */
 
+/**
+ * The property name a literal declares, however it is spelled.
+ *
+ * `{ 'timeout': 10 }` creates the same property as `{ timeout: 10 }`, and
+ * matching only an `Identifier` broke both ways: a quoted `timeout` hid a real
+ * deadline, and a quoted `killSignal` made a compliant call read as unbounded.
+ * The same folding the sibling module applies to member names.
+ */
+function staticPropertyName(name: ts.PropertyName | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return ts.isComputedPropertyName(name) ? constantString(name.expression) : undefined;
+}
+
 /** A string constant, resolved through the binding when it is held in a name. */
 function constantString(
   node: ts.Node | undefined,
@@ -75,11 +92,18 @@ function constantString(
  * unbounded one is a violation.
  */
 function resolveOptions(
-  node: ts.Node | undefined,
+  candidate: ts.Node | undefined,
   seen: ReadonlySet<ts.Node> = new Set(),
 ): readonly ts.ObjectLiteralExpression[] {
-  if (node === undefined || seen.has(node)) return [];
-  const guarded = new Set([...seen, node]);
+  if (candidate === undefined || seen.has(candidate)) return [];
+  const guarded = new Set([...seen, candidate]);
+  // `{ timeout: 10 } satisfies SpawnSyncOptions` is erased at run time and the
+  // child receives the timed object, but a reader recognising only a bare
+  // literal saw no deadline. Parentheses and `as` had the same gap. Which forms
+  // are transparent is a property of the node rather than of the guard reading
+  // it, so this asks the sibling module's function instead of listing them
+  // again here.
+  const node = unwrapTransparent(candidate);
 
   if (ts.isObjectLiteralExpression(node)) return [node];
 
@@ -132,12 +156,7 @@ function resolveOptions(
 
   return resolveOptions((node as ts.PropertyAccessExpression).expression, guarded)
     .map((receiver) =>
-      receiver.properties.find(
-        (candidate) =>
-          candidate.name !== undefined &&
-          ts.isIdentifier(candidate.name) &&
-          candidate.name.text === key,
-      ),
+      receiver.properties.find((property) => staticPropertyName(property.name) === key),
     )
     .flatMap((property) =>
       property !== undefined && ts.isPropertyAssignment(property)
@@ -182,7 +201,8 @@ function flattenedProperties(
       }
       continue;
     }
-    if (property.name === undefined || !ts.isIdentifier(property.name)) continue;
+    const key = staticPropertyName(property.name);
+    if (key === undefined) continue;
     // A method or accessor named `timeout` is not a deadline; the value is what
     // the checks read, so it is resolved once here.
     const value = ts.isPropertyAssignment(property)
@@ -190,7 +210,7 @@ function flattenedProperties(
       : ts.isShorthandPropertyAssignment(property)
         ? property.name
         : undefined;
-    if (value !== undefined) properties.set(property.name.text, value);
+    if (value !== undefined) properties.set(key, value);
   }
   return properties;
 }
@@ -205,9 +225,42 @@ function flattenedProperties(
  * and an unbounded call reads as compliant. Both spellings of the write are
  * accepted, since `options['timeout'] = 10` sets the same property.
  */
-function assignedProperties(receiver: ts.Identifier): Map<string, ts.Expression> {
+function assignedProperties(receiver: ts.Identifier, call: ts.Node): Map<string, ts.Expression> {
   const properties = new Map<string, ts.Expression>();
   const binding = innermostBinding(receiver, receiver.text, true);
+
+  /** The nearest function body or source file a node sits in. */
+  const enclosingScope = (node: ts.Node): ts.Node => {
+    for (
+      let current: ts.Node | undefined = node.parent;
+      current !== undefined;
+      current = current.parent
+    ) {
+      if (ts.isFunctionLike(current) || ts.isSourceFile(current)) return current;
+    }
+    return node.getSourceFile();
+  };
+  const contains = (ancestor: ts.Node, node: ts.Node): boolean => {
+    for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
+      if (current === ancestor) return true;
+    }
+    return false;
+  };
+
+  /**
+   * Whether a write can have run before this call.
+   *
+   * Collecting every write in the file made `spawnSync('x', [], options);
+   * options.killSignal = 'SIGKILL';` read as compliant, though the subprocess
+   * starts before the signal is ever assigned — and a write inside a function
+   * nothing invokes had the same effect. A write counts only when it precedes
+   * the call in source order *and* sits in a scope enclosing it. That is the
+   * conservative half of the question: it can drop a write that really did run
+   * through some call path, and that direction fails toward reporting.
+   */
+  const canPrecede = (write: ts.Node): boolean =>
+    write.end <= call.getStart() && contains(enclosingScope(write), call);
+
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       const target = node.left;
@@ -225,7 +278,8 @@ function assignedProperties(receiver: ts.Identifier): Map<string, ts.Expression>
         owner !== undefined &&
         ts.isIdentifier(owner) &&
         owner.text === receiver.text &&
-        innermostBinding(owner, owner.text, true) === binding
+        innermostBinding(owner, owner.text, true) === binding &&
+        canPrecede(node)
       ) {
         properties.set(key, node.right);
       }
@@ -503,7 +557,7 @@ export function unboundedSpawnCalls(
             (argument): argument is ts.Identifier =>
               argument !== undefined && ts.isIdentifier(argument),
           )
-          .map((argument) => assignedProperties(argument));
+          .map((argument) => assignedProperties(argument, node));
         const resolved = candidateArguments.flatMap((argument) => resolveOptions(argument));
         const objects: (ts.ObjectLiteralExpression | undefined)[] =
           resolved.length > 0 ? resolved : written.some((map) => map.size > 0) ? [undefined] : [];
@@ -922,6 +976,59 @@ describe('every subprocess deadline is enforceable', () => {
         "spawnSync('x', [], o);",
       ]),
     ).toEqual([4]);
+  });
+
+  it('matches a deadline key however it is spelled', () => {
+    // `{ 'timeout': 10 }` creates the same property, and matching only an
+    // identifier broke both ways: a quoted `timeout` hid a real deadline, and a
+    // quoted `killSignal` made a compliant call read as unbounded.
+    expect(unbounded("spawnSync('x', [], { 'timeout': 10 });")).toEqual([1]);
+    expect(unbounded("spawnSync('x', [], { timeout: 10, 'killSignal': 'SIGKILL' });")).toEqual([]);
+  });
+
+  it('sees through the TypeScript wrappers that erase at run time', () => {
+    // The child receives the timed object either way, but a reader recognising
+    // only a bare literal saw no deadline at all.
+    expect(
+      unbounded("spawnSync('x', [], { timeout: 10 } satisfies Record<string, number>);"),
+    ).toEqual([1]);
+    expect(unbounded("spawnSync('x', [], { timeout: 10 } as Record<string, number>);")).toEqual([
+      1,
+    ]);
+    expect(unbounded("spawnSync('x', [], ({ timeout: 10 }));")).toEqual([1]);
+  });
+
+  it('counts only writes that can have run before the call', () => {
+    // The subprocess starts before a signal assigned afterwards exists, and a
+    // write inside a function nothing invokes never runs at all — yet
+    // collecting every write in the file let both exempt the call.
+    expect(
+      unbounded([
+        'const o = { timeout: 10 };',
+        "spawnSync('x', [], o);",
+        "o.killSignal = 'SIGKILL';",
+      ]),
+    ).toEqual([2]);
+    expect(
+      unbounded([
+        'const o = { timeout: 10 };',
+        "function later() { o.killSignal = 'SIGKILL'; }",
+        "spawnSync('x', [], o);",
+      ]),
+    ).toEqual([3]);
+    // A write that precedes the call in a scope enclosing it still counts.
+    expect(
+      unbounded([
+        'const o = { timeout: 10 };',
+        "o.killSignal = 'SIGKILL';",
+        "spawnSync('x', [], o);",
+      ]),
+    ).toEqual([]);
+    expect(
+      unbounded(
+        "function run(o) { o.timeout = 10; o.killSignal = 'SIGKILL'; spawnSync('x', [], o); }",
+      ),
+    ).toEqual([]);
   });
 
   it('rejects an ignorable signal, not merely a missing property', () => {

@@ -97,7 +97,14 @@ function flatten(text: string): string {
  * property of the node, not of where it happens to appear, so it is answered
  * once here and reused everywhere a node's identity matters.
  */
-function unwrapTransparent(node: ts.Node): ts.Node {
+/**
+ * Exported for `subprocess-deadlines.test.ts`, which had the same gap this
+ * solves: `{ timeout: 10 } satisfies SpawnSyncOptions` is erased at run time,
+ * and a reader that recognises only a bare object literal sees no deadline.
+ * The transparent forms are a property of the node, not of the guard reading
+ * it, so both guards ask the same function.
+ */
+export function unwrapTransparent(node: ts.Node): ts.Node {
   let current = node;
   for (;;) {
     if (ts.isParenthesizedExpression(current)) current = current.expression;
@@ -2370,26 +2377,53 @@ export function hasForeignShebang(contents: string): boolean {
     const takesOperand = new Set(['-u', '--unset', '-C', '--chdir']);
     // `--split-string=bun` carries the command inside the option, so the loop
     // below would skip the only token naming it.
-    const inlineSplit = tokens.slice(1).find((token) => token.startsWith('--split-string='));
-    if (inlineSplit !== undefined) {
-      const [first] = inlineSplit.slice('--split-string='.length).trim().split(/\s+/);
-      const named = commandName(first ?? '');
-      return named !== 'node' && named !== 'bun' && named !== 'deno';
-    }
-    const rest = tokens.slice(1);
-    let command: string | undefined;
-    for (let index = 0; index < rest.length; index += 1) {
-      const token = rest[index] ?? '';
-      if (takesOperand.has(token)) {
-        index += 1;
-        continue;
+    //
+    // The payload is a whole command line, not just a command: `env` splits it
+    // and then applies its ordinary rules, so `NAME=value` assignments inside
+    // it precede the interpreter exactly as they do outside. Reading the first
+    // word unconditionally mistook the assignment for the command and called a
+    // runnable Bun entrypoint foreign, skipping every import in it.
+    /**
+     * The command in an `env` argument list: the first operand that is neither
+     * an option, an option's separate value, nor a `NAME=value` assignment.
+     *
+     * One reader, used for the argument list and for a `--split-string`
+     * payload. The payload is a whole command line — `env` splits it and then
+     * applies these same rules — so reading its first *word* mistook the
+     * assignment in `--split-string=FOO=bar bun` for the interpreter and called
+     * a runnable Bun entrypoint foreign. A second, simpler reader for the same
+     * grammar is how that happened.
+     */
+    const commandFrom = (words: readonly string[]): string | undefined => {
+      for (let index = 0; index < words.length; index += 1) {
+        const token = words[index] ?? '';
+        if (token.length === 0) continue;
+        if (takesOperand.has(token)) {
+          index += 1;
+          continue;
+        }
+        if (token.startsWith('-')) continue;
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+        return token;
       }
-      if (token.startsWith('-')) continue;
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
-      command = token;
-      break;
-    }
-    interpreter = commandName(command ?? '');
+      return undefined;
+    };
+
+    // `--split-string=S` splits `S` into words *in place* and then keeps
+    // processing the rest of the argument list, so the command can be inside
+    // the payload (`--split-string=bun`), after it
+    // (`--split-string=FOO=bar bun`), or after options the payload introduces.
+    // Expanding the token and reading the whole list models that; reading the
+    // payload alone found nothing in the second case and called a runnable Bun
+    // entrypoint foreign.
+    const expanded = tokens
+      .slice(1)
+      .flatMap((token) =>
+        token.startsWith('--split-string=')
+          ? token.slice('--split-string='.length).trim().split(/\s+/)
+          : [token],
+      );
+    interpreter = commandName(commandFrom(expanded) ?? '');
   }
   return interpreter !== 'node' && interpreter !== 'bun' && interpreter !== 'deno';
 }

@@ -2328,6 +2328,23 @@ describe('extensionless entrypoints', () => {
     expect(isScannableFile('.eslintrc.js')).toBe(true);
   });
 
+  it('reads a --split-string payload as a command line, not as a command', () => {
+    // `--split-string=S` splits `S` in place and then keeps processing the rest
+    // of the argument list, so the command can sit inside the payload, after
+    // it, or after options the payload introduces. Reading the payload's first
+    // word mistook the assignment in `--split-string=FOO=bar bun` for the
+    // interpreter and called a runnable Bun entrypoint foreign, which skips
+    // every import in it.
+    expect(hasForeignShebang('#!/usr/bin/env --split-string=FOO=bar bun\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env --split-string=bun\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env --split-string=FOO=bar python3\n')).toBe(true);
+    // An argument list that names no command at all cannot run anything, so it
+    // is not a JavaScript entrypoint. Unchanged behaviour, asserted because the
+    // rewrite moved the branch that decides it.
+    expect(hasForeignShebang('#!/usr/bin/env\n')).toBe(true);
+    expect(hasForeignShebang('#!/usr/bin/env -u FOO\n')).toBe(true);
+  });
+
   it('skips shell, which this test previously asserted was scanned', () => {
     // `script.sh` was an assertion of the case above: `.sh` was not listed, so
     // it was scanned, and that was cited as the inverted filter working. The
