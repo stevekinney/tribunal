@@ -1204,6 +1204,13 @@ export function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     if (ts.isIdentifier(pattern)) {
       return pattern.text === identifier.text ? [initializer] : [];
     }
+    // Known boundary: the source has to be a literal written beside the
+    // pattern. `const { load } = holder` does not resolve, because following a
+    // name here calls `aliasInitializers`, which calls back into this function
+    // — the two have no shared re-entry guard and the pair recurses until the
+    // stack is exhausted. That was tried and reverted rather than shipped
+    // half-working; threading a guard through both is a change to make on its
+    // own evidence, not at the end of a review cycle.
     if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(source)) {
       for (const [index, element] of pattern.elements.entries()) {
         if (!ts.isBindingElement(element)) continue;
@@ -1928,12 +1935,22 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
   // Masking rather than concatenating keeps every byte offset, so both passes
   // report the line the code is actually written on and results merge without
   // any mapping back.
+  // Non-code is blanked to `;` rather than to a space, which separates the
+  // retained ranges without moving a single byte. A run of semicolons is a run
+  // of empty statements — legal everywhere a statement can appear — and it is
+  // what makes two retained ranges on the *same line* parse as two statements.
+  // With spaces they ran together: `{@const runner = 'bun:test'}{require(runner)}`
+  // composed to `const runner = 'bun:test'   require(runner)`, which has no
+  // terminator and no newline for automatic semicolon insertion to use, so the
+  // declaration never reached the resolver and a real banned call went
+  // unreported. The multi-line spelling of the same component worked, which is
+  // exactly the kind of difference that hides in a fixture.
   const maskTo = (regions: { start: number; end: number }[], extra: string[] = []): string => {
     let masked = '';
     for (let index = 0; index < contents.length; index += 1) {
       const character = contents.charAt(index);
       const inRegion = regions.some(({ start, end }) => index >= start && index < end);
-      masked += character === '\n' || inRegion ? character : ' ';
+      masked += character === '\n' || inRegion ? character : ';';
     }
     return extra.length > 0 ? `${masked}\n${extra.join('\n')}` : masked;
   };
@@ -2005,6 +2022,25 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  * loader needs the binding resolver, which runs on the composed program rather
  * than on the template AST.
  */
+/**
+ * Whether a template block introduces its own binding for `wanted`.
+ *
+ * Svelte's blocks nest and shadow: an inner `{#each … as runner}` owns every
+ * use of `runner` inside it. The activation searches below stop there, because
+ * treating an inner use as activating an outer binding flattens two scopes into
+ * one program — and the resolver deliberately prefers a banned value, so a
+ * component importing only the permitted runner was rejected.
+ */
+function rebinds(node: unknown, wanted: unknown): boolean {
+  if (node === null || typeof node !== 'object') return false;
+  const record = node as { type?: unknown; context?: unknown; parameters?: unknown };
+  if (record.type === 'EachBlock') return patternNames(record.context).includes(String(wanted));
+  if (record.type === 'SnippetBlock') {
+    return patternNames(record.parameters).includes(String(wanted));
+  }
+  return false;
+}
+
 /** Every identifier a Svelte each-context binds, pattern or not. */
 function patternNames(context: unknown): string[] {
   const names: string[] = [];
@@ -2091,6 +2127,7 @@ function mentionedInRequireArgument(
       for (const item of candidate) visit(item);
       return;
     }
+    if (rebinds(candidate, wanted)) return;
     const record = candidate as { type?: unknown; callee?: unknown; arguments?: unknown };
     const callee = record.callee as { type?: unknown; name?: unknown } | undefined;
     if (
@@ -2139,6 +2176,13 @@ function referencesName(
       for (const item of candidate) visit(item);
       return;
     }
+    // A nested block that rebinds the same name owns every use inside it, so
+    // the search stops there. Without this, an inner
+    // `{#each ['vitest'] as runner}` made the *outer* `runner` binding look
+    // used, both synthetic declarations were flattened into one program, and
+    // the resolver's banned-value preference rejected a component that imports
+    // only the permitted runner.
+    if (rebinds(candidate, wanted)) return;
     const record = candidate as { type?: unknown; callee?: unknown; source?: unknown };
     // The name has to be used *as* a loader or *as* an import's specifier.
     // Asking only whether some call mentions it let an unrelated `{foo(runner)}`
@@ -2202,13 +2246,33 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
       record.expression !== undefined
     ) {
       const name = contents.slice(record.context.start, record.context.end);
-      const iterable = record.expression as { start?: unknown; end?: unknown };
-      if (typeof iterable.start === 'number' && typeof iterable.end === 'number') {
-        // The iterable is emitted whole rather than element by element, so a
-        // *named* one works too: `const runners = ['bun:test']` in the instance
-        // script is reached by following the alias, which is machinery that
-        // already exists. Element extraction only handled a literal written in
-        // the markup.
+      const iterable = record.expression as {
+        start?: unknown;
+        end?: unknown;
+        type?: unknown;
+        elements?: { start?: unknown; end?: unknown }[];
+      };
+      // Svelte binds the context from *an element*, not from the collection.
+      // For an identifier context that distinction costs nothing — the
+      // resolver reads a list by the any-match rule, so binding the whole
+      // iterable finds the same values, and it keeps a *named* iterable
+      // working through the alias machinery that already exists.
+      //
+      // A destructuring context is different: `const { runner } = [{ runner:
+      // … }]` destructures the array and yields nothing, because that is what
+      // the JavaScript means. So a pattern binds each element in turn, with
+      // `var` rather than `const` because the same name is declared once per
+      // element and only `var` permits that.
+      const elements =
+        record.context?.type !== 'Identifier' && iterable.type === 'ArrayExpression'
+          ? (iterable.elements ?? [])
+          : [];
+      if (elements.length > 0) {
+        for (const element of elements) {
+          if (typeof element.start !== 'number' || typeof element.end !== 'number') continue;
+          declarations.push(`var ${name} = ${contents.slice(element.start, element.end)};`);
+        }
+      } else if (typeof iterable.start === 'number' && typeof iterable.end === 'number') {
         declarations.push(`const ${name} = ${contents.slice(iterable.start, iterable.end)};`);
       }
     }
@@ -2299,9 +2363,16 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
       record.type === 'VariableDeclaration' &&
       block !== undefined &&
       Array.isArray(record.declarations) &&
-      !record.declarations.some((declaration) =>
-        referencesName(block, (declaration as { id?: { start?: unknown; end?: unknown } }).id),
-      )
+      // The same two positions the each-block binding asks about. Retention
+      // used the callee-or-import-source test alone while the each binding
+      // also asked about a `require(...)` argument — an asymmetry introduced
+      // when the argument predicate was added to one caller and not the other,
+      // which dropped the declaration for `{@const runner = 'bun:test'}`
+      // followed by `{require(runner)}`.
+      !record.declarations.some((declaration) => {
+        const id = (declaration as { id?: { start?: unknown; end?: unknown } }).id;
+        return referencesName(block, id) || mentionedInRequireArgument(block, id);
+      })
     ) {
       return;
     }
@@ -2330,7 +2401,17 @@ function templateCallRanges(fragment: unknown): { start: number; end: number }[]
       // has no node to retain, so a call bound by one of its parameters is left
       // out instead. That is the same answer, reached from the other side: the
       // call invokes the parameter, so there is nothing here to report.
-      if (bound.some((name) => shadowsLoader(node, name))) return;
+      // A shadowed call is not reportable, but its *arguments* still execute:
+      // `{wrap(import('bun:test'))}` evaluates the import before `wrap` ever
+      // runs. Returning here discarded the whole range and the nested import
+      // with it, so the walk continues into the children instead.
+      if (bound.some((name) => shadowsLoader(node, name))) {
+        for (const [key, value] of Object.entries(node)) {
+          if (key === 'parent') continue;
+          visit(value, block, bound);
+        }
+        return;
+      }
       ranges.push({ start: record.start, end: record.end });
       return;
     }

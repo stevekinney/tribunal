@@ -2921,6 +2921,71 @@ describe('svelte template block scope', () => {
     ).toEqual([]);
   });
 
+  it('binds a destructuring each context from an element, not the collection', () => {
+    // Svelte binds the context from *an element*. Emitting
+    // `const { runner } = [{ runner: … }]` destructures the array and yields
+    // nothing, because that is what the JavaScript means — so a pattern binds
+    // each element in turn, with `var` because the name is declared once per
+    // element.
+    expect(
+      findBannedImportsInSvelte(
+        "{#each [{ runner: 'bun:test' }] as { runner }}{require(runner)}{/each}",
+      ),
+    ).toHaveLength(1);
+    expect(
+      findBannedImportsInSvelte(
+        "{#each [{ runner: 'vitest' }] as { runner }}{require(runner)}{/each}",
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps a nested block that rebinds the same name out of the outer scope', () => {
+    // An inner `{#each … as runner}` owns every use inside it. Treating an
+    // inner use as activating the outer binding flattened two scopes into one
+    // program, and the resolver prefers a banned value — so a component
+    // importing only the permitted runner was rejected.
+    expect(
+      findBannedImportsInSvelte(
+        "{#each ['bun:test'] as runner}{#each ['vitest'] as runner}{#await import(runner)}<p/>{/await}{/each}{/each}",
+      ),
+    ).toEqual([]);
+    // The outer binding still activates when the outer scope is the one using it.
+    expect(
+      findBannedImportsInSvelte(
+        "{#each ['bun:test'] as runner}{#await import(runner)}<p/>{/await}{/each}",
+      ),
+    ).toHaveLength(1);
+    // A snippet parameter rebinds just as an each context does, so a nested
+    // snippet reusing the name owns its body too.
+    expect(
+      findBannedImportsInSvelte(
+        "{#each ['bun:test'] as runner}{#snippet row(runner)}{#await import(runner)}<p/>{/await}{/snippet}{/each}",
+      ),
+    ).toEqual([]);
+    expect(
+      findBannedImportsInSvelte(
+        "{#each ['bun:test'] as runner}{#snippet row(other)}<p>{other}</p>{/snippet}{#await import(runner)}<p/>{/await}{/each}",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('retains a {@const} read as a require argument, as each bindings already were', () => {
+    // The retention test used the callee-or-import-source predicate alone while
+    // the each binding also asked about a `require(...)` argument — an
+    // asymmetry introduced when that predicate was added to one caller only.
+    expect(
+      findBannedImportsInSvelte("{#if true}{@const runner = 'bun:test'}{require(runner)}{/if}"),
+    ).toHaveLength(1);
+  });
+
+  it('keeps a nested import inside a call the snippet parameter shadows', () => {
+    // The call is not reportable, but its arguments still execute:
+    // `{wrap(import('bun:test'))}` evaluates the import before `wrap` runs.
+    expect(
+      findBannedImportsInSvelte("{#snippet render(wrap)}{wrap(import('bun:test'))}{/snippet}"),
+    ).toHaveLength(1);
+  });
+
   it('reconstructs an each binding that destructures', () => {
     // `{#each [['bun:test']] as [runner]}` binds through an `ArrayPattern`,
     // which has no `.name` — so the activation test compared against undefined
