@@ -841,6 +841,102 @@ describe('alias resolution stops at every nearer binding', () => {
   });
 });
 
+describe('createRequire is decided by provenance, not by spelling', () => {
+  it('follows an aliased named import', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire as makeRequire } from 'node:module';\nmakeRequire(import.meta.url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not accept a same-named export from an unrelated module', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import { createRequire } from './helpers';\ncreateRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('does not accept a member call on an unrelated namespace', () => {
+    // The first version checked provenance for the named import and took the
+    // member form on the property name alone, which reported valid code.
+    expect(
+      findBannedTestRunnerImports(
+        "import * as helpers from './helpers';\nhelpers.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('accepts a member call on the node:module namespace', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "import * as m from 'node:module';\nm.createRequire(url)('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe('module format decides whether a hoisted var leaves a loader behind', () => {
+  it('reports in CommonJS, where the wrapper parameter survives the redeclaration', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "try { require('bun:test'); } catch {}\nvar require = custom;\n",
+        0,
+        'probe.cjs',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not report in an ES module, where the hoisted var is undefined', () => {
+    // No wrapper parameter exists to survive, so the call throws instead of
+    // loading. Confirmed by running the same source as `.cjs` and `.mjs`.
+    expect(
+      findBannedTestRunnerImports(
+        "try { require('bun:test'); } catch {}\nvar require = custom;\n",
+        0,
+        'probe.mjs',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('keeps the CommonJS reading for ambiguous extensions', () => {
+    // `.ts` and `.js` depend on the nearest package.json `type`, which this
+    // validator does not read, so they keep the reading that reports.
+    expect(
+      findBannedTestRunnerImports(
+        "try { require('bun:test'); } catch {}\nvar require = custom;\n",
+        0,
+        'probe.ts',
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe('a namespace body is a scope', () => {
+  it('a local binding inside a TypeScript namespace shadows', () => {
+    expect(
+      findBannedTestRunnerImports("namespace N { const require = load; require('bun:test'); }\n"),
+    ).toHaveLength(0);
+  });
+});
+
+describe('a shebang decides the language only when nothing else does', () => {
+  it('still scans a known JavaScript extension that begins with a foreign hashbang', () => {
+    // A hashbang is a valid JavaScript comment, so this is still JavaScript —
+    // Bun runs it and a `*.test.mjs` vitest project collects it.
+    expect(
+      findBannedImportsForPath('runner/probe.test.mjs', "#!/bin/sh\nimport 'bun:test';\n"),
+    ).toHaveLength(1);
+  });
+
+  it('still skips an extensionless file whose shebang names another interpreter', () => {
+    expect(findBannedImportsForPath('bin/tool', "#!/bin/sh\n# import 'bun:test'\n")).toHaveLength(
+      0,
+    );
+  });
+});
+
 describe('hasForeignShebang', () => {
   it('rejects a python shebang', () => {
     expect(hasForeignShebang("#!/usr/bin/env python3\n# import 'bun:test'\n")).toBe(true);

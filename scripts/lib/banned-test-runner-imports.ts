@@ -179,6 +179,12 @@ function functionBodyOf(node: ts.Node): ts.Block | undefined {
  * file-wide approximation would have been the easy version and would trade
  * this false positive for a false negative.
  */
+/** Extensions that are ES modules whatever the nearest `package.json` says. */
+function isEsModuleFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.mjs') || lower.endsWith('.mts');
+}
+
 function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.Node | undefined {
   /** A binding introduced by this node, if it names `name`. */
   /**
@@ -257,6 +263,18 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
     // the second, because any nearer binding — even a `var` whose assignment
     // has not run — is what the call actually names.
     if (ignoreOrder) return true;
+
+    // The whole positional rule exists because CommonJS supplies `require` and
+    // `module` as wrapper *parameters*, so a `var` redeclaration leaves a live
+    // loader behind until its assignment runs. An ES module has no wrapper, so
+    // the hoisted `var` is `undefined` from the start and the call throws
+    // rather than loading — confirmed by running the same source as `.cjs`
+    // (loads) and `.mjs` (TypeError). Position is therefore irrelevant there.
+    //
+    // Only the unambiguous extensions are treated as ES modules. `.ts` and
+    // `.js` depend on the nearest `package.json` `type`, which this validator
+    // does not read, so they keep the CommonJS reading — the one that reports.
+    if (isEsModuleFile(declaration.getSourceFile().fileName)) return true;
     const list = declaration.parent;
     if ((list.flags & ts.NodeFlags.BlockScoped) !== 0) return true;
 
@@ -376,23 +394,25 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
       ? scope.statements
       : ts.isBlock(scope)
         ? scope.statements
-        : ts.isCaseBlock(scope)
-          ? // Clauses share one block scope, so a `const` in any clause binds
-            // for the whole switch. A `var` does not get the same treatment:
-            // control flow enters at one clause, so an initializer in another
-            // one need never have run. Restricting `var` to its own clause is
-            // sound because there is no `goto` — fall-through enters a clause
-            // at its top, so statements within one clause do run in order.
-            scope.clauses.flatMap((clause) =>
-              clause === callClause
-                ? [...clause.statements]
-                : clause.statements.filter(
-                    (statement) =>
-                      !ts.isVariableStatement(statement) ||
-                      (statement.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0,
-                  ),
-            )
-          : functionBodyOf(scope)?.statements;
+        : ts.isModuleBlock(scope)
+          ? scope.statements
+          : ts.isCaseBlock(scope)
+            ? // Clauses share one block scope, so a `const` in any clause binds
+              // for the whole switch. A `var` does not get the same treatment:
+              // control flow enters at one clause, so an initializer in another
+              // one need never have run. Restricting `var` to its own clause is
+              // sound because there is no `goto` — fall-through enters a clause
+              // at its top, so statements within one clause do run in order.
+              scope.clauses.flatMap((clause) =>
+                clause === callClause
+                  ? [...clause.statements]
+                  : clause.statements.filter(
+                      (statement) =>
+                        !ts.isVariableStatement(statement) ||
+                        (statement.declarationList.flags & ts.NodeFlags.BlockScoped) !== 0,
+                    ),
+              )
+            : functionBodyOf(scope)?.statements;
 
     if (ts.isFunctionLike(scope)) {
       for (const parameter of scope.parameters) if (bindsName(parameter)) found = parameter;
@@ -463,6 +483,9 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
     if (
       ts.isBlock(scope) ||
       ts.isCaseBlock(scope) ||
+      // A `namespace N { ... }` body is a `ModuleBlock`, which is a scope the
+      // grammar creates and the node kinds do not name after `Block`.
+      ts.isModuleBlock(scope) ||
       ts.isFunctionLike(scope) ||
       ts.isSourceFile(scope)
     ) {
@@ -546,35 +569,49 @@ function constAliasInitializer(identifier: ts.Identifier): ts.Expression | undef
 }
 
 /**
+ * Whether a name was introduced by importing `exportName` from `node:module`.
+ *
+ * Resolves the *imported* symbol rather than the local name, because
+ * `import { createRequire as makeRequire }` renames it, and provenance rather
+ * than spelling is what makes it Node's loader factory. Pass `'*'` to ask
+ * whether the name is a namespace import of the module itself.
+ */
+function isNodeModuleImport(identifier: ts.Identifier, exportName: string): boolean {
+  const binding = innermostBinding(identifier, identifier.text, true);
+  if (binding === undefined || !ts.isImportDeclaration(binding)) return false;
+
+  const from = constantSpecifier(binding.moduleSpecifier);
+  if (from !== 'node:module' && from !== 'module') return false;
+
+  const named = binding.importClause?.namedBindings;
+  if (named === undefined) return false;
+  if (ts.isNamespaceImport(named)) return exportName === '*';
+  return named.elements.some(
+    (element) =>
+      element.name.text === identifier.text &&
+      (element.propertyName?.text ?? element.name.text) === exportName,
+  );
+}
+
+/**
  * Whether an expression is Node's `createRequire`, which returns a real loader.
  *
  * Not a hypothetical spelling: this repository already calls it in
  * `packages/test/src/database.ts` and `packages/mcp/src/logger.ts`, and
  * `const require = createRequire(import.meta.url)` is *the* conventional way to
- * reach CommonJS from an ES module. Without modelling it, the most ordinary ESM
- * spelling of the banned import passed both the hook and CI.
+ * reach CommonJS from an ES module.
  *
- * Recognised by name, and only when that name is not itself locally bound, so a
- * project's own unrelated `createRequire` helper does not become a loader.
+ * Decided by provenance in both spellings, which is what a first version got
+ * wrong in each direction: it matched the local name literally, so an aliased
+ * import slipped past, and it accepted any `.createRequire` member, so an
+ * unrelated `helpers.createRequire` was reported as a loader.
  */
 function isCreateRequire(callee: ts.Node): boolean {
-  if (!ts.isIdentifier(callee)) {
-    // `module.createRequire(...)`, where `module` is the imported namespace.
-    const member = staticMemberName(callee);
-    return member !== undefined && member.name === 'createRequire';
-  }
-  if (callee.text !== 'createRequire') return false;
+  if (ts.isIdentifier(callee)) return isNodeModuleImport(callee, 'createRequire');
 
-  // A plain shadow check is wrong here, and gets the answer backwards: the name
-  // is *always* bound, because it has to be imported to be used, and that
-  // import is exactly what identifies it. So the binding is inspected rather
-  // than merely counted — an import of it qualifies, a local declaration of
-  // something else by the same name does not.
-  const binding = innermostBinding(callee, 'createRequire', true);
-  if (binding === undefined) return false;
-  if (!ts.isImportDeclaration(binding)) return false;
-  const from = constantSpecifier(binding.moduleSpecifier);
-  return from === 'node:module' || from === 'module';
+  const member = staticMemberName(callee);
+  if (member === undefined || member.name !== 'createRequire') return false;
+  return ts.isIdentifier(member.object) && isNodeModuleImport(member.object, '*');
 }
 
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
@@ -792,7 +829,13 @@ function findBannedImportsInUnparseableSvelte(contents: string): BannedImport[] 
 
 /** Dispatch to the right reader for a path's extension. */
 export function findBannedImportsForPath(path: string, contents: string): BannedImport[] {
-  if (hasForeignShebang(contents)) return [];
+  // The shebang decides the language only where nothing else does. A hashbang
+  // is a valid JavaScript comment, so `probe.test.mjs` beginning `#!/bin/sh` is
+  // still JavaScript — Bun runs it and a `*.test.mjs` vitest project collects
+  // it — and skipping it on the shebang alone let a banned suite through.
+  const lower = path.toLowerCase();
+  const namedByExtension = JAVASCRIPT_EXTENSIONS.some((extension) => lower.endsWith(extension));
+  if (!namedByExtension && hasForeignShebang(contents)) return [];
   return path.endsWith('.svelte')
     ? findBannedImportsInSvelte(contents)
     : findBannedTestRunnerImports(contents, 0, path);
