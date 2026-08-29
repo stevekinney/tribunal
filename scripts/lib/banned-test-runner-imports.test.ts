@@ -1255,6 +1255,65 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('scope limits on the broader searches', () => {
+  it('a nested var shadows, because there is no wrapper binding inside a function', () => {
+    // The bare-`var` exception preserves the CommonJS wrapper binding, and that
+    // binding only exists at the top level. Inside a function the `var` is its
+    // own and is `undefined` on entry, so the call throws.
+    expect(
+      findBannedTestRunnerImports(
+        "function f() { var require; require('bun:test'); }\n",
+        0,
+        'p.cjs',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('a top-level bare var still preserves the wrapper', () => {
+    expect(
+      findBannedTestRunnerImports("var require;\nrequire('bun:test');\n", 0, 'p.cjs'),
+    ).toHaveLength(1);
+  });
+
+  it('an assignment to a shadowing parameter is not an assignment to the outer binding', () => {
+    // The assignment search covers nested functions, so the target has to be
+    // resolved rather than matched by name.
+    expect(
+      findBannedTestRunnerImports(
+        "let load = custom;\nfunction wire(load) { load = require; }\nload('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('an assignment in a nested function that does not shadow still counts', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "let load = other;\nfunction wire() { load = require; }\nload('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('an each binding does not escape its block', () => {
+    // The synthetic declaration is appended at top level, so it is only emitted
+    // when the block body actually holds a call — otherwise a block-local name
+    // would become a candidate for markup outside it.
+    expect(
+      findBannedImportsForPath(
+        'src/L.svelte',
+        "<script lang=\"ts\">\n  const runner = 'vitest';\n</script>\n{#each ['bun:test'] as runner}<p>a</p>{/each}\n{#await import(runner) then s}<p>b</p>{/await}\n",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('follows a module alias through a destructuring source', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const commonjsModule = module;\nconst { require: load } = commonjsModule;\nload('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+});
+
 describe('an each block binds a name the markup can use', () => {
   it('resolves a specifier taken from the iterated array', () => {
     // The binding is created by the block, so there is no declaration in the

@@ -58,7 +58,15 @@ export function unboundedSpawnCalls(source: string, fileName: string): number[] 
         if (options !== undefined && ts.isObjectLiteralExpression(options)) {
           const deadline = propertyNamed(options, 'timeout');
           const signal = propertyNamed(options, 'killSignal');
-          if (deadline !== undefined && signal === undefined) {
+          // The *value* matters, not the property. `killSignal: 'SIGTERM'` is
+          // the default a child can trap, so accepting any signal accepts the
+          // very thing the rule exists to prevent.
+          const nonIgnorable =
+            signal !== undefined &&
+            ts.isPropertyAssignment(signal) &&
+            ts.isStringLiteralLike(signal.initializer) &&
+            signal.initializer.text === 'SIGKILL';
+          if (deadline !== undefined && !nonIgnorable) {
             offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
           }
         }
@@ -105,5 +113,13 @@ describe('every subprocess deadline is enforceable', () => {
 
   it('accepts a call that sets no deadline at all', () => {
     expect(unboundedSpawnCalls("spawnSync('a', []);\n", 'probe.ts')).toEqual([]);
+  });
+
+  it('rejects an ignorable signal, not merely a missing property', () => {
+    // SIGTERM is the default a child can trap — accepting any `killSignal`
+    // accepts the exact failure the rule exists to prevent.
+    expect(
+      unboundedSpawnCalls("spawnSync('a', [], { timeout: 10, killSignal: 'SIGTERM' });\n", 'p.ts'),
+    ).toEqual([1]);
   });
 });

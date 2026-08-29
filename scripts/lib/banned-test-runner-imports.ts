@@ -337,7 +337,13 @@ function innermostBinding(node: ts.Node, name: string, ignoreOrder = false): ts.
       return callStart >= loop.statement.getStart();
     }
 
-    if (declaration.initializer === undefined) return false;
+    if (declaration.initializer === undefined) {
+      // A bare `var` preserves the CommonJS wrapper binding only where that
+      // binding exists. Inside a nested function the `var` is its own, is
+      // `undefined` on entry, and shadows — so the call throws rather than
+      // loading. Same scope correction the enum merge rule needed.
+      return enclosingFunctionOf(declaration) !== undefined;
+    }
 
     // Source order only tracks execution order within one function body. Across
     // a function boundary it tracks nothing: a hoisted declaration can be
@@ -794,6 +800,11 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
 
     const target = unwrapTransparent(expression.left);
     if (ts.isIdentifier(target) && target.text === identifier.text) {
+      // The name matching is not enough: the search covers nested functions, so
+      // `function wire(load) { load = require; }` assigns that function's
+      // *parameter*, not the outer binding. Resolving the target confirms which
+      // binding it writes to.
+      if (innermostBinding(target, identifier.text, true) !== binding) return;
       initializers.push(expression.right);
     } else if (ts.isArrayLiteralExpression(target)) {
       // `[load] = [require]` — the assignment form of array destructuring. The
@@ -1076,9 +1087,9 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
   if (!takesRequire) return false;
 
   const source = unwrapTransparent(binding.initializer);
-  return (
-    ts.isIdentifier(source) && source.text === 'module' && !isLocallyShadowed(source, 'module')
-  );
+  // Resolved through the alias chain, as the member-access path already is:
+  // `const commonjsModule = module; const { require: load } = commonjsModule`.
+  return ts.isIdentifier(source) && resolvesToModuleObject(source, new Set());
 }
 
 /** Whether an identifier resolves, through any number of aliases, to `module`. */
@@ -1362,6 +1373,15 @@ export function findBannedImportsInSvelte(contents: string): BannedImport[] {
  * Emitted as text rather than kept as ranges, because the binding is created by
  * the block itself — there is no declaration in the source to preserve.
  */
+/** Whether a template subtree contains a call the ban could care about. */
+function containsCall(node: unknown): boolean {
+  if (node === null || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some((item) => containsCall(item));
+  const record = node as { type?: unknown };
+  if (record.type === 'ImportExpression' || record.type === 'CallExpression') return true;
+  return Object.entries(node).some(([key, value]) => key !== 'parent' && containsCall(value));
+}
+
 function templateEachBindings(fragment: unknown, contents: string): string[] {
   const declarations: string[] = [];
   const visit = (node: unknown): void => {
@@ -1377,6 +1397,11 @@ function templateEachBindings(fragment: unknown, contents: string): string[] {
     };
     if (
       record.type === 'EachBlock' &&
+      // Only when the block body holds a call. The synthetic declaration is
+      // appended at top level, so emitting it unconditionally would make the
+      // block-local binding a candidate for markup *outside* the block —
+      // reporting a component whose outer `runner` names something else.
+      containsCall((node as { body?: unknown }).body) &&
       record.context?.type === 'Identifier' &&
       typeof record.context.start === 'number' &&
       typeof record.context.end === 'number' &&
