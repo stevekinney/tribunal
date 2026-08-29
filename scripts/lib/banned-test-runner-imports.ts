@@ -716,13 +716,10 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
    * binding a value that is a *part* of the initializer, so pushing the whole
    * initializer asks whether an array or object literal is a loader.
    */
-  const throughPattern = (
-    pattern: ts.BindingName,
-    initializer: ts.Expression,
-  ): ts.Expression | undefined => {
+  const throughPattern = (pattern: ts.BindingName, initializer: ts.Expression): ts.Expression[] => {
     const source = unwrapTransparent(initializer);
     if (ts.isIdentifier(pattern)) {
-      return pattern.text === identifier.text ? initializer : undefined;
+      return pattern.text === identifier.text ? [initializer] : [];
     }
     if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(source)) {
       for (const [index, element] of pattern.elements.entries()) {
@@ -730,12 +727,17 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
         // `const [load = require] = []` — the default is the value the binding
         // receives when the position is absent, so it is an initializer like
         // any other.
-        const value = source.elements[index] ?? element.initializer;
-        if (value === undefined) continue;
-        const found = throughPattern(element.name, value);
-        if (found !== undefined) return found;
+        // Both the matched position and the default are candidates: JavaScript
+        // applies the default when the value is *explicitly* `undefined`, not
+        // only when the position is absent, and which one applies is a runtime
+        // question. Any match is a match.
+        const candidates = [source.elements[index], element.initializer].filter(
+          (value): value is ts.Expression => value !== undefined,
+        );
+        const found = candidates.flatMap((value) => throughPattern(element.name, value));
+        if (found.length > 0) return found;
       }
-      return undefined;
+      return [];
     }
     if (ts.isObjectBindingPattern(pattern) && ts.isObjectLiteralExpression(source)) {
       for (const element of pattern.elements) {
@@ -754,16 +756,17 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
         );
         // `const { load = require } = {}` — no matching property, so the
         // default supplies the value.
-        const value =
+        const candidates = [
           property !== undefined && ts.isPropertyAssignment(property)
             ? property.initializer
-            : element.initializer;
-        if (value === undefined) continue;
-        const found = throughPattern(element.name, value);
-        if (found !== undefined) return found;
+            : undefined,
+          element.initializer,
+        ].filter((value): value is ts.Expression => value !== undefined);
+        const found = candidates.flatMap((value) => throughPattern(element.name, value));
+        if (found.length > 0) return found;
       }
     }
-    return undefined;
+    return [];
   };
 
   /**
@@ -839,8 +842,7 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const takeDeclarations = (list: ts.VariableDeclarationList): void => {
     for (const declaration of list.declarations) {
       if (declaration.initializer === undefined) continue;
-      const value = throughPattern(declaration.name, declaration.initializer);
-      if (value !== undefined) initializers.push(value);
+      initializers.push(...throughPattern(declaration.name, declaration.initializer));
     }
   };
 
@@ -870,7 +872,16 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     // the assignment is where the value arrives. Which assignment is live at
     // the call is not established — every one is a candidate and any match is a
     // match, which fails toward reporting.
-    if (ts.isExpressionStatement(sibling)) takeAssignment(sibling.expression);
+    // Assignments are searched through the whole statement, not only at its
+    // top level: `if (useBun) { load = require; }` assigns the same binding,
+    // and so does one written inside a nested function. Which of them runs is
+    // the control-flow question this validator declines everywhere else, so
+    // every one is a candidate.
+    const visitForAssignments = (node: ts.Node): void => {
+      if (ts.isBinaryExpression(node)) takeAssignment(node);
+      ts.forEachChild(node, visitForAssignments);
+    };
+    visitForAssignments(sibling);
   }
   return initializers;
 }
@@ -1070,6 +1081,17 @@ function destructuredLoaderProperty(identifier: ts.Identifier): boolean {
   );
 }
 
+/** Whether an identifier resolves, through any number of aliases, to `module`. */
+function resolvesToModuleObject(identifier: ts.Identifier, seen: ReadonlySet<ts.Node>): boolean {
+  if (seen.has(identifier)) return false;
+  if (identifier.text === 'module') return !isLocallyShadowed(identifier, 'module');
+  const next = new Set([...seen, identifier]);
+  return aliasInitializers(identifier).some((initializer) => {
+    const source = unwrapTransparent(initializer);
+    return ts.isIdentifier(source) && resolvesToModuleObject(source, next);
+  });
+}
+
 function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set()): boolean {
   // `createRequire(import.meta.url)('bun:test')` calls the loader that call
   // returns, so the callee here is itself a call rather than a name.
@@ -1114,16 +1136,11 @@ function isModuleLoader(callee: ts.Node, seen: ReadonlySet<ts.Node> = new Set())
     // `const commonjsModule = module; commonjsModule.require(...)` keeps the
     // module object and reaches its property later. Followed by resolving the
     // receiver, so an arbitrary object carrying a `require` method still fails.
-    // No visited set here, unlike the callee path: this inspects each
-    // initializer directly and never recurses back into `isModuleLoader`, so
-    // it cannot cycle. A guard was written anyway and the coverage gate showed
-    // its fallback unreachable.
-    return aliasInitializers(member.object).some((initializer) => {
-      const source = unwrapTransparent(initializer);
-      return (
-        ts.isIdentifier(source) && source.text === 'module' && !isLocallyShadowed(source, 'module')
-      );
-    });
+    // Followed recursively, because an alias of an alias is still the module
+    // object: `const first = module; const second = first`. A previous version
+    // checked one hop and said a visited set was unnecessary — true of a
+    // one-hop check, and the reason the second hop was missed.
+    return resolvesToModuleObject(member.object, seen);
   }
   // `import.meta` specifically. `ts.isMetaProperty` alone is also true for
   // `new.target`, whose `require` is a method on an arbitrary object.

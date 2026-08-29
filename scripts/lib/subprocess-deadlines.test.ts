@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { resolveRepositoryRoot } from './repository-root';
@@ -12,18 +13,17 @@ import { resolveRepositoryRoot } from './repository-root';
 // at 4019ms against 400ms. `.claude/rules/scripts.md` states the rule; this is
 // the check that makes it hold, because the rule alone did not.
 //
-// Two things this test has already got wrong, both recorded because the fix is
+// Three things this check has already got wrong, kept here because each fix is
 // the interesting part:
 //
-//  1. It named its files. A hand-maintained list is the defect this whole guard
+//  1. It named its files. A hand-maintained list is the defect this guard
 //     exists to remove, and it silently omitted a spawner.
-//  2. It then walked the filesystem, which the same rules file forbids: a
-//     recursive walk enters ignored directories — a nested worktree under
-//     `.worktrees/` — and fails the current repository over a stale copy git
-//     would never commit.
-//
-// The enumeration is git's. It honours `.gitignore` with no skip list to
-// maintain, and it sees exactly what would be committed.
+//  2. It then walked the filesystem, which the same rules file forbids: a walk
+//     enters ignored directories and fails the repository over a stale copy
+//     git would never commit. The enumeration is git's now.
+//  3. It asserted on the file's *text*, so a file containing one compliant call
+//     and one unbounded call passed — both strings were present somewhere. Each
+//     call is inspected on its own now.
 const here = dirname(fileURLToPath(import.meta.url));
 const root =
   typeof (import.meta as { dir?: string }).dir === 'string'
@@ -32,29 +32,78 @@ const root =
 
 const SOURCE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
-const spawnersWithDeadlines = execFileSync('git', ['ls-files', '-z'], {
+/** Every `spawnSync` call in a source text that sets a `timeout`. */
+export function unboundedSpawnCalls(source: string, fileName: string): number[] {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const offenders: number[] = [];
+
+  const propertyNamed = (options: ts.ObjectLiteralExpression, name: string) =>
+    options.properties.find(
+      (property) =>
+        property.name !== undefined &&
+        ts.isIdentifier(property.name) &&
+        property.name.text === name,
+    );
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : undefined;
+      if (name === 'spawnSync') {
+        const options = node.arguments.find((argument) => ts.isObjectLiteralExpression(argument));
+        if (options !== undefined && ts.isObjectLiteralExpression(options)) {
+          const deadline = propertyNamed(options, 'timeout');
+          const signal = propertyNamed(options, 'killSignal');
+          if (deadline !== undefined && signal === undefined) {
+            offenders.push(parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  return offenders;
+}
+
+const tracked = execFileSync('git', ['ls-files', '-z'], {
   cwd: root,
   encoding: 'utf8',
   maxBuffer: 32 * 1024 * 1024,
 })
   .split('\0')
-  .filter((path) => path.length > 0 && SOURCE.test(path))
-  .filter((path) => {
-    const source = readFileSync(join(root, path), 'utf8');
-    return source.includes('spawnSync') && source.includes('timeout:');
-  })
+  .filter((path) => path.length > 0 && SOURCE.test(path));
+
+const spawners = tracked
+  .filter((path) => readFileSync(join(root, path), 'utf8').includes('spawnSync'))
   .sort();
 
 describe('every subprocess deadline is enforceable', () => {
   it('enumerates the spawners rather than trusting a list', () => {
-    // Guards against the enumeration silently matching nothing, which would
-    // make every assertion below vacuous while still reading as thorough.
-    expect(spawnersWithDeadlines.length).toBeGreaterThan(0);
+    expect(spawners.length).toBeGreaterThan(0);
   });
 
-  it.each(spawnersWithDeadlines)('%s pairs timeout with killSignal', (relativePath) => {
+  it.each(spawners)('%s bounds every deadline it sets', (relativePath) => {
     const source = readFileSync(join(root, relativePath), 'utf8');
-    expect(source).toContain('timeout:');
-    expect(source).toContain("killSignal: 'SIGKILL'");
+    expect(unboundedSpawnCalls(source, relativePath)).toEqual([]);
+  });
+
+  it('catches an unbounded call sitting beside a compliant one', () => {
+    // The failure the previous, text-based version missed: both strings are
+    // present in the file, so a whole-file assertion passed.
+    const source = [
+      "import { spawnSync } from 'node:child_process';",
+      "spawnSync('a', [], { timeout: 10, killSignal: 'SIGKILL' });",
+      "spawnSync('b', [], { timeout: 10 });",
+    ].join('\n');
+    expect(unboundedSpawnCalls(source, 'probe.ts')).toEqual([3]);
+  });
+
+  it('accepts a call that sets no deadline at all', () => {
+    expect(unboundedSpawnCalls("spawnSync('a', []);\n", 'probe.ts')).toEqual([]);
   });
 });

@@ -1255,6 +1255,24 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('a module-object alias is followed as far as it goes', () => {
+  it('follows two hops', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const first = module;\nconst second = first;\nsecond.require('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('does not follow a chain that never reaches module', () => {
+    expect(
+      findBannedTestRunnerImports(
+        "const first = someObject;\nconst second = first;\nsecond.require('bun:test');\n",
+      ),
+    ).toHaveLength(0);
+  });
+});
+
 describe('the module object can be held in an alias', () => {
   it('follows `const commonjsModule = module`', () => {
     expect(
@@ -1583,6 +1601,18 @@ describe('every route a value reaches a binding by', () => {
     ['object destructuring default', "const { load = require } = {};\nload('bun:test');\n"],
     ['array destructuring default', "const [load = require] = [];\nload('bun:test');\n"],
     ['array destructuring assignment', "let load;\n[load] = [require];\nload('bun:test');\n"],
+    [
+      'a default against an explicit undefined',
+      "const { load = require } = { load: undefined };\nload('bun:test');\n",
+    ],
+    [
+      'an assignment inside a conditional',
+      "let load = other;\nif (useBun) { load = require; }\nload('bun:test');\n",
+    ],
+    [
+      'an assignment inside a nested function',
+      "let load = other;\nfunction wire() { load = require; }\nload('bun:test');\n",
+    ],
   ];
 
   it.each(loads)('reports a loader reaching the binding by %s', (_label, source) => {
