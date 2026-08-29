@@ -731,7 +731,10 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(source)) {
       for (const [index, element] of pattern.elements.entries()) {
         if (!ts.isBindingElement(element)) continue;
-        const value = source.elements[index];
+        // `const [load = require] = []` — the default is the value the binding
+        // receives when the position is absent, so it is an initializer like
+        // any other.
+        const value = source.elements[index] ?? element.initializer;
         if (value === undefined) continue;
         const found = throughPattern(element.name, value);
         if (found !== undefined) return found;
@@ -753,8 +756,14 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
             ts.isIdentifier(candidate.name) &&
             candidate.name.text === key,
         );
-        if (property === undefined || !ts.isPropertyAssignment(property)) continue;
-        const found = throughPattern(element.name, property.initializer);
+        // `const { load = require } = {}` — no matching property, so the
+        // default supplies the value.
+        const value =
+          property !== undefined && ts.isPropertyAssignment(property)
+            ? property.initializer
+            : element.initializer;
+        if (value === undefined) continue;
+        const found = throughPattern(element.name, value);
         if (found !== undefined) return found;
       }
     }
@@ -1513,9 +1522,24 @@ export function hasForeignShebang(contents: string): boolean {
     // its own synopsis is `[-u name] [name=value ...] [utility [argument ...]]`.
     // Skipping only options selected `NODE_OPTIONS=--no-warnings` as the
     // interpreter and wrote off a real JavaScript entrypoint as foreign.
-    const command = tokens
-      .slice(1)
-      .find((token) => !token.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token));
+    // Some `env` options take their value as a *separate* operand — its own
+    // help documents `-u, --unset=NAME` and `-C, --chdir=DIR`, and the local
+    // binary accepts both spellings. Skipping only the option token left its
+    // operand looking like the command, so `env -S -u FOO bun` selected `FOO`.
+    const takesOperand = new Set(['-u', '--unset', '-C', '--chdir']);
+    const rest = tokens.slice(1);
+    let command: string | undefined;
+    for (let index = 0; index < rest.length; index += 1) {
+      const token = rest[index] ?? '';
+      if (takesOperand.has(token)) {
+        index += 1;
+        continue;
+      }
+      if (token.startsWith('-')) continue;
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+      command = token;
+      break;
+    }
     interpreter = commandName(command ?? '');
   }
   return interpreter !== 'node' && interpreter !== 'bun' && interpreter !== 'deno';

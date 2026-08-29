@@ -1255,6 +1255,22 @@ describe('a destructured loader property', () => {
   });
 });
 
+describe('a destructuring default supplies a specifier too', () => {
+  it('resolves `const { runner = "bun:test" } = {}`', () => {
+    // Loader resolution and specifier resolution share the pattern walk, so a
+    // gap in it is a gap in both.
+    expect(
+      findBannedTestRunnerImports("const { runner = 'bun:test' } = {};\nawait import(runner);\n"),
+    ).toHaveLength(1);
+  });
+
+  it('does not resolve a default naming another module', () => {
+    expect(
+      findBannedTestRunnerImports("const { runner = 'vitest' } = {};\nawait import(runner);\n"),
+    ).toHaveLength(0);
+  });
+});
+
 describe('an immutable specifier alias is still a constant', () => {
   it('follows `const runner = "bun:test"; import(runner)`', () => {
     expect(
@@ -1512,6 +1528,8 @@ describe('every route a value reaches a binding by', () => {
     ['sequence expression', "const load = (0, require);\nload('bun:test');\n"],
     ['type assertion', "const load = require as never;\nload('bun:test');\n"],
     ['parameter default', "function f(load = require) { load('bun:test'); }\n"],
+    ['object destructuring default', "const { load = require } = {};\nload('bun:test');\n"],
+    ['array destructuring default', "const [load = require] = [];\nload('bun:test');\n"],
   ];
 
   it.each(loads)('reports a loader reaching the binding by %s', (_label, source) => {
@@ -1527,6 +1545,7 @@ describe('every route a value reaches a binding by', () => {
     ['logical assignment', "let load;\nload ??= other;\nload('bun:test');\n"],
     ['chained assignment', "let a, load;\na = load = other;\nload('bun:test');\n"],
     ['parameter default', "function f(load = other) { load('bun:test'); }\n"],
+    ['object destructuring default', "const { load = other } = {};\nload('bun:test');\n"],
     ['the wrong array index', "const [x, load] = [require, other];\nload('bun:test');\n"],
     [
       'the wrong object key',
@@ -1580,6 +1599,14 @@ describe('the shebang interpreter is parsed, not searched for', () => {
 
   it('skips env options before the command', () => {
     expect(hasForeignShebang('#!/usr/bin/env -S bun run\n')).toBe(false);
+  });
+
+  it('skips option operands, which env takes separately', () => {
+    // `env`'s own help documents `-u, --unset=NAME` and `-C, --chdir=DIR`, and
+    // the local binary accepts the value as a separate operand — so skipping
+    // only the option token left `FOO` looking like the command.
+    expect(hasForeignShebang('#!/usr/bin/env -S -u FOO bun\n')).toBe(false);
+    expect(hasForeignShebang('#!/usr/bin/env -S -u FOO python3\n')).toBe(true);
   });
 
   it('skips env assignments as well as options', () => {
