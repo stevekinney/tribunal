@@ -1492,6 +1492,64 @@ describe('an inner binding is not masked by an outer one', () => {
   });
 });
 
+describe('every route a value reaches a binding by', () => {
+  // Enumerated in one pass rather than discovered one review round at a time.
+  // Each is a way a name comes to hold the loader; all fifteen were probed
+  // against the real gate, and five of them were holes when the list was made.
+  const loads: [string, string][] = [
+    ['const', "const load = require;\nload('bun:test');\n"],
+    ['let', "let load = require;\nload('bun:test');\n"],
+    ['var', "var load = require;\nload('bun:test');\n"],
+    ['deferred assignment', "let load;\nload = require;\nload('bun:test');\n"],
+    ['for header assignment', "let load;\nfor (load = require; false; ) {}\nload('bun:test');\n"],
+    ['for header declaration', "for (var load = require; false; ) {}\nload('bun:test');\n"],
+    ['destructuring assignment', "let load;\n({ load } = { load: require });\nload('bun:test');\n"],
+    ['array destructuring', "const [load] = [require];\nload('bun:test');\n"],
+    ['property destructuring', "const { require: load } = module;\nload('bun:test');\n"],
+    ['logical assignment', "let load;\nload ??= require;\nload('bun:test');\n"],
+    ['comma assignment', "let load;\nload = other, load = require;\nload('bun:test');\n"],
+    ['chained assignment', "let a, load;\na = load = require;\nload('bun:test');\n"],
+    ['sequence expression', "const load = (0, require);\nload('bun:test');\n"],
+    ['type assertion', "const load = require as never;\nload('bun:test');\n"],
+    ['parameter default', "function f(load = require) { load('bun:test'); }\n"],
+  ];
+
+  it.each(loads)('reports a loader reaching the binding by %s', (_label, source) => {
+    expect(findBannedTestRunnerImports(source)).toHaveLength(1);
+  });
+
+  const safe: [string, string][] = [
+    ['const', "const load = other;\nload('bun:test');\n"],
+    ['deferred assignment', "let load;\nload = other;\nload('bun:test');\n"],
+    ['array destructuring', "const [load] = [other];\nload('bun:test');\n"],
+    ['property destructuring', "const { require: load } = somethingElse;\nload('bun:test');\n"],
+    ['destructuring assignment', "let load;\n({ load } = { load: other });\nload('bun:test');\n"],
+    ['logical assignment', "let load;\nload ??= other;\nload('bun:test');\n"],
+    ['chained assignment', "let a, load;\na = load = other;\nload('bun:test');\n"],
+    ['parameter default', "function f(load = other) { load('bun:test'); }\n"],
+    ['the wrong array index', "const [x, load] = [require, other];\nload('bun:test');\n"],
+    [
+      'the wrong object key',
+      "const { a: load } = { a: other, require: require };\nload('bun:test');\n",
+    ],
+  ];
+
+  it('ignores a destructuring declaration that binds no matching name', () => {
+    // `throughPattern` is asked about every declaration in the scope, not only
+    // the one that binds the call's name, so a pattern that matches nothing has
+    // to fall through rather than mis-select an element.
+    expect(
+      findBannedTestRunnerImports(
+        "const [first] = [other];\nconst load = require;\nload('bun:test');\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(safe)('does not report when %s binds something else', (_label, source) => {
+    expect(findBannedTestRunnerImports(source)).toHaveLength(0);
+  });
+});
+
 describe('a for header can assign instead of declare', () => {
   it('follows an assignment in a classic-for header', () => {
     // Combines two routes already handled separately: a loop initializer that

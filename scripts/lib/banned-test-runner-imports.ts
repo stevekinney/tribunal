@@ -695,6 +695,11 @@ function aliasInitializer(identifier: ts.Identifier): ts.Expression | undefined 
  */
 function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
   const binding = innermostBinding(identifier, identifier.text, true);
+  // A default gives a parameter its value exactly as an initializer gives one
+  // to a declaration: `function f(load = require) { load('bun:test') }` loads.
+  if (binding !== undefined && ts.isParameter(binding)) {
+    return binding.initializer === undefined ? [] : [binding.initializer];
+  }
   if (binding === undefined || !ts.isVariableDeclaration(binding)) return [];
 
   const list = binding.parent;
@@ -708,23 +713,116 @@ function aliasInitializers(identifier: ts.Identifier): ts.Expression[] {
     return binding.initializer === undefined ? [] : [binding.initializer];
 
   const initializers: ts.Expression[] = [];
+  /**
+   * The sub-expression a destructuring pattern binds to this name.
+   *
+   * `const [load] = [require]` and `const { require: load } = module` give the
+   * binding a value that is a *part* of the initializer, so pushing the whole
+   * initializer asks whether an array or object literal is a loader.
+   */
+  const throughPattern = (
+    pattern: ts.BindingName,
+    initializer: ts.Expression,
+  ): ts.Expression | undefined => {
+    const source = unwrapTransparent(initializer);
+    if (ts.isIdentifier(pattern)) {
+      return pattern.text === identifier.text ? initializer : undefined;
+    }
+    if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(source)) {
+      for (const [index, element] of pattern.elements.entries()) {
+        if (!ts.isBindingElement(element)) continue;
+        const value = source.elements[index];
+        if (value === undefined) continue;
+        const found = throughPattern(element.name, value);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    }
+    if (ts.isObjectBindingPattern(pattern) && ts.isObjectLiteralExpression(source)) {
+      for (const element of pattern.elements) {
+        const key =
+          element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
+            ? element.propertyName.text
+            : ts.isIdentifier(element.name)
+              ? element.name.text
+              : undefined;
+        if (key === undefined) continue;
+        const property = source.properties.find(
+          (candidate) =>
+            candidate.name !== undefined &&
+            ts.isIdentifier(candidate.name) &&
+            candidate.name.text === key,
+        );
+        if (property === undefined || !ts.isPropertyAssignment(property)) continue;
+        const found = throughPattern(element.name, property.initializer);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  };
+
+  /**
+   * Assignments, in every spelling that gives this name a value.
+   *
+   * Enumerated together rather than added one report at a time: plain and
+   * logical assignment, a chain (`a = load = require`, where the interesting
+   * assignment is the right operand of another), and a destructuring assignment
+   * to an existing binding.
+   */
   const takeAssignment = (candidate: ts.Expression): void => {
     const expression = unwrapTransparent(candidate);
-    if (
-      ts.isBinaryExpression(expression) &&
-      expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isIdentifier(expression.left) &&
-      expression.left.text === identifier.text
-    ) {
+    if (!ts.isBinaryExpression(expression)) return;
+
+    const assigns =
+      expression.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken;
+    // No comma-operator case here: `unwrapTransparent` already resolves a comma
+    // expression to its final operand, which is the value the assignment
+    // produces — so `load = other, load = require` arrives as `load = require`.
+    // A branch for it was written, and the coverage gate showed it unreachable.
+    if (!assigns) return;
+
+    const target = unwrapTransparent(expression.left);
+    if (ts.isIdentifier(target) && target.text === identifier.text) {
       initializers.push(expression.right);
+    } else if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target)) {
+      // `({ load } = { load: require })` — a destructuring *assignment*, whose
+      // left side parses as a literal rather than a binding pattern.
+      for (const property of ts.isObjectLiteralExpression(target) ? target.properties : []) {
+        const key =
+          property.name !== undefined && ts.isIdentifier(property.name)
+            ? property.name.text
+            : undefined;
+        const bound =
+          ts.isShorthandPropertyAssignment(property) ||
+          (ts.isPropertyAssignment(property) && ts.isIdentifier(property.initializer)
+            ? property.initializer.text === identifier.text
+            : false);
+        if (key === undefined || !bound) continue;
+        const source = unwrapTransparent(expression.right);
+        if (!ts.isObjectLiteralExpression(source)) continue;
+        const value = source.properties.find(
+          (candidate) =>
+            candidate.name !== undefined &&
+            ts.isIdentifier(candidate.name) &&
+            candidate.name.text === key,
+        );
+        if (value !== undefined && ts.isPropertyAssignment(value))
+          initializers.push(value.initializer);
+      }
     }
+
+    // `a = load = require`: the assignment that matters is the right operand.
+    takeAssignment(expression.right);
   };
 
   const takeDeclarations = (list: ts.VariableDeclarationList): void => {
     for (const declaration of list.declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      if (declaration.name.text !== identifier.text) continue;
-      if (declaration.initializer !== undefined) initializers.push(declaration.initializer);
+      if (declaration.initializer === undefined) continue;
+      const value = throughPattern(declaration.name, declaration.initializer);
+      if (value !== undefined) initializers.push(value);
     }
   };
 
