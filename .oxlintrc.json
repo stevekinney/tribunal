@@ -114,6 +114,17 @@
       {
         "max": 60
       }
+    ],
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "bun:test",
+            "message": "Tribunal's test runner is vitest. Import from 'vitest' instead \u2014 bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner."
+          }
+        ]
+      }
     ]
   },
   "globals": {

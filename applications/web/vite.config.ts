@@ -118,7 +118,14 @@ const config: UserConfig & { test: InlineConfig } = {
           name: 'server',
           environment: 'node',
           isolate: true, // Ensures module isolation between test files to prevent state pollution
-          include: ['src/**/*.{test,spec}.{js,ts}', 'test/**/*.{test,spec}.{js,ts}'],
+          include: [
+            'src/**/*.{test,spec}.{js,ts}',
+            'test/**/*.{test,spec}.{js,ts}',
+            // TRI-34. Build-support code under `scripts/` is real, tested code,
+            // but it sat outside every project's include, so its tests never ran
+            // under the configured runner. Coverage still scopes to `src/`.
+            'scripts/**/*.{test,spec}.{js,ts}',
+          ],
           exclude: [
             'src/**/*.svelte.{test,spec}.{js,ts}',
             // Performance tests run in isolation via test:perf to avoid timing interference

@@ -31,7 +31,13 @@ export default defineConfig({
       // for the same reason. These entrypoints are verified by their owning integration and operational
       // gates; the deterministic helpers they share remain covered under lib/**.
       include: ['lib/**/*.ts'],
-      exclude: ['lib/**/*.test.ts'],
+      // `*.bun-fixture.ts` files are excluded for a different reason than the
+      // tests are: they ARE executed, but by Bun in a subprocess, which this
+      // in-process instrumentation cannot observe, so they read as 0%. Their
+      // execution is asserted by the spawning test's exit-code check rather
+      // than by coverage. They exist because `import.meta.dir` is Bun-only, so
+      // the behaviour they cover is unreachable from Vitest by construction.
+      exclude: ['lib/**/*.test.ts', 'lib/**/*.bun-fixture.ts'],
       thresholds: {
         lines: 100,
         functions: 100,

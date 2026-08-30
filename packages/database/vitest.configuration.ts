@@ -15,7 +15,9 @@ export default defineConfig({
     testTimeout: 15_000,
     teardownTimeout: 10_000,
     name: 'database',
-    include: ['src/**/*.test.ts'],
+    // TRI-34. `scripts/` holds tested build-support code whose tests were
+    // collected by no project. Coverage still scopes to `src/` below.
+    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     environment: 'node',
     passWithNoTests: true,
     coverage: {
