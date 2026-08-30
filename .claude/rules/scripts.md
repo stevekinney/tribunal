@@ -251,3 +251,19 @@ const output = await outputPromise;
 ```
 
 This is especially problematic with verbose reporters that increase output volume.
+
+## Checking whether a check actually passed
+
+Lessons paid for on the TRI-34 branch, kept because each one cost real time to learn and none is specific to the guard that branch abandoned.
+
+**Verify by exit code, not by grepping output.** Tool output frequently carries ANSI escape sequences, so `grep -c "error TS"` can report zero against output that plainly contains errors — a false green that survives several steps before anything contradicts it. Check `$?` when you need pass/fail, and grep the output only to read *which* errors occurred, after the exit code has already said there were some. Beware pipes: `cmd | tail` returns *tail's* status, so in zsh read `${pipestatus[1]}`.
+
+**A background task's completion notification reports the wrapper's exit status, not the command's.** Read the status the command itself wrote.
+
+**`gh pr checks` exit codes do not mean what its documentation says.** It documents 8 for pending, 0 for all-pass, 1 for a terminal failure. Observed against this repository, the plain form returned **1 while seven checks were pending** and the `--json` form returns **0 while pending** — in neither spelling is the exit code the pending signal. Query `/repos/{owner}/{repo}/commits/{sha}/check-runs` for the commit you actually care about and count incomplete runs. Note also that `gh pr checks` describes the *pull request*, which immediately after a push still refers to the previous commit.
+
+**Bound every subprocess with `killSignal`.** `Bun.spawnSync`'s `timeout` signals the child and then *waits* for it, so a child ignoring SIGTERM is unbounded — measured here at 4019ms against a 400ms deadline. Always pair `timeout` with `killSignal: 'SIGKILL'`.
+
+**Enumerate files through git, never by walking the tree.** `git ls-files --cached --others --exclude-standard` honours `.gitignore` with no list to maintain, which keeps a script from traversing a nested worktree or a stale `.tmp/` checkout. Skip mode-160000 gitlinks.
+
+**Verify the edit landed, not only that the reasoning was right.** A scripted replacement whose anchor does not match silently does nothing. Assert the match, then read the file back — a fix reported in a commit message and never actually applied is worse than no fix, because it stops anyone looking again.

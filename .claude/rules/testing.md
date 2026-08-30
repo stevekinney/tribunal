@@ -131,3 +131,20 @@ For code examples and environment tables, see `component-standards` references.
 
 - Disable `landmark-one-main`, `page-has-heading-one`, and `region` rules for isolated component testing.
 - Use `withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])` for WCAG coverage.
+
+## A test file only counts if a project collects it
+
+Vitest silently ignores test files outside every project's `include`. Adding or moving a `*.test.ts` is not enough on its own, and a green suite says nothing about a file the runner never saw.
+
+- Before trusting a new or moved test, run it by name: `vitest run --project <name> <path>`. The include filter applies to the argument too, so an uncollected file answers `No test files found, exiting with code 1`. **Check that exit code, not the summary line.**
+- The collected roots are narrower than the workspace. `applications/web` collects `src/**`, `test/**`, and `scripts/**`; `packages/database` collects `src/**/*.test.ts` and `scripts/**/*.test.ts`. Code outside those roots needs its include widened in the same change that adds its test.
+- Coverage roots are deliberately narrower still — `src/**` in both workspaces — so widening a test include does not drag build-support code into a coverage threshold.
+
+## `import.meta.dir` is Bun-only, and tests must say so
+
+`import.meta.dir` is populated by Bun and never by Vite, so a helper using it throws `TypeError` under Vitest when `node:path#resolve` receives `undefined`. Roughly fifteen call sites across the repository rely on it; that is the convention for Bun-run build-support scripts, not a defect to refactor away one file at a time.
+
+- Test such a helper across both runtimes rather than rewriting it. `scripts/lib/repository-root.test.ts` is the reference: assert the real filesystem layout under Bun, and assert the `TypeError` under Vitest.
+- Do not split on the runtime to do it. Every configured invocation of these files is Vitest, so a branch guarded on "running under Bun" is *permanently* skipped, and the one assertion left standing proves only that a Bun-only helper fails under a runtime it is never used in. Run the helper under Bun in a subprocess and assert its exit code instead.
+- Pair that subprocess's `timeout` with `killSignal: 'SIGKILL'`, never written alone — `spawnSync`'s timeout signals the child and then *waits* for it, so a child that traps or ignores SIGTERM leaves the deadline unenforced.
+- `applications/web` sets `expect: { requireAssertions: true }`, so a test returning before it asserts fails rather than passing vacuously. That is a backstop, not a licence to write a test whose only outcome is a skip.
