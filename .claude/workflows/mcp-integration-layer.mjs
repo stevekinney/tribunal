@@ -5,7 +5,10 @@ export const meta = {
   whenToUse:
     'After a layer of the TRI MCP graph opens. Pass args.issues (see the descriptor contract below); the orchestrator drives pull request gates and Linear separately.',
   phases: [
-    { title: 'Execute', detail: 'one agent per issue: implement or draft the decision, then push a branch' },
+    {
+      title: 'Execute',
+      detail: 'one agent per issue: implement or draft the decision, then push a branch',
+    },
     { title: 'Verify', detail: 'adversarial pass: does each acceptance criterion actually hold?' },
   ],
 };
@@ -23,6 +26,7 @@ export const meta = {
 //   body    string   the issue text, verbatim — agents do not fetch it
 //   branch  string   branch to create or reopen, e.g. 'steve/tri-27-mcp-package'
 //   mode    'implement' | 'decide'
+//   humanCheckpoint boolean — true when completion still requires a person's action or approval
 //   model   'opus' | 'sonnet' | 'haiku'
 //   effort  'low' | 'medium' | 'high' | 'xhigh' | 'max'
 //
@@ -46,6 +50,7 @@ const SHELL_SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 // executor whose fetch, switch, and push sequence cannot succeed — returning
 // rework for what should have been an immediate `invalid`.
 function gitRefProblem(branch) {
+  if (branch === 'HEAD') return 'is the reserved name "HEAD"';
   if (branch.includes('..')) return 'contains ".."';
   if (branch.includes('//')) return 'contains "//"';
   if (branch.includes('@{')) return 'contains "@{"';
@@ -53,8 +58,10 @@ function gitRefProblem(branch) {
   if (branch.endsWith('.')) return 'ends with "."';
   if (branch.endsWith('.lock')) return 'ends with ".lock"';
   if (branch.split('/').some((segment) => segment.length === 0)) return 'has an empty path segment';
-  if (branch.split('/').some((segment) => segment.startsWith('.'))) return 'has a path segment starting with "."';
-  if (branch.split('/').some((segment) => segment.endsWith('.lock'))) return 'has a path segment ending with ".lock"';
+  if (branch.split('/').some((segment) => segment.startsWith('.')))
+    return 'has a path segment starting with "."';
+  if (branch.split('/').some((segment) => segment.endsWith('.lock')))
+    return 'has a path segment ending with ".lock"';
   return null;
 }
 
@@ -89,18 +96,31 @@ function validateIssues(rawIssues) {
       } else {
         const refProblem = gitRefProblem(issue.branch);
         if (refProblem) {
-          problems.push(`${where}: branch "${issue.branch}" is not a valid Git ref name — it ${refProblem}.`);
+          problems.push(
+            `${where}: branch "${issue.branch}" is not a valid Git ref name — it ${refProblem}.`,
+          );
         }
       }
     }
     if (!VALID_MODES.includes(issue.mode)) {
-      problems.push(`${where}: mode must be one of ${VALID_MODES.join(', ')} (got ${JSON.stringify(issue.mode)})`);
+      problems.push(
+        `${where}: mode must be one of ${VALID_MODES.join(', ')} (got ${JSON.stringify(issue.mode)})`,
+      );
+    }
+    if (typeof issue.humanCheckpoint !== 'boolean') {
+      problems.push(
+        `${where}: humanCheckpoint must be a boolean (got ${JSON.stringify(issue.humanCheckpoint)})`,
+      );
     }
     if (!VALID_MODELS.includes(issue.model)) {
-      problems.push(`${where}: model must be one of ${VALID_MODELS.join(', ')} (got ${JSON.stringify(issue.model)})`);
+      problems.push(
+        `${where}: model must be one of ${VALID_MODELS.join(', ')} (got ${JSON.stringify(issue.model)})`,
+      );
     }
     if (!VALID_EFFORTS.includes(issue.effort)) {
-      problems.push(`${where}: effort must be one of ${VALID_EFFORTS.join(', ')} (got ${JSON.stringify(issue.effort)})`);
+      problems.push(
+        `${where}: effort must be one of ${VALID_EFFORTS.join(', ')} (got ${JSON.stringify(issue.effort)})`,
+      );
     }
   });
 
@@ -156,10 +176,10 @@ would each silently operate on a mixture of two branches.
   shipping a partial dressed up as complete.
 - Test runner is vitest. No \`bun:test\` may enter this repository.
 - Prefer full words in names: \`configuration\` not \`config\`, \`utilities\` not \`utils\`.
-- Kebab-case filenames. **Source code** is TypeScript only (\`.ts\`/\`.tsx\`) — never
-  introduce \`.js\`, \`.mjs\`, \`.cjs\`, or \`.jsx\` source. This restriction is about
-  source files: documentation, decision documents, and learnings are Markdown
-  (\`.md\`) as they are everywhere else in this repository.
+- Kebab-case filenames. TypeScript source uses \`.ts\`/\`.tsx\`. Svelte components use \`.svelte\`.
+  Never introduce \`.js\`, \`.mjs\`, \`.cjs\`, or \`.jsx\` source.
+  Validate changed Svelte components with the Svelte MCP autofixer before finalizing
+  them. Documentation, decision documents, and learnings remain Markdown (\`.md\`).
 - Match existing repository conventions. Inspect neighbouring files before
   inventing a new pattern or directory.
 - Cite code by file and symbol, never by line number — line references drift.
@@ -198,7 +218,10 @@ const REPORT_SCHEMA = {
   required: ['issue', 'pushed', 'branch', 'filesChanged', 'verification', 'unmetCriteria', 'notes'],
   properties: {
     issue: { type: 'string' },
-    pushed: { type: 'boolean', description: 'true only if the branch was actually pushed to origin' },
+    pushed: {
+      type: 'boolean',
+      description: 'true only if the branch was actually pushed to origin',
+    },
     branch: { type: 'string' },
     filesChanged: { type: 'array', items: { type: 'string' } },
     verification: {
@@ -233,7 +256,10 @@ const VERDICT_SCHEMA = {
         properties: {
           criterion: { type: 'string' },
           met: { type: 'boolean' },
-          evidence: { type: 'string', description: 'The command run and its exit code, or the file and symbol inspected' },
+          evidence: {
+            type: 'string',
+            description: 'The command run and its exit code, or the file and symbol inspected',
+          },
         },
       },
     },
@@ -244,7 +270,10 @@ const VERDICT_SCHEMA = {
         'Anything wrong, including problems outside the numbered criteria (out-of-scope changes, fabricated citations, weakened tests). Set recommendation to needs-rework if any of these should block a pull request.',
       items: { type: 'string' },
     },
-    recommendation: { type: 'string', enum: ['open-pull-request', 'needs-rework', 'hand-back-to-human'] },
+    recommendation: {
+      type: 'string',
+      enum: ['open-pull-request', 'needs-rework', 'hand-back-to-human'],
+    },
   },
 };
 
@@ -295,7 +324,9 @@ for (let index = 0; index < issues.length; index += MAX_CONCURRENT_EXECUTORS) {
   batches.push(issues.slice(index, index + MAX_CONCURRENT_EXECUTORS));
 }
 if (batches.length > 1) {
-  log(`Running ${issues.length} issues in ${batches.length} batches of at most ${MAX_CONCURRENT_EXECUTORS}.`);
+  log(
+    `Running ${issues.length} issues in ${batches.length} batches of at most ${MAX_CONCURRENT_EXECUTORS}.`,
+  );
 }
 
 const results = [];
@@ -304,13 +335,17 @@ for (const batch of batches) {
   results.push(...batchResults);
 }
 
+function requiresHumanHandBack(issue) {
+  return issue.mode === 'decide' || issue.humanCheckpoint;
+}
+
 function runBatch(batchIssues) {
   return pipeline(
-  batchIssues,
+    batchIssues,
 
-  // Stage 1 — implement, or draft the decision. One agent per issue, isolated.
-  (issue) => {
-    const decisionFraming = `
+    // Stage 1 — implement, or draft the decision. One agent per issue, isolated.
+    (issue) => {
+      const decisionFraming = `
 ## This is a DECISION issue — draft, do not self-approve
 
 Your job is to produce a decision document (Markdown) that a human approves:
@@ -326,7 +361,7 @@ Ground every claim in the actual codebase, and cite only sources you have read.
 A citation that turns out not to say what you claim is worse than no citation,
 because it reads as diligence.`;
 
-    const implementationFraming = `
+      const implementationFraming = `
 ## This is an IMPLEMENTATION issue
 
 For every acceptance criterion, prove it holds by running something that exits
@@ -338,8 +373,8 @@ Any verification script the issue names must be added to the root
 \`package.json\`. Do not edit or compose aggregate scripts (\`test:security\`,
 \`test:observability\`, \`test:mcp\`) — a different issue owns those.`;
 
-    return agent(
-      `You are executing Linear issue ${issue.id} for the Tribunal MCP server integration.
+      return agent(
+        `You are executing Linear issue ${issue.id} for the Tribunal MCP server integration.
 
 # The issue, verbatim
 
@@ -353,40 +388,45 @@ ${houseRules(issue, orchestratorCheckout)}
 
 Start by reading the repository to understand its real shape — do not assume.
 Then do the work. Then verify. Then commit and push.`,
-      {
-        label: `${issue.mode === 'decide' ? 'draft' : 'build'}:${issue.id}`,
-        phase: 'Execute',
-        model: issue.model,
-        effort: issue.effort,
-        isolation: 'worktree',
-        schema: REPORT_SCHEMA,
-      },
-    );
-  },
+        {
+          label: `${issue.mode === 'decide' ? 'draft' : 'build'}:${issue.id}`,
+          phase: 'Execute',
+          model: issue.model,
+          effort: issue.effort,
+          isolation: 'worktree',
+          schema: REPORT_SCHEMA,
+        },
+      );
+    },
 
-  // Stage 2 — adversarial verify. Fresh eyes, told to disprove the report.
-  (report, issue) => {
-    if (!report) {
-      return {
-        issue: issue.id,
-        criteriaVerified: [],
-        confirmedMet: false,
-        problems: ['Stage 1 agent produced no report (died, errored, or was skipped).'],
-        recommendation: 'needs-rework',
-      };
-    }
-    if (!report.pushed) {
-      return {
-        issue: issue.id,
-        criteriaVerified: [],
-        confirmedMet: false,
-        problems: [`Branch ${issue.branch} was not pushed. Notes: ${report.notes}`],
-        recommendation: 'needs-rework',
-      };
-    }
+    // Stage 2 — adversarial verify. Fresh eyes, told to disprove the report.
+    (report, issue) => {
+      if (!report) {
+        return {
+          issue: issue.id,
+          criteriaVerified: [],
+          confirmedMet: false,
+          problems: ['Stage 1 agent produced no report (died, errored, or was skipped).'],
+          recommendation: 'needs-rework',
+        };
+      }
+      if (!report.pushed) {
+        return {
+          issue: issue.id,
+          criteriaVerified: [],
+          confirmedMet: false,
+          problems: [`Branch ${issue.branch} was not pushed. Notes: ${report.notes}`],
+          recommendation: 'needs-rework',
+        };
+      }
 
-    return agent(
-      `You are adversarially verifying work claimed complete for Linear issue ${issue.id}.
+      const humanHandBackRequired = requiresHumanHandBack(issue);
+      const dispositionFraming = humanHandBackRequired
+        ? `This issue is mode \`${issue.mode}\` and humanCheckpoint is \`${issue.humanCheckpoint}\`. If every acceptance criterion is met and no separate problem requires rework, You MUST set \`recommendation\` to \`hand-back-to-human\`, never \`open-pull-request\`. A person still owns the remaining decision or action.`
+        : `This issue is mode \`${issue.mode}\` and humanCheckpoint is \`${issue.humanCheckpoint}\`. Use \`open-pull-request\` only when every acceptance criterion is met and no separate problem requires rework.`;
+
+      return agent(
+        `You are adversarially verifying work claimed complete for Linear issue ${issue.id}.
 
 Your default posture is SKEPTICAL. The executing agent claims it satisfied every
 acceptance criterion. Your job is to find out where that is not true.
@@ -400,6 +440,10 @@ ${issue.body}
 # What the executing agent claims
 
 ${JSON.stringify(report, null, 2)}
+
+# Required disposition
+
+${dispositionFraming}
 
 # How to verify
 
@@ -446,33 +490,44 @@ Set \`confirmedMet\` true only if every numbered criterion genuinely holds. Use
 criteria — an out-of-scope change, a fabricated citation, a weakened test — is
 grounds for \`needs-rework\` even when every numbered criterion passes. Put every
 such problem in \`problems\`.`,
-      {
-        label: `verify:${issue.id}`,
-        phase: 'Verify',
-        model: 'opus',
-        effort: 'high',
-        isolation: 'worktree',
-        schema: VERDICT_SCHEMA,
-      },
-    );
-  },
+        {
+          label: `verify:${issue.id}`,
+          phase: 'Verify',
+          model: 'opus',
+          effort: 'high',
+          isolation: 'worktree',
+          schema: VERDICT_SCHEMA,
+        },
+      );
+    },
   );
 }
 
 // A falsy result here means the verifier itself died or was skipped. Filtering
 // it away would drop the issue from BOTH collections and leave the orchestrator
 // with no record that it was ever dispatched, so it becomes an explicit verdict.
-const verdicts = results.map((result, index) =>
-  result
-    ? result
-    : {
-        issue: issues[index].id,
-        criteriaVerified: [],
-        confirmedMet: false,
-        problems: ['Stage 2 verifier produced no verdict (died, errored, or was skipped). Work is unverified.'],
-        recommendation: 'needs-rework',
-      },
-);
+const verdicts = results
+  .map((result, index) =>
+    result
+      ? result
+      : {
+          issue: issues[index].id,
+          criteriaVerified: [],
+          confirmedMet: false,
+          problems: [
+            'Stage 2 verifier produced no verdict (died, errored, or was skipped). Work is unverified.',
+          ],
+          recommendation: 'needs-rework',
+        },
+  )
+  .map((verdict, index) =>
+    requiresHumanHandBack(issues[index]) &&
+    verdict.confirmedMet &&
+    (verdict.problems || []).length === 0 &&
+    verdict.recommendation === 'open-pull-request'
+      ? { ...verdict, recommendation: 'hand-back-to-human' }
+      : verdict,
+  );
 
 // Readiness honours the verifier's own recommendation, not just confirmedMet.
 // A verifier can legitimately confirm every numbered criterion and still return
@@ -484,20 +539,28 @@ const ready = verdicts.filter((v) => v.confirmedMet && v.recommendation === 'ope
 // decision only a person can make, so folding them into `rework` invites the
 // orchestrator to redispatch an issue that is waiting on a human instead.
 const handBack = verdicts.filter(
-  (v) => v.recommendation === 'hand-back-to-human' && !(v.confirmedMet && v.recommendation === 'open-pull-request'),
+  (v) =>
+    v.recommendation === 'hand-back-to-human' &&
+    !(v.confirmedMet && v.recommendation === 'open-pull-request'),
 );
 const rework = verdicts.filter(
-  (v) => !(v.confirmedMet && v.recommendation === 'open-pull-request') && v.recommendation !== 'hand-back-to-human',
+  (v) =>
+    !(v.confirmedMet && v.recommendation === 'open-pull-request') &&
+    v.recommendation !== 'hand-back-to-human',
 );
 
 log(
   `Verified: ${ready.length} ready for a pull request, ${rework.length} needing rework, ${handBack.length} awaiting a human decision.`,
 );
 for (const verdict of handBack) {
-  log(`  ${verdict.issue} [hand-back]: ${(verdict.problems || []).join('; ') || 'awaiting a human decision'}`);
+  log(
+    `  ${verdict.issue} [hand-back]: ${(verdict.problems || []).join('; ') || 'awaiting a human decision'}`,
+  );
 }
 for (const verdict of rework) {
-  log(`  ${verdict.issue} [${verdict.recommendation}]: ${(verdict.problems || []).join('; ') || 'no detail given'}`);
+  log(
+    `  ${verdict.issue} [${verdict.recommendation}]: ${(verdict.problems || []).join('; ') || 'no detail given'}`,
+  );
 }
 // Problems on an otherwise-ready issue are still worth surfacing rather than dropping.
 for (const verdict of ready) {
