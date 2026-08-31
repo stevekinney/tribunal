@@ -1,6 +1,6 @@
 import type { Handle, ServerInit } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
-import { dev } from '$app/environment';
+import { building, dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import {
   deleteNeonAuthTokenCookie,
@@ -25,7 +25,7 @@ import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured'
  * it is a warning rather than a startup guard that throws.
  */
 export const init: ServerInit = () => {
-  if (!dev) {
+  if (!building && !dev) {
     assertNeonAuthConfigured();
   }
 

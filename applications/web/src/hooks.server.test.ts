@@ -6,11 +6,14 @@ const mockValidateNeonSessionFromToken = vi.hoisted(() => vi.fn());
 const mockDeleteNeonAuthTokenCookie = vi.hoisted(() => vi.fn());
 const mockWarnOnGitHubAppConfigurationDriftAtStartup = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ E2E_TEST_MODE: '0' }));
-const mockApplicationEnvironment = vi.hoisted(() => ({ dev: true }));
+const mockApplicationEnvironment = vi.hoisted(() => ({ building: false, dev: true }));
 const mockAssertNeonAuthConfigured = vi.hoisted(() => vi.fn());
 
 vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
 vi.mock('$app/environment', () => ({
+  get building() {
+    return mockApplicationEnvironment.building;
+  },
   get dev() {
     return mockApplicationEnvironment.dev;
   },
@@ -76,6 +79,7 @@ describe('hooks auth handle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnv.E2E_TEST_MODE = '0';
+    mockApplicationEnvironment.building = false;
     mockApplicationEnvironment.dev = true;
     mockAssertNeonAuthConfigured.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
@@ -223,6 +227,7 @@ describe('correlationHandle (isolated from the composed handle via a mocked sequ
 
 describe('init (server startup hook)', () => {
   beforeEach(() => {
+    mockApplicationEnvironment.building = false;
     mockApplicationEnvironment.dev = true;
     mockAssertNeonAuthConfigured.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
@@ -236,6 +241,16 @@ describe('init (server startup hook)', () => {
     await init();
 
     expect(mockAssertNeonAuthConfigured).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not require runtime configuration while SvelteKit is building', async () => {
+    mockApplicationEnvironment.building = true;
+    mockApplicationEnvironment.dev = false;
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockAssertNeonAuthConfigured).not.toHaveBeenCalled();
   });
 
   it('fires the webhook subscription drift check without awaiting it', async () => {
