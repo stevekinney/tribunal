@@ -68,6 +68,20 @@ describe('CI workflow validation', () => {
     });
   });
 
+  describe('container image smoke test', () => {
+    it('boots the web image with the required Neon Auth runtime configuration', async () => {
+      const workflow = await readRepositoryFile('.github/workflows/ci.yml');
+      const webContainerConfiguration = workflow
+        .split('docker run -d --rm --name tribunal-web-test')[1]
+        ?.split('docker run -d --rm --name tribunal-engine-test')[0];
+
+      expect(webContainerConfiguration).toContain(
+        '-e PUBLIC_NEON_AUTH_URL=https://auth.ci.invalid',
+      );
+      expect(webContainerConfiguration).toContain('-e NEON_AUTH_BASE_URL=https://auth.ci.invalid');
+    });
+  });
+
   describe('package.json scripts', () => {
     let packageJson: Record<string, any>;
 
