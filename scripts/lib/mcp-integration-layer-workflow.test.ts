@@ -164,6 +164,42 @@ describe('MCP integration layer workflow', () => {
     expect(result.rework).toEqual([expect.objectContaining({ issue: 'TRI-TEST' })]);
   });
 
+  test('hands back a checkpoint whose only unmet criterion requires a person', async () => {
+    let verifyPrompt = '';
+    const agent = vi.fn((prompt: string, options: { phase: string }) => {
+      if (options.phase === 'Execute') {
+        return {
+          issue: 'TRI-TEST',
+          pushed: true,
+          branch: 'tri-test',
+          filesChanged: [],
+          verification: [],
+          unmetCriteria: ['A person must complete the credentialed deployment.'],
+          notes: 'Scripted preparation is complete.',
+        };
+      }
+      verifyPrompt = prompt;
+      return {
+        issue: 'TRI-TEST',
+        criteriaVerified: [
+          { criterion: 'scripted preparation', met: true, evidence: 'exit 0' },
+          { criterion: 'credentialed deployment', met: false, evidence: 'awaiting a person' },
+        ],
+        confirmedMet: false,
+        problems: [],
+        recommendation: 'hand-back-to-human',
+      };
+    });
+
+    const result = await executeWorkflow([descriptor({ humanCheckpoint: true })], agent);
+
+    expect(result.ready).toEqual([]);
+    expect(result.rework).toEqual([]);
+    expect(result.handBack).toEqual([expect.objectContaining({ issue: 'TRI-TEST' })]);
+    expect(verifyPrompt).toContain('Keep those manual criteria accurately marked unmet');
+    expect(verifyPrompt).toContain('their deliberate deferral is not `needs-rework`');
+  });
+
   test('permits Svelte source while barring JavaScript-family source alternatives', async () => {
     let executePrompt = '';
     const agent = vi.fn((prompt: string, options: { phase: string }) => {

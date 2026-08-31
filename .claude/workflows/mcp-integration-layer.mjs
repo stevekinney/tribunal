@@ -434,7 +434,7 @@ Then do the work. Then verify. Then commit and push.`,
 
       const humanHandBackRequired = requiresHumanHandBack(issue);
       const dispositionFraming = humanHandBackRequired
-        ? `This issue is mode \`${issue.mode}\` and humanCheckpoint is \`${issue.humanCheckpoint}\`. If every acceptance criterion is met and no separate problem requires rework, You MUST set \`recommendation\` to \`hand-back-to-human\`, never \`open-pull-request\`. A person still owns the remaining decision or action.`
+        ? `This issue is mode \`${issue.mode}\` and humanCheckpoint is \`${issue.humanCheckpoint}\`. You MUST set \`recommendation\` to \`hand-back-to-human\`, never \`open-pull-request\`, when the scripted preparation is verified and the only unmet criteria are the decision, approval, credentialed step, or other action reserved for a person. Keep those manual criteria accurately marked unmet and \`confirmedMet\` false; their deliberate deferral is not \`needs-rework\`. Use \`needs-rework\` only when the scripted preparation or another non-human requirement is defective. A person still owns the remaining decision or action.`
         : `This issue is mode \`${issue.mode}\` and humanCheckpoint is \`${issue.humanCheckpoint}\`. Use \`open-pull-request\` only when every acceptance criterion is met and no separate problem requires rework.`;
 
       return agent(
