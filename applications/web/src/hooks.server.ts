@@ -13,6 +13,8 @@ import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
 import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured';
+import { setLogger } from '@tribunal/mcp';
+import { mcpLogger } from '$lib/server/mcp-logger';
 
 /**
  * Runs once before the server responds to its first request.
@@ -25,6 +27,7 @@ import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured'
  * it is a warning rather than a startup guard that throws.
  */
 export const init: ServerInit = () => {
+  setLogger(mcpLogger);
   if (!building && !dev && env.E2E_TEST_MODE !== '1') {
     assertNeonAuthConfigured();
   }

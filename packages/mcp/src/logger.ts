@@ -160,3 +160,25 @@ export function createLogger(options?: { destination?: DestinationStream }): pin
 }
 
 export const logger = createLogger();
+
+export type McpLogMethod = (...arguments_: unknown[]) => void;
+export type McpLogger = {
+  debug: McpLogMethod;
+  info: McpLogMethod;
+  warn: McpLogMethod;
+  error: McpLogMethod;
+};
+
+let hostLogger: McpLogger = logger;
+
+/** Installs the consuming application's logger as the engine's only operational sink. */
+export function setLogger(nextLogger: McpLogger): void {
+  hostLogger = nextLogger;
+}
+
+export const engineLogger: McpLogger = {
+  debug: (...arguments_) => hostLogger.debug(...arguments_),
+  info: (...arguments_) => hostLogger.info(...arguments_),
+  warn: (...arguments_) => hostLogger.warn(...arguments_),
+  error: (...arguments_) => hostLogger.error(...arguments_),
+};

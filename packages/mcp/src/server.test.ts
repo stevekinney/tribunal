@@ -6,11 +6,154 @@ import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { areResourceSubscriptionsAuthorized, createMcpServer } from './server.js';
 import { getSupportedScopes } from './supported-scopes.js';
+import { allPrompts } from './prompts/index.js';
 import { allResources } from './resources/index.js';
 import { allTools } from './tools/index.js';
-import type { McpResourceDefinition, McpToolDefinition } from './types/primitives.js';
+import { engineLogger, logger as defaultLogger, setLogger } from './logger.js';
+import type { McpLogger } from './logger.js';
+import type {
+  McpPromptDefinition,
+  McpResourceDefinition,
+  McpToolDefinition,
+} from './types/primitives.js';
 
 describe('createMcpServer', () => {
+  it('sends engine records exclusively to a host-supplied logger', async () => {
+    const records: unknown[] = [];
+    const hostLogger: McpLogger = {
+      debug: (...arguments_) => records.push(arguments_),
+      info: (...arguments_) => records.push(arguments_),
+      warn: (...arguments_) => records.push(arguments_),
+      error: (...arguments_) => records.push(arguments_),
+    };
+    setLogger(hostLogger);
+    engineLogger.debug({ event: 'mcp_test', outcome: 'debug' }, 'debug record');
+    engineLogger.info({ event: 'mcp_test', outcome: 'info' }, 'info record');
+    engineLogger.error({ event: 'mcp_test', outcome: 'error' }, 'error record');
+
+    const failingTool: McpToolDefinition = {
+      name: 'host_logger_tool',
+      title: 'Host logger tool',
+      description: 'Returns an error.',
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      requiredScope: 'profile:read',
+      handler: async () => ({ content: [{ type: 'text', text: 'failure' }], isError: true }),
+    };
+    allTools.push(failingTool);
+    try {
+      const server = createMcpServer({
+        userId: 'host-user',
+        user: {
+          id: 'host-user',
+          email: 'host@example.com',
+          name: 'Host',
+          image: null,
+          role: 'user',
+        },
+        enableUiExtension: false,
+        scopes: ['profile:read'],
+      });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'host-logger-client', version: '1.0.0' });
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      await client.callTool({ name: failingTool.name, arguments: {} });
+      expect(records).toContainEqual([
+        expect.objectContaining({ event: 'mcp_tool_call', outcome: 'tool_failure' }),
+        expect.any(String),
+      ]);
+      expect(records).toEqual(
+        expect.arrayContaining([
+          [expect.objectContaining({ outcome: 'debug' }), 'debug record'],
+          [expect.objectContaining({ outcome: 'info' }), 'info record'],
+          [expect.objectContaining({ outcome: 'error' }), 'error record'],
+        ]),
+      );
+      await client.close();
+    } finally {
+      allTools.length = 0;
+      setLogger(defaultLogger);
+    }
+  });
+
+  it('threads requestId into tool, resource, and prompt handlers', async () => {
+    const received: Array<string | undefined> = [];
+    const tool: McpToolDefinition = {
+      name: 'request_id_tool',
+      title: 'Request ID tool',
+      description: 'Captures context.',
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      requiredScope: 'profile:read',
+      handler: async (_input, context) => {
+        received.push(context.requestId);
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    };
+    const resource: McpResourceDefinition = {
+      name: 'request_id_resource',
+      title: 'Request ID resource',
+      uri: 'test://request-id',
+      description: 'Captures context.',
+      mimeType: 'text/plain',
+      requiredScope: 'profile:read',
+      handler: async (uri, context) => {
+        received.push(context.requestId);
+        return { contents: [{ uri: uri.toString(), text: 'ok' }] };
+      },
+    };
+    const prompt: McpPromptDefinition = {
+      name: 'request_id_prompt',
+      title: 'Request ID prompt',
+      description: 'Captures context.',
+      arguments: undefined,
+      requiredScope: 'profile:read',
+      handler: async (_input, context) => {
+        received.push(context.requestId);
+        return { messages: [{ role: 'user', content: { type: 'text', text: 'ok' } }] };
+      },
+    };
+    allTools.push(tool);
+    allResources.push(resource);
+    allPrompts.push(prompt);
+    try {
+      const server = createMcpServer({
+        userId: 'request-user',
+        user: {
+          id: 'request-user',
+          email: 'request@example.com',
+          name: 'Request',
+          image: null,
+          role: 'user',
+        },
+        requestId: 'req-propagated',
+        enableUiExtension: false,
+        scopes: ['profile:read'],
+      });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'request-id-client', version: '1.0.0' });
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      await client.callTool({ name: tool.name, arguments: {} });
+      await client.readResource({ uri: resource.uri });
+      await client.getPrompt({ name: prompt.name, arguments: {} });
+      expect(received).toEqual(['req-propagated', 'req-propagated', 'req-propagated']);
+      await client.close();
+    } finally {
+      allTools.length = 0;
+      allResources.length = 0;
+      allPrompts.length = 0;
+    }
+  });
   it('returns a defined server instance', () => {
     const server = createMcpServer({
       userId: 'test-user-id',

@@ -92,5 +92,8 @@ const server = createServer((incomingMessage, serverResponse) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  logger.info({ port }, 'MCP conformance server listening');
+  logger.info(
+    { event: 'mcp_conformance_server', outcome: 'listening', port },
+    'MCP conformance server listening',
+  );
 });

@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { join } from 'node:path';
+import { buildPrecommitVitestInvocation } from './lib/precommit-tests';
 /**
  * Pre-commit test runner that:
  * 1. Runs tests for affected projects
@@ -13,29 +15,17 @@ async function main() {
   }
 
   try {
-    const projects = ['server', 'client'];
-
     // Run vitest with verbose reporter to capture snapshot warnings
     // --changed: only run tests for files that changed since the last commit
     //            (Vitest compares HEAD against the working tree, not staged files)
     // --bail 1: stop on first failure to fail fast
-    const vitestArgs = [
-      'vitest',
-      'run',
-      '-c',
-      'applications/web/vite.config.ts',
-      '--reporter=verbose',
-      '--changed',
-      '--bail',
-      '1',
-    ];
-    for (const project of projects) {
-      vitestArgs.push('--project', project);
-    }
+    const repositoryRoot = join(import.meta.dirname, '..');
+    const invocation = buildPrecommitVitestInvocation(repositoryRoot);
 
-    const proc = Bun.spawn(vitestArgs, {
+    const proc = Bun.spawn(invocation.command, {
       stdio: ['inherit', 'pipe', 'pipe'],
       env: { ...process.env },
+      cwd: invocation.workingDirectory,
     });
 
     // Collect output to scan for obsolete snapshots
