@@ -6,8 +6,22 @@ const mockValidateNeonSessionFromToken = vi.hoisted(() => vi.fn());
 const mockDeleteNeonAuthTokenCookie = vi.hoisted(() => vi.fn());
 const mockWarnOnGitHubAppConfigurationDriftAtStartup = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ E2E_TEST_MODE: '0' }));
+const mockApplicationEnvironment = vi.hoisted(() => ({ building: false, dev: true }));
+const mockAssertNeonAuthConfigured = vi.hoisted(() => vi.fn());
 
 vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
+vi.mock('$app/environment', () => ({
+  get building() {
+    return mockApplicationEnvironment.building;
+  },
+  get dev() {
+    return mockApplicationEnvironment.dev;
+  },
+}));
+
+vi.mock(import('$lib/server/auth/neon-auth-configured'), () => ({
+  assertNeonAuthConfigured: mockAssertNeonAuthConfigured,
+}));
 
 vi.mock(import('$lib/server/github/webhooks/subscription-drift'), () => ({
   warnOnGitHubAppConfigurationDriftAtStartup: mockWarnOnGitHubAppConfigurationDriftAtStartup,
@@ -65,6 +79,9 @@ describe('hooks auth handle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnv.E2E_TEST_MODE = '0';
+    mockApplicationEnvironment.building = false;
+    mockApplicationEnvironment.dev = true;
+    mockAssertNeonAuthConfigured.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockResolvedValue(undefined);
   });
@@ -209,6 +226,44 @@ describe('correlationHandle (isolated from the composed handle via a mocked sequ
 });
 
 describe('init (server startup hook)', () => {
+  beforeEach(() => {
+    mockEnv.E2E_TEST_MODE = '0';
+    mockApplicationEnvironment.building = false;
+    mockApplicationEnvironment.dev = true;
+    mockAssertNeonAuthConfigured.mockReset();
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
+    mockWarnOnGitHubAppConfigurationDriftAtStartup.mockResolvedValue(undefined);
+  });
+
+  it('requires Neon Auth configuration outside development', async () => {
+    mockApplicationEnvironment.dev = false;
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockAssertNeonAuthConfigured).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not require runtime configuration while SvelteKit is building', async () => {
+    mockApplicationEnvironment.building = true;
+    mockApplicationEnvironment.dev = false;
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockAssertNeonAuthConfigured).not.toHaveBeenCalled();
+  });
+
+  it('does not require production identity configuration in E2E preview mode', async () => {
+    mockApplicationEnvironment.dev = false;
+    mockEnv.E2E_TEST_MODE = '1';
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockAssertNeonAuthConfigured).not.toHaveBeenCalled();
+  });
+
   it('fires the webhook subscription drift check without awaiting it', async () => {
     let resolveDriftCheck: () => void = () => {};
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReturnValue(

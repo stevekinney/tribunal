@@ -247,27 +247,30 @@ describe('POST /api/auth/neon-session', () => {
     expect.assertions(2);
   });
 
-  it('attaches an existing email-matched user only when that user has no Neon Auth mapping', async () => {
+  it('returns 409 without attaching an existing email-matched user', async () => {
     const existingUser = await userFactory.create({
       username: 'bridge-email',
       neonAuthUserId: null,
       email: 'bridge-email@example.com',
     });
 
-    await postToken(
+    const { response } = await postToken(
       await createToken({
         subject: 'neon-email-bridge',
         email: 'bridge-email@example.com',
       }),
     );
+    const body = (await response.json()) as { error: { message: string } };
 
     const [storedUser] = await testDb.db
       .select()
       .from(userTable)
       .where(eq(userTable.id, existingUser.id));
 
-    expect(storedUser.neonAuthUserId).toBe('neon-email-bridge');
-    expect.assertions(1);
+    expect(response.status).toBe(409);
+    expect(body.error.message).toBe('Email is already linked to another Tribunal user');
+    expect(storedUser.neonAuthUserId).toBeNull();
+    expect.assertions(3);
   });
 
   it('refreshOnly resets the cookie for an already-mapped user without touching their profile', async () => {

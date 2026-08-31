@@ -324,12 +324,6 @@ export async function upsertApplicationUserFromNeonToken(
   if (verifiedToken.email) {
     const emailMatchedUser = await db
       .select({
-        id: userTable.id,
-        username: userTable.username,
-        name: userTable.name,
-        avatarUrl: userTable.avatarUrl,
-        email: userTable.email,
-        isPlatformAdministrator: userTable.isPlatformAdministrator,
         neonAuthUserId: userTable.neonAuthUserId,
       })
       .from(userTable)
@@ -337,28 +331,8 @@ export async function upsertApplicationUserFromNeonToken(
       .limit(1);
 
     const existing = emailMatchedUser[0];
-    if (existing) {
-      if (existing.neonAuthUserId) {
-        error(409, 'Email is already linked to another Neon Auth user');
-      }
-
-      const [updatedUser] = await db
-        .update(userTable)
-        .set({
-          neonAuthUserId: verifiedToken.neonAuthUserId,
-          ...profileUpdatesForExistingUser(verifiedToken, false),
-        })
-        .where(eq(userTable.id, existing.id))
-        .returning({
-          id: userTable.id,
-          username: userTable.username,
-          name: userTable.name,
-          avatarUrl: userTable.avatarUrl,
-          email: userTable.email,
-          isPlatformAdministrator: userTable.isPlatformAdministrator,
-        });
-
-      return updatedUser;
+    if (existing && existing.neonAuthUserId !== verifiedToken.neonAuthUserId) {
+      error(409, 'Email is already linked to another Tribunal user');
     }
   }
 
@@ -372,6 +346,7 @@ export async function upsertApplicationUserFromNeonToken(
       name: verifiedToken.name,
       avatarUrl: verifiedToken.avatarUrl,
     })
+    .onConflictDoNothing()
     .returning({
       id: userTable.id,
       username: userTable.username,
@@ -381,7 +356,18 @@ export async function upsertApplicationUserFromNeonToken(
       isPlatformAdministrator: userTable.isPlatformAdministrator,
     });
 
-  return newUser;
+  if (newUser) {
+    return newUser;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const concurrentlyCreatedUser = await findMappedUser(verifiedToken.neonAuthUserId);
+    if (concurrentlyCreatedUser) {
+      return concurrentlyCreatedUser;
+    }
+  }
+
+  error(409, 'Could not create a Tribunal user for this Neon Auth identity');
 }
 
 export async function createNeonSessionFromToken(

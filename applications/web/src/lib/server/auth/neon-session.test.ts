@@ -372,6 +372,31 @@ describe('Neon Auth profile upsert', () => {
     expect.assertions(4);
   });
 
+  it('preserves a mapped identity when its new email belongs to another user', async () => {
+    const mappedUser = await userFactory.create({
+      username: 'mapped-user',
+      neonAuthUserId: 'neon-user-1',
+      email: 'original@example.com',
+      name: 'Original Name',
+    });
+    await userFactory.create({
+      username: 'email-owner',
+      neonAuthUserId: 'neon-user-2',
+      email: 'claimed@example.com',
+    });
+
+    const applicationUser = await withTestDatabase(() =>
+      upsertApplicationUserFromNeonToken(
+        verifiedToken({ email: 'claimed@example.com', name: 'Updated Name' }),
+      ),
+    );
+
+    expect(applicationUser.id).toBe(mappedUser.id);
+    expect(applicationUser.email).toBe('original@example.com');
+    expect(applicationUser.name).toBe('Updated Name');
+    expect.assertions(3);
+  });
+
   it('preserves mapped profile fields when Neon omits profile claims', async () => {
     const existingUser = await userFactory.create({
       username: 'existing-user',
@@ -394,7 +419,7 @@ describe('Neon Auth profile upsert', () => {
     expect.assertions(4);
   });
 
-  it('attaches an existing email-matched user only when it has no Neon Auth mapping', async () => {
+  it('rejects an email collision instead of attaching an existing unmapped user', async () => {
     const existingUser = await userFactory.create({
       username: 'email-match',
       neonAuthUserId: null,
@@ -402,24 +427,27 @@ describe('Neon Auth profile upsert', () => {
       isPlatformAdministrator: true,
     });
 
-    const applicationUser = await withTestDatabase(() =>
-      upsertApplicationUserFromNeonToken(
-        verifiedToken({ neonAuthUserId: 'neon-email-match', email: 'match@example.com' }),
+    await expect(
+      withTestDatabase(() =>
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({ neonAuthUserId: 'neon-email-match', email: 'match@example.com' }),
+        ),
       ),
-    );
+    ).rejects.toMatchObject({
+      status: 409,
+      body: { message: 'Email is already linked to another Tribunal user' },
+    });
 
     const [storedUser] = await testDb.db
       .select()
       .from(userTable)
       .where(eq(userTable.id, existingUser.id));
 
-    expect(applicationUser.id).toBe(existingUser.id);
-    expect(applicationUser.isPlatformAdministrator).toBe(true);
-    expect(storedUser.neonAuthUserId).toBe('neon-email-match');
-    expect.assertions(3);
+    expect(storedUser.neonAuthUserId).toBeNull();
+    expect.assertions(2);
   });
 
-  it('preserves email-matched profile fields when Neon omits profile claims', async () => {
+  it('rejects an unmapped email collision even when Neon omits profile claims', async () => {
     const existingUser = await userFactory.create({
       username: 'email-match',
       neonAuthUserId: null,
@@ -428,24 +456,25 @@ describe('Neon Auth profile upsert', () => {
       avatarUrl: 'https://example.test/email-match.png',
     });
 
-    const applicationUser = await withTestDatabase(() =>
-      upsertApplicationUserFromNeonToken(
-        verifiedToken({
-          neonAuthUserId: 'neon-email-match',
-          email: 'match@example.com',
-          name: null,
-          avatarUrl: null,
-        }),
+    await expect(
+      withTestDatabase(() =>
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({
+            neonAuthUserId: 'neon-email-match',
+            email: 'match@example.com',
+            name: null,
+            avatarUrl: null,
+          }),
+        ),
       ),
-    );
+    ).rejects.toMatchObject({ status: 409 });
 
     const [storedUser] = await testDb.db
       .select()
       .from(userTable)
       .where(eq(userTable.id, existingUser.id));
 
-    expect(applicationUser.id).toBe(existingUser.id);
-    expect(storedUser.neonAuthUserId).toBe('neon-email-match');
+    expect(storedUser.neonAuthUserId).toBeNull();
     expect(storedUser.name).toBe('Email Match');
     expect(storedUser.avatarUrl).toBe('https://example.test/email-match.png');
     expect.assertions(4);
@@ -515,6 +544,62 @@ describe('Neon Auth profile upsert', () => {
     });
     expect(neonSession.neonAuthUserId).toBe('neon-created-user');
     expect.assertions(2);
+  });
+
+  it('returns one user for concurrent first sign-ins with the same Neon identity', async () => {
+    const token = verifiedToken({
+      neonAuthUserId: 'neon-concurrent-user',
+      email: 'concurrent@example.com',
+      name: 'Concurrent User',
+    });
+
+    const [firstUser, secondUser] = await withTestDatabase(() =>
+      Promise.all([
+        upsertApplicationUserFromNeonToken(token),
+        upsertApplicationUserFromNeonToken(token),
+      ]),
+    );
+
+    const storedUsers = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.neonAuthUserId, token.neonAuthUserId));
+
+    expect(firstUser.id).toBe(secondUser.id);
+    expect(storedUsers).toHaveLength(1);
+    expect.assertions(2);
+  });
+
+  it('returns 409 for one of two concurrent identities claiming the same email', async () => {
+    const results = await withTestDatabase(() =>
+      Promise.allSettled([
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({
+            neonAuthUserId: 'neon-concurrent-email-one',
+            email: 'shared-concurrent@example.com',
+          }),
+        ),
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({
+            neonAuthUserId: 'neon-concurrent-email-two',
+            email: 'shared-concurrent@example.com',
+          }),
+        ),
+      ]),
+    );
+
+    const fulfilledResults = results.filter((result) => result.status === 'fulfilled');
+    const rejectedResults = results.filter((result) => result.status === 'rejected');
+    const storedUsers = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.email, 'shared-concurrent@example.com'));
+
+    expect(fulfilledResults).toHaveLength(1);
+    expect(rejectedResults).toHaveLength(1);
+    expect(rejectedResults[0]).toMatchObject({ reason: { status: 409 } });
+    expect(storedUsers).toHaveLength(1);
+    expect.assertions(4);
   });
 
   it('gives up with 409 once every deterministic and randomized handle candidate is taken', async () => {

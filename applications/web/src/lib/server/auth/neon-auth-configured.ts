@@ -12,3 +12,17 @@ import { env as publicEnv } from '$env/dynamic/public';
 export function isNeonAuthConfigured(): boolean {
   return Boolean(publicEnv.PUBLIC_NEON_AUTH_URL && privateEnv.NEON_AUTH_BASE_URL);
 }
+
+/** Refuse server startup when the configured identity provider is incomplete. */
+export function assertNeonAuthConfigured(): void {
+  const missingVariables = [
+    !publicEnv.PUBLIC_NEON_AUTH_URL && 'PUBLIC_NEON_AUTH_URL',
+    !privateEnv.NEON_AUTH_BASE_URL && 'NEON_AUTH_BASE_URL',
+  ].filter((variableName): variableName is string => Boolean(variableName));
+
+  if (missingVariables.length > 0) {
+    throw new Error(
+      `Refusing to start: Neon Auth is not configured. Missing ${missingVariables.join(', ')}.`,
+    );
+  }
+}

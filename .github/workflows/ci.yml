@@ -330,6 +330,8 @@ jobs:
             -e PORT=4310 \
             -e DATABASE_URL="${database_url}" \
             -e REDIS_URL="${redis_url}" \
+            -e PUBLIC_NEON_AUTH_URL=https://auth.ci.invalid \
+            -e NEON_AUTH_BASE_URL=https://auth.ci.invalid \
             -p 4310:4310 tribunal-web:test
           docker run -d --rm --name tribunal-engine-test \
             --add-host=host.docker.internal:host-gateway \
