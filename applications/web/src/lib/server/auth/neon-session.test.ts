@@ -545,6 +545,38 @@ describe('Neon Auth profile upsert', () => {
     expect.assertions(2);
   });
 
+  it('returns 409 for one of two concurrent identities claiming the same email', async () => {
+    const results = await withTestDatabase(() =>
+      Promise.allSettled([
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({
+            neonAuthUserId: 'neon-concurrent-email-one',
+            email: 'shared-concurrent@example.com',
+          }),
+        ),
+        upsertApplicationUserFromNeonToken(
+          verifiedToken({
+            neonAuthUserId: 'neon-concurrent-email-two',
+            email: 'shared-concurrent@example.com',
+          }),
+        ),
+      ]),
+    );
+
+    const fulfilledResults = results.filter((result) => result.status === 'fulfilled');
+    const rejectedResults = results.filter((result) => result.status === 'rejected');
+    const storedUsers = await testDb.db
+      .select()
+      .from(userTable)
+      .where(eq(userTable.email, 'shared-concurrent@example.com'));
+
+    expect(fulfilledResults).toHaveLength(1);
+    expect(rejectedResults).toHaveLength(1);
+    expect(rejectedResults[0]).toMatchObject({ reason: { status: 409 } });
+    expect(storedUsers).toHaveLength(1);
+    expect.assertions(4);
+  });
+
   it('gives up with 409 once every deterministic and randomized handle candidate is taken', async () => {
     // Occupy every deterministic candidate the first loop tries (base, then
     // base-2..base-10) so it falls through to the randomized-suffix loop,

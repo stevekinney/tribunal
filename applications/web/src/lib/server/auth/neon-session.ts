@@ -292,6 +292,21 @@ function profileUpdatesForExistingUser(
 export async function upsertApplicationUserFromNeonToken(
   verifiedToken: VerifiedNeonToken,
 ): Promise<AuthenticatedApplicationUser> {
+  if (verifiedToken.email) {
+    const emailMatchedUser = await db
+      .select({
+        neonAuthUserId: userTable.neonAuthUserId,
+      })
+      .from(userTable)
+      .where(sql`lower(${userTable.email}) = lower(${verifiedToken.email})`)
+      .limit(1);
+
+    const existing = emailMatchedUser[0];
+    if (existing && existing.neonAuthUserId !== verifiedToken.neonAuthUserId) {
+      error(409, 'Email is already linked to another Tribunal user');
+    }
+  }
+
   const mappedUser = await findMappedUser(verifiedToken.neonAuthUserId);
 
   if (mappedUser) {
@@ -319,32 +334,6 @@ export async function upsertApplicationUserFromNeonToken(
       });
 
     return updatedUser;
-  }
-
-  if (verifiedToken.email) {
-    const emailMatchedUser = await db
-      .select({
-        id: userTable.id,
-        username: userTable.username,
-        name: userTable.name,
-        avatarUrl: userTable.avatarUrl,
-        email: userTable.email,
-        isPlatformAdministrator: userTable.isPlatformAdministrator,
-        neonAuthUserId: userTable.neonAuthUserId,
-      })
-      .from(userTable)
-      .where(sql`lower(${userTable.email}) = lower(${verifiedToken.email})`)
-      .limit(1);
-
-    const existing = emailMatchedUser[0];
-    if (existing) {
-      if (existing.neonAuthUserId === verifiedToken.neonAuthUserId) {
-        const { neonAuthUserId: _neonAuthUserId, ...applicationUser } = existing;
-        return applicationUser;
-      }
-
-      error(409, 'Email is already linked to another Tribunal user');
-    }
   }
 
   const username = await createUniqueHandle(verifiedToken);
