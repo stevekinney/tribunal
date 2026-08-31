@@ -372,6 +372,31 @@ describe('Neon Auth profile upsert', () => {
     expect.assertions(4);
   });
 
+  it('preserves a mapped identity when its new email belongs to another user', async () => {
+    const mappedUser = await userFactory.create({
+      username: 'mapped-user',
+      neonAuthUserId: 'neon-user-1',
+      email: 'original@example.com',
+      name: 'Original Name',
+    });
+    await userFactory.create({
+      username: 'email-owner',
+      neonAuthUserId: 'neon-user-2',
+      email: 'claimed@example.com',
+    });
+
+    const applicationUser = await withTestDatabase(() =>
+      upsertApplicationUserFromNeonToken(
+        verifiedToken({ email: 'claimed@example.com', name: 'Updated Name' }),
+      ),
+    );
+
+    expect(applicationUser.id).toBe(mappedUser.id);
+    expect(applicationUser.email).toBe('original@example.com');
+    expect(applicationUser.name).toBe('Updated Name');
+    expect.assertions(3);
+  });
+
   it('preserves mapped profile fields when Neon omits profile claims', async () => {
     const existingUser = await userFactory.create({
       username: 'existing-user',
