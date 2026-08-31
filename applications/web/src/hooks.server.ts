@@ -1,5 +1,6 @@
 import type { Handle, ServerInit } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import {
   deleteNeonAuthTokenCookie,
@@ -11,6 +12,7 @@ import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
+import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured';
 
 /**
  * Runs once before the server responds to its first request.
@@ -23,6 +25,10 @@ import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/w
  * it is a warning rather than a startup guard that throws.
  */
 export const init: ServerInit = () => {
+  if (!dev) {
+    assertNeonAuthConfigured();
+  }
+
   void warnOnGitHubAppConfigurationDriftAtStartup().catch((error) => {
     console.error('[github-app-configuration] Unexpected error during startup drift check:', error);
   });
