@@ -227,6 +227,7 @@ describe('correlationHandle (isolated from the composed handle via a mocked sequ
 
 describe('init (server startup hook)', () => {
   beforeEach(() => {
+    mockEnv.E2E_TEST_MODE = '0';
     mockApplicationEnvironment.building = false;
     mockApplicationEnvironment.dev = true;
     mockAssertNeonAuthConfigured.mockReset();
@@ -246,6 +247,16 @@ describe('init (server startup hook)', () => {
   it('does not require runtime configuration while SvelteKit is building', async () => {
     mockApplicationEnvironment.building = true;
     mockApplicationEnvironment.dev = false;
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockAssertNeonAuthConfigured).not.toHaveBeenCalled();
+  });
+
+  it('does not require production identity configuration in E2E preview mode', async () => {
+    mockApplicationEnvironment.dev = false;
+    mockEnv.E2E_TEST_MODE = '1';
 
     const { init } = await import('./hooks.server');
     await init();

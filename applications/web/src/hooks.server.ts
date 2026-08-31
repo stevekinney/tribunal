@@ -25,7 +25,7 @@ import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured'
  * it is a warning rather than a startup guard that throws.
  */
 export const init: ServerInit = () => {
-  if (!building && !dev) {
+  if (!building && !dev && env.E2E_TEST_MODE !== '1') {
     assertNeonAuthConfigured();
   }
 
