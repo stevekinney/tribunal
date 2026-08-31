@@ -96,9 +96,11 @@ describe('MCP integration layer workflow', () => {
     expect(verifyPrompt).toContain('humanCheckpoint is `true`');
   });
 
-  test('routes a satisfied implementation checkpoint into handBack', async () => {
-    const agent = vi.fn((_prompt: string, options: { phase: string }) => {
+  test('routes a satisfied implementation checkpoint with notes into handBack', async () => {
+    let executePrompt = '';
+    const agent = vi.fn((prompt: string, options: { phase: string }) => {
       if (options.phase === 'Execute') {
+        executePrompt = prompt;
         return {
           issue: 'TRI-TEST',
           pushed: true,
@@ -113,7 +115,7 @@ describe('MCP integration layer workflow', () => {
         issue: 'TRI-TEST',
         criteriaVerified: [{ criterion: 'release prepared', met: true, evidence: 'exit 0' }],
         confirmedMet: true,
-        problems: [],
+        problems: ['A human must publish the prepared release.'],
         recommendation: 'open-pull-request',
       };
     });
@@ -126,6 +128,8 @@ describe('MCP integration layer workflow', () => {
     expect(result.ready).toEqual([]);
     expect(result.rework).toEqual([]);
     expect(result.handBack).toEqual([expect.objectContaining({ issue: 'TRI-TEST' })]);
+    expect(executePrompt).toContain('Stop before any action that requires a person');
+    expect(executePrompt).toContain('Never perform or claim the human-only action');
   });
 
   test('preserves a rework verdict for a human checkpoint with verification problems', async () => {

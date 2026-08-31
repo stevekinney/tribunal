@@ -373,6 +373,16 @@ Any verification script the issue names must be added to the root
 \`package.json\`. Do not edit or compose aggregate scripts (\`test:security\`,
 \`test:observability\`, \`test:mcp\`) — a different issue owns those.`;
 
+      const checkpointFraming = issue.humanCheckpoint
+        ? `
+## This issue has a HUMAN CHECKPOINT
+
+Complete and push every scripted preparation that can be verified without a person.
+Stop before any action that requires a person, their credentials, or their approval.
+Never perform or claim the human-only action. Record what remains for the person in
+your report notes so the verifier can hand the issue back explicitly.`
+        : '';
+
       return agent(
         `You are executing Linear issue ${issue.id} for the Tribunal MCP server integration.
 
@@ -383,6 +393,8 @@ Any verification script the issue names must be added to the root
 ${issue.body}
 
 ${issue.mode === 'decide' ? decisionFraming : implementationFraming}
+
+${checkpointFraming}
 
 ${houseRules(issue, orchestratorCheckout)}
 
@@ -523,7 +535,6 @@ const verdicts = results
   .map((verdict, index) =>
     requiresHumanHandBack(issues[index]) &&
     verdict.confirmedMet &&
-    (verdict.problems || []).length === 0 &&
     verdict.recommendation === 'open-pull-request'
       ? { ...verdict, recommendation: 'hand-back-to-human' }
       : verdict,
