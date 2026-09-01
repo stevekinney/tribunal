@@ -13,7 +13,7 @@ import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
 import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured';
-import { setLogger } from '@tribunal/mcp';
+import { setLogger } from '@lostgradient/mcp';
 import { mcpLogger } from '$lib/server/mcp-logger';
 
 /**

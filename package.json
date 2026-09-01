@@ -37,7 +37,7 @@
     "test:workflow-prompt-injection": "vitest run --config .github/tests/vitest.config.ts workflow-prompt-injection",
     "test:production-migration-gate": "vitest run --config .github/tests/vitest.config.ts production-migration-gate",
     "test:mcp:identity": "bun run --cwd applications/web test:unit:server -- src/lib/server/auth/neon-session.test.ts src/lib/server/auth/neon-auth-configured.test.ts src/lib/server/auth/authentication.test.ts src/hooks.server.test.ts src/routes/api/auth/neon-session/server.spec.ts",
-    "test:mcp:redaction": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp-logger.test.ts && bun run --cwd packages/mcp test -- src/server.test.ts",
+    "test:mcp:redaction": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp-logger.test.ts src/lib/server/mcp-package-adoption.test.ts",
     "audit:mcp-logs": "bun run scripts/audit-mcp-logs.ts",
     "verify": "bun run scripts/verify.ts",
     "deploy:status": "bun run scripts/deploy.ts",

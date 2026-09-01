@@ -3,10 +3,7 @@ import { join, relative } from 'node:path';
 import { auditMcpLogSource } from './lib/audit-mcp-logs';
 
 const repositoryRoot = join(import.meta.dirname, '..');
-const sourceRoots = [
-  join(repositoryRoot, 'packages/mcp/src'),
-  join(repositoryRoot, 'applications/web/src'),
-];
+const sourceRoots = [join(repositoryRoot, 'applications/web/src')];
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
