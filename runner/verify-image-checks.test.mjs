@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 
 import { requiredCommands, runReviewerImageChecks } from './verify-image-checks.mjs';
 
@@ -58,6 +59,32 @@ describe('runReviewerImageChecks', () => {
       'Reviewer image is missing required commands: git, bun\n',
     );
     expect(importModule).not.toHaveBeenCalled();
+  });
+
+  it('bounds command checks and reports a timed-out command distinctly', async () => {
+    const output = createOutput();
+    const slowCommand = vi.fn((_command, _arguments, options) => {
+      expect(options.timeout).toBe(5_000);
+      expect(options.killSignal).toBe('SIGKILL');
+      return spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 1_000)'], {
+        ...options,
+        timeout: 10,
+        killSignal: 'SIGKILL',
+      });
+    });
+
+    await expect(
+      runReviewerImageChecks({
+        commandRunner: slowCommand,
+        pathExists: vi.fn(() => true),
+        importModule: createSuccessfulImport,
+        ...output,
+      }),
+    ).resolves.toBe(1);
+
+    expect(output.stderr.write).toHaveBeenCalledWith(
+      'Reviewer image command check timed out: git\n',
+    );
   });
 
   it('reports an unreadable runner directory', async () => {

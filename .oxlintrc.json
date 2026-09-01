@@ -122,6 +122,16 @@
           {
             "name": "bun:test",
             "message": "Tribunal's test runner is vitest. Import from 'vitest' instead \u2014 bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner."
+          },
+          {
+            "name": "node:child_process",
+            "importNames": ["spawnSync", "execFileSync", "execSync"],
+            "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
+          },
+          {
+            "name": "child_process",
+            "importNames": ["spawnSync", "execFileSync", "execSync"],
+            "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
           }
         ]
       }
@@ -177,6 +187,32 @@
       "files": ["test/**/*.svelte"],
       "rules": {
         "no-unused-vars": "off"
+      }
+    },
+    {
+      "files": [
+        "runner/run-agent.mjs",
+        "runner/run-agent.test.mjs",
+        "runner/verify-image-checks.mjs",
+        "runner/verify-image-checks.test.mjs",
+        "applications/web/scripts/lib/__tests__/repository-root.test.ts",
+        "applications/web/src/lib/server/auth/dev-github-bypass.ts",
+        "scripts/lib/install-git-hooks.ts",
+        "scripts/lib/install-git-hooks.test.ts",
+        "scripts/lib/repository-root.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "bun:test",
+                "message": "Tribunal's test runner is vitest. Import from 'vitest' instead \u2014 bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner."
+              }
+            ]
+          }
+        ]
       }
     }
   ]

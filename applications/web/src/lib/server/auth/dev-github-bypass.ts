@@ -20,6 +20,23 @@ interface DevGitHubBypassSession {
   neonSession: NeonSession;
 }
 
+interface GitHubCliTokenResult {
+  error?: unknown;
+  status: number | null;
+  stdout: string;
+}
+
+type GitHubCliTokenReader = (
+  command: string,
+  arguments_: string[],
+  options: {
+    encoding: 'utf8';
+    killSignal: 'SIGKILL';
+    stdio: ['ignore', 'pipe', 'pipe'];
+    timeout: number;
+  },
+) => GitHubCliTokenResult;
+
 const userColumns = {
   id: userTable.id,
   username: userTable.username,
@@ -35,13 +52,27 @@ export function resetDevGitHubBypassCacheForTests(): void {
   // are visible without restarting the dev server.
 }
 
-function readGitHubTokenFromCli(): string | null {
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ETIMEDOUT';
+}
+
+export function readGitHubTokenFromCli(spawn: GitHubCliTokenReader = spawnSync): string | null {
   if (env.DEV_AUTH_GITHUB_TOKEN_FROM_GITHUB_CLI !== '1') return null;
 
-  const result = spawnSync('gh', ['auth', 'token', '--hostname', 'github.com'], {
+  const result = spawn('gh', ['auth', 'token', '--hostname', 'github.com'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    // The CLI may consult a credential helper or the network. A request must
+    // not inherit an interactive or stalled lookup indefinitely.
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
+
+  if (isTimeoutError(result.error)) {
+    throw new Error('GitHub CLI token lookup timed out after 10 seconds.', {
+      cause: result.error,
+    });
+  }
 
   if (result.status !== 0) {
     throw new Error(

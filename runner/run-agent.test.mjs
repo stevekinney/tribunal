@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import {
   createTribunalMcpServer,
   createGitBaseFileReader,
+  readGitObjectAtRevision,
   isAgentSlug,
   isMainModule,
   main,
@@ -236,6 +237,7 @@ describe('runner agent wiring', () => {
         diffContext,
         createMcpServer: (reviewTools) => createTribunalMcpServer(reviewTools, captured.sdk),
         queryClient: async function* () {
+          yield* [];
           const recordFinding = captured.server.tools.find(
             (tool) => tool.name === 'record_finding',
           );
@@ -442,6 +444,7 @@ describe('runner agent wiring', () => {
       exit: vi.fn(),
       performanceNow: vi.fn().mockReturnValueOnce(10).mockReturnValue(35),
       queryClient: async function* () {
+        yield* [];
         throw new Error('SDK unavailable');
       },
     });
@@ -699,6 +702,8 @@ describe('runner agent wiring', () => {
     const repositoryPath = new URL('..', import.meta.url).pathname;
     const headSha = execFileSync('git', ['-C', repositoryPath, 'rev-parse', 'HEAD'], {
       encoding: 'utf8',
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
     }).trim();
     const reader = createGitBaseFileReader({
       repositoryPath,
@@ -714,6 +719,27 @@ describe('runner agent wiring', () => {
 
     expect(reader('runner/run-agent.mjs')).toContain('export async function main');
     expect(reader('runner/does-not-exist.mjs')).toBeNull();
+  });
+
+  it('bounds base-file git reads and reports timeout separately', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const slowCommand = vi.fn((_command, _arguments, options) => {
+      expect(options.timeout).toBe(5_000);
+      expect(options.killSignal).toBe('SIGKILL');
+      return execFileSync(process.execPath, ['-e', 'setTimeout(() => {}, 1_000)'], {
+        ...options,
+        timeout: 10,
+        killSignal: 'SIGKILL',
+      });
+    });
+
+    expect(
+      readGitObjectAtRevision('/repository', 'abc1234', 'src/file.ts', slowCommand),
+    ).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith(
+      'Git base-file read timed out: /repository abc1234:src/file.ts',
+    );
+    consoleError.mockRestore();
   });
 
   it('accepts digit-leading agent slugs allowed by the shared agent schema', () => {
