@@ -40,7 +40,11 @@ export function validateRuleFrontmatter(repositoryRoot: string): string[] {
       seen.add(path);
 
       if (CONDITIONAL_PATHS.get(relativePath)?.has(path)) continue;
-      if (globSync(path, { cwd: repositoryRoot }).length === 0) {
+      const hiddenRootMatch = path.match(/^(\.[^/]+)\/(.+)$/);
+      const matches = hiddenRootMatch
+        ? globSync(hiddenRootMatch[2], { cwd: join(repositoryRoot, hiddenRootMatch[1]) })
+        : globSync(path, { cwd: repositoryRoot });
+      if (matches.length === 0) {
         errors.push(`${relativePath}: path \`${path}\` matches no files`);
       }
     }

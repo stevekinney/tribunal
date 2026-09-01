@@ -68,4 +68,13 @@ describe('validateRuleFrontmatter', () => {
 
     expect(validateRuleFrontmatter(repositoryRoot)).toEqual([]);
   });
+
+  test('matches files inside a leading-dot directory', () => {
+    const repositoryRoot = createRepository();
+    mkdirSync(join(repositoryRoot, '.github/workflows'), { recursive: true });
+    writeFileSync(join(repositoryRoot, '.github/workflows/ci.yml'), 'name: CI\n');
+    writeRule(repositoryRoot, 'github-actions.md', ['.github/workflows/**']);
+
+    expect(validateRuleFrontmatter(repositoryRoot)).toEqual([]);
+  });
 });
