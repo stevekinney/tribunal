@@ -1,9 +1,7 @@
 import { globSync, readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 
-const CONDITIONAL_PATHS = new Map([
-  ['.claude/rules/plan.md', new Set(['PLAN.md', '.claude/plan.md'])],
-]);
+const CONDITIONAL_PATHS = new Map([['plan.md', new Set(['PLAN.md', '.claude/plan.md'])]]);
 
 function extractPaths(markdown: string): string[] {
   const frontmatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1];
@@ -28,7 +26,7 @@ export function validateRuleFrontmatter(repositoryRoot: string): string[] {
 
   for (const ruleFile of ruleFiles) {
     const absolutePath = join(ruleDirectory, ruleFile);
-    const relativePath = relative(repositoryRoot, absolutePath);
+    const relativePath = `.claude/rules/${ruleFile}`;
     const paths = extractPaths(readFileSync(absolutePath, 'utf8'));
     const seen = new Set<string>();
 
@@ -39,7 +37,7 @@ export function validateRuleFrontmatter(repositoryRoot: string): string[] {
       }
       seen.add(path);
 
-      if (CONDITIONAL_PATHS.get(relativePath)?.has(path)) continue;
+      if (CONDITIONAL_PATHS.get(ruleFile)?.has(path)) continue;
       const hiddenRootMatch = path.match(/^(\.[^/]+)\/(.+)$/);
       const matches = hiddenRootMatch
         ? globSync(hiddenRootMatch[2], { cwd: join(repositoryRoot, hiddenRootMatch[1]) })
