@@ -1,6 +1,5 @@
 import { and, eq } from 'drizzle-orm';
 import { pullRequestState } from '@tribunal/database/schema';
-import { getInstallationForRepository } from '@tribunal/github/repositories/service';
 import { getPullRequest, listPullRequests } from '@tribunal/github/pull-requests/service';
 import type { PullRequestFilterState } from '@tribunal/github/types/pull-requests';
 import { db } from '$lib/server/database';
@@ -19,6 +18,8 @@ export type McpPullRequestSummary = {
   isDraft: boolean;
   authorLogin: string | null;
   headRef: string;
+  /** The commit GitHub reports as head right now. */
+  headSha: string;
   baseRef: string;
   htmlUrl: string;
   updatedAt: string;
@@ -59,6 +60,16 @@ export type McpPullRequestOperationalState = {
   mergeStatus: string;
   mergeUpdatedAt: string | null;
   pullRequestUpdatedAt: string | null;
+  /**
+   * Whether this stored state describes the commit that is head right now.
+   *
+   * False means a push landed after the last review touched the pull request,
+   * or that the state update failed — so the CI, review, and merge values
+   * describe an earlier commit. Reported rather than suppressed: "passing, for
+   * the previous commit" is useful, and "passing" presented as current when it
+   * is not is the failure worth preventing.
+   */
+  describesCurrentHead: boolean;
 };
 
 export type McpPullRequestDetail = McpPullRequestSummary & {
@@ -166,14 +177,25 @@ export function selectStoredPullRequestState(repositoryId: number, pullRequestNu
 }
 
 /**
- * Authorizes the repository *before* resolving its installation.
+ * Resolves the repository through the caller's own access, then builds a client
+ * for *that* installation.
+ *
+ * Two separate hazards, and the second is easy to miss after fixing the first.
  *
  * `getInstallationForRepository` takes a repository identifier and no user
  * identifier, so resolving it first and checking access afterwards would hand
  * any scope-bearing caller an installation client for a repository somebody
- * else connected — and with it, that repository's private pull request
- * content. Tribunal's own route is safe for exactly this reason: it authorizes
- * first. Every pull request primitive here does the same.
+ * else connected. Tribunal's own route is safe for exactly this reason: it
+ * authorizes first.
+ *
+ * But authorizing first is not enough on its own. That function picks an
+ * installation from the repository's link rows globally, and a repository can
+ * carry links for more than one — a transfer that left the old link behind is
+ * the ordinary way it happens. The caller could then be authorized through the
+ * installation it can reach while the client is built for a different one,
+ * which is a cross-account read assembled out of two individually correct
+ * steps. Using the installation that granted access closes that, and removes a
+ * second resolution nothing needed.
  */
 async function resolveAuthorizedInstallation(userId: number, selector: RepositorySelector) {
   const accessible =
@@ -183,17 +205,11 @@ async function resolveAuthorizedInstallation(userId: number, selector: Repositor
   if (!accessible.ok) return { ok: false, error: accessible.error } as const;
   if (!accessible.repository) return { ok: false, error: 'repository_not_found' } as const;
 
-  const repositoryId = accessible.repository.id;
-  const installation = await getInstallationForRepository(githubContext, repositoryId);
-  if (!installation.ok) return { ok: false, error: 'github_unreachable' } as const;
+  const { id: repositoryId, owner, name, installationId } = accessible.repository;
+  const octokit = await githubContext.getInstallationOctokit(installationId);
+  if (!octokit) return { ok: false, error: 'github_unreachable' } as const;
 
-  return {
-    ok: true,
-    repositoryId,
-    octokit: installation.octokit,
-    owner: installation.owner,
-    repo: installation.repo,
-  } as const;
+  return { ok: true, repositoryId, octokit, owner, repo: name } as const;
 }
 
 function summarize(pullRequest: {
@@ -203,6 +219,7 @@ function summarize(pullRequest: {
   draft: boolean;
   author: { login: string } | null;
   headRef: string;
+  headSha: string;
   baseRef: string;
   htmlUrl: string;
   updatedAt: string;
@@ -215,6 +232,7 @@ function summarize(pullRequest: {
     isDraft: pullRequest.draft,
     authorLogin: pullRequest.author?.login ?? null,
     headRef: pullRequest.headRef,
+    headSha: pullRequest.headSha,
     baseRef: pullRequest.baseRef,
     htmlUrl: pullRequest.htmlUrl,
     updatedAt: pullRequest.updatedAt,
@@ -314,6 +332,7 @@ export async function getRepositoryPullRequest(
             mergeStatus: storedState.mergeStatus,
             mergeUpdatedAt: storedState.mergeUpdatedAt?.toISOString() ?? null,
             pullRequestUpdatedAt: storedState.prUpdatedAt?.toISOString() ?? null,
+            describesCurrentHead: storedState.headSha === detail.headSha,
           }
         : null,
     },

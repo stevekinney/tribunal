@@ -5,7 +5,7 @@ import { runWithDatabase } from '$lib/server/database';
 
 const mocks = vi.hoisted(() => ({
   getRepositoriesForUser: vi.fn(),
-  getInstallationForRepository: vi.fn(),
+  getInstallationOctokit: vi.fn(),
   listPullRequests: vi.fn(),
   getPullRequest: vi.fn(),
 }));
@@ -14,16 +14,14 @@ vi.mock('$lib/server/repositories', () => ({
   getRepositoriesForUser: mocks.getRepositoriesForUser,
 }));
 
-vi.mock('@tribunal/github/repositories/service', () => ({
-  getInstallationForRepository: mocks.getInstallationForRepository,
-}));
-
 vi.mock('@tribunal/github/pull-requests/service', () => ({
   listPullRequests: mocks.listPullRequests,
   getPullRequest: mocks.getPullRequest,
 }));
 
-vi.mock('$lib/server/github-context', () => ({ githubContext: { cache: {} } }));
+vi.mock('$lib/server/github-context', () => ({
+  githubContext: { cache: {}, getInstallationOctokit: mocks.getInstallationOctokit },
+}));
 
 import {
   getRepositoryPullRequest,
@@ -67,13 +65,7 @@ function grantAccess() {
     ],
     installations: [],
   });
-  mocks.getInstallationForRepository.mockResolvedValue({
-    ok: true,
-    octokit: { rest: {} },
-    owner: 'lost-gradient',
-    repo: 'tribunal',
-    installationId: 7001,
-  });
+  mocks.getInstallationOctokit.mockResolvedValue({ rest: {} });
 }
 
 describe('pull request reader', () => {
@@ -183,7 +175,7 @@ describe('pull request reader', () => {
     );
 
     expect(result).toEqual({ ok: false, error: 'repository_not_found' });
-    expect(mocks.getInstallationForRepository).not.toHaveBeenCalled();
+    expect(mocks.getInstallationOctokit).not.toHaveBeenCalled();
   });
 
   it('passes a repository access failure through', async () => {
@@ -205,11 +197,7 @@ describe('pull request reader', () => {
   it('reports an unresolvable installation distinctly from an unreachable repository', async () => {
     expect.assertions(1);
     grantAccess();
-    mocks.getInstallationForRepository.mockResolvedValue({
-      ok: false,
-      error: 'Installation not found',
-      code: 'not_found',
-    });
+    mocks.getInstallationOctokit.mockResolvedValue(null);
 
     const result = await withTestDatabase(() =>
       listRepositoryPullRequests(7, {
@@ -384,7 +372,7 @@ describe('pull request reader', () => {
     // repository by name — which is every client holding `pull_requests:read`
     // without `repositories:read` — learns the id for its next call.
     expect(result).toMatchObject({ ok: true, repositoryId: 9001 });
-    expect(mocks.getInstallationForRepository).toHaveBeenCalledWith(expect.anything(), 9001);
+    expect(mocks.getInstallationOctokit).toHaveBeenCalledWith(7001);
   });
 
   it('reports a name outside the accessible set as not found', async () => {
@@ -401,6 +389,76 @@ describe('pull request reader', () => {
     );
 
     expect(result).toEqual({ ok: false, error: 'repository_not_found' });
-    expect(mocks.getInstallationForRepository).not.toHaveBeenCalled();
+    expect(mocks.getInstallationOctokit).not.toHaveBeenCalled();
+  });
+
+  it('builds the client for the installation that authorized the caller', async () => {
+    expect.assertions(1);
+    grantAccess();
+    mocks.listPullRequests.mockResolvedValue({
+      pullRequests: [listItem],
+      filters: {},
+      hasNextPage: false,
+    });
+
+    await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { repositoryId: 9001 },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    // Not re-resolved from the repository's link rows: a repository can carry
+    // links for more than one installation, and picking one globally can build
+    // a client for an account the caller was never authorized through.
+    expect(mocks.getInstallationOctokit).toHaveBeenCalledWith(7001);
+  });
+
+  it('reports stored state as stale when the head commit has moved on', async () => {
+    expect.assertions(2);
+    grantAccess();
+    mocks.getPullRequest.mockResolvedValue({
+      ...listItem,
+      headSha: 'new-head',
+      body: null,
+      additions: 0,
+      deletions: 0,
+      changedFiles: 0,
+      mergeable: null,
+      mergeableState: 'unknown',
+      merged: false,
+      mergedBy: null,
+      comments: 0,
+      reviewComments: 0,
+      commits: 1,
+    });
+    await testDb.db.insert(pullRequestState).values({
+      repositoryId: 9001,
+      prNumber: 412,
+      state: 'open',
+      headSha: 'abc123',
+      ciStatus: 'passing',
+      reviewStatus: 'approved',
+      mergeStatus: 'clean',
+    });
+
+    const result = await withTestDatabase(() =>
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 9001 },
+        pullRequestNumber: 412,
+      }),
+    );
+
+    // Otherwise a client reports "passing" for a commit nothing has checked.
+    expect(result).toMatchObject({
+      ok: true,
+      pullRequest: { headSha: 'new-head', operationalState: { describesCurrentHead: false } },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      pullRequest: { operationalState: { ciStatus: 'passing' } },
+    });
   });
 });

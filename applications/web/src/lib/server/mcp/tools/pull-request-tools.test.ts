@@ -21,6 +21,7 @@ const summary = {
   isDraft: false,
   authorLogin: 'contributor',
   headRef: 'feature',
+  headSha: 'abc123',
   baseRef: 'main',
   htmlUrl: 'https://github.com/lost-gradient/tribunal/pull/412',
   updatedAt: '2026-08-01T00:00:00.000Z',

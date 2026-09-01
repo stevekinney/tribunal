@@ -21,6 +21,7 @@ const repositoryProjection = {
   defaultBranch: 'main',
   latestCommit: 'abc123',
   installationAccount: 'lost-gradient',
+  installationId: 7001,
 };
 
 function context(userId: string): McpContext {

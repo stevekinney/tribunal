@@ -55,6 +55,7 @@ describe('repository reader', () => {
           defaultBranch: 'main',
           latestCommit: 'abc123',
           installationAccount: 'lost-gradient',
+          installationId: 7001,
         },
       ],
     });

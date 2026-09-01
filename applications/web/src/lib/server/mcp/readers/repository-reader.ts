@@ -16,6 +16,16 @@ export type McpRepository = {
   defaultBranch: string | null;
   latestCommit: string | null;
   installationAccount: string;
+  /**
+   * The installation the caller's access was actually resolved through.
+   *
+   * Carried rather than re-derived because a repository can hold link rows for
+   * more than one installation — a transfer that left the old link behind is
+   * the ordinary way it happens — and re-resolving picks one globally rather
+   * than the one that authorized this caller. See
+   * `pull-request-reader.ts`'s `resolveAuthorizedInstallation`.
+   */
+  installationId: number;
 };
 
 /** Why a repository read could not produce an answer, as the caller sees it. */
@@ -67,6 +77,7 @@ export async function listAccessibleRepositories(userId: number): Promise<Reposi
       defaultBranch: entry.repository.defaultBranch,
       latestCommit: entry.repository.commit,
       installationAccount: entry.installation.accountLogin,
+      installationId: entry.installation.installationId,
     })),
   };
 }
