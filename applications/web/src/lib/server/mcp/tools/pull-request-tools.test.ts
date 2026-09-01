@@ -233,4 +233,48 @@ describe('get_pull_request', () => {
       pullRequestNumber: 412,
     });
   });
+
+  it('refuses a call carrying both selector forms rather than picking one', async () => {
+    expect.assertions(2);
+
+    const result = await getPullRequestTool.handler(
+      { repositoryId: 9001, owner: 'lost-gradient', name: 'cinder', pullRequestNumber: 412 },
+      context('7'),
+    );
+
+    // Preferring the id would answer for a different repository than the one
+    // named in the same call — the failure a stale id plus a fresh name
+    // produces.
+    expect(readToolResultText(result)).toMatch(/not both/);
+    expect(mocks.getRepositoryPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('refuses a list call carrying both selector forms', async () => {
+    expect.assertions(1);
+
+    const result = await listPullRequestsTool.handler(
+      {
+        repositoryId: 9001,
+        owner: 'lost-gradient',
+        name: 'cinder',
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      },
+      context('7'),
+    );
+
+    expect(readToolResultText(result)).toMatch(/not both/);
+  });
+
+  it('refuses a call naming an owner without a name', async () => {
+    expect.assertions(1);
+
+    const result = await listPullRequestsTool.handler(
+      { owner: 'lost-gradient', state: 'open', page: 1, perPage: 25 },
+      context('7'),
+    );
+
+    expect(readToolResultText(result)).toMatch(/Name the repository/);
+  });
 });

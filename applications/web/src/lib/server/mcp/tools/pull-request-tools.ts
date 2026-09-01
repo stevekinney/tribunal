@@ -7,12 +7,19 @@ import {
   type RepositorySelector,
 } from '../readers/pull-request-reader';
 import { maximumPageSize } from '../pagination';
-import { readErrorResponse, unresolvedSubjectError } from '../tool-support';
+import { readErrorResponse, unresolvedSubjectError, type McpReadError } from '../tool-support';
 import { withUntrustedContentFraming } from '../untrusted-content';
 import { resolveTribunalUserId } from '../user-identity';
 
 /**
- * Reads whichever repository form the caller supplied.
+ * Reads whichever repository form the caller supplied, and refuses a call that
+ * supplies both.
+ *
+ * Preferring the id would be the obvious thing and is the wrong thing: a model
+ * carrying a stale id alongside the name it was just given would silently get
+ * pull requests from a different repository than the one it named in the same
+ * call. The two forms can disagree, nothing here can tell which the caller
+ * meant, and answering the wrong repository is worse than asking again.
  *
  * Checked in the handler rather than through a schema refinement so the input
  * schema stays a plain object: the golden-prompt specification reads each
@@ -23,12 +30,19 @@ function resolveRepositorySelector(input: {
   repositoryId?: number;
   owner?: string;
   name?: string;
-}): RepositorySelector | null {
-  if (input.repositoryId !== undefined) return { repositoryId: input.repositoryId };
-  if (input.owner !== undefined && input.name !== undefined) {
-    return { owner: input.owner, name: input.name };
+}): { ok: true; selector: RepositorySelector } | { ok: false; error: McpReadError } {
+  const hasName = input.owner !== undefined || input.name !== undefined;
+
+  if (input.repositoryId !== undefined) {
+    if (hasName) return { ok: false, error: 'repository_selector_conflict' };
+    return { ok: true, selector: { repositoryId: input.repositoryId } };
   }
-  return null;
+
+  if (input.owner !== undefined && input.name !== undefined) {
+    return { ok: true, selector: { owner: input.owner, name: input.name } };
+  }
+
+  return { ok: false, error: 'repository_selector_missing' };
 }
 
 const pullRequestSummarySchema = z.object({
@@ -80,7 +94,9 @@ export const listPullRequestsTool = tribunalScopeVocabulary.defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('Repository owner, used with name when no repository id is known.'),
+      .describe(
+        'Repository owner, used with name when no repository id is known. Do not send this together with repositoryId.',
+      ),
     name: z.string().min(1).optional().describe('Repository name, used with owner.'),
     state: z
       .union([z.literal('open'), z.literal('closed'), z.literal('all')])
@@ -116,10 +132,10 @@ export const listPullRequestsTool = tribunalScopeVocabulary.defineTool({
     if (userId === null) return unresolvedSubjectError();
 
     const repository = resolveRepositorySelector(input);
-    if (!repository) return readErrorResponse('repository_selector_missing');
+    if (!repository.ok) return readErrorResponse(repository.error);
 
     const result = await listRepositoryPullRequests(userId, {
-      repository,
+      repository: repository.selector,
       state: input.state,
       page: input.page,
       perPage: input.perPage,
@@ -157,7 +173,9 @@ export const getPullRequestTool = tribunalScopeVocabulary.defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('Repository owner, used with name when no repository id is known.'),
+      .describe(
+        'Repository owner, used with name when no repository id is known. Do not send this together with repositoryId.',
+      ),
     name: z.string().min(1).optional().describe('Repository name, used with owner.'),
     pullRequestNumber: z
       .number()
@@ -191,10 +209,10 @@ export const getPullRequestTool = tribunalScopeVocabulary.defineTool({
     if (userId === null) return unresolvedSubjectError();
 
     const repository = resolveRepositorySelector(input);
-    if (!repository) return readErrorResponse('repository_selector_missing');
+    if (!repository.ok) return readErrorResponse(repository.error);
 
     const result = await getRepositoryPullRequest(userId, {
-      repository,
+      repository: repository.selector,
       pullRequestNumber: input.pullRequestNumber,
     });
     if (!result.ok) return readErrorResponse(result.error);

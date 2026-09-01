@@ -29,7 +29,9 @@ export type McpReadError =
   | 'review_run_not_found'
   | 'review_finding_not_found'
   /** Neither a repository id nor an owner-and-name pair was supplied. */
-  | 'repository_selector_missing';
+  | 'repository_selector_missing'
+  /** Both forms were supplied, and acting on either would be a guess. */
+  | 'repository_selector_conflict';
 
 /**
  * Caller-facing text for a failed read.
@@ -46,7 +48,10 @@ export function describeReadError(error: McpReadError): string {
     case 'github_unavailable':
       return 'GitHub could not be reached to confirm which repositories you can access. Try again shortly.';
     case 'repository_not_found':
-      return 'No repository with that id is connected to your Tribunal account.';
+      // Selector-neutral on purpose: naming an id the caller never sent
+      // invites a model to invent one, and the owner-and-name form is the only
+      // route a client holding `pull_requests:read` alone can use.
+      return 'No repository matching that id, or that owner and name, is connected to your Tribunal account.';
     case 'github_unreachable':
       return "That repository's GitHub App installation could not be resolved. Check the installation and try again.";
     case 'pull_request_not_found':
@@ -57,6 +62,8 @@ export function describeReadError(error: McpReadError): string {
       return 'No finding with that id belongs to your Tribunal account.';
     case 'repository_selector_missing':
       return 'Name the repository, either as repositoryId or as owner and name together.';
+    case 'repository_selector_conflict':
+      return 'Send either repositoryId or owner and name, not both — they can disagree, and guessing which one you meant is not safe.';
   }
 }
 

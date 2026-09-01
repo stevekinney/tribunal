@@ -45,6 +45,16 @@ export async function listAccessibleRepositories(userId: number): Promise<Reposi
   // mutate persistent integration state while answering a read. The revocation
   // is GitHub's fact rather than this request's, and the next interactive page
   // load records it.
+  //
+  // One write is deliberately left in place, and naming it here is the point:
+  // `getUserOctokit` rotates a token that is about to expire and persists the
+  // new one. That is credential maintenance the transport performs to make the
+  // read possible at all, not a change to any repository, pull request,
+  // review, finding, or cost record — the resources these scopes actually
+  // govern. Suppressing it would make a call arriving inside the refresh
+  // window fail rather than succeed, which trades a real behaviour for a
+  // definitional one. `readOnlyHint` describes what the tool does to the
+  // user's data; this rotation is invisible to them and changes none of it.
   const result = await getRepositoriesForUser(userId, { recordTokenInvalidation: false });
   if (!result.ok) return { ok: false, error: result.error };
 

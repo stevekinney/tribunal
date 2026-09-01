@@ -130,7 +130,7 @@ describe('get_repository', () => {
     const result = await getRepositoryTool.handler({ repositoryId: 111222333 }, context('7'));
 
     expect(result.isError).toBe(true);
-    expect(readToolResultText(result)).toMatch(/No repository with that id/);
+    expect(readToolResultText(result)).toMatch(/No repository matching that id/);
   });
 
   it('passes a read failure through as a tool error', async () => {

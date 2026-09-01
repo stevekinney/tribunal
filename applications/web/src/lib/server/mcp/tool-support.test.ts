@@ -15,6 +15,7 @@ const everyReadError: McpReadError[] = [
   'review_run_not_found',
   'review_finding_not_found',
   'repository_selector_missing',
+  'repository_selector_conflict',
 ];
 
 describe('describeReadError', () => {
@@ -37,8 +38,18 @@ describe('describeReadError', () => {
     expect.assertions(1);
 
     expect(describeReadError('repository_not_found')).toBe(
-      'No repository with that id is connected to your Tribunal account.',
+      'No repository matching that id, or that owner and name, is connected to your Tribunal account.',
     );
+  });
+
+  it('names neither selector form when a repository does not resolve', () => {
+    expect.assertions(2);
+    const message = describeReadError('repository_not_found');
+
+    // A caller that sent owner and name must not be told its id was wrong;
+    // that invites a model to invent one.
+    expect(message).toContain('owner and name');
+    expect(message).toContain('id');
   });
 });
 
