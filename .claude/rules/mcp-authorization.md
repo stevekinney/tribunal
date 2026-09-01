@@ -1,7 +1,6 @@
 ---
 paths:
   - packages/mcp/src/**
-  - applications/web/src/routes/oauth/**
 ---
 
 # MCP authorization server rules

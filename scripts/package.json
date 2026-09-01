@@ -6,6 +6,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
+    "validate:rules": "bun run validate-rule-frontmatter.ts",
     "validate:skills": "bun run validate-skill-wiring.ts",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write --ignore-path ../.prettierignore .",
