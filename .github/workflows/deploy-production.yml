@@ -115,6 +115,7 @@ jobs:
             runner \
             scripts/package.json \
             scripts/install-git-hooks.ts \
+            scripts/lib/install-git-hooks.ts \
             deployment/containers/reviewer.Dockerfile \
             | tar -x -f - -C "$reviewer_context"
 
