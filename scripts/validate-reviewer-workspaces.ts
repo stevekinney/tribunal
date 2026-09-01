@@ -10,6 +10,8 @@ function trackedWorkspaceManifests(patterns: readonly string[]): string[] {
     cwd: repositoryRoot,
     stdout: 'pipe',
     stderr: 'inherit',
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
 
   if (trackedManifestResult.exitCode !== 0) {
