@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { agent, costEvent, repository, user, userReviewSettings } from '@tribunal/database/schema';
 import { runWithDatabase } from '$lib/server/database';
-import { listCostEvents, summarizeCostEvents } from './cost-event-reader';
+import { listCostEvents, orderCostRollup, summarizeCostEvents } from './cost-event-reader';
 
 describe('cost event reader', () => {
   let testDb: TestDatabase;
@@ -205,6 +205,19 @@ describe('cost event reader', () => {
     ]);
   });
 
+  it('summarizes an empty window as zero rather than as missing data', async () => {
+    expect.assertions(4);
+
+    const summary = await withTestDatabase(() =>
+      summarizeCostEvents(ownerId, { source: 'estimate', windowDays: 7 }),
+    );
+
+    expect(summary.eventCount).toBe(0);
+    expect(summary.totalUsd).toBe(0);
+    expect(summary.byRepository).toEqual([]);
+    expect(summary.byAgent).toEqual([]);
+  });
+
   it('orders equal totals deterministically by label, in both directions', async () => {
     expect.assertions(1);
     // Seeded newest first, so the rollup encounters them as cinder, tribunal,
@@ -272,5 +285,34 @@ describe('cost event reader', () => {
     const settings = await testDb.db.select().from(userReviewSettings);
 
     expect(settings).toEqual([]);
+  });
+});
+
+describe('orderCostRollup', () => {
+  it('puts the largest spend first', () => {
+    expect.assertions(1);
+
+    expect(
+      orderCostRollup([
+        { label: 'b', amountUsd: 1 },
+        { label: 'a', amountUsd: 2 },
+      ]),
+    ).toEqual([
+      { label: 'a', amountUsd: 2 },
+      { label: 'b', amountUsd: 1 },
+    ]);
+  });
+
+  it.each([
+    ['already ordered', ['a', 'b']],
+    ['reversed', ['b', 'a']],
+  ])('breaks a tie by label whatever order the planner returned (%s)', (_label, labels) => {
+    expect.assertions(1);
+    // `GROUP BY` gives no ordering guarantee, so the comparator has to settle
+    // ties in both directions. Driving it from a query could only ever
+    // exercise whichever direction that query happened to produce.
+    const ordered = orderCostRollup(labels.map((label) => ({ label, amountUsd: 1 })));
+
+    expect(ordered.map((entry) => entry.label)).toEqual(['a', 'b']);
   });
 });

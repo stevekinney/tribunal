@@ -84,14 +84,14 @@ describe('review run reader', () => {
       repositoryOwner: 'lost-gradient',
       repositoryName: 'tribunal',
       pullRequestNumber: 7,
-      trigger: 'opened',
-      headSha: 'sha-run-1',
       costEstimateUsd: 1.25,
-      commentsPosted: 2,
       startedAt: '2026-08-01T00:00:00.000Z',
       finishedAt: '2026-08-01T00:05:00.000Z',
     });
-    expect(JSON.stringify(run)).not.toMatch(/secret|internal failure/);
+    // Infrastructure identifiers, the internal failure string, the run's
+    // trigger, and the commit it reviewed are all outside what `reviews:read`
+    // asks the user to approve.
+    expect(JSON.stringify(run)).not.toMatch(/secret|internal failure|sha-run-1|opened/);
   });
 
   it("refuses another account's run rather than reporting it", async () => {

@@ -19,6 +19,17 @@ import { buildPage, type Page, type PaginationInput } from '../pagination';
  * out for the same reason: infrastructure identifiers and internal failure
  * text are not "status, timing, and cost estimate", which is what the user
  * approved.
+ *
+ * So are the run's `trigger`, the `headSha` it reviewed, and how many comments
+ * it posted. A review review found them beyond the same sentence, and it was
+ * right: a token holding `reviews:read` alone would otherwise learn which
+ * commit a pull request was at and how much review traffic it drew, without
+ * the pull request capability the user could have declined separately.
+ *
+ * `pullRequestNumber` stays, and the distinction is deliberate rather than
+ * convenient: it identifies *which of the caller's own runs* this is, and a
+ * review-run tool that cannot say what was reviewed answers nothing. It names
+ * the subject; the dropped fields describe it.
  */
 export type McpReviewRun = {
   id: string;
@@ -27,10 +38,7 @@ export type McpReviewRun = {
   repositoryOwner: string;
   repositoryName: string;
   pullRequestNumber: number;
-  trigger: string;
-  headSha: string;
   costEstimateUsd: number;
-  commentsPosted: number;
   startedAt: string | null;
   finishedAt: string | null;
 };
@@ -42,10 +50,7 @@ const reviewRunColumns = {
   repositoryOwner: repository.owner,
   repositoryName: repository.name,
   pullRequestNumber: pullRequestReviewRun.prNumber,
-  trigger: pullRequestReviewRun.trigger,
-  headSha: pullRequestReviewRun.headSha,
   costEstimateUsd: tribunalRun.costEstimateUsd,
-  commentsPosted: pullRequestReviewRun.commentsPosted,
   startedAt: tribunalRun.startedAt,
   finishedAt: tribunalRun.finishedAt,
 };
@@ -57,10 +62,7 @@ type ReviewRunRow = {
   repositoryOwner: string;
   repositoryName: string;
   pullRequestNumber: number;
-  trigger: string;
-  headSha: string;
   costEstimateUsd: string;
-  commentsPosted: number;
   startedAt: Date | null;
   finishedAt: Date | null;
 };
@@ -73,10 +75,7 @@ function projectReviewRun(row: ReviewRunRow): McpReviewRun {
     repositoryOwner: row.repositoryOwner,
     repositoryName: row.repositoryName,
     pullRequestNumber: row.pullRequestNumber,
-    trigger: row.trigger,
-    headSha: row.headSha,
     costEstimateUsd: Number(row.costEstimateUsd),
-    commentsPosted: row.commentsPosted,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
   };

@@ -21,10 +21,7 @@ const run = {
   repositoryOwner: 'lost-gradient',
   repositoryName: 'tribunal',
   pullRequestNumber: 7,
-  trigger: 'opened',
-  headSha: 'abc123',
   costEstimateUsd: 1.25,
-  commentsPosted: 2,
   startedAt: '2026-08-01T00:00:00.000Z',
   finishedAt: '2026-08-01T00:05:00.000Z',
 };

@@ -14,7 +14,10 @@ const costSourceSchema = z
 const costEventSchema = z.object({
   occurredAt: z.string(),
   amountUsd: z.number(),
-  source: z.string(),
+  // The same closed vocabulary the input accepts. Declaring the output as a
+  // free-form string would tell a client that some third source might arrive
+  // and need handling, when the column's own check constraint says otherwise.
+  source: costSourceSchema,
   repositoryId: z.number().nullable(),
   repositoryOwner: z.string().nullable(),
   repositoryName: z.string().nullable(),

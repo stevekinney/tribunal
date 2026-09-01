@@ -14,10 +14,7 @@ const reviewRunSchema = z.object({
   repositoryOwner: z.string(),
   repositoryName: z.string(),
   pullRequestNumber: z.number(),
-  trigger: z.string(),
-  headSha: z.string(),
   costEstimateUsd: z.number(),
-  commentsPosted: z.number(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
 });
@@ -73,7 +70,7 @@ export const getReviewRunTool = tribunalScopeVocabulary.defineTool({
   name: 'get_review_run',
   title: 'Get a review run',
   description:
-    "Returns one of the caller's own review runs: status, timing, trigger, reviewed commit, and cost estimate. A run belonging to another account is reported as not found. Agent configuration and agent event telemetry are never included.",
+    "Returns one of the caller's own review runs: status, timing, and cost estimate, with the repository and pull request it reviewed. A run belonging to another account is reported as not found. Agent configuration, agent event telemetry, the run's trigger, and the reviewed commit are never included.",
   inputSchema: z.object({
     runId: z.string().min(1).describe('The review run id, as returned by list_review_runs.'),
   }),

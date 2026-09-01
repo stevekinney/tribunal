@@ -1,4 +1,4 @@
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, count, desc, eq, gte, sum } from 'drizzle-orm';
 import { agent, costEvent, repository } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
 import { buildPage, type Page, type PaginationInput } from '../pagination';
@@ -22,7 +22,7 @@ export type McpCostEventSource = 'estimate' | 'reconciled';
 export type McpCostEvent = {
   occurredAt: string;
   amountUsd: number;
-  source: string;
+  source: McpCostEventSource;
   repositoryId: number | null;
   repositoryOwner: string | null;
   repositoryName: string | null;
@@ -66,7 +66,12 @@ function projectCostEvent(row: CostEventRow): McpCostEvent {
   return {
     occurredAt: row.occurredAt.toISOString(),
     amountUsd: Number(row.amountUsd),
-    source: row.source,
+    // `cost_event.source` carries a check constraint admitting exactly these
+    // two values, so the column cannot hold anything else. Should a migration
+    // ever widen it without widening this vocabulary, the tool's own output
+    // schema rejects the response — a loud failure rather than a client
+    // quietly handed a source it was told could not exist.
+    source: row.source as McpCostEventSource,
     repositoryId: row.repositoryId,
     repositoryOwner: row.repositoryOwner,
     repositoryName: row.repositoryName,
@@ -114,56 +119,98 @@ export async function listCostEvents(
   return buildPage(rows.map(projectCostEvent), input);
 }
 
-function rollUp(
-  events: McpCostEvent[],
-  label: (event: McpCostEvent) => string,
+/**
+ * Orders an already-aggregated rollup: largest spend first, ties broken on a
+ * plain code-point comparison rather than `localeCompare`, so the same ledger
+ * produces the same order on every machine that reads it.
+ *
+ * Exported because it is the only part of the summary whose ordering does not
+ * come from the database: `GROUP BY` returns its rows in whatever order the
+ * planner produces, so this comparator — and both directions of its tie-break
+ * — is what a test has to pin directly rather than through a query whose input
+ * order it cannot choose.
+ */
+export function orderCostRollup(
+  rollup: Array<{ label: string; amountUsd: number }>,
 ): Array<{ label: string; amountUsd: number }> {
-  const totals = new Map<string, number>();
-  for (const event of events) {
-    const key = label(event);
-    totals.set(key, (totals.get(key) ?? 0) + event.amountUsd);
-  }
-  return Array.from(totals.entries())
-    .map(([groupLabel, amountUsd]) => ({ label: groupLabel, amountUsd }))
-    .sort((left, right) => {
-      if (left.amountUsd !== right.amountUsd) return right.amountUsd - left.amountUsd;
-      // Ties break on a plain code-point comparison rather than
-      // `localeCompare`, so the same ledger produces the same order on every
-      // machine that reads it. Labels are `Map` keys, so two of them are
-      // never equal and there is no third case to handle.
-      return left.label < right.label ? -1 : 1;
-    });
+  return rollup.sort((left, right) => {
+    if (left.amountUsd !== right.amountUsd) return right.amountUsd - left.amountUsd;
+    return left.label < right.label ? -1 : 1;
+  });
 }
 
+/** `SUM` returns `null` for an empty group and a `numeric` string otherwise. */
+function toAmount(total: string | null): number {
+  return Number(total ?? 0);
+}
+
+/**
+ * Summarizes the caller's ledger with the aggregation done in PostgreSQL.
+ *
+ * Two reasons, and neither is style. A 365-day window on a busy account would
+ * otherwise transfer every matching row plus its joined repository and agent
+ * into the process just to produce three numbers, so the cost of a small
+ * summary would grow with the size of the whole ledger. And summing `numeric`
+ * amounts by converting each row to a JavaScript number first reintroduces
+ * binary floating point one row at a time — `0.1` and `0.2` come back as
+ * `0.30000000000000004`. `SUM` keeps the arithmetic in `numeric` and the
+ * conversion happens once, on the total.
+ */
 export async function summarizeCostEvents(
   userId: number,
   input: { source: McpCostEventSource; windowDays: number },
 ): Promise<McpCostSummary> {
   const since = new Date(Date.now() - input.windowDays * 24 * 60 * 60 * 1000);
+  const window = and(
+    eq(costEvent.userId, userId),
+    eq(costEvent.source, input.source),
+    gte(costEvent.occurredAt, since),
+  );
 
-  const rows = await costEventQuery()
-    .where(
-      and(
-        eq(costEvent.userId, userId),
-        eq(costEvent.source, input.source),
-        gte(costEvent.occurredAt, since),
-      ),
-    )
-    .orderBy(desc(costEvent.occurredAt));
-
-  const events = rows.map(projectCostEvent);
+  const [[totals], repositoryRows, agentRows] = await Promise.all([
+    db
+      .select({ eventCount: count(), totalUsd: sum(costEvent.amountUsd) })
+      .from(costEvent)
+      .where(window),
+    db
+      .select({
+        owner: repository.owner,
+        name: repository.name,
+        totalUsd: sum(costEvent.amountUsd),
+      })
+      .from(costEvent)
+      .leftJoin(repository, eq(repository.id, costEvent.repositoryId))
+      .where(window)
+      .groupBy(repository.owner, repository.name),
+    db
+      .select({ agentSlug: agent.slug, totalUsd: sum(costEvent.amountUsd) })
+      .from(costEvent)
+      .leftJoin(agent, eq(agent.id, costEvent.agentId))
+      .where(window)
+      .groupBy(agent.slug),
+  ]);
 
   return {
     source: input.source,
     windowDays: input.windowDays,
     since: since.toISOString(),
-    eventCount: events.length,
-    totalUsd: events.reduce((total, event) => total + event.amountUsd, 0),
-    byRepository: rollUp(events, (event) =>
-      event.repositoryOwner && event.repositoryName
-        ? `${event.repositoryOwner}/${event.repositoryName}`
-        : 'Unassigned',
+    eventCount: totals.eventCount,
+    totalUsd: toAmount(totals.totalUsd),
+    byRepository: orderCostRollup(
+      repositoryRows.map((row) => ({
+        // `repository.owner` and `repository.name` are both non-null columns,
+        // so the only way either is missing is the left join finding no row —
+        // a cost event whose repository was deleted. That is one group, not
+        // several.
+        label: row.owner && row.name ? `${row.owner}/${row.name}` : 'Unassigned',
+        amountUsd: toAmount(row.totalUsd),
+      })),
     ),
-    byAgent: rollUp(events, (event) => event.agentSlug ?? 'Unassigned'),
+    byAgent: orderCostRollup(
+      agentRows.map((row) => ({
+        label: row.agentSlug ?? 'Unassigned',
+        amountUsd: toAmount(row.totalUsd),
+      })),
+    ),
   };
 }
