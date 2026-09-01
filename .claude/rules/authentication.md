@@ -7,12 +7,6 @@ paths:
   - applications/web/src/routes/logout/**
   - applications/web/src/routes/onboarding/**
   - applications/web/src/routes/auth/**
-  - src/routes/login/**
-  - src/routes/onboarding/**
-  - src/routes/logout/**
-  - src/routes/auth/**
-  - src/lib/auth/**
-  - src/lib/server/auth/**
 ---
 
 # Authentication patterns

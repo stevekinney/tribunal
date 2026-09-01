@@ -1,7 +1,7 @@
 ---
 paths:
-  - src/lib/components/**
-  - src/lib/utilities/**
+  - applications/web/src/lib/components/**
+  - applications/web/src/lib/utilities/**
 ---
 
 # Svelte 5 Patterns

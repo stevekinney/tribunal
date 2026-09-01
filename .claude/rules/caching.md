@@ -1,6 +1,6 @@
 ---
 paths:
-  - src/lib/**/*.ts
+  - applications/web/src/lib/**/*.ts
 ---
 
 # Caching patterns

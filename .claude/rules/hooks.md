@@ -1,6 +1,6 @@
 ---
 paths:
-  - src/hooks.*
+  - applications/web/src/hooks.*
 ---
 
 # Hooks patterns

@@ -2,8 +2,6 @@
 paths:
   - "**/*.svelte"
   - "**/*.svelte.ts"
-  - src/lib/components/**
-  - src/routes/**
 ---
 
 # Svelte Review Requirement

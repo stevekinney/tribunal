@@ -29,6 +29,7 @@
     "db:studio": "drizzle-kit studio --config packages/database/drizzle.config.ts",
     "database:migration:prepare": "bun run db:generate && bun run db:check && bun run check",
     "validate:turbo": "bun run scripts/validate-turbo-configuration.ts",
+    "validate:rules": "bun run --cwd scripts validate:rules",
     "validate:reviewer-workspaces": "bun run scripts/validate-reviewer-workspaces.ts",
     "validate:synchronous-subprocesses": "bun run scripts/validate-synchronous-subprocesses.ts",
     "audit:workflows": "bun run .github/scripts/audit-workflows.ts",

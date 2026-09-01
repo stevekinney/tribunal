@@ -1,10 +1,10 @@
 ---
 paths:
-  - src/routes/**/*.svelte
-  - src/routes/**
-  - src/params/**
-  - src/lib/server/**
-  - src/hooks.server.*
+  - applications/web/src/routes/**/*.svelte
+  - applications/web/src/routes/**
+  - applications/web/src/params/**
+  - applications/web/src/lib/server/**
+  - applications/web/src/hooks.server.*
 ---
 
 # SvelteKit Routes and Server Patterns

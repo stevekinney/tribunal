@@ -56,6 +56,8 @@ jobs:
       # by which package a pull request happened to touch.
       - name: Validate Turborepo configuration
         run: bun run validate:turbo
+      - name: Validate rule frontmatter
+        run: bun run validate:rules
       - name: Validate skill wiring
         run: bun run --cwd scripts validate:skills
       - name: Validate reviewer Dockerfile workspace parity

@@ -1,7 +1,6 @@
 ---
 paths:
-  - src/lib/components/**
-  - lib/components/**
+  - applications/web/src/lib/components/**
 ---
 
 # UX Review Requirement
