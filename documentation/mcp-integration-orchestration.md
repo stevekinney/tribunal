@@ -189,8 +189,6 @@ This cannot run fully autonomously end to end. Stop and hand back at:
 
 - **Any `type:decision` issue** — product and architecture calls. Draft the document with options and a recommendation; do not self-approve. TRI-24, TRI-25, TRI-26, and TRI-83 have cleared this gate. TRI-79 (whether a present-but-unparseable `Origin` is rejected) has not.
 
-  **TRI-83 is worth reaching for early rather than when its blockers clear.** TRI-43, TRI-52, and TRI-56 are each being built against an answer nobody has stated, and the cost of discovering it late is rework in the three places hardest to retrofit.
-
 - **TRI-60** — provisioning production Fly secrets and deploying. Outward-facing and credential-bearing.
 - **TRI-62 through TRI-65** — the client release gates. Browser OAuth is unscriptable by design; run the scripted half and hand the manual half back with exact steps.
 - **TRI-46** — a Cinder version decision affecting the whole design system, not just this project.

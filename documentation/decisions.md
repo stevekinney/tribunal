@@ -45,7 +45,7 @@ the completed Check Run summary's undercounted estimated cost.
 
 ## 2026-08-31 Production Deployment Topology
 
-Tribunal deliberately runs the proxy, engine, and web applications as singletons. The production workflow deploys each application and immediately runs `flyctl scale count 1`; `.github/tests/production-migration-gate.test.ts` treats that command as a load-bearing constraint and fails if it is removed or separated from its corresponding deploy step.
+Tribunal deliberately runs the proxy, engine, and web applications as singletons. The production workflow deploys each application and immediately runs `flyctl scale count 1 --yes --app tribunal-<service>`; `.github/tests/production-migration-gate.test.ts` treats that exact command as a load-bearing constraint and fails if it is removed or separated from its corresponding deploy step.
 
 Scaling any application above one Machine requires revisiting the affected contracts before rollout:
 
