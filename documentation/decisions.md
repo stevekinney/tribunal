@@ -42,3 +42,15 @@ endpoint, and the historical implementation was removed by issue #215 / pull req
 Three confirmed follow-ups were filed: #255 tracks the run list presenting `costEstimateUsd` under a
 generic `Cost` column, #260 tracks the unused repository 30-day cost rollup read, and #261 tracks
 the completed Check Run summary's undercounted estimated cost.
+
+## 2026-08-31 Production Deployment Topology
+
+Tribunal deliberately runs the proxy, engine, and web applications as singletons. The production workflow deploys each application and immediately runs `flyctl scale count 1 --yes --app tribunal-<service>`; `.github/tests/production-migration-gate.test.ts` treats that exact command as a load-bearing constraint and fails if it is removed or separated from its corresponding deploy step.
+
+Scaling any application above one Machine requires revisiting the affected contracts before rollout:
+
+- The web application's per-user MCP handler cache and `subscriptions/listen` delivery do not provide cross-replica fan-out. A stream is reachable only from the Machine holding it.
+- Redis-backed rate limiting, concurrency caps, and failed-authentication lockout remain correct shared-state mechanisms, but Tribunal does not claim they have been exercised against more than one live replica.
+- MCP metrics are per-instance metrics for the sole web Machine. A multi-replica deployment requires an aggregation contract.
+
+This constraint does not replace the engine's independent singleton lease. The engine lease prevents concurrent workflow ownership even if deployment topology drifts; the production scale command keeps the intended topology explicit for all three applications.
