@@ -118,8 +118,11 @@ The one-line consent-screen description is the verbatim text a `getSupportedScop
 export const mcpScopeDescriptions: Record<TribunalMcpScope, string> = {
   'repositories:read':
     "Read the repositories you've connected to Tribunal, including their name, owner, default branch, and latest commit.",
+  // Narrowed by TRI-29 to what the shipped readers actually return; see
+  // "What TRI-29 decided" below. The original wording promised diffs and
+  // comment text, which no reader retrieves.
   'pull_requests:read':
-    'Read pull request content from your connected repositories, including titles, descriptions, diffs, and comments.',
+    'Read pull request titles, descriptions, authors, and CI, review, and merge status from your connected repositories. Diffs and comment text are not included.',
   'reviews:read':
     "Read the status, timing, and cost estimate of Tribunal's automated reviews in your connected repositories.",
   'review_findings:read':
@@ -202,6 +205,30 @@ Two strings the donor's suite asserts must still be _accepted_, so a port does n
 
 Beyond AC5's literal ask, the donor adds one more check worth naming here even though it is not a control-character or bidirectional-text case: a mixed-script homoglyph check that rejects a name only when it mixes Latin-script letters with Cyrillic or Greek letters in the same name (the donor's own example is a Cyrillic lowercase "a," `а`, standing in for the Latin "a" in the string "PayPal," written as `'PаyPal'`), while still accepting a name written _entirely_ in Cyrillic or entirely in Greek. Whether this repository ports that fourth check is a decision for whichever issue implements client-name validation, not this one—it is named here only so it is not mistaken for part of AC5's control/bidi set.
 
+## What TRI-29 decided, where this document left the choice to it
+
+This document names several requirements as "F2/O1 must pick one rather than leaving it implicit." TRI-29 built the registry (`applications/web/src/lib/server/mcp/`) and picked. Each choice below is recorded here so the next reader finds the answer beside the question.
+
+**Tools only; no MCP resources and no MCP prompts in this release.** The five capability families are each served by a pair of tools, which covers everything this vocabulary grants. Resources would additionally commit Tribunal to the `resources/subscribe` and `subscriptions/listen` surface, whose authorization the engine cannot enforce for a consumer — it has to be checked at the host's own HTTP boundary before dispatch — and nothing in the client set asks for it. Adding a resource later is additive and does not disturb the vocabulary.
+
+**The final tool names, matching this document's illustrative table:** `list_repositories`, `get_repository`, `list_pull_requests`, `get_pull_request`, `list_review_runs`, `get_review_run`, `list_review_findings`, `get_review_finding`, `list_cost_events`, `get_cost_summary`.
+
+**`pull_requests:read`'s consent copy is narrowed rather than its readers built.** This document gave two acceptable resolutions for the fact that no reader returns diffs or comment text; TRI-29 took the narrowing. The shipped string is:
+
+> Read pull request titles, descriptions, authors, and CI, review, and merge status from your connected repositories. Diffs and comment text are not included.
+
+Building diff and comment readers means new GitHub API paths with their own permission, rate-limit, cache-policy, and invalidation characteristics — a change that belongs with the GitHub integration rules, not smuggled into the registry. Consent copy promising data no tool returns is the worse failure of the two, so the copy describes what is actually retrievable. `get_pull_request` returns comment _counts_, which `getPullRequest` does provide.
+
+**Review runs paginate; they are not recent-history-only.** `list_review_runs` takes `limit` and `offset` and returns `hasMore`, over-fetching one row to answer it. `getRunsOverview`'s unconditional `LIMIT 50` is not exposed. `list_pull_requests` paginates through GitHub's own `page`/`perPage` and reports `hasNextPage`, because the upstream API is the paginator there.
+
+**Review and cost tools keep repository labels and carry the untrusted-content framing.** This document required choosing per tool between stripping labels and framing them; a spending or review-status answer that names repositories only by numeric id is close to useless, so both families keep `repositoryOwner` and `repositoryName` and every tool result in every family carries the framing notice. `applications/web/src/lib/server/mcp/untrusted-content.ts` holds the notice text.
+
+**The stored pull request projection is restricted at the reader.** `get_pull_request` returns the pull request, CI, review, and merge columns of `pull_request_state` and never `automationStatus`, `attemptCount`, `lastErrorMessage`, `lastTriggerSignature`, `signatureAttemptCount`, `lastAttemptAt`, or `isPaused`. Review runs are projected to lifecycle fields alone — no agent descriptions, no agent events, and also no `workflowId`, `sandboxId`, or internal `error` string, none of which are "status, timing, and cost estimate". Cost tools read `cost_event` directly and never `getCostOverview`, which writes.
+
+**Ownership is enforced on every path.** Repository and pull request reads resolve the caller's own installation set first and authorize the repository before resolving its installation; review run, finding, and cost reads filter on the caller's user id. In every case "belongs to somebody else" and "does not exist" return the same answer.
+
+**`conformance:read` is reserved and unregistered.** The scope is in the vocabulary with its consent copy, and no production or conformance-only primitive declares it, so `getSupportedScopes()` excludes it structurally. What Tribunal's fixture tool returns remains TRI-30's decision; TRI-29 registered no `conformanceOnlyTools`.
+
 ## Open questions
 
 **Scope cardinality: decided here, one scope per primitive.** An earlier draft left this open while the mechanism section above called single-scope a property the port "must preserve"—a contradiction F2/O1 could not satisfy both halves of, and one that changes both how `getSupportedScopes()` flattens declarations and whether invocation authorization checks one scope or several. Leaving it open was the error, so it is decided rather than restated.
@@ -222,4 +249,4 @@ An earlier revision assigned this to TRI-25, which is now Done and never covered
 
 Conformance fixture content: named above—reserving the `conformance:read` scope and its exclusion mechanism is this document's job; deciding what the fixture tool actually returns is not.
 
-MCP resources versus tools-only: this document proposes illustrative tool names for every scope and does not commit to whether Tribunal's first release also exposes MCP resources (the donor's `user://profile`-style URI resource, with its `resources/subscribe` surface). The orchestration document's invariant list ("one `McpHttpHandler` per authenticated user," "`subscriptions/listen` enforces the same scope check `resources/read` does") describes constraints on that surface _if_ it is ported, but does not itself decide that Tribunal needs resources in a first release rather than tools alone. That decision, too, belongs to F2/O1.
+MCP resources versus tools-only: **decided by TRI-29 — tools only.** See the section above; the paragraph that follows is the question as it stood, kept because it records why the choice was left open rather than assumed. This document proposed illustrative tool names for every scope and did not commit to whether Tribunal's first release also exposes MCP resources (the donor's `user://profile`-style URI resource, with its `resources/subscribe` surface). The orchestration document's invariant list ("one `McpHttpHandler` per authenticated user," "`subscriptions/listen` enforces the same scope check `resources/read` does") describes constraints on that surface _if_ it is ported, but does not itself decide that Tribunal needs resources in a first release rather than tools alone.
