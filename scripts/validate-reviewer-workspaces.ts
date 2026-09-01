@@ -4,8 +4,7 @@ import { reviewerWorkspaceParityResult } from './lib/reviewer-workspace-parity';
 
 const repositoryRoot = join(import.meta.dirname, '..');
 
-async function expandWorkspacePattern(pattern: string): Promise<string[]> {
-  const glob = new Bun.Glob(`${pattern}/package.json`);
+function trackedWorkspaceManifests(patterns: readonly string[]): string[] {
   const trackedManifestResult = Bun.spawnSync({
     cmd: ['git', 'ls-files', '--', ':(glob)**/package.json'],
     cwd: repositoryRoot,
@@ -17,21 +16,31 @@ async function expandWorkspacePattern(pattern: string): Promise<string[]> {
     throw new Error('Failed to enumerate tracked workspace manifests.');
   }
 
-  return trackedManifestResult.stdout
+  const trackedManifests = trackedManifestResult.stdout
     .toString()
     .trim()
     .split('\n')
-    .filter((manifest) => manifest.length > 0 && glob.match(manifest))
-    .map(dirname)
+    .filter((manifest) => manifest.length > 0);
+
+  return patterns
+    .flatMap((pattern) => {
+      const glob = new Bun.Glob(`${pattern}/package.json`);
+      return trackedManifests.filter((manifest) => glob.match(manifest));
+    })
     .sort();
 }
 
 const rootManifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as {
   workspaces: string[];
 };
-const declaredWorkspaces = (
-  await Promise.all(rootManifest.workspaces.map(expandWorkspacePattern))
-).flat();
+const workspaceManifests = trackedWorkspaceManifests(rootManifest.workspaces);
+
+if (process.argv.includes('--print-manifests')) {
+  for (const manifest of workspaceManifests) console.log(manifest);
+  process.exit(0);
+}
+
+const declaredWorkspaces = workspaceManifests.map(dirname);
 const dockerfile = await readFile(
   join(repositoryRoot, 'deployment/containers/reviewer.Dockerfile'),
   'utf8',
