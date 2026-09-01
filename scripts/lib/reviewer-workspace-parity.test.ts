@@ -4,7 +4,13 @@ import {
   reviewerWorkspaceParityResult,
 } from './reviewer-workspace-parity';
 
-const workspaces = ['applications/web', 'packages/agents', 'packages/mcp', 'runner', 'scripts'];
+const workspaces = [
+  'applications/web',
+  'packages/agents',
+  'packages/database',
+  'runner',
+  'scripts',
+];
 
 function dockerfileFor(entries: readonly string[]): string {
   return [
@@ -25,9 +31,9 @@ describe('compareReviewerWorkspaceManifests', () => {
     expect(
       compareReviewerWorkspaceManifests(
         workspaces,
-        dockerfileFor(workspaces.filter((workspace) => workspace !== 'packages/mcp')),
+        dockerfileFor(workspaces.filter((workspace) => workspace !== 'packages/database')),
       ),
-    ).toEqual({ missing: ['packages/mcp'], stale: [] });
+    ).toEqual({ missing: ['packages/database'], stale: [] });
   });
 
   it('reports a Dockerfile manifest entry for a workspace that no longer exists', () => {
@@ -44,15 +50,15 @@ describe('compareReviewerWorkspaceManifests', () => {
       'COPY applications/web/package.json ./applications/web/package.json',
       'COPY packages/agents/package.json ./wrong/package.json',
       'RUN bun install --production --frozen-lockfile',
-      'COPY packages/mcp/package.json ./packages/mcp/package.json',
+      'COPY packages/database/package.json ./packages/database/package.json',
     ].join('\n');
 
     expect(
       compareReviewerWorkspaceManifests(
-        ['applications/web', 'packages/agents', 'packages/mcp'],
+        ['applications/web', 'packages/agents', 'packages/database'],
         dockerfile,
       ),
-    ).toEqual({ missing: ['packages/agents', 'packages/mcp'], stale: [] });
+    ).toEqual({ missing: ['packages/agents', 'packages/database'], stale: [] });
   });
 
   it('returns process outcomes and actionable diagnostics for parity and drift', () => {
@@ -63,11 +69,11 @@ describe('compareReviewerWorkspaceManifests', () => {
     expect(
       reviewerWorkspaceParityResult(
         workspaces,
-        dockerfileFor(workspaces.filter((workspace) => workspace !== 'packages/mcp')),
+        dockerfileFor(workspaces.filter((workspace) => workspace !== 'packages/database')),
       ),
     ).toMatchObject({
       exitCode: 1,
-      diagnostics: ['Reviewer Dockerfile is missing workspace manifests: packages/mcp'],
+      diagnostics: ['Reviewer Dockerfile is missing workspace manifests: packages/database'],
     });
     expect(
       reviewerWorkspaceParityResult(workspaces, dockerfileFor([...workspaces, 'packages/removed'])),

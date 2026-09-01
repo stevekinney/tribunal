@@ -1,6 +1,6 @@
 ---
 paths:
-  - packages/mcp/src/**
+  - applications/web/src/lib/server/mcp-*.ts
 ---
 
 # MCP authorization server rules
