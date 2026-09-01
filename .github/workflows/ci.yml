@@ -189,6 +189,17 @@ jobs:
       - uses: ./.github/actions/setup-playwright
         if: steps.browser-changes.outputs.changed == 'true'
 
+      # The browser tests boot a Vitest dev server that resolves any route
+      # module a test happens to request — including API routes that import
+      # built workspace packages. Without this build those imports fail, Vite
+      # paints a `<vite-error-overlay>` over the page, and every later click
+      # in the run is silently intercepted. The coverage job already builds
+      # first (via `test:coverage`), which is why it stayed green while this
+      # job went red.
+      - name: Build workspace packages
+        if: steps.browser-changes.outputs.changed == 'true'
+        run: bunx turbo run build --filter='!@tribunal/web'
+
       - name: Run unit tests (browser)
         if: steps.browser-changes.outputs.changed == 'true'
         run: bun run --cwd applications/web test:unit:client -- --run

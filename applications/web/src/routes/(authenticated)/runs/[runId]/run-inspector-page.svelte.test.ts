@@ -149,6 +149,28 @@ async function expectStatusDotLiveLabel(label: string) {
   );
 }
 
+/**
+ * Replace EventSource with an inert stub.
+ *
+ * A running run opens a real EventSource against
+ * `/api/review/runs/:id/events` on mount. In browser tests that is a live
+ * request to the Vitest dev server, which then has to evaluate that route
+ * module — and any failure there paints a `<vite-error-overlay>` over the
+ * page that swallows pointer events for every later test in the run. Tests
+ * that only assert rendering have no reason to open that connection.
+ */
+function stubInertEventSource(): void {
+  vi.stubGlobal(
+    'EventSource',
+    class {
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      addEventListener(): void {}
+      close(): void {}
+    },
+  );
+}
+
 describe('/runs/[runId] page', () => {
   afterEach(() => {
     cleanup();
@@ -576,6 +598,7 @@ describe('/runs/[runId] page', () => {
   // indicator) must survive so a running agent still reports transport state
   // before its first event lands.
   it('states an empty event stream explicitly while keeping the live log region', async () => {
+    stubInertEventSource();
     render(RunInspectorPage, {
       data: {
         ...data,
@@ -599,6 +622,7 @@ describe('/runs/[runId] page', () => {
   });
 
   it('expands and collapses the structured detail panel for an event', async () => {
+    stubInertEventSource();
     render(RunInspectorPage, { data });
 
     const toggle = page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' });
@@ -626,6 +650,7 @@ describe('/runs/[runId] page', () => {
   });
 
   it('omits the detail disclosure for an event that recorded no structured detail', async () => {
+    stubInertEventSource();
     render(RunInspectorPage, {
       data: {
         ...data,
