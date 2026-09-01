@@ -428,11 +428,11 @@ own log aggregator or a threshold against `/metrics`," never a running
 alert in the donor codebase. Tribunal's own web application today logs
 with bare `console.log`/`console.error` (see
 `applications/web/src/routes/api/webhooks/github/+server.ts`) and has no
-`/metrics` endpoint, no pino instance, and no metrics collector of any
-kind. So for `/mcp`, both the emitting side (the structured pino logger
-with redaction, and the metrics collector Protokit's
-`packages/mcp/src/logger.ts` and `packages/mcp/src/metrics.ts` provide)
-and the sink are new.
+`/metrics` endpoint or metrics sink. For `/mcp`, the installed
+`@lostgradient/mcp` package supplies the engine logger and metrics collector;
+Tribunal supplies the redacting host logger in
+`applications/web/src/lib/server/mcp-logger.ts` and still needs to wire the
+operational sink.
 
 An earlier revision said the logger and collector "arrive with the port
 itself", which was true of a fork and is misleading as a dependency. They
