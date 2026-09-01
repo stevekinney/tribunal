@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildPage, defaultPageSize, maximumPageSize, paginationInputFields } from './pagination';
+import {
+  buildPage,
+  defaultPageSize,
+  maximumPageSize,
+  paginateResolvedItems,
+  paginationInputFields,
+} from './pagination';
 
 describe('buildPage', () => {
   it('reports hasMore and drops the over-fetched row when a further page exists', () => {
@@ -24,6 +30,32 @@ describe('buildPage', () => {
 
     expect(page.limit).toBe(10);
     expect(page.offset).toBe(30);
+  });
+});
+
+describe('paginateResolvedItems', () => {
+  it('cuts a page out of a set that was resolved in full', () => {
+    expect.assertions(2);
+    const page = paginateResolvedItems([1, 2, 3, 4, 5], { limit: 2, offset: 2 });
+
+    expect(page.items).toEqual([3, 4]);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('reports the final page as complete', () => {
+    expect.assertions(2);
+    const page = paginateResolvedItems([1, 2, 3], { limit: 2, offset: 2 });
+
+    expect(page.items).toEqual([3]);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('returns nothing past the end of the set', () => {
+    expect.assertions(2);
+    const page = paginateResolvedItems([1, 2], { limit: 5, offset: 10 });
+
+    expect(page.items).toEqual([]);
+    expect(page.hasMore).toBe(false);
   });
 });
 

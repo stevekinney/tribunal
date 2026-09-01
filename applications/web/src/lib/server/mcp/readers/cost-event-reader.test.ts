@@ -147,6 +147,28 @@ describe('cost event reader', () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it('pages rows sharing one timestamp without repeating or skipping any', async () => {
+    expect.assertions(3);
+    const tied = new Date('2026-08-01T00:00:00.000Z');
+    await seedEvent({ key: 'event-a', userId: ownerId, amountUsd: '1.00', occurredAt: tied });
+    await seedEvent({ key: 'event-b', userId: ownerId, amountUsd: '2.00', occurredAt: tied });
+    await seedEvent({ key: 'event-c', userId: ownerId, amountUsd: '3.00', occurredAt: tied });
+
+    const firstPage = await withTestDatabase(() =>
+      listCostEvents(ownerId, { limit: 2, offset: 0 }),
+    );
+    const secondPage = await withTestDatabase(() =>
+      listCostEvents(ownerId, { limit: 2, offset: 2 }),
+    );
+    const seen = [...firstPage.items, ...secondPage.items].map((event) => event.amountUsd);
+
+    expect(firstPage.hasMore).toBe(true);
+    expect(secondPage.hasMore).toBe(false);
+    // Ordering ties on the primary key, so consecutive offsets traverse the
+    // ledger exactly once rather than reshuffling between queries.
+    expect([...seen].sort()).toEqual([1, 2, 3]);
+  });
+
   it('totals a window and rolls it up by repository and agent', async () => {
     expect.assertions(4);
     const now = new Date();

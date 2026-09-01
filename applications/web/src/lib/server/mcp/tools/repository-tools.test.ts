@@ -43,17 +43,39 @@ describe('list_repositories', () => {
       repositories: [repositoryProjection],
     });
 
-    const result = await listRepositoriesTool.handler({}, context('7'));
+    const result = await listRepositoriesTool.handler({ limit: 25, offset: 0 }, context('7'));
 
-    expect(result.structuredContent).toEqual({ repositories: [repositoryProjection] });
+    expect(result.structuredContent).toEqual({
+      repositories: [repositoryProjection],
+      limit: 25,
+      offset: 0,
+      hasMore: false,
+    });
     expect(mocks.listAccessibleRepositories).toHaveBeenCalledWith(7);
+  });
+
+  it('pages a large installation set and says more remain', async () => {
+    expect.assertions(2);
+    mocks.listAccessibleRepositories.mockResolvedValue({
+      ok: true,
+      repositories: [
+        repositoryProjection,
+        { ...repositoryProjection, id: 9002, name: 'cinder' },
+        { ...repositoryProjection, id: 9003, name: 'agents' },
+      ],
+    });
+
+    const result = await listRepositoriesTool.handler({ limit: 2, offset: 0 }, context('7'));
+
+    expect(result.structuredContent).toMatchObject({ hasMore: true });
+    expect(readToolResultText(result)).toMatch(/more available/);
   });
 
   it('frames the result as untrusted content', async () => {
     expect.assertions(1);
     mocks.listAccessibleRepositories.mockResolvedValue({ ok: true, repositories: [] });
 
-    const result = await listRepositoriesTool.handler({}, context('7'));
+    const result = await listRepositoriesTool.handler({ limit: 25, offset: 0 }, context('7'));
 
     expect(readToolResultText(result)).toMatch(/Untrusted content/);
   });
@@ -61,7 +83,10 @@ describe('list_repositories', () => {
   it('refuses a subject that is not a Tribunal user identifier', async () => {
     expect.assertions(2);
 
-    const result = await listRepositoriesTool.handler({}, context('not-an-id'));
+    const result = await listRepositoriesTool.handler(
+      { limit: 25, offset: 0 },
+      context('not-an-id'),
+    );
 
     expect(result.isError).toBe(true);
     expect(mocks.listAccessibleRepositories).not.toHaveBeenCalled();
@@ -74,7 +99,7 @@ describe('list_repositories', () => {
       error: 'github_unavailable',
     });
 
-    const result = await listRepositoriesTool.handler({}, context('7'));
+    const result = await listRepositoriesTool.handler({ limit: 25, offset: 0 }, context('7'));
 
     expect(result.isError).toBe(true);
     expect(readToolResultText(result)).toMatch(/GitHub could not be reached/);

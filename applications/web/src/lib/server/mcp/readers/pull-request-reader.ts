@@ -97,6 +97,37 @@ export type PullRequestDetailResult =
   { ok: true; pullRequest: McpPullRequestDetail } | { ok: false; error: PullRequestReadError };
 
 /**
+ * The columns of `pull_request_state` this scope may read, named one by one.
+ *
+ * A bare `.select()` would return the whole row and leave the exclusion to
+ * whoever assembles the response — which reads as a projection but is not one:
+ * the automation columns still cross the database boundary into the process,
+ * where a log line, a query trace, or a later object spread can surface them.
+ * Naming the columns keeps the withheld data in PostgreSQL, and
+ * `pull-request-reader.test.ts` asserts against this object so the guarantee is
+ * checked where it is made rather than at the far end of the response.
+ */
+export const pullRequestStateProjection = {
+  state: pullRequestState.state,
+  isDraft: pullRequestState.isDraft,
+  isMerged: pullRequestState.isMerged,
+  headSha: pullRequestState.headSha,
+  baseSha: pullRequestState.baseSha,
+  baseRef: pullRequestState.baseRef,
+  ciStatus: pullRequestState.ciStatus,
+  failingCheckCount: pullRequestState.failingCheckCount,
+  ciUpdatedAt: pullRequestState.ciUpdatedAt,
+  reviewStatus: pullRequestState.reviewStatus,
+  approvalCount: pullRequestState.approvalCount,
+  changesRequestedCount: pullRequestState.changesRequestedCount,
+  unresolvedThreadCount: pullRequestState.unresolvedThreadCount,
+  reviewUpdatedAt: pullRequestState.reviewUpdatedAt,
+  mergeStatus: pullRequestState.mergeStatus,
+  mergeUpdatedAt: pullRequestState.mergeUpdatedAt,
+  prUpdatedAt: pullRequestState.prUpdatedAt,
+} as const;
+
+/**
  * Authorizes the repository *before* resolving its installation.
  *
  * `getInstallationForRepository` takes a repository identifier and no user
@@ -196,7 +227,7 @@ export async function getRepositoryPullRequest(
   if (!detail) return { ok: false, error: 'pull_request_not_found' };
 
   const [storedState] = await db
-    .select()
+    .select(pullRequestStateProjection)
     .from(pullRequestState)
     .where(
       and(

@@ -103,7 +103,11 @@ export async function listCostEvents(
 
   const rows = await costEventQuery()
     .where(and(...filters))
-    .orderBy(desc(costEvent.occurredAt))
+    // The idempotency key is this table's primary key, and it breaks ties on
+    // `occurredAt`. Without it, rows sharing a timestamp have no defined order
+    // between two `OFFSET` queries, so paging a busy ledger can repeat one
+    // event and skip another while `hasMore` still looks correct.
+    .orderBy(desc(costEvent.occurredAt), desc(costEvent.idempotencyKey))
     .limit(input.limit + 1)
     .offset(input.offset);
 

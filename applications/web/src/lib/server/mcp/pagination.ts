@@ -49,3 +49,25 @@ export function buildPage<Item>(rows: Item[], { limit, offset }: PaginationInput
   const hasMore = rows.length > limit;
   return { items: hasMore ? rows.slice(0, limit) : rows, limit, offset, hasMore };
 }
+
+/**
+ * Pages a set that was resolved in full before it could be paged.
+ *
+ * The repository list is the case: it comes from GitHub's own installation
+ * endpoints through the caller's token, so there is no query to push `LIMIT`
+ * into — the whole set is already in memory by the time a page can be cut from
+ * it. Paging it anyway keeps every list tool honest about the same contract,
+ * which the server instructions state without exception, and gives a client
+ * with a large account a bounded response.
+ */
+export function paginateResolvedItems<Item>(
+  items: readonly Item[],
+  { limit, offset }: PaginationInput,
+): Page<Item> {
+  return {
+    items: items.slice(offset, offset + limit),
+    limit,
+    offset,
+    hasMore: items.length > offset + limit,
+  };
+}

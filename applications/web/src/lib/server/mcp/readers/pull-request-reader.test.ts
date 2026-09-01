@@ -25,7 +25,11 @@ vi.mock('@tribunal/github/pull-requests/service', () => ({
 
 vi.mock('$lib/server/github-context', () => ({ githubContext: { cache: {} } }));
 
-import { getRepositoryPullRequest, listRepositoryPullRequests } from './pull-request-reader';
+import {
+  getRepositoryPullRequest,
+  listRepositoryPullRequests,
+  pullRequestStateProjection,
+} from './pull-request-reader';
 
 const listItem = {
   number: 412,
@@ -94,6 +98,30 @@ describe('pull request reader', () => {
   function withTestDatabase<T>(operation: () => Promise<T>): Promise<T> {
     return runWithDatabase(testDb.db as never, operation);
   }
+
+  it('never asks the database for the automation columns', () => {
+    expect.assertions(1);
+    const withheldColumns = [
+      'automationStatus',
+      'attemptCount',
+      'lastErrorMessage',
+      'lastTriggerSignature',
+      'signatureAttemptCount',
+      'lastAttemptAt',
+      'isPaused',
+      'id',
+      'createdAt',
+      'updatedAt',
+    ];
+
+    // Asserted against the projection the query is built from, not against the
+    // response: filtering while assembling the response would still have
+    // pulled operator pause state and internal error strings out of
+    // PostgreSQL, where a log line or a later spread could surface them.
+    expect(
+      Object.keys(pullRequestStateProjection).filter((column) => withheldColumns.includes(column)),
+    ).toEqual([]);
+  });
 
   it('lists pull requests through the installation once the repository is authorized', async () => {
     expect.assertions(3);
