@@ -9,7 +9,15 @@ export type ReviewerWorkspaceParityResult = ReviewerWorkspaceParity & {
 };
 
 function copiedWorkspaceManifests(dockerfile: string): string[] {
-  return [...dockerfile.matchAll(/^\s*COPY\s+(?:\.\/)?([^\s]+)\/package\.json\s+/gm)]
+  const installOffset = dockerfile.search(/^\s*RUN\s+.*\bbun install\b/m);
+  const manifestStage = installOffset === -1 ? '' : dockerfile.slice(0, installOffset);
+
+  return [
+    ...manifestStage.matchAll(
+      /^\s*COPY\s+(?:\.\/)?([^\s]+)\/package\.json\s+(?:\.\/)?([^\s]+)\/package\.json\s*$/gm,
+    ),
+  ]
+    .filter((match) => match[1] === match[2])
     .map((match) => match[1])
     .sort();
 }
