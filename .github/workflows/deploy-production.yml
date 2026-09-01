@@ -107,9 +107,7 @@ jobs:
           git archive HEAD -- \
             package.json \
             bun.lock \
-            applications/engine/package.json \
-            applications/proxy/package.json \
-            applications/web/package.json \
+            ':(glob)applications/*/package.json' \
             packages \
             runner \
             scripts/package.json \

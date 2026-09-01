@@ -6,7 +6,24 @@ const repositoryRoot = join(import.meta.dirname, '..');
 
 async function expandWorkspacePattern(pattern: string): Promise<string[]> {
   const glob = new Bun.Glob(`${pattern}/package.json`);
-  return [...glob.scanSync({ cwd: repositoryRoot, onlyFiles: true })].map(dirname).sort();
+  const trackedManifestResult = Bun.spawnSync({
+    cmd: ['git', 'ls-files', '--', ':(glob)**/package.json'],
+    cwd: repositoryRoot,
+    stdout: 'pipe',
+    stderr: 'inherit',
+  });
+
+  if (trackedManifestResult.exitCode !== 0) {
+    throw new Error('Failed to enumerate tracked workspace manifests.');
+  }
+
+  return trackedManifestResult.stdout
+    .toString()
+    .trim()
+    .split('\n')
+    .filter((manifest) => manifest.length > 0 && glob.match(manifest))
+    .map(dirname)
+    .sort();
 }
 
 const rootManifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as {
