@@ -104,8 +104,9 @@ export type PullRequestDetailResult =
  * the automation columns still cross the database boundary into the process,
  * where a log line, a query trace, or a later object spread can surface them.
  * Naming the columns keeps the withheld data in PostgreSQL, and
- * `pull-request-reader.test.ts` asserts against this object so the guarantee is
- * checked where it is made rather than at the far end of the response.
+ * `pull-request-reader.test.ts` asserts against the SQL this produces, so the
+ * guarantee is checked where it is made rather than at the far end of the
+ * response.
  */
 export const pullRequestStateProjection = {
   state: pullRequestState.state,
@@ -126,6 +127,28 @@ export const pullRequestStateProjection = {
   mergeUpdatedAt: pullRequestState.mergeUpdatedAt,
   prUpdatedAt: pullRequestState.prUpdatedAt,
 } as const;
+
+/**
+ * Builds the stored-state query, exported so a test can read the SQL it
+ * generates.
+ *
+ * Asserting on the projection object alone would not have been a regression
+ * test: reverting the query to a bare `.select()` leaves that object exported
+ * and unchanged, so the assertion passes while every withheld column is being
+ * read again. The SQL is the thing that has to be checked, because the SQL is
+ * what decides which columns leave the database.
+ */
+export function selectStoredPullRequestState(repositoryId: number, pullRequestNumber: number) {
+  return db
+    .select(pullRequestStateProjection)
+    .from(pullRequestState)
+    .where(
+      and(
+        eq(pullRequestState.repositoryId, repositoryId),
+        eq(pullRequestState.prNumber, pullRequestNumber),
+      ),
+    );
+}
 
 /**
  * Authorizes the repository *before* resolving its installation.
@@ -226,15 +249,10 @@ export async function getRepositoryPullRequest(
   );
   if (!detail) return { ok: false, error: 'pull_request_not_found' };
 
-  const [storedState] = await db
-    .select(pullRequestStateProjection)
-    .from(pullRequestState)
-    .where(
-      and(
-        eq(pullRequestState.repositoryId, input.repositoryId),
-        eq(pullRequestState.prNumber, input.pullRequestNumber),
-      ),
-    );
+  const [storedState] = await selectStoredPullRequestState(
+    input.repositoryId,
+    input.pullRequestNumber,
+  );
 
   return {
     ok: true,

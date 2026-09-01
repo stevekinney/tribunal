@@ -160,13 +160,14 @@ describe('cost event reader', () => {
     const secondPage = await withTestDatabase(() =>
       listCostEvents(ownerId, { limit: 2, offset: 2 }),
     );
-    const seen = [...firstPage.items, ...secondPage.items].map((event) => event.amountUsd);
-
-    expect(firstPage.hasMore).toBe(true);
+    // Asserted as an exact sequence, not as set membership: the rows were
+    // inserted a, b, c and the ledger returns them keyed descending, so a
+    // reader that dropped the tie-breaker would come back in insertion order
+    // and fail here. Sorting the combined pages first would have passed either
+    // way, which is the shape of test that proves nothing.
+    expect(firstPage.items.map((event) => event.amountUsd)).toEqual([3, 2]);
+    expect(secondPage.items.map((event) => event.amountUsd)).toEqual([1]);
     expect(secondPage.hasMore).toBe(false);
-    // Ordering ties on the primary key, so consecutive offsets traverse the
-    // ledger exactly once rather than reshuffling between queries.
-    expect([...seen].sort()).toEqual([1, 2, 3]);
   });
 
   it('totals a window and rolls it up by repository and agent', async () => {

@@ -28,7 +28,7 @@ vi.mock('$lib/server/github-context', () => ({ githubContext: { cache: {} } }));
 import {
   getRepositoryPullRequest,
   listRepositoryPullRequests,
-  pullRequestStateProjection,
+  selectStoredPullRequestState,
 } from './pull-request-reader';
 
 const listItem = {
@@ -99,28 +99,30 @@ describe('pull request reader', () => {
     return runWithDatabase(testDb.db as never, operation);
   }
 
-  it('never asks the database for the automation columns', () => {
-    expect.assertions(1);
+  it('never asks the database for the automation columns', async () => {
+    expect.assertions(3);
     const withheldColumns = [
-      'automationStatus',
-      'attemptCount',
-      'lastErrorMessage',
-      'lastTriggerSignature',
-      'signatureAttemptCount',
-      'lastAttemptAt',
-      'isPaused',
-      'id',
-      'createdAt',
-      'updatedAt',
+      'automation_status',
+      'attempt_count',
+      'last_error_message',
+      'last_trigger_signature',
+      'signature_attempt_count',
+      'last_attempt_at',
+      'is_paused',
     ];
 
-    // Asserted against the projection the query is built from, not against the
-    // response: filtering while assembling the response would still have
-    // pulled operator pause state and internal error strings out of
-    // PostgreSQL, where a log line or a later spread could surface them.
-    expect(
-      Object.keys(pullRequestStateProjection).filter((column) => withheldColumns.includes(column)),
-    ).toEqual([]);
+    // Asserted against the SQL the reader actually issues, not against the
+    // response and not against the exported projection object. Both of those
+    // still pass while the query selects every column — and a whole-row read
+    // pulls operator pause state and internal error strings out of PostgreSQL
+    // into the process, where a log line or a later spread can surface them.
+    const { sql } = await withTestDatabase(async () =>
+      selectStoredPullRequestState(9001, 412).toSQL(),
+    );
+
+    expect(withheldColumns.filter((column) => sql.includes(column))).toEqual([]);
+    expect(sql).toContain('ci_status');
+    expect(sql).toContain('merge_status');
   });
 
   it('lists pull requests through the installation once the repository is authorized', async () => {
