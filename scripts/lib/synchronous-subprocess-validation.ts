@@ -64,8 +64,12 @@ function subprocessName(
 }
 
 function hasTimeoutOption(call: ts.CallExpression, name: SynchronousSubprocessName): boolean {
-  const optionsIndex =
-    name === 'spawnSync' && ts.isPropertyAccessExpression(call.expression) ? 0 : 2;
+  const isBunSpawnSync =
+    name === 'spawnSync' &&
+    ts.isPropertyAccessExpression(call.expression) &&
+    ts.isIdentifier(call.expression.expression) &&
+    call.expression.expression.text === 'Bun';
+  const optionsIndex = isBunSpawnSync ? 0 : 2;
   const options = call.arguments[optionsIndex];
   if (!options || !ts.isObjectLiteralExpression(options)) return false;
 

@@ -55,4 +55,13 @@ describe('findUnboundedSynchronousSubprocessCalls', () => {
       ),
     ).toEqual(['example.ts:1 spawnSync must pass an explicit timeout option.']);
   });
+
+  it('uses Node argument positions for namespace member calls', () => {
+    expect(
+      findUnboundedSynchronousSubprocessCalls(
+        "import * as childProcess from 'node:child_process';\nchildProcess.spawnSync('tool', [], { timeout: 1_000 });",
+        'example.ts',
+      ),
+    ).toEqual([]);
+  });
 });
