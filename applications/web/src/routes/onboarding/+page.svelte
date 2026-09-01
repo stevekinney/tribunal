@@ -246,7 +246,7 @@
             <SearchField
               value={searchQuery}
               placeholder="Search {repoCountLabel}…"
-              oninput={(value) => (searchQuery = value)}
+              onValueChange={(value) => (searchQuery = value)}
             />
           </div>
 
@@ -401,7 +401,7 @@
   .wordmark-name {
     font-size: var(--text-base);
     font-weight: var(--font-semibold);
-    color: var(--cinder-text);
+    color: var(--cinder-text-default);
   }
 
   .brand-headline {
@@ -409,7 +409,7 @@
     font-weight: var(--font-semibold);
     line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);
-    color: var(--cinder-text);
+    color: var(--cinder-text-default);
     margin: 0 0 var(--space-3);
     text-wrap: balance;
   }

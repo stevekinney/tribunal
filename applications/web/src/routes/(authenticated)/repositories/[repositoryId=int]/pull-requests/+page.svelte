@@ -8,9 +8,9 @@
   import { Link } from '@lostgradient/cinder/link';
   import { Badge } from '@lostgradient/cinder/badge';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import { FacetedFilterBar } from '@lostgradient/cinder/faceted-filter-bar';
+  import { FilterBar } from '@lostgradient/cinder/filter-bar';
   import { Input } from '@lostgradient/cinder/input';
-  import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/faceted-filter-bar';
+  import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/filter-bar';
   import { Pagination } from '@lostgradient/cinder/pagination';
   import {
     GitPullRequest,
@@ -233,33 +233,39 @@
 
 {#snippet baseBranchControl({
   value,
-  onchange,
+  onValueChange,
+  disabled,
 }: {
   value: string;
-  onchange: (value: string) => void;
+  onValueChange: (value: string) => void;
+  disabled: boolean;
 })}
   <Input
     id="pull-request-base-branch-filter"
     label="Base branch"
     placeholder="main"
     value={value ?? ''}
-    onValueChange={onchange}
+    {disabled}
+    {onValueChange}
   />
 {/snippet}
 
 {#snippet headBranchControl({
   value,
-  onchange,
+  onValueChange,
+  disabled,
 }: {
   value: string;
-  onchange: (value: string) => void;
+  onValueChange: (value: string) => void;
+  disabled: boolean;
 })}
   <Input
     id="pull-request-head-branch-filter"
     label="Head branch"
     placeholder="owner:branch"
     value={value ?? ''}
-    onValueChange={onchange}
+    {disabled}
+    {onValueChange}
   />
 {/snippet}
 
@@ -280,7 +286,7 @@
 {/snippet}
 
 <Page title="Pull requests" {subtitle} {breadcrumbs} actions={pageActions}>
-  <FacetedFilterBar
+  <FilterBar
     aria-label="Pull request filters"
     searchVisible={false}
     {facets}

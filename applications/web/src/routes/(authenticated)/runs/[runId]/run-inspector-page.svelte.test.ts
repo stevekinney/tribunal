@@ -569,4 +569,81 @@ describe('/runs/[runId] page', () => {
     source.onerror?.();
     await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
   });
+
+  // `Feed kind="log"` renders authored children, so it cannot detect an empty
+  // stream the way `EventStreamViewer` did from its `events` array. The page
+  // owns the empty state now, and the log region (with its connection
+  // indicator) must survive so a running agent still reports transport state
+  // before its first event lands.
+  it('states an empty event stream explicitly while keeping the live log region', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [{ ...data.run.agentRuns[0], events: [] }],
+        },
+      },
+    });
+
+    await expect
+      .element(page.getByRole('log', { name: 'security event stream' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('No events to display.')).toBeVisible();
+    expect(document.querySelector('.event-empty-status')?.getAttribute('role')).toBe('status');
+    // The list item itself keeps its listitem role inside Feed's <ol>.
+    expect(document.querySelector('.event-empty')?.hasAttribute('role')).toBe(false);
+    await expect
+      .element(page.getByRole('button', { name: 'Show details' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('expands and collapses the structured detail panel for an event', async () => {
+    render(RunInspectorPage, { data });
+
+    const toggle = page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' });
+    await expect.element(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    const panelId = (toggle.element() as HTMLElement).getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(true);
+
+    await toggle.click();
+
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(false);
+    // The structured detail itself renders, not just the panel wrapper.
+    await expect.element(page.getByText('denied')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }).click();
+
+    await expect
+      .element(page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('omits the detail disclosure for an event that recorded no structured detail', async () => {
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              events: [{ ...data.run.agentRuns[0].events[0], detail: null }],
+            },
+          ],
+        },
+      },
+    });
+
+    await expect.element(page.getByText('tool_pre: Read')).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Show details' }))
+      .not.toBeInTheDocument();
+  });
 });

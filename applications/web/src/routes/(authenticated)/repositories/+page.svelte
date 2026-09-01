@@ -427,7 +427,7 @@
           id="repository-search"
           value={searchQuery}
           placeholder="Search repositories…"
-          oninput={(value) => (searchQuery = value)}
+          onValueChange={(value) => (searchQuery = value)}
         />
       </div>
     </div>

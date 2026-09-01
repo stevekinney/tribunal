@@ -235,6 +235,22 @@ describe('/repositories/[repositoryId]/issues page', () => {
     });
   });
 
+  // FilterBar hands custom facets `{ value, onValueChange, disabled }`. The
+  // assignee control must stay named for assistive technology while its
+  // label stays visually hidden, and must not arrive disabled by default.
+  it('keeps the assignee facet accessibly named and enabled', async () => {
+    render(IssuesPage, { data: baseData });
+
+    const assigneeInput = browserPage.getByRole('textbox', { name: 'Assignee' });
+    await expect.element(assigneeInput).toBeInTheDocument();
+    await expect.element(assigneeInput).toBeEnabled();
+
+    // The label stays in the DOM and associated (that is what names the
+    // control); Cinder owns hiding it visually via `labelVisible={false}`.
+    const label = document.querySelector<HTMLLabelElement>('label[for="issue-assignee-filter"]');
+    expect(label?.textContent?.trim()).toBe('Assignee');
+  });
+
   it('preserves an in-flight filter change when a second filter changes before the first navigation lands', async () => {
     // goto() is mocked and never resolves here, simulating the window while
     // a real navigation is still loading (during which $app/state's

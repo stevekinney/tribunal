@@ -76,7 +76,7 @@
                   <Toggle
                     id={`agent-${agent.id}-enabled`}
                     label={`Agent ${agent.slug} enabled`}
-                    hideLabel
+                    labelVisible={false}
                     checked={agent.enabled}
                     onValueChange={(next) => {
                       if (next === agent.enabled) return;

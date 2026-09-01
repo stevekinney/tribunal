@@ -146,7 +146,7 @@
                   <Toggle
                     id={`listener-${row.listener.id}-enabled`}
                     label={`Event listener ${row.listener.name} enabled`}
-                    hideLabel
+                    labelVisible={false}
                     checked={row.listener.enabled}
                     onValueChange={(next) => {
                       if (next === row.listener.enabled) return;
