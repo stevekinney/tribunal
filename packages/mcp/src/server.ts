@@ -10,7 +10,7 @@ import { registerConformanceFixtures } from './conformance-fixture-registration.
 import { hasRegisteredUiExtensionResource } from './ui-extension-support.js';
 import { getEnvironment } from './env.js';
 import { metricsCollector } from './metrics.js';
-import { logger } from './logger.js';
+import { engineLogger as logger } from './logger.js';
 import type {
   McpPromptDefinition,
   McpResourceDefinition,
@@ -386,6 +386,15 @@ export function createMcpServer(context: {
   }
 
   for (const prompt of allPrompts) {
+    const promptHandler = prompt.arguments
+      ? async (arguments_: unknown, ctx: { mcpReq: { signal: AbortSignal } }) => {
+          assertRequiredScope(prompt);
+          return prompt.handler(arguments_ as never, { ...context, signal: ctx.mcpReq.signal });
+        }
+      : async (ctx: { mcpReq: { signal: AbortSignal } }) => {
+          assertRequiredScope(prompt);
+          return prompt.handler({} as never, { ...context, signal: ctx.mcpReq.signal });
+        };
     server.registerPrompt(
       prompt.name,
       {
@@ -393,10 +402,7 @@ export function createMcpServer(context: {
         description: prompt.description,
         ...(prompt.arguments ? { argsSchema: prompt.arguments } : {}),
       },
-      async (arguments_, ctx) => {
-        assertRequiredScope(prompt);
-        return prompt.handler(arguments_ as never, { ...context, signal: ctx.mcpReq.signal });
-      },
+      promptHandler as never,
     );
   }
 

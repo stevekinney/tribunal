@@ -2,7 +2,8 @@ export { createMcpServer, areResourceSubscriptionsAuthorized } from './server.js
 export { allTools, conformanceOnlyTools } from './tools/index.js';
 export { allResources } from './resources/index.js';
 export { allPrompts } from './prompts/index.js';
-export { logger } from './logger.js';
+export { logger, engineLogger, setLogger } from './logger.js';
+export type { McpLogger } from './logger.js';
 export {
   createToolTextResponse,
   createToolJsonResponse,
