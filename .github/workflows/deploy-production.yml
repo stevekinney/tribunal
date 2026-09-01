@@ -104,12 +104,13 @@ jobs:
           rm -rf "$reviewer_context"
           mkdir -p "$reviewer_context"
 
+          workspace_manifest_output="$(bun run scripts/validate-reviewer-workspaces.ts --print-manifests)"
+          mapfile -t workspace_manifests <<< "$workspace_manifest_output"
+
           git archive HEAD -- \
             package.json \
             bun.lock \
-            applications/engine/package.json \
-            applications/proxy/package.json \
-            applications/web/package.json \
+            "${workspace_manifests[@]}" \
             packages \
             runner \
             scripts/package.json \

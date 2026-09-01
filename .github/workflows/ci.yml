@@ -58,6 +58,8 @@ jobs:
         run: bun run validate:turbo
       - name: Validate skill wiring
         run: bun run --cwd scripts validate:skills
+      - name: Validate reviewer Dockerfile workspace parity
+        run: bun run validate:reviewer-workspaces
       # .github/** is inside no Turborepo workspace, so these root-level
       # workflow-security gates (TRI-28) run directly rather than through
       # `bunx turbo run`. See .github/scripts/workflow-policy.ts.
@@ -258,12 +260,13 @@ jobs:
           rm -rf "$reviewer_context"
           mkdir -p "$reviewer_context"
 
+          workspace_manifest_output="$(bun run scripts/validate-reviewer-workspaces.ts --print-manifests)"
+          mapfile -t workspace_manifests <<< "$workspace_manifest_output"
+
           git archive HEAD -- \
             package.json \
             bun.lock \
-            applications/engine/package.json \
-            applications/proxy/package.json \
-            applications/web/package.json \
+            "${workspace_manifests[@]}" \
             packages \
             runner \
             scripts/package.json \

@@ -29,6 +29,7 @@
     "db:studio": "drizzle-kit studio --config packages/database/drizzle.config.ts",
     "database:migration:prepare": "bun run db:generate && bun run db:check && bun run check",
     "validate:turbo": "bun run scripts/validate-turbo-configuration.ts",
+    "validate:reviewer-workspaces": "bun run scripts/validate-reviewer-workspaces.ts",
     "audit:workflows": "bun run .github/scripts/audit-workflows.ts",
     "test:workflow-authorization": "vitest run --config .github/tests/vitest.config.ts workflow-authorization",
     "test:workflow-prompt-injection": "vitest run --config .github/tests/vitest.config.ts workflow-prompt-injection",
