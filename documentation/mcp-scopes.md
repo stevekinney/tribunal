@@ -118,11 +118,15 @@ The one-line consent-screen description is the verbatim text a `getSupportedScop
 export const mcpScopeDescriptions: Record<TribunalMcpScope, string> = {
   'repositories:read':
     "Read the repositories you've connected to Tribunal, including their name, owner, default branch, and latest commit.",
-  // Narrowed by TRI-29 to what the shipped readers actually return; see
-  // "What TRI-29 decided" below. The original wording promised diffs and
-  // comment text, which no reader retrieves.
+  // Rewritten by TRI-29 to match the shipped projection exactly; see "What
+  // TRI-29 decided" below. The original wording promised diffs and comment
+  // text, which no reader retrieves, and a first correction then under-described
+  // what is returned. This string is the one in
+  // `applications/web/src/lib/server/mcp/scope-vocabulary.ts`; if the two ever
+  // disagree, that module is what renders on the consent screen and this
+  // document is stale.
   'pull_requests:read':
-    'Read pull request titles, descriptions, authors, and CI, review, and merge status from your connected repositories. Diffs and comment text are not included.',
+    'Read pull request details from your connected repositories: title, description, author, branch names, commit SHAs, link, timestamps, changed-file and line counts, comment and commit counts, and the CI, review, and merge status Tribunal recorded. Diffs and comment text are not included.',
   'reviews:read':
     "Read the status, timing, and cost estimate of Tribunal's automated reviews in your connected repositories.",
   'review_findings:read':
@@ -232,6 +236,8 @@ The rule the copy has to satisfy is symmetric, and an earlier revision of this s
 `pullRequestNumber` and the repository labels stay. The distinction is that they name _which of the caller's own runs_ this is; a review-run tool that cannot say what was reviewed answers nothing. The dropped fields describe the pull request rather than identify it.
 
 **The stored pull request projection is restricted at the reader.** `get_pull_request` returns the pull request, CI, review, and merge columns of `pull_request_state` and never `automationStatus`, `attemptCount`, `lastErrorMessage`, `lastTriggerSignature`, `signatureAttemptCount`, `lastAttemptAt`, or `isPaused`. Review runs are projected to lifecycle fields alone — no agent descriptions, no agent events, and also no `workflowId`, `sandboxId`, or internal `error` string, none of which are "status, timing, and cost estimate". Cost tools read `cost_event` directly and never `getCostOverview`, which writes.
+
+**A finding names its review run and not the agent that reported it.** The projection carries `runId` and omits `agentSlug` and `agentRunId`. This document puts agents outside every first-release scope, and `review_findings:read` authorizes finding rows — so naming which reviewer produced a finding is data no scope grants, however incidental it looks. `agent_run` is still joined, because it is the path from a finding to its run; reaching a row is not the same as returning its columns.
 
 **Ownership is enforced on every path.** Repository and pull request reads resolve the caller's own installation set first and authorize the repository before resolving its installation; review run, finding, and cost reads filter on the caller's user id. In every case "belongs to somebody else" and "does not exist" return the same answer.
 

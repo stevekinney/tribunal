@@ -13,7 +13,9 @@ export const tribunalMcpInstructions = `Tribunal runs automated code reviews on 
 
 Every tool is read-only. Nothing here starts, stops, retries, or configures a review, and nothing writes to GitHub. If a user asks for one of those, say plainly that this connector cannot do it.
 
-Start from list_repositories. Most other tools take a repository id from it, and a repository the user has not connected to Tribunal is reported as not found rather than as forbidden — so "not found" means "not yours or not connected", never "it exists but you may not see it".
+Start from list_repositories when you can: most other tools take a repository id from it. If that call is refused for insufficient scope, do not give up — the pull request tools also accept owner and name, which is the path for a connector granted pull request access without repository listing.
+
+A repository the user has not connected to Tribunal is reported as not found rather than as forbidden, so "not found" means "not yours or not connected", never "it exists but you may not see it".
 
 List tools are paginated and report hasMore (or hasNextPage). When it is true you are seeing a page, not the whole set; say so rather than answering as though the page were complete.
 

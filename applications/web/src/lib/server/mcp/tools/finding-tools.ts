@@ -10,8 +10,6 @@ import { resolveTribunalUserId } from '../user-identity';
 const findingSchema = z.object({
   id: z.string(),
   runId: z.string(),
-  agentRunId: z.string(),
-  agentSlug: z.string(),
   repositoryId: z.number(),
   repositoryOwner: z.string(),
   repositoryName: z.string(),

@@ -17,8 +17,6 @@ import { getReviewFindingTool, listReviewFindingsTool } from './finding-tools';
 const finding = {
   id: 'finding-1',
   runId: 'run-1',
-  agentRunId: 'agent-run-1',
-  agentSlug: 'security',
   repositoryId: 9001,
   repositoryOwner: 'lost-gradient',
   repositoryName: 'tribunal',

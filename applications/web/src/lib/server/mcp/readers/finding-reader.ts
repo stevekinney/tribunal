@@ -22,12 +22,18 @@ import { buildPage, type Page, type PaginationInput } from '../pagination';
  * `verificationNote`, and Tribunal's own posting bookkeeping — `fingerprint`,
  * `mergedFingerprints`, `anchored`, `githubCommentId`. This scope's consent
  * copy covers severity, file location, and suggested fixes.
+ *
+ * The agent dimension is absent for the same reason, and review had to point
+ * it out twice before it was: `agentSlug` and `agentRunId` name which reviewer
+ * produced the finding, and `documentation/mcp-scopes.md` puts agents outside
+ * every first-release scope. `agent_run` is still joined — reaching a row is
+ * not the same as returning its columns — because it is the path from a
+ * finding to its run, and `runId` is what a client needs to group findings by
+ * the review that reported them.
  */
 export type McpReviewFinding = {
   id: string;
   runId: string;
-  agentRunId: string;
-  agentSlug: string;
   repositoryId: number;
   repositoryOwner: string;
   repositoryName: string;
@@ -47,8 +53,6 @@ export type McpReviewFinding = {
 const findingColumns = {
   id: finding.id,
   runId: tribunalRun.id,
-  agentRunId: finding.agentRunId,
-  agentSlug: agentRun.agentSlug,
   repositoryId: tribunalRun.repositoryId,
   repositoryOwner: repository.owner,
   repositoryName: repository.name,

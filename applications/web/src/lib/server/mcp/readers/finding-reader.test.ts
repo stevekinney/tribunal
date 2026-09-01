@@ -99,8 +99,6 @@ describe('finding reader', () => {
     expect(result).toEqual({
       id: 'finding-1',
       runId: 'run-1',
-      agentRunId: 'agent-run-1',
-      agentSlug: 'security',
       repositoryId: 9001,
       repositoryOwner: 'lost-gradient',
       repositoryName: 'tribunal',
@@ -116,7 +114,9 @@ describe('finding reader', () => {
       verificationStatus: 'pending',
       createdAt: '2026-08-01T00:00:00.000Z',
     });
-    expect(JSON.stringify(result)).not.toContain('Agent configuration prose');
+    // Neither the agent's configuration nor its identity: this scope's copy
+    // covers finding rows, and agents are outside every first-release scope.
+    expect(JSON.stringify(result)).not.toMatch(/Agent configuration prose|security|agent-run-1/);
   });
 
   it("refuses another account's finding rather than reporting it", async () => {
