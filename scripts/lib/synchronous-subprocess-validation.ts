@@ -2,6 +2,22 @@ import ts from 'typescript';
 
 type SynchronousSubprocessName = 'spawnSync' | 'execFileSync' | 'execSync';
 
+function isSynchronousSubprocessName(value: string): value is SynchronousSubprocessName {
+  return value === 'spawnSync' || value === 'execFileSync' || value === 'execSync';
+}
+
+function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
+  return Boolean(
+    expression &&
+    ts.isCallExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'require' &&
+    expression.arguments.length === 1 &&
+    ts.isStringLiteral(expression.arguments[0]) &&
+    expression.arguments[0].text === 'node:child_process',
+  );
+}
+
 function importedSubprocessBindings(
   sourceFile: ts.SourceFile,
 ): Map<string, SynchronousSubprocessName> {
@@ -17,15 +33,30 @@ function importedSubprocessBindings(
 
     for (const element of namedImports.elements) {
       const importedName = element.propertyName?.text ?? element.name.text;
-      if (
-        importedName === 'spawnSync' ||
-        importedName === 'execFileSync' ||
-        importedName === 'execSync'
-      ) {
+      if (isSynchronousSubprocessName(importedName)) {
         bindings.set(element.name.text, importedName);
       }
     }
   }
+
+  function collectCommonJsBindings(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      isChildProcessRequire(node.initializer)
+    ) {
+      for (const element of node.name.elements) {
+        if (!ts.isIdentifier(element.name)) continue;
+        const importedName = element.propertyName?.getText(sourceFile) ?? element.name.text;
+        if (isSynchronousSubprocessName(importedName)) {
+          bindings.set(element.name.text, importedName);
+        }
+      }
+    }
+    ts.forEachChild(node, collectCommonJsBindings);
+  }
+
+  collectCommonJsBindings(sourceFile);
 
   function collectInjectedBindings(node: ts.Node): void {
     if (
@@ -63,22 +94,42 @@ function subprocessName(
   return undefined;
 }
 
-function hasTimeoutOption(call: ts.CallExpression, name: SynchronousSubprocessName): boolean {
+function hasHardDeadline(call: ts.CallExpression, name: SynchronousSubprocessName): boolean {
   const isBunSpawnSync =
     name === 'spawnSync' &&
     ts.isPropertyAccessExpression(call.expression) &&
     ts.isIdentifier(call.expression.expression) &&
     call.expression.expression.text === 'Bun';
-  const optionsIndex = isBunSpawnSync ? 0 : 2;
+  const optionsIndex = isBunSpawnSync ? 0 : name === 'execSync' ? 1 : 2;
   const options = call.arguments[optionsIndex];
   if (!options || !ts.isObjectLiteralExpression(options)) return false;
 
-  return options.properties.some((property) => {
-    if (!('name' in property) || !property.name) return false;
-    return ts.isIdentifier(property.name)
-      ? property.name.text === 'timeout'
-      : ts.isStringLiteral(property.name) && property.name.text === 'timeout';
-  });
+  let hasPositiveTimeout = false;
+  let hasHardKillSignal = false;
+  for (const property of options.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const propertyName = ts.isIdentifier(property.name)
+      ? property.name.text
+      : ts.isStringLiteral(property.name)
+        ? property.name.text
+        : undefined;
+    if (
+      propertyName === 'timeout' &&
+      ts.isNumericLiteral(property.initializer) &&
+      Number(property.initializer.text.replaceAll('_', '')) > 0
+    ) {
+      hasPositiveTimeout = true;
+    }
+    if (
+      propertyName === 'killSignal' &&
+      ts.isStringLiteral(property.initializer) &&
+      property.initializer.text === 'SIGKILL'
+    ) {
+      hasHardKillSignal = true;
+    }
+  }
+
+  return hasPositiveTimeout && hasHardKillSignal;
 }
 
 export function findUnboundedSynchronousSubprocessCalls(
@@ -104,9 +155,11 @@ export function findUnboundedSynchronousSubprocessCalls(
   function visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) {
       const name = subprocessName(node.expression, bindings);
-      if (name && !hasTimeoutOption(node, name)) {
+      if (name && !hasHardDeadline(node, name)) {
         const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-        violations.push(`${filePath}:${line} ${name} must pass an explicit timeout option.`);
+        violations.push(
+          `${filePath}:${line} ${name} must pass a positive literal timeout and SIGKILL killSignal.`,
+        );
       }
     }
     ts.forEachChild(node, visit);

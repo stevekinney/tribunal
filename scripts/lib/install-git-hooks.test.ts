@@ -10,6 +10,7 @@ describe('installGitHooks', () => {
       return spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 1_000)'], {
         ...options,
         timeout: 10,
+        killSignal: 'SIGKILL',
       });
     });
     const reportTimeout = vi.fn();
