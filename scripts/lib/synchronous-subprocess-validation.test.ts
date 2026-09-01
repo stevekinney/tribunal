@@ -105,4 +105,46 @@ describe('findUnboundedSynchronousSubprocessCalls', () => {
       'example.cjs:2 execSync must pass a positive literal timeout and SIGKILL killSignal.',
     ]);
   });
+
+  it('recognizes the unprefixed child_process module', () => {
+    expect(
+      findUnboundedSynchronousSubprocessCalls(
+        "import { execSync } from 'child_process';\nexecSync('tool');",
+        'example.ts',
+      ),
+    ).toEqual([
+      'example.ts:2 execSync must pass a positive literal timeout and SIGKILL killSignal.',
+    ]);
+  });
+
+  it('accepts options as the second execFileSync argument', () => {
+    expect(
+      findUnboundedSynchronousSubprocessCalls(
+        "import { execFileSync } from 'node:child_process';\nexecFileSync('tool', { timeout: 1_000, killSignal: 'SIGKILL' });",
+        'example.ts',
+      ),
+    ).toEqual([]);
+  });
+
+  it('follows an injected runner in a destructured parameter', () => {
+    expect(
+      findUnboundedSynchronousSubprocessCalls(
+        "import { spawnSync } from 'node:child_process';\nfunction run({ commandRunner = spawnSync } = {}) { commandRunner('tool'); }",
+        'example.ts',
+      ),
+    ).toEqual([
+      'example.ts:2 spawnSync must pass a positive literal timeout and SIGKILL killSignal.',
+    ]);
+  });
+
+  it('only validates member calls on known subprocess namespaces', () => {
+    expect(
+      findUnboundedSynchronousSubprocessCalls(
+        "const childProcess = require('child_process');\ncompiler.spawnSync('tool');\nchildProcess.execFileSync('tool');",
+        'example.cjs',
+      ),
+    ).toEqual([
+      'example.cjs:3 execFileSync must pass a positive literal timeout and SIGKILL killSignal.',
+    ]);
+  });
 });

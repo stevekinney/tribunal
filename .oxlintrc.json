@@ -127,6 +127,11 @@
             "name": "node:child_process",
             "importNames": ["spawnSync", "execFileSync", "execSync"],
             "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
+          },
+          {
+            "name": "child_process",
+            "importNames": ["spawnSync", "execFileSync", "execSync"],
+            "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
           }
         ]
       }

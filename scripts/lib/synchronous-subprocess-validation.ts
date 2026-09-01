@@ -6,6 +6,10 @@ function isSynchronousSubprocessName(value: string): value is SynchronousSubproc
   return value === 'spawnSync' || value === 'execFileSync' || value === 'execSync';
 }
 
+function isChildProcessModuleSpecifier(value: string): boolean {
+  return value === 'node:child_process' || value === 'child_process';
+}
+
 function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
   return Boolean(
     expression &&
@@ -14,22 +18,29 @@ function isChildProcessRequire(expression: ts.Expression | undefined): boolean {
     expression.expression.text === 'require' &&
     expression.arguments.length === 1 &&
     ts.isStringLiteral(expression.arguments[0]) &&
-    expression.arguments[0].text === 'node:child_process',
+    isChildProcessModuleSpecifier(expression.arguments[0].text),
   );
 }
 
-function importedSubprocessBindings(
-  sourceFile: ts.SourceFile,
-): Map<string, SynchronousSubprocessName> {
+function importedSubprocessBindings(sourceFile: ts.SourceFile): {
+  bindings: Map<string, SynchronousSubprocessName>;
+  namespaces: Set<string>;
+} {
   const bindings = new Map<string, SynchronousSubprocessName>();
+  const namespaces = new Set<string>();
 
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
-    if (statement.moduleSpecifier.text !== 'node:child_process') continue;
+    if (!isChildProcessModuleSpecifier(statement.moduleSpecifier.text)) continue;
     const namedImports = statement.importClause?.namedBindings;
-    if (!namedImports || !ts.isNamedImports(namedImports)) continue;
+    if (!namedImports) continue;
+
+    if (ts.isNamespaceImport(namedImports)) {
+      namespaces.add(namedImports.name.text);
+      continue;
+    }
 
     for (const element of namedImports.elements) {
       const importedName = element.propertyName?.text ?? element.name.text;
@@ -53,6 +64,13 @@ function importedSubprocessBindings(
         }
       }
     }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      isChildProcessRequire(node.initializer)
+    ) {
+      namespaces.add(node.name.text);
+    }
     ts.forEachChild(node, collectCommonJsBindings);
   }
 
@@ -68,26 +86,38 @@ function importedSubprocessBindings(
       const inheritedName = bindings.get(node.initializer.text);
       if (inheritedName) bindings.set(node.name.text, inheritedName);
     }
+    if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
+      for (const element of node.name.elements) {
+        if (!ts.isIdentifier(element.name) || !element.initializer) continue;
+        if (!ts.isIdentifier(element.initializer)) continue;
+        const inheritedName = bindings.get(element.initializer.text);
+        if (inheritedName) bindings.set(element.name.text, inheritedName);
+      }
+    }
     ts.forEachChild(node, collectInjectedBindings);
   }
 
   collectInjectedBindings(sourceFile);
-  return bindings;
+  return { bindings, namespaces };
 }
 
 function subprocessName(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, SynchronousSubprocessName>,
+  namespaces: ReadonlySet<string>,
 ): SynchronousSubprocessName | undefined {
   if (ts.isIdentifier(expression)) {
     return bindings.get(expression.text);
   }
 
   if (ts.isPropertyAccessExpression(expression)) {
-    return expression.name.text === 'spawnSync' ||
-      expression.name.text === 'execFileSync' ||
-      expression.name.text === 'execSync'
-      ? expression.name.text
+    const name = expression.name.text;
+    if (!isSynchronousSubprocessName(name) || !ts.isIdentifier(expression.expression)) {
+      return undefined;
+    }
+    const receiver = expression.expression.text;
+    return (receiver === 'Bun' && name === 'spawnSync') || namespaces.has(receiver)
+      ? name
       : undefined;
   }
 
@@ -100,7 +130,9 @@ function hasHardDeadline(call: ts.CallExpression, name: SynchronousSubprocessNam
     ts.isPropertyAccessExpression(call.expression) &&
     ts.isIdentifier(call.expression.expression) &&
     call.expression.expression.text === 'Bun';
-  const optionsIndex = isBunSpawnSync ? 0 : name === 'execSync' ? 1 : 2;
+  const secondArgumentIsOptions =
+    call.arguments[1] && ts.isObjectLiteralExpression(call.arguments[1]);
+  const optionsIndex = isBunSpawnSync ? 0 : name === 'execSync' || secondArgumentIsOptions ? 1 : 2;
   const options = call.arguments[optionsIndex];
   if (!options || !ts.isObjectLiteralExpression(options)) return false;
 
@@ -150,11 +182,11 @@ export function findUnboundedSynchronousSubprocessCalls(
           : ts.ScriptKind.JS,
   );
   const violations: string[] = [];
-  const bindings = importedSubprocessBindings(sourceFile);
+  const { bindings, namespaces } = importedSubprocessBindings(sourceFile);
 
   function visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) {
-      const name = subprocessName(node.expression, bindings);
+      const name = subprocessName(node.expression, bindings, namespaces);
       if (name && !hasHardDeadline(node, name)) {
         const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
         violations.push(
