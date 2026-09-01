@@ -44,6 +44,7 @@ describe('list_pull_requests', () => {
     expect.assertions(2);
     mocks.listRepositoryPullRequests.mockResolvedValue({
       ok: true,
+      repositoryId: 9001,
       pullRequests: [summary],
       page: 1,
       perPage: 25,
@@ -56,6 +57,7 @@ describe('list_pull_requests', () => {
     );
 
     expect(result.structuredContent).toEqual({
+      repositoryId: 9001,
       pullRequests: [summary],
       page: 1,
       perPage: 25,
@@ -111,16 +113,20 @@ describe('get_pull_request', () => {
       commitCount: 2,
       operationalState: null,
     };
-    mocks.getRepositoryPullRequest.mockResolvedValue({ ok: true, pullRequest: detail });
+    mocks.getRepositoryPullRequest.mockResolvedValue({
+      ok: true,
+      repositoryId: 9001,
+      pullRequest: detail,
+    });
 
     const result = await getPullRequestTool.handler(
       { repositoryId: 9001, pullRequestNumber: 412 },
       context('7'),
     );
 
-    expect(result.structuredContent).toEqual({ pullRequest: detail });
+    expect(result.structuredContent).toEqual({ repositoryId: 9001, pullRequest: detail });
     expect(mocks.getRepositoryPullRequest).toHaveBeenCalledWith(7, {
-      repositoryId: 9001,
+      repository: { repositoryId: 9001 },
       pullRequestNumber: 412,
     });
   });
@@ -149,5 +155,82 @@ describe('get_pull_request', () => {
     );
 
     expect(result.isError).toBe(true);
+  });
+
+  it('accepts a repository named by owner and name', async () => {
+    expect.assertions(1);
+    mocks.listRepositoryPullRequests.mockResolvedValue({
+      ok: true,
+      repositoryId: 9001,
+      pullRequests: [summary],
+      page: 1,
+      perPage: 25,
+      hasNextPage: false,
+    });
+
+    await listPullRequestsTool.handler(
+      { owner: 'lost-gradient', name: 'tribunal', state: 'open', page: 1, perPage: 25 },
+      context('7'),
+    );
+
+    expect(mocks.listRepositoryPullRequests).toHaveBeenCalledWith(7, {
+      repository: { owner: 'lost-gradient', name: 'tribunal' },
+      state: 'open',
+      page: 1,
+      perPage: 25,
+    });
+  });
+
+  it('asks for a repository when the call names none', async () => {
+    expect.assertions(2);
+
+    const result = await listPullRequestsTool.handler(
+      { state: 'open', page: 1, perPage: 25 },
+      context('7'),
+    );
+
+    expect(readToolResultText(result)).toMatch(/Name the repository/);
+    expect(mocks.listRepositoryPullRequests).not.toHaveBeenCalled();
+  });
+
+  it('asks for a repository when only half the name is given', async () => {
+    expect.assertions(1);
+
+    const result = await getPullRequestTool.handler(
+      { owner: 'lost-gradient', pullRequestNumber: 412 },
+      context('7'),
+    );
+
+    expect(readToolResultText(result)).toMatch(/Name the repository/);
+  });
+
+  it('accepts detail addressed by owner and name', async () => {
+    expect.assertions(1);
+    mocks.getRepositoryPullRequest.mockResolvedValue({
+      ok: true,
+      repositoryId: 9001,
+      pullRequest: {
+        ...summary,
+        description: null,
+        additions: 0,
+        deletions: 0,
+        changedFiles: 0,
+        isMerged: false,
+        commentCount: 0,
+        reviewCommentCount: 0,
+        commitCount: 1,
+        operationalState: null,
+      },
+    });
+
+    await getPullRequestTool.handler(
+      { owner: 'lost-gradient', name: 'tribunal', pullRequestNumber: 412 },
+      context('7'),
+    );
+
+    expect(mocks.getRepositoryPullRequest).toHaveBeenCalledWith(7, {
+      repository: { owner: 'lost-gradient', name: 'tribunal' },
+      pullRequestNumber: 412,
+    });
   });
 });

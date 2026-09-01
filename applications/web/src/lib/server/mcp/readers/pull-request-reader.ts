@@ -5,7 +5,11 @@ import { getPullRequest, listPullRequests } from '@tribunal/github/pull-requests
 import type { PullRequestFilterState } from '@tribunal/github/types/pull-requests';
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
-import { findAccessibleRepository, type RepositoryReadError } from './repository-reader';
+import {
+  findAccessibleRepository,
+  findAccessibleRepositoryByName,
+  type RepositoryReadError,
+} from './repository-reader';
 
 /** A pull request as a list result: identity and state, never body text. */
 export type McpPullRequestSummary = {
@@ -75,6 +79,15 @@ export type McpPullRequestDetail = McpPullRequestSummary & {
   operationalState: McpPullRequestOperationalState | null;
 };
 
+/**
+ * Which repository a pull request call is about.
+ *
+ * Either form is accepted because the two scopes are granted independently: a
+ * client holding `pull_requests:read` but not `repositories:read` cannot learn
+ * a numeric id, and would otherwise hold a scope it can never use.
+ */
+export type RepositorySelector = { repositoryId: number } | { owner: string; name: string };
+
 export type PullRequestReadError =
   | RepositoryReadError
   /** Not connected, or connected by somebody else — the caller cannot tell which. */
@@ -86,6 +99,7 @@ export type PullRequestReadError =
 export type PullRequestListResult =
   | {
       ok: true;
+      repositoryId: number;
       pullRequests: McpPullRequestSummary[];
       page: number;
       perPage: number;
@@ -94,7 +108,8 @@ export type PullRequestListResult =
   | { ok: false; error: PullRequestReadError };
 
 export type PullRequestDetailResult =
-  { ok: true; pullRequest: McpPullRequestDetail } | { ok: false; error: PullRequestReadError };
+  | { ok: true; repositoryId: number; pullRequest: McpPullRequestDetail }
+  | { ok: false; error: PullRequestReadError };
 
 /**
  * The columns of `pull_request_state` this scope may read, named one by one.
@@ -160,16 +175,21 @@ export function selectStoredPullRequestState(repositoryId: number, pullRequestNu
  * content. Tribunal's own route is safe for exactly this reason: it authorizes
  * first. Every pull request primitive here does the same.
  */
-async function resolveAuthorizedInstallation(userId: number, repositoryId: number) {
-  const accessible = await findAccessibleRepository(userId, repositoryId);
+async function resolveAuthorizedInstallation(userId: number, selector: RepositorySelector) {
+  const accessible =
+    'repositoryId' in selector
+      ? await findAccessibleRepository(userId, selector.repositoryId)
+      : await findAccessibleRepositoryByName(userId, selector.owner, selector.name);
   if (!accessible.ok) return { ok: false, error: accessible.error } as const;
   if (!accessible.repository) return { ok: false, error: 'repository_not_found' } as const;
 
+  const repositoryId = accessible.repository.id;
   const installation = await getInstallationForRepository(githubContext, repositoryId);
   if (!installation.ok) return { ok: false, error: 'github_unreachable' } as const;
 
   return {
     ok: true,
+    repositoryId,
     octokit: installation.octokit,
     owner: installation.owner,
     repo: installation.repo,
@@ -204,9 +224,14 @@ function summarize(pullRequest: {
 
 export async function listRepositoryPullRequests(
   userId: number,
-  input: { repositoryId: number; state: PullRequestFilterState; page: number; perPage: number },
+  input: {
+    repository: RepositorySelector;
+    state: PullRequestFilterState;
+    page: number;
+    perPage: number;
+  },
 ): Promise<PullRequestListResult> {
-  const installation = await resolveAuthorizedInstallation(userId, input.repositoryId);
+  const installation = await resolveAuthorizedInstallation(userId, input.repository);
   if (!installation.ok) return { ok: false, error: installation.error };
 
   const result = await listPullRequests(
@@ -221,11 +246,14 @@ export async function listRepositoryPullRequests(
       page: input.page,
       perPage: input.perPage,
     },
-    input.repositoryId,
+    installation.repositoryId,
   );
 
   return {
     ok: true,
+    // Echoed so a client that resolved the repository by name learns its id
+    // and can address it directly next time.
+    repositoryId: installation.repositoryId,
     pullRequests: result.pullRequests.map(summarize),
     page: input.page,
     perPage: input.perPage,
@@ -235,9 +263,9 @@ export async function listRepositoryPullRequests(
 
 export async function getRepositoryPullRequest(
   userId: number,
-  input: { repositoryId: number; pullRequestNumber: number },
+  input: { repository: RepositorySelector; pullRequestNumber: number },
 ): Promise<PullRequestDetailResult> {
-  const installation = await resolveAuthorizedInstallation(userId, input.repositoryId);
+  const installation = await resolveAuthorizedInstallation(userId, input.repository);
   if (!installation.ok) return { ok: false, error: installation.error };
 
   const detail = await getPullRequest(
@@ -250,12 +278,13 @@ export async function getRepositoryPullRequest(
   if (!detail) return { ok: false, error: 'pull_request_not_found' };
 
   const [storedState] = await selectStoredPullRequestState(
-    input.repositoryId,
+    installation.repositoryId,
     input.pullRequestNumber,
   );
 
   return {
     ok: true,
+    repositoryId: installation.repositoryId,
     pullRequest: {
       ...summarize(detail),
       description: detail.body,

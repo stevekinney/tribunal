@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, sum } from 'drizzle-orm';
+import { and, count, desc, eq, gte, sql, sum } from 'drizzle-orm';
 import { agent, costEvent, repository } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
 import { buildPage, type Page, type PaginationInput } from '../pagination';
@@ -145,72 +145,92 @@ function toAmount(total: string | null): number {
 }
 
 /**
- * Summarizes the caller's ledger with the aggregation done in PostgreSQL.
+ * Summarizes the caller's ledger in one statement.
  *
- * Two reasons, and neither is style. A 365-day window on a busy account would
+ * Three reasons, and none is style. A 365-day window on a busy account would
  * otherwise transfer every matching row plus its joined repository and agent
  * into the process just to produce three numbers, so the cost of a small
- * summary would grow with the size of the whole ledger. And summing `numeric`
+ * summary would grow with the size of the whole ledger. Summing `numeric`
  * amounts by converting each row to a JavaScript number first reintroduces
  * binary floating point one row at a time — `0.1` and `0.2` come back as
- * `0.30000000000000004`. `SUM` keeps the arithmetic in `numeric` and the
- * conversion happens once, on the total.
+ * `0.30000000000000004`. And three separately dispatched statements see three
+ * PostgreSQL snapshots on the HTTP driver, so an insert landing mid-summary
+ * could leave `totalUsd` disagreeing with the rollups it is supposed to total.
+ *
+ * `GROUPING SETS` answers all three: one statement, one snapshot, arithmetic
+ * left in `numeric` until the end. `GROUPING()` reports which set each row came
+ * from — without it, a repository legitimately named `Unassigned` would be
+ * indistinguishable from the grand-total row.
  */
 export async function summarizeCostEvents(
   userId: number,
   input: { source: McpCostEventSource; windowDays: number },
 ): Promise<McpCostSummary> {
   const since = new Date(Date.now() - input.windowDays * 24 * 60 * 60 * 1000);
-  const window = and(
-    eq(costEvent.userId, userId),
-    eq(costEvent.source, input.source),
-    gte(costEvent.occurredAt, since),
-  );
 
-  const [[totals], repositoryRows, agentRows] = await Promise.all([
-    db
-      .select({ eventCount: count(), totalUsd: sum(costEvent.amountUsd) })
-      .from(costEvent)
-      .where(window),
-    db
-      .select({
-        owner: repository.owner,
-        name: repository.name,
-        totalUsd: sum(costEvent.amountUsd),
-      })
-      .from(costEvent)
-      .leftJoin(repository, eq(repository.id, costEvent.repositoryId))
-      .where(window)
-      .groupBy(repository.owner, repository.name),
-    db
-      .select({ agentSlug: agent.slug, totalUsd: sum(costEvent.amountUsd) })
-      .from(costEvent)
-      .leftJoin(agent, eq(agent.id, costEvent.agentId))
-      .where(window)
-      .groupBy(agent.slug),
-  ]);
+  const rows = await db
+    .select({
+      repositoryOwner: repository.owner,
+      repositoryName: repository.name,
+      agentSlug: agent.slug,
+      repositoryGrouped: sql<number>`grouping(${repository.owner}, ${repository.name})`,
+      agentGrouped: sql<number>`grouping(${agent.slug})`,
+      eventCount: count(),
+      totalUsd: sum(costEvent.amountUsd),
+    })
+    .from(costEvent)
+    .leftJoin(agent, eq(agent.id, costEvent.agentId))
+    .leftJoin(repository, eq(repository.id, costEvent.repositoryId))
+    .where(
+      and(
+        eq(costEvent.userId, userId),
+        eq(costEvent.source, input.source),
+        gte(costEvent.occurredAt, since),
+      ),
+    )
+    .groupBy(sql`grouping sets ((${repository.owner}, ${repository.name}), (${agent.slug}), ())`);
+
+  // Folded in one pass rather than filtered three times, and with the totals
+  // seeded at zero rather than read back through an optional: `GROUPING SETS`
+  // always returns the grand-total row, so an optional access there would be a
+  // branch no test could reach and no reader could explain.
+  let eventCount = 0;
+  let totalUsd: string | null = null;
+  const byRepository: Array<{ label: string; amountUsd: number }> = [];
+  const byAgent: Array<{ label: string; amountUsd: number }> = [];
+
+  for (const row of rows) {
+    if (row.repositoryGrouped === 0) {
+      byRepository.push({
+        // `repository.owner` and `repository.name` are both non-null columns,
+        // so the only way either is missing is the left join finding no row —
+        // a cost event whose repository was deleted. That is one group, not
+        // several.
+        label:
+          row.repositoryOwner && row.repositoryName
+            ? `${row.repositoryOwner}/${row.repositoryName}`
+            : 'Unassigned',
+        amountUsd: toAmount(row.totalUsd),
+      });
+      continue;
+    }
+
+    if (row.agentGrouped === 0) {
+      byAgent.push({ label: row.agentSlug ?? 'Unassigned', amountUsd: toAmount(row.totalUsd) });
+      continue;
+    }
+
+    eventCount = row.eventCount;
+    totalUsd = row.totalUsd;
+  }
 
   return {
     source: input.source,
     windowDays: input.windowDays,
     since: since.toISOString(),
-    eventCount: totals.eventCount,
-    totalUsd: toAmount(totals.totalUsd),
-    byRepository: orderCostRollup(
-      repositoryRows.map((row) => ({
-        // `repository.owner` and `repository.name` are both non-null columns,
-        // so the only way either is missing is the left join finding no row —
-        // a cost event whose repository was deleted. That is one group, not
-        // several.
-        label: row.owner && row.name ? `${row.owner}/${row.name}` : 'Unassigned',
-        amountUsd: toAmount(row.totalUsd),
-      })),
-    ),
-    byAgent: orderCostRollup(
-      agentRows.map((row) => ({
-        label: row.agentSlug ?? 'Unassigned',
-        amountUsd: toAmount(row.totalUsd),
-      })),
-    ),
+    eventCount,
+    totalUsd: toAmount(totalUsd),
+    byRepository: orderCostRollup(byRepository),
+    byAgent: orderCostRollup(byAgent),
   };
 }

@@ -24,7 +24,12 @@ export function unresolvedSubjectError() {
  * else" and "does not exist" always produce the same answer.
  */
 export type McpReadError =
-  RepositoryReadError | PullRequestReadError | 'review_run_not_found' | 'review_finding_not_found';
+  | RepositoryReadError
+  | PullRequestReadError
+  | 'review_run_not_found'
+  | 'review_finding_not_found'
+  /** Neither a repository id nor an owner-and-name pair was supplied. */
+  | 'repository_selector_missing';
 
 /**
  * Caller-facing text for a failed read.
@@ -50,6 +55,8 @@ export function describeReadError(error: McpReadError): string {
       return 'No review run with that id belongs to your Tribunal account.';
     case 'review_finding_not_found':
       return 'No finding with that id belongs to your Tribunal account.';
+    case 'repository_selector_missing':
+      return 'Name the repository, either as repositoryId or as owner and name together.';
   }
 }
 

@@ -30,18 +30,23 @@ export const tribunalScopeVocabulary = defineScopes({
   'repositories:read':
     "Read the repositories you've connected to Tribunal, including their name, owner, default branch, and latest commit.",
   /**
-   * Narrowed from the wording `documentation/mcp-scopes.md` originally
-   * proposed, which promised diffs and comment text. That document names the
-   * narrowing as one of two acceptable resolutions and requires this issue to
-   * pick one explicitly: Tribunal has no reusable reader for either — pull
-   * request content is never stored, `getPullRequest` returns the body plus
-   * numeric comment counts, and diff data reaches the system only through the
-   * review diff-context service. Consent copy promising data no tool can
-   * return is the worse of the two failures, so the copy describes what the
-   * tools actually retrieve.
+   * Rewritten from the wording `documentation/mcp-scopes.md` originally
+   * proposed, which promised diffs and comment text. That document names
+   * adjusting this string as one of two acceptable resolutions and requires
+   * this issue to pick one explicitly: Tribunal has no reusable reader for
+   * either — pull request content is never stored, `getPullRequest` returns
+   * the body plus numeric comment counts, and diff data reaches the system
+   * only through the review diff-context service.
+   *
+   * The rule the copy has to satisfy is that it describes what the tools
+   * return — no more, and no less. An earlier revision here only dropped the
+   * over-promise, which left the opposite mismatch: branch names, links,
+   * timestamps, change counts, and commit SHAs were all being returned under a
+   * sentence that mentioned none of them. Review caught it. The enumeration
+   * below is the projection, written out.
    */
   'pull_requests:read':
-    'Read pull request titles, descriptions, authors, and CI, review, and merge status from your connected repositories. Diffs and comment text are not included.',
+    'Read pull request details from your connected repositories: title, description, author, branch names, commit SHAs, link, timestamps, changed-file and line counts, comment and commit counts, and the CI, review, and merge status Tribunal recorded. Diffs and comment text are not included.',
   'reviews:read':
     "Read the status, timing, and cost estimate of Tribunal's automated reviews in your connected repositories.",
   'review_findings:read':

@@ -39,7 +39,13 @@ export type RepositoryLookupResult =
  * repository is indistinguishable from one that does not exist.
  */
 export async function listAccessibleRepositories(userId: number): Promise<RepositoryListResult> {
-  const result = await getRepositoriesForUser(userId);
+  // `recordTokenInvalidation: false` is what keeps `readOnlyHint: true` true.
+  // The default path writes `oauth_connection.status = 'invalid'` when GitHub
+  // answers 401, so without this every repository and pull request tool could
+  // mutate persistent integration state while answering a read. The revocation
+  // is GitHub's fact rather than this request's, and the next interactive page
+  // load records it.
+  const result = await getRepositoriesForUser(userId, { recordTokenInvalidation: false });
   if (!result.ok) return { ok: false, error: result.error };
 
   return {
@@ -71,5 +77,39 @@ export async function findAccessibleRepository(
   return {
     ok: true,
     repository: result.repositories.find((entry) => entry.id === repositoryId) ?? null,
+  };
+}
+
+/**
+ * Resolves a repository by the owner and name a person would actually type.
+ *
+ * This exists so `pull_requests:read` is usable on its own. Scopes are granted
+ * independently, and a client holding only that scope has no way to learn a
+ * numeric repository id — `list_repositories` is gated on `repositories:read`,
+ * which the user may have declined. Without a name-based path the whole
+ * capability family is unreachable under a grant the consent screen offers,
+ * which is a worse outcome than the extra resolution step.
+ *
+ * Matching is case-insensitive because GitHub treats owner and repository names
+ * that way, and the caller is typing what a person told them.
+ */
+export async function findAccessibleRepositoryByName(
+  userId: number,
+  owner: string,
+  name: string,
+): Promise<RepositoryLookupResult> {
+  const result = await listAccessibleRepositories(userId);
+  if (!result.ok) return result;
+
+  const wantedOwner = owner.toLowerCase();
+  const wantedName = name.toLowerCase();
+
+  return {
+    ok: true,
+    repository:
+      result.repositories.find(
+        (entry) =>
+          entry.owner.toLowerCase() === wantedOwner && entry.name.toLowerCase() === wantedName,
+      ) ?? null,
   };
 }

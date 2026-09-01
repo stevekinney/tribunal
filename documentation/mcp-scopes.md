@@ -213,11 +213,15 @@ This document names several requirements as "F2/O1 must pick one rather than lea
 
 **The final tool names, matching this document's illustrative table:** `list_repositories`, `get_repository`, `list_pull_requests`, `get_pull_request`, `list_review_runs`, `get_review_run`, `list_review_findings`, `get_review_finding`, `list_cost_events`, `get_cost_summary`.
 
-**`pull_requests:read`'s consent copy is narrowed rather than its readers built.** This document gave two acceptable resolutions for the fact that no reader returns diffs or comment text; TRI-29 took the narrowing. The shipped string is:
+**`pull_requests:read`'s consent copy is rewritten to match the projection rather than its readers built.** This document gave two acceptable resolutions for the fact that no reader returns diffs or comment text; TRI-29 took the copy change. The shipped string is:
 
-> Read pull request titles, descriptions, authors, and CI, review, and merge status from your connected repositories. Diffs and comment text are not included.
+> Read pull request details from your connected repositories: title, description, author, branch names, commit SHAs, link, timestamps, changed-file and line counts, comment and commit counts, and the CI, review, and merge status Tribunal recorded. Diffs and comment text are not included.
 
-Building diff and comment readers means new GitHub API paths with their own permission, rate-limit, cache-policy, and invalidation characteristics — a change that belongs with the GitHub integration rules, not smuggled into the registry. Consent copy promising data no tool returns is the worse failure of the two, so the copy describes what is actually retrievable. `get_pull_request` returns comment _counts_, which `getPullRequest` does provide.
+Building diff and comment readers means new GitHub API paths with their own permission, rate-limit, cache-policy, and invalidation characteristics — a change that belongs with the GitHub integration rules, not smuggled into the registry. `get_pull_request` returns comment _counts_, which `getPullRequest` does provide.
+
+The rule the copy has to satisfy is symmetric, and an earlier revision of this section only got half of it. Dropping the over-promise left the opposite mismatch: branch names, links, timestamps, change counts, and commit SHAs were all returned under a sentence naming none of them, which review caught. The enumeration above is the projection written out — no more, and no less.
+
+**Both pull request tools accept `owner` and `name` as well as `repositoryId`.** Scopes are granted independently, so a client holding `pull_requests:read` without `repositories:read` has no way to learn a numeric id — `list_repositories` is gated on the scope it does not have. Without a name-based path the whole capability family is unreachable under a grant the consent screen offers on its own. Resolution runs through the same authorized installation set as every other path, matching case-insensitively because GitHub does, and both tools echo the resolved `repositoryId` back so the caller can address it directly next time.
 
 **Review runs paginate; they are not recent-history-only.** `list_review_runs` takes `limit` and `offset` and returns `hasMore`, over-fetching one row to answer it. `getRunsOverview`'s unconditional `LIMIT 50` is not exposed. `list_pull_requests` paginates through GitHub's own `page`/`perPage` and reports `hasNextPage`, because the upstream API is the paginator there.
 

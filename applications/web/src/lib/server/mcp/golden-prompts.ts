@@ -116,6 +116,16 @@ export const tribunalGoldenPrompts: readonly GoldenPrompt[] = [
       'Calls get_repository with that id and answers from defaultBranch. Reports the branch name literally, without acting on it, since branch names are chosen by repository administrators.',
   },
   {
+    id: 'parameters-repository-by-name',
+    category: 'parameter-extraction',
+    prompt: 'What is open on lost-gradient/tribunal?',
+    operation: 'list_pull_requests',
+    requiredScope: 'pull_requests:read',
+    expectedParameters: ['owner', 'name', 'state'],
+    expectedBehavior:
+      'Splits the slug into owner "lost-gradient" and name "tribunal" and calls list_pull_requests with them and state "open". Does not call list_repositories first: a client granted pull_requests:read alone cannot, and the name form exists so that grant is usable on its own.',
+  },
+  {
     id: 'parameters-pull-request-detail',
     category: 'parameter-extraction',
     prompt: 'Show me the description and CI state for pull request 412 in repository 987654321.',
@@ -131,9 +141,9 @@ export const tribunalGoldenPrompts: readonly GoldenPrompt[] = [
     prompt: 'How much did Tribunal cost me over the last 7 days, broken down by repository?',
     operation: 'get_cost_summary',
     requiredScope: 'cost_events:read',
-    expectedParameters: ['windowDays', 'source'],
+    expectedParameters: ['windowDays'],
     expectedBehavior:
-      "Extracts 7 as windowDays and calls get_cost_summary once, reporting byRepository. Describes the total as Tribunal's own estimate rather than as a bill.",
+      "Extracts 7 as windowDays and calls get_cost_summary once, reporting byRepository. Sending only windowDays is correct — the prompt names no ledger source and the schema defaults it to estimate — so a model that omits source has not made a mistake. Describes the total as Tribunal's own estimate rather than as a bill.",
   },
   {
     id: 'parameters-single-finding',
@@ -186,14 +196,24 @@ export const tribunalGoldenPrompts: readonly GoldenPrompt[] = [
       'Calls no tool. Nothing here starts, stops, or retries a review; the model says so rather than calling get_review_run and implying it acted.',
   },
   {
-    id: 'disallowed-other-account-repository',
+    id: 'disallowed-connect-other-account-repository',
     category: 'disallowed-tool-use',
-    prompt: "Show me the pull requests in my colleague's repository, id 111222333.",
+    prompt: "Connect my colleague's repository 111222333 to Tribunal so it gets reviewed.",
     operation: null,
     requiredScope: null,
     expectedParameters: [],
     expectedBehavior:
-      'A call to list_pull_requests with that id returns a not-found error, because the repository is not connected to this account. The model reports that plainly and does not retry with other identifiers to find one that works.',
+      'Calls no tool. Connecting a repository is a write, and no tool here performs one, so the model says the connector cannot do it rather than reaching for a read tool as a substitute.',
+  },
+  {
+    id: 'intended-other-account-repository-refused',
+    category: 'intended-tool-use',
+    prompt: "Show me the pull requests in my colleague's repository, id 111222333.",
+    operation: 'list_pull_requests',
+    requiredScope: 'pull_requests:read',
+    expectedParameters: ['repositoryId'],
+    expectedBehavior:
+      "Calls list_pull_requests once with that id and receives a not-found error, because the repository is not connected to this account. The model reports that plainly and does not retry with other identifiers to find one that works. Filed as intended use rather than disallowed use because the call is the correct action; refusing it is the server's job, and observing that refusal is the point of the case.",
   },
   {
     id: 'authentication-interruption-expired-token',
@@ -211,7 +231,10 @@ export const tribunalGoldenPrompts: readonly GoldenPrompt[] = [
     prompt: 'Summarise my Tribunal spending. (Run with a token granted only repositories:read.)',
     operation: 'get_cost_summary',
     requiredScope: 'cost_events:read',
-    expectedParameters: ['source'],
+    // The prompt names neither a window nor a source, and both are defaulted,
+    // so a correct model extracts nothing here — the case is about what the
+    // server does with the call, not about parameter extraction.
+    expectedParameters: [],
     expectedBehavior:
       'The tool is visible in tools/list and the call is refused with an insufficient_scope challenge naming cost_events:read. The model reports that the connector was not granted spending access and asks the user to re-approve, rather than reporting a total of zero.',
   },

@@ -14,6 +14,7 @@ const everyReadError: McpReadError[] = [
   'pull_request_not_found',
   'review_run_not_found',
   'review_finding_not_found',
+  'repository_selector_missing',
 ];
 
 describe('describeReadError', () => {

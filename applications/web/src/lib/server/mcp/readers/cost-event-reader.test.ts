@@ -205,6 +205,22 @@ describe('cost event reader', () => {
     ]);
   });
 
+  it('totals decimal amounts exactly rather than through binary floats', async () => {
+    expect.assertions(2);
+    const now = new Date();
+    // 0.1 + 0.2 is the canonical float artifact: summed in JavaScript it comes
+    // back as 0.30000000000000004. PostgreSQL keeps it in `numeric`.
+    await seedEvent({ key: 'event-1', userId: ownerId, amountUsd: '0.10', occurredAt: now });
+    await seedEvent({ key: 'event-2', userId: ownerId, amountUsd: '0.20', occurredAt: now });
+
+    const summary = await withTestDatabase(() =>
+      summarizeCostEvents(ownerId, { source: 'estimate', windowDays: 30 }),
+    );
+
+    expect(summary.totalUsd).toBe(0.3);
+    expect(summary.byRepository).toEqual([{ label: 'lost-gradient/tribunal', amountUsd: 0.3 }]);
+  });
+
   it('summarizes an empty window as zero rather than as missing data', async () => {
     expect.assertions(4);
 

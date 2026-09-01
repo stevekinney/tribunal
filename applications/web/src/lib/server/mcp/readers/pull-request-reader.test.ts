@@ -136,7 +136,7 @@ describe('pull request reader', () => {
 
     const result = await withTestDatabase(() =>
       listRepositoryPullRequests(7, {
-        repositoryId: 9001,
+        repository: { repositoryId: 9001 },
         state: 'open',
         page: 1,
         perPage: 25,
@@ -156,8 +156,12 @@ describe('pull request reader', () => {
       ],
     });
     // Authorization precedes installation resolution: the installation client
-    // is never built for a repository the caller cannot reach.
-    expect(mocks.getRepositoriesForUser).toHaveBeenCalledWith(7);
+    // is never built for a repository the caller cannot reach. The read is
+    // side-effect-free, so a revoked token is not written down by a tool
+    // advertised as read-only.
+    expect(mocks.getRepositoriesForUser).toHaveBeenCalledWith(7, {
+      recordTokenInvalidation: false,
+    });
     expect(mocks.listPullRequests).toHaveBeenCalledOnce();
   });
 
@@ -171,7 +175,7 @@ describe('pull request reader', () => {
 
     const result = await withTestDatabase(() =>
       listRepositoryPullRequests(7, {
-        repositoryId: 111222333,
+        repository: { repositoryId: 111222333 },
         state: 'open',
         page: 1,
         perPage: 25,
@@ -187,7 +191,12 @@ describe('pull request reader', () => {
     mocks.getRepositoriesForUser.mockResolvedValue({ ok: false, error: 'no_github_token' });
 
     const result = await withTestDatabase(() =>
-      listRepositoryPullRequests(7, { repositoryId: 9001, state: 'open', page: 1, perPage: 25 }),
+      listRepositoryPullRequests(7, {
+        repository: { repositoryId: 9001 },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
     );
 
     expect(result).toEqual({ ok: false, error: 'no_github_token' });
@@ -203,7 +212,12 @@ describe('pull request reader', () => {
     });
 
     const result = await withTestDatabase(() =>
-      listRepositoryPullRequests(7, { repositoryId: 9001, state: 'open', page: 1, perPage: 25 }),
+      listRepositoryPullRequests(7, {
+        repository: { repositoryId: 9001 },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
     );
 
     expect(result).toEqual({ ok: false, error: 'github_unreachable' });
@@ -240,7 +254,10 @@ describe('pull request reader', () => {
     });
 
     const result = await withTestDatabase(() =>
-      getRepositoryPullRequest(7, { repositoryId: 9001, pullRequestNumber: 412 }),
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 9001 },
+        pullRequestNumber: 412,
+      }),
     );
 
     expect(result).toMatchObject({
@@ -276,7 +293,10 @@ describe('pull request reader', () => {
     });
 
     const result = await withTestDatabase(() =>
-      getRepositoryPullRequest(7, { repositoryId: 9001, pullRequestNumber: 412 }),
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 9001 },
+        pullRequestNumber: 412,
+      }),
     );
 
     expect(result).toMatchObject({ ok: true, pullRequest: { operationalState: null } });
@@ -288,7 +308,10 @@ describe('pull request reader', () => {
     mocks.getPullRequest.mockResolvedValue(null);
 
     const result = await withTestDatabase(() =>
-      getRepositoryPullRequest(7, { repositoryId: 9001, pullRequestNumber: 999 }),
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 9001 },
+        pullRequestNumber: 999,
+      }),
     );
 
     expect(result).toEqual({ ok: false, error: 'pull_request_not_found' });
@@ -303,7 +326,10 @@ describe('pull request reader', () => {
     });
 
     const result = await withTestDatabase(() =>
-      getRepositoryPullRequest(7, { repositoryId: 111222333, pullRequestNumber: 412 }),
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 111222333 },
+        pullRequestNumber: 412,
+      }),
     );
 
     expect(result).toEqual({ ok: false, error: 'repository_not_found' });
@@ -320,7 +346,12 @@ describe('pull request reader', () => {
     });
 
     const result = await withTestDatabase(() =>
-      listRepositoryPullRequests(7, { repositoryId: 9001, state: 'all', page: 2, perPage: 5 }),
+      listRepositoryPullRequests(7, {
+        repository: { repositoryId: 9001 },
+        state: 'all',
+        page: 2,
+        perPage: 5,
+      }),
     );
 
     expect(result).toMatchObject({
@@ -329,5 +360,47 @@ describe('pull request reader', () => {
       perPage: 5,
       pullRequests: [{ authorLogin: null }],
     });
+  });
+
+  it('resolves a repository given as owner and name', async () => {
+    expect.assertions(2);
+    grantAccess();
+    mocks.listPullRequests.mockResolvedValue({
+      pullRequests: [listItem],
+      filters: {},
+      hasNextPage: false,
+    });
+
+    const result = await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { owner: 'lost-gradient', name: 'tribunal' },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    // The id is echoed back, so a client that could only address the
+    // repository by name — which is every client holding `pull_requests:read`
+    // without `repositories:read` — learns the id for its next call.
+    expect(result).toMatchObject({ ok: true, repositoryId: 9001 });
+    expect(mocks.getInstallationForRepository).toHaveBeenCalledWith(expect.anything(), 9001);
+  });
+
+  it('reports a name outside the accessible set as not found', async () => {
+    expect.assertions(2);
+    grantAccess();
+
+    const result = await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { owner: 'someone-else', name: 'private-thing' },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, error: 'repository_not_found' });
+    expect(mocks.getInstallationForRepository).not.toHaveBeenCalled();
   });
 });
