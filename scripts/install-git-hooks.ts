@@ -1,9 +1,8 @@
 import { existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { installGitHooks } from './lib/install-git-hooks';
 
 if (!existsSync('.git')) {
   process.exit(0);
 }
 
-const result = spawnSync('lefthook', ['install'], { stdio: 'inherit' });
-process.exit(result.status ?? 1);
+process.exit(installGitHooks());

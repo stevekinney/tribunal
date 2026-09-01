@@ -60,6 +60,8 @@ jobs:
         run: bun run --cwd scripts validate:skills
       - name: Validate reviewer Dockerfile workspace parity
         run: bun run validate:reviewer-workspaces
+      - name: Validate synchronous subprocess deadlines
+        run: bun run validate:synchronous-subprocesses
       # .github/** is inside no Turborepo workspace, so these root-level
       # workflow-security gates (TRI-28) run directly rather than through
       # `bunx turbo run`. See .github/scripts/workflow-policy.ts.

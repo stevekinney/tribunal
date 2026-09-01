@@ -56,6 +56,7 @@ vi.mock('./authentication', () => ({
 }));
 
 import {
+  readGitHubTokenFromCli,
   resolveDevGitHubBypassSession,
   resetDevGitHubBypassCacheForTests,
 } from './dev-github-bypass';
@@ -163,6 +164,24 @@ describe('resolveDevGitHubBypassSession', () => {
 
     await expect(resolveDevGitHubBypassSession()).rejects.toThrow(
       /gh auth token --hostname github.com. failed/,
+    );
+  });
+
+  it('bounds GitHub CLI token lookup and reports a timeout distinctly', async () => {
+    mocks.env.DEV_AUTH_GITHUB_TOKEN_FROM_GITHUB_CLI = '1';
+    const { spawnSync: actualSpawnSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const slowCommand = vi.fn((_command, _arguments, options) => {
+      expect(options.timeout).toBe(10_000);
+      expect(options.killSignal).toBe('SIGKILL');
+      return actualSpawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 1_000)'], {
+        ...options,
+        timeout: 10,
+      });
+    });
+
+    expect(() => readGitHubTokenFromCli(slowCommand)).toThrow(
+      'GitHub CLI token lookup timed out after 10 seconds.',
     );
   });
 

@@ -573,13 +573,27 @@ export function createGitBaseFileReader({
   };
 }
 
-function readGitObjectAtRevision(repositoryPath, revision, filePath) {
+export function readGitObjectAtRevision(
+  repositoryPath,
+  revision,
+  filePath,
+  execute = execFileSync,
+  onTimeout = (path, sha, file) =>
+    console.error(`Git base-file read timed out: ${path} ${sha}:${file}`),
+) {
   try {
-    return execFileSync('git', ['-C', repositoryPath, 'show', `${revision}:${filePath}`], {
+    return execute('git', ['-C', repositoryPath, 'show', `${revision}:${filePath}`], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // This is a local object read on a request-adjacent review path. Five
+      // seconds is ample for a healthy checkout and bounds filesystem stalls.
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
     });
-  } catch {
+  } catch (cause) {
+    if (cause instanceof Error && cause.code === 'ETIMEDOUT') {
+      onTimeout(repositoryPath, revision, filePath);
+    }
     return null;
   }
 }
