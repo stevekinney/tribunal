@@ -844,9 +844,13 @@ export async function getInstallationForRepositoryAsCaller(
 
   const linked = await installationHasActiveLink(context, repositoryId, authorizedInstallationId);
   if (!linked) {
+    // Deliberately distinct from `getInstallationForRepository`'s wording. That
+    // one means the repository has no installation at all; this one means it
+    // has none *for this caller*, which is a different situation to debug and
+    // reads as a different thing in telemetry.
     return {
       ok: false,
-      error: 'Repository has no associated GitHub installation',
+      error: 'Repository is not linked to this GitHub installation',
       code: 'no_installation',
     };
   }

@@ -1254,7 +1254,7 @@ describe('getInstallationForRepositoryAsCaller', () => {
 
     expect(result).toEqual({
       ok: false,
-      error: 'Repository has no associated GitHub installation',
+      error: 'Repository is not linked to this GitHub installation',
       code: 'no_installation',
     });
   });
@@ -1282,7 +1282,7 @@ describe('getInstallationForRepositoryAsCaller', () => {
 
     expect(result).toEqual({
       ok: false,
-      error: 'Repository has no associated GitHub installation',
+      error: 'Repository is not linked to this GitHub installation',
       code: 'no_installation',
     });
   });

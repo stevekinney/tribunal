@@ -204,6 +204,15 @@ async function listLivePullRequests(
     authorizedInstallationId,
   );
   if (!installation.ok) {
+    // `not_found` and `no_installation` are local conditions, not GitHub
+    // connectivity: the repository row is gone, or the caller's installation
+    // no longer links it. Reaching either after authorization already
+    // succeeded means access was lost between the two queries, so it fails
+    // closed the same way the authorization check itself does rather than
+    // blaming GitHub for a 502.
+    if (installation.code === 'not_found' || installation.code === 'no_installation') {
+      error(404, 'Repository not found');
+    }
     error(502, `Could not reach GitHub for this repository: ${installation.error}`);
   }
 
