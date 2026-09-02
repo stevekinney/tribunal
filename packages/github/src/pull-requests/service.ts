@@ -215,6 +215,9 @@ function buildPullRequestFilterKey(filters: PullRequestFilterOptions): string {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param filters - Filter and pagination options
+ * @param installationId - Installation whose credentials authenticated `octokit`.
+ *   This partitions the cache entry; passing any other installation's id would
+ *   let one installation read another's cached content.
  * @param repositoryId - Internal repository ID for Redis caching (optional)
  */
 export async function listPullRequests(
