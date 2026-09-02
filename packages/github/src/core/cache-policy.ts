@@ -146,8 +146,8 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'list-issues',
-  keyFactory: (repositoryId: number, filterKey: string) =>
-    CACHE_KEYS.GITHUB_ISSUES_LIST(repositoryId, filterKey),
+  keyFactory: (repositoryId: number, installationId: number, filterKey: string) =>
+    CACHE_KEYS.GITHUB_ISSUES_LIST(repositoryId, installationId, filterKey),
   ttlSeconds: GITHUB_LIST_CACHE_TTL,
   supportsEtag: false, // List fetch callbacks do not forward eTag headers
 });

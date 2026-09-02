@@ -272,8 +272,9 @@ describe('cache-policy', () => {
 
     it('list-issues generates correct cache key', () => {
       const policy = getPolicy('list-issues')!;
-      const key = policy.keyFactory(7, 's:open');
-      expect(key).toBe('github:repository:7:issues:list:s:open');
+      const key = policy.keyFactory(7, 42, 's:open');
+      expect(key).toBe('github:repository:7:issues:list:installation:42:s:open');
+      expect(key).not.toBe(policy.keyFactory(7, 99, 's:open'));
     });
 
     it('get-issue generates correct cache key', () => {

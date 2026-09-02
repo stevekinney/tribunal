@@ -11,8 +11,15 @@ export const CACHE_KEYS = {
   GITHUB_ACCESS_REPO_PATTERN: (repositoryId: number) => `github-access:*:${repositoryId}`,
 
   // GitHub Issues list (Redis)
-  GITHUB_ISSUES_LIST: (repositoryId: number, filterKey: string) =>
-    `github:repository:${repositoryId}:issues:list:${filterKey}`,
+  //
+  // Partitioned by installation for the same reason as GITHUB_PRS_LIST below:
+  // `cachedRead` answers a hit without invoking the Octokit client, so the
+  // credential that would have been access-checked is never used, and a
+  // repository carrying link rows for two installations would otherwise serve
+  // one installation's private issue list to the other. Always the
+  // installation whose credentials authenticated the fetch.
+  GITHUB_ISSUES_LIST: (repositoryId: number, installationId: number, filterKey: string) =>
+    `github:repository:${repositoryId}:issues:list:installation:${installationId}:${filterKey}`,
   GITHUB_ISSUES_LIST_PATTERN: (repositoryId: number) =>
     `github:repository:${repositoryId}:issues:list:*`,
 

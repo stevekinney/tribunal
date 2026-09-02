@@ -211,7 +211,7 @@ describe('listIssues', () => {
     expect.assertions(3);
     const context = createMockContext();
     const octokit = createMockOctokit([]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.issues).toHaveLength(0);
     expect(result.filters).toEqual(defaultFilters);
@@ -253,7 +253,7 @@ describe('listIssues', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockIssue]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.issues).toHaveLength(1);
     const issue = result.issues[0];
@@ -290,7 +290,7 @@ describe('listIssues', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockIssue]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.issues[0].author).toBeNull();
     expect(result.issues[0].milestone).toBeNull();
@@ -327,7 +327,7 @@ describe('listIssues', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockIssue, mockPullRequest]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].number).toBe(9);
@@ -352,7 +352,7 @@ describe('listIssues', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockIssue]);
-    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.issues[0].labels).toHaveLength(2);
     expect(result.issues[0].labels[0].name).toBe('bug');
@@ -377,7 +377,7 @@ describe('listIssues', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([]);
-    await listIssues(context, octokit, 'owner', 'repo', filters);
+    await listIssues(context, octokit, 'owner', 'repo', filters, 55);
 
     expect((octokit as any).rest.issues.listForRepo).toHaveBeenCalledWith({
       owner: 'owner',
@@ -419,7 +419,7 @@ describe('listIssues', () => {
     expect.assertions(1);
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
     const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)]);
-    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters, 55);
 
     expect(result.hasNextPage).toBe(false);
   });
@@ -428,7 +428,7 @@ describe('listIssues', () => {
     expect.assertions(1);
     const filters: IssueFilterOptions = { ...defaultFilters, perPage: 2 };
     const octokit = createMockOctokit([buildIssueRow(1)]);
-    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters, 55);
 
     expect(result.hasNextPage).toBe(false);
   });
@@ -439,7 +439,7 @@ describe('listIssues', () => {
     const octokit = createMockOctokit([buildIssueRow(1), buildIssueRow(2)], {
       link: '<https://api.github.com/repositories/1/issues?page=1>; rel="prev", <https://api.github.com/repositories/1/issues?page=1>; rel="first"',
     });
-    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters);
+    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', filters, 55);
 
     expect(result.hasNextPage).toBe(false);
   });
@@ -449,7 +449,14 @@ describe('listIssues', () => {
     const octokit = createMockOctokit([buildIssueRow(1)], {
       link: '<https://api.github.com/repositories/1/issues?page=2>; rel="next", <https://api.github.com/repositories/1/issues?page=5>; rel="last"',
     });
-    const result = await listIssues(createMockContext(), octokit, 'owner', 'repo', defaultFilters);
+    const result = await listIssues(
+      createMockContext(),
+      octokit,
+      'owner',
+      'repo',
+      defaultFilters,
+      55,
+    );
 
     expect(result.hasNextPage).toBe(true);
   });
@@ -458,9 +465,105 @@ describe('listIssues', () => {
     expect.assertions(2);
     const context = createMockContext();
     const octokit = createMockOctokit([]);
-    await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 42);
+    await listIssues(context, octokit, 'owner', 'repo', defaultFilters, 55, 42);
 
     expect(context.cache.getCached).toHaveBeenCalled();
     expect(context.cache.setCache).toHaveBeenCalled();
+  });
+
+  // The transfer scenario, end to end through the real `cachedRead`. A
+  // repository that still carries a link row for its previous installation
+  // stays readable by that installation's users, so an unpartitioned entry
+  // hands them the current installation's private issue list.
+  it('does not serve one installation the issue list another installation cached', async () => {
+    expect.assertions(4);
+
+    // A real store, not an always-miss mock: a mock would make the second read
+    // look like a miss no matter how the key were built, and so could not
+    // distinguish a partitioned cache from an unpartitioned one.
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    const currentInstallationList = vi.fn().mockResolvedValue({
+      data: [
+        {
+          number: 5,
+          title: 'Private to the current installation',
+          state: 'open',
+          user: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          closed_at: null,
+          labels: [],
+          assignees: [],
+          comments: 0,
+          html_url: 'https://github.com/acme/widgets/issues/5',
+          milestone: null,
+        },
+      ],
+      headers: {},
+    });
+    const populated = await listIssues(
+      context,
+      { rest: { issues: { listForRepo: currentInstallationList } } } as never,
+      'acme',
+      'widgets',
+      defaultFilters,
+      200,
+      7,
+    );
+    expect(populated.issues).toHaveLength(1);
+
+    const staleInstallationList = vi.fn().mockResolvedValue({ data: [], headers: {} });
+    const leaked = await listIssues(
+      context,
+      { rest: { issues: { listForRepo: staleInstallationList } } } as never,
+      'acme',
+      'widgets',
+      defaultFilters,
+      100,
+      7,
+    );
+
+    // It must reach GitHub (a genuine miss) and get its own answer.
+    expect(staleInstallationList).toHaveBeenCalledOnce();
+    expect(leaked.issues).toHaveLength(0);
+    expect([...store.keys()].every((key) => key.includes(':installation:'))).toBe(true);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['zero', 0],
+    ['negative', -1],
+  ])('refuses to list issues with a %s installation id', async (_label, badId) => {
+    expect.assertions(2);
+    const context = createMockContext();
+    const octokit = createMockOctokit([]);
+
+    await expect(
+      listIssues(
+        context,
+        octokit,
+        'acme',
+        'widgets',
+        defaultFilters,
+        badId as unknown as number,
+        7,
+      ),
+    ).rejects.toThrow(/installationId must be a positive integer/);
+    expect(context.cache.getCached).not.toHaveBeenCalled();
   });
 });
