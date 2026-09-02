@@ -1,6 +1,9 @@
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { createConsumerConformanceHandler, type McpContext } from '@lostgradient/mcp';
 import { describe, expect, it, vi } from 'vitest';
-import type { McpContext } from '@lostgradient/mcp';
 import { conformanceFixtureTool } from './conformance-fixture';
+import { tribunalMcpRegistry } from './registry';
+import { tribunalScopeVocabulary } from './scope-vocabulary';
 import { readToolResultText } from './tool-result-text';
 
 vi.mock('$env/dynamic/private', () => ({ env: { MCP_SERVER_NAME: 'tribunal-mcp-server' } }));
@@ -48,5 +51,77 @@ describe('conformance fixture', () => {
     const result = await conformanceFixtureTool.handler({ label: 'conformance' }, context());
 
     expect(result.isError).toBeUndefined();
+  });
+});
+
+/**
+ * The fixture exists to be exercised through the protocol, so the property
+ * that matters is not that its handler works in isolation — the tests above
+ * cover that — but that with conformance mode on, a real MCP client can list
+ * it and call it and get a schema-valid result.
+ *
+ * `runMcpConformance` builds its handler with conformance mode off, so it
+ * never touches the fixture; this drives `createConsumerConformanceHandler`
+ * with the mode on, mirroring the harness's own client and transport wiring.
+ * Without this, a regression in `createMcpServer` that stopped registering
+ * `conformanceOnlyTools`, or registered them without their `outputSchema`,
+ * would leave every other test green while making the fixture unreachable.
+ */
+describe('conformance fixture over the protocol', () => {
+  async function connectWithConformanceMode() {
+    const handler = createConsumerConformanceHandler({
+      registry: tribunalMcpRegistry,
+      scopeVocabulary: tribunalScopeVocabulary,
+      enableConformanceMode: true,
+      identity: {
+        userId: '7',
+        user: { id: '7', email: 'c@example.com', name: 'C', image: null, role: 'user' },
+      },
+    });
+    const client = new Client(
+      { name: 'fixture-conformance-test', version: '1.0.0' },
+      { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://localhost/mcp'), {
+      fetch: (input, init) => {
+        const request = new Request(input, init);
+        request.headers.set('host', 'localhost');
+        return handler.fetch(request);
+      },
+    });
+    await client.connect(transport);
+    return client;
+  }
+
+  it('lists the fixture when conformance mode is on', async () => {
+    expect.assertions(1);
+    const client = await connectWithConformanceMode();
+
+    try {
+      const listed = await client.listTools();
+      expect(listed.tools.map((tool) => tool.name)).toContain('conformance_echo');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('calls the fixture through the protocol and gets a schema-valid result', async () => {
+    expect.assertions(2);
+    const client = await connectWithConformanceMode();
+
+    try {
+      // Arguments omitted on purpose: the protocol layer has to apply the
+      // input default, which a direct handler call would bypass.
+      const result = await client.callTool({ name: 'conformance_echo', arguments: {} });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({
+        label: 'conformance',
+        synthetic: true,
+        surface: 'tools/call',
+      });
+    } finally {
+      await client.close();
+    }
   });
 });
