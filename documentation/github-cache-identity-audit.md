@@ -25,14 +25,34 @@ No missing user, installation, repository, pull request, issue, branch, or commi
 > `list-pull-requests` by installation; TRI-110 did the same for
 > `list-issues`. The rows below reflect the current keys.
 >
-> Still open: `get-pull-request-diff-context` keys on
-> `(repositoryId, pullNumber, headSha)` with no installation segment, and the
-> web routes select an installation with `getInstallationForRepository`
-> (`packages/github/src/repositories/service.ts`), whose private
-> `getInstallationIdFromLinkTable` returns the most recently added active link
-> rather than the installation the caller was authorized through — so those
-> routes can hand a caller another installation's Octokit even on a cache
-> miss. Tracked as TRI-111; do not read the table below as clearing either.
+> Still open, and this list is meant to be exhaustive as of this revision. An
+> earlier revision named only `get-pull-request-diff-context`, which read as
+> though everything else were settled; it was not.
+>
+> **Six live policies still key without an installation dimension** — tracked
+> as TRI-112. `get-review-thread-counts` and `get-failing-check-count` and
+> `get-branch-ci-status` and `get-branch-head-sha` and `get-branch-rules` and
+> `get-pull-request-diff-context`. The first two are reached through
+> `getPullRequestOperationalStatus`, whose `getPullRequest` call _is_
+> partitioned — so that surface is currently partitioned for detail and
+> unpartitioned for its sibling reads, which is worse than uniformly either.
+> Head SHAs, branch names, CI conclusions, and unresolved-thread counts are
+> private repository data; they read as less sensitive than a pull request
+> body, which is why they were missed twice.
+>
+> **The route picks the installation without reference to the caller** —
+> tracked as TRI-111. `getInstallationForRepository`
+> (`packages/github/src/repositories/service.ts`) delegates to the private
+> `getInstallationIdFromLinkTable`, which returns the most recently added
+> active link and takes no `userId`, while `userCanAccessRepository` admits a
+> caller reachable through _any_ of their live installations. The two can
+> disagree, and then the route hands out an Octokit the caller was never
+> authorized under — a leak on a cache _miss_, which no amount of cache
+> partitioning addresses.
+>
+> Do not read the table below as clearing either. A row marked correctly
+> scoped means its key carries the identity dimensions it needs, not that the
+> caller reaching it was resolved correctly.
 
 ## Inventory
 
