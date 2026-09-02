@@ -570,7 +570,7 @@ describe('pull request reader', () => {
 
     // Answering for either would surface the wrong pull requests under a
     // repository id the caller never sent.
-    expect(result).toEqual({ ok: false, error: 'repository_name_ambiguous' });
+    expect(result).toEqual({ ok: false, error: { ambiguous: [9001, 9004] } });
     expect(mocks.getInstallationOctokit).not.toHaveBeenCalled();
   });
 

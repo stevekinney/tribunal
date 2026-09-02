@@ -93,7 +93,7 @@ export const tribunalGoldenPrompts: readonly GoldenPrompt[] = [
     requiredScope: 'reviews:read',
     expectedParameters: ['limit'],
     expectedBehavior:
-      'Calls list_review_runs with a small limit and summarises status and timing. If hasMore is true, says the answer covers only the most recent runs rather than presenting it as complete.',
+      'Calls list_review_runs with a small limit and summarises status and timing. If hasMore is true, says the answer covers one page rather than presenting it as complete — and does not describe that page as the most recent runs, since runs that have not started yet come first in a stable but non-chronological order.',
   },
   {
     id: 'intended-findings-for-run',

@@ -112,8 +112,12 @@ export type PullRequestReadError =
   | 'github_unreachable'
   | 'pull_request_not_found'
   /** GitHub refused the read for rate limiting — worth retrying later. */
-  /** The owner and name matched more than one accessible repository. */
-  | 'repository_name_ambiguous'
+  /**
+   * The owner and name matched more than one accessible repository. Carries
+   * the candidates, because `list_repositories` — the only other way to learn
+   * an id — is gated on a scope this caller may not hold.
+   */
+  | { ambiguous: readonly number[] }
   | 'github_rate_limited'
   /** GitHub failed the read for some other reason — permissions, an outage. */
   | 'github_read_failed';
@@ -223,7 +227,14 @@ async function resolveAuthorizedRepository(userId: number, selector: RepositoryS
   // would be a guess the caller never made, and it would surface as the wrong
   // pull requests under a repository id they did not send.
   if (matched.matches.length > 1) {
-    return { ok: false, error: 'repository_name_ambiguous' } as const;
+    // Naming the candidates is the recovery. Telling a caller to "send
+    // repositoryId" is a dead end when the only tool that lists ids requires
+    // `repositories:read`, which is separately refusable — and these ids are
+    // already returned by every successful call in this family.
+    return {
+      ok: false,
+      error: { ambiguous: matched.matches.map((repository) => repository.id) },
+    } as const;
   }
 
   return { ok: true, repository: matched.matches[0] as McpRepository } as const;

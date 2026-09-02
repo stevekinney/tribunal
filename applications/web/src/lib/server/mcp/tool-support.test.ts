@@ -16,12 +16,22 @@ const everyReadError: McpReadError[] = [
   'review_finding_not_found',
   'repository_selector_missing',
   'repository_selector_conflict',
-  'repository_name_ambiguous',
   'github_rate_limited',
   'github_read_failed',
 ];
 
 describe('describeReadError', () => {
+  it('names the candidates when a repository name is ambiguous', () => {
+    expect.assertions(2);
+    const message = describeReadError({ ambiguous: [9001, 9004] });
+
+    // Telling a caller to send an id is a dead end when the only tool that
+    // lists ids needs a scope they may not hold, so the ids come with the
+    // refusal.
+    expect(message).toContain('9001, 9004');
+    expect(message).toMatch(/Send one of those as repositoryId/);
+  });
+
   it.each(everyReadError)('describes %s in caller-facing terms', (error) => {
     expect.assertions(2);
     const message = describeReadError(error);

@@ -42,6 +42,10 @@ export type McpReadError =
  * reach. The two row-level cases below collapse the same way.
  */
 export function describeReadError(error: McpReadError): string {
+  if (typeof error === 'object') {
+    return `That owner and name match more than one repository you can reach: ${error.ambiguous.join(', ')}. Send one of those as repositoryId.`;
+  }
+
   switch (error) {
     case 'no_github_token':
       return 'Tribunal has no valid GitHub token for your account. Reconnect GitHub and try again.';
@@ -56,8 +60,6 @@ export function describeReadError(error: McpReadError): string {
       return "That repository's GitHub App installation could not be resolved. Check the installation and try again.";
     case 'pull_request_not_found':
       return 'No pull request with that number exists in this repository.';
-    case 'repository_name_ambiguous':
-      return 'That owner and name match more than one repository you can reach. Send repositoryId instead.';
     case 'github_rate_limited':
       return 'GitHub rate-limited this read. Wait a little and try again.';
     case 'github_read_failed':
