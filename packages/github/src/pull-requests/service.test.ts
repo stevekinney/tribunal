@@ -236,7 +236,7 @@ describe('listPullRequests', () => {
     expect.assertions(2);
     const context = createMockContext();
     const octokit = createMockOctokit([]);
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.pullRequests).toHaveLength(0);
     expect(result.filters).toEqual(defaultFilters);
@@ -267,7 +267,7 @@ describe('listPullRequests', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockPr]);
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.pullRequests).toHaveLength(1);
     const pr = result.pullRequests[0];
@@ -305,7 +305,7 @@ describe('listPullRequests', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit([mockPr]);
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.pullRequests).toHaveLength(1);
     expect(result.pullRequests[0].author).toBeNull();
@@ -331,7 +331,7 @@ describe('listPullRequests', () => {
     };
 
     const context = createMockContext();
-    await listPullRequests(context, octokit, 'owner', 'repo', filters);
+    await listPullRequests(context, octokit, 'owner', 'repo', filters, 55);
 
     expect(mockList).toHaveBeenCalledWith({
       owner: 'owner',
@@ -360,7 +360,7 @@ describe('listPullRequests', () => {
     } as never;
 
     const context = createMockContext();
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.hasNextPage).toBe(true);
   });
@@ -396,7 +396,7 @@ describe('listPullRequests', () => {
     } as never;
 
     const context = createMockContext();
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.hasNextPage).toBe(false);
   });
@@ -426,7 +426,7 @@ describe('listPullRequests', () => {
     const octokit = createMockOctokit(fullPage);
 
     const context = createMockContext();
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55);
 
     expect(result.pullRequests).toHaveLength(defaultFilters.perPage);
     expect(result.hasNextPage).toBe(false);
@@ -458,7 +458,7 @@ describe('listPullRequests', () => {
     const octokit = { rest: { pulls: { list: mockList } } } as never;
     const context = createMockContext();
 
-    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 7);
+    const result = await listPullRequests(context, octokit, 'owner', 'repo', defaultFilters, 55, 7);
 
     expect(result.hasNextPage).toBe(true);
     expect(context.cache.setCache).toHaveBeenCalled();
@@ -514,7 +514,7 @@ describe('getPullRequest', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit(mockPr);
-    const result = await getPullRequest(context, octokit, 'owner', 'repo', 42);
+    const result = await getPullRequest(context, octokit, 'owner', 'repo', 42, 55);
 
     expect(result).not.toBeNull();
     expect(result!.number).toBe(42);
@@ -570,7 +570,7 @@ describe('getPullRequest', () => {
 
     const context = createMockContext();
     const octokit = createMockOctokit(mockPr);
-    const result = await getPullRequest(context, octokit, 'owner', 'repo', 1);
+    const result = await getPullRequest(context, octokit, 'owner', 'repo', 1, 55);
 
     expect(result!.merged).toBe(true);
     expect(result!.mergedBy).not.toBeNull();
@@ -583,9 +583,100 @@ describe('getPullRequest', () => {
     const context = createMockContext();
     const octokit = createMockOctokit(null, notFoundError);
 
-    const result = await getPullRequest(context, octokit, 'owner', 'repo', 999);
+    const result = await getPullRequest(context, octokit, 'owner', 'repo', 999, 55);
 
     expect(result).toBeNull();
+  });
+
+  // Criterion 3: the transfer scenario, end to end through the real
+  // `cachedRead`. A repository that still carries a link row for its previous
+  // installation stays readable by that installation's users. If the cache is
+  // not partitioned, the entry the current installation populated is handed to
+  // them — content their own credentials would be refused.
+  it('does not serve one installation the pull request another installation cached', async () => {
+    expect.assertions(4);
+
+    // A real store, not a mock that always misses. A always-miss mock would
+    // make the second read look like a miss no matter how the key were built,
+    // so it could not distinguish a partitioned cache from an unpartitioned one.
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+
+    const privatePayload = {
+      number: 5,
+      title: 'Private to the current installation',
+      state: 'open',
+      draft: false,
+      locked: false,
+      user: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      closed_at: null,
+      merged_at: null,
+      labels: [],
+      head: { ref: 'feature', sha: 'sha5' },
+      base: { ref: 'main' },
+      html_url: 'https://github.com/acme/widgets/pull/5',
+      body: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 0,
+      mergeable: true,
+      mergeable_state: 'clean',
+      merged: false,
+      merged_by: null,
+      comments: 0,
+      review_comments: 0,
+      commits: 1,
+    };
+
+    // The installation that currently owns the repository reads it and
+    // populates the cache.
+    const currentInstallationGet = vi.fn().mockResolvedValue({ data: privatePayload });
+    const cached = await getPullRequest(
+      context,
+      { rest: { pulls: { get: currentInstallationGet } } } as never,
+      'acme',
+      'widgets',
+      5,
+      currentInstallationId,
+    );
+    expect(cached?.title).toBe('Private to the current installation');
+
+    // The installation the transfer left behind no longer has access, so its
+    // live call 404s.
+    const staleInstallationGet = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+    const leaked = await getPullRequest(
+      context,
+      { rest: { pulls: { get: staleInstallationGet } } } as never,
+      'acme',
+      'widgets',
+      5,
+      staleInstallationId,
+    );
+
+    // It must reach GitHub (a genuine miss) and return GitHub's answer rather
+    // than the other installation's cached content.
+    expect(staleInstallationGet).toHaveBeenCalledOnce();
+    expect(leaked).toBeNull();
+    expect([...store.keys()]).toStrictEqual(['github:response:acme:widgets:pr:5:installation:200']);
   });
 
   it('re-throws non-404 errors', async () => {
@@ -594,7 +685,7 @@ describe('getPullRequest', () => {
     const context = createMockContext();
     const octokit = createMockOctokit(null, serverError);
 
-    await expect(getPullRequest(context, octokit, 'owner', 'repo', 42)).rejects.toThrow(
+    await expect(getPullRequest(context, octokit, 'owner', 'repo', 42, 55)).rejects.toThrow(
       'Server Error',
     );
   });
@@ -645,7 +736,7 @@ describe('getPullRequest', () => {
     const get = vi.fn().mockRejectedValue(notModifiedError);
     const octokit = { rest: { pulls: { get } } } as never;
 
-    const result = await getPullRequest(context, octokit, 'owner', 'repo', 42);
+    const result = await getPullRequest(context, octokit, 'owner', 'repo', 42, 55);
 
     expect(result).toEqual(cachedDetail);
     expect(get).toHaveBeenCalledWith(
@@ -740,6 +831,7 @@ describe('getPullRequestOperationalStatus', () => {
       'repo',
       42,
       'actual-head-sha',
+      55,
     );
 
     expect(status.ciStatus).toBe('failing');
@@ -843,6 +935,7 @@ describe('getPullRequestOperationalStatus', () => {
       'repo',
       42,
       'actual-head-sha',
+      55,
     );
 
     expect(status.ciStatus).toBe('passing');
@@ -906,6 +999,7 @@ describe('getPullRequestOperationalStatus', () => {
       'repo',
       7,
       'freshsha',
+      55,
     );
 
     expect(status.mergeConflictStatus).toBe('unknown');

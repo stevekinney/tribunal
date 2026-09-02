@@ -81,24 +81,24 @@ export function getAllPolicies(): ReadonlyMap<string, CachePolicy<unknown[]>> {
 
 registerPolicy({
   operationId: 'list-pull-requests',
-  keyFactory: (repositoryId: number, filterKey: string) =>
-    CACHE_KEYS.GITHUB_PRS_LIST(repositoryId, filterKey),
+  keyFactory: (repositoryId: number, installationId: number, filterKey: string) =>
+    CACHE_KEYS.GITHUB_PRS_LIST(repositoryId, installationId, filterKey),
   ttlSeconds: GITHUB_LIST_CACHE_TTL,
   supportsEtag: false, // List fetch callbacks do not forward eTag headers
 });
 
 registerPolicy({
   operationId: 'get-pull-request',
-  keyFactory: (owner: string, repo: string, pullNumber: number) =>
-    CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, pullNumber),
+  keyFactory: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, pullNumber, installationId),
   ttlSeconds: GITHUB_RESPONSE_CACHE_TTL_SECONDS,
   supportsEtag: true,
 });
 
 registerPolicy({
   operationId: 'get-pull-request-metadata',
-  keyFactory: (owner: string, repo: string, pullNumber: number) =>
-    CACHE_KEYS.GITHUB_PR_METADATA(owner, repo, pullNumber),
+  keyFactory: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    CACHE_KEYS.GITHUB_PR_METADATA(owner, repo, pullNumber, installationId),
   ttlSeconds: GITHUB_RESPONSE_CACHE_TTL_SECONDS,
   supportsEtag: true,
 });

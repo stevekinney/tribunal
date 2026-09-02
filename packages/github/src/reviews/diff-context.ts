@@ -77,7 +77,7 @@ export async function getPullRequestMetadata(
         throw error;
       }
     },
-    [input.owner, input.repository, input.pullRequestNumber],
+    [input.owner, input.repository, input.pullRequestNumber, input.installationId],
   );
 
   return toPullRequestMetadata(value);

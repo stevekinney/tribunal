@@ -25,7 +25,7 @@ Document the bypass reason in a code comment.
 ## Adding new cached endpoints
 
 1. Register a `CachePolicy` in `packages/github/src/core/cache-policy.ts`
-2. Add a `CACHE_KEYS` entry in `packages/cache/src/cache-keys.ts` if needed
+2. Add a `CACHE_KEYS` entry in `packages/github/src/cache-keys.ts` if needed
 3. Add invalidation handling in `packages/github/src/webhooks/resource-invalidation.ts`
 4. Use `cachedRead` in the service function
 

@@ -18,9 +18,13 @@ describe('CACHE_KEYS', () => {
   });
 
   it('builds GitHub PR list keys and their invalidation pattern', () => {
-    expect.assertions(2);
-    expect(CACHE_KEYS.GITHUB_PRS_LIST(7, 's:open')).toBe('github:repository:7:prs:list:s:open');
+    expect.assertions(3);
+    expect(CACHE_KEYS.GITHUB_PRS_LIST(7, 42, 's:open')).toBe(
+      'github:repository:7:prs:list:installation:42:s:open',
+    );
     expect(CACHE_KEYS.GITHUB_PRS_LIST_PATTERN(7)).toBe('github:repository:7:prs:list:*');
+    // The pattern must still sweep every installation's list entry.
+    expect(CACHE_KEYS.GITHUB_PRS_LIST(7, 42, 's:open')).toMatch(/^github:repository:7:prs:list:/);
   });
 
   it('builds issue detail and comment list keys', () => {
@@ -34,14 +38,46 @@ describe('CACHE_KEYS', () => {
   });
 
   it('builds PR detail, metadata, and diff context keys', () => {
-    expect.assertions(3);
-    expect(CACHE_KEYS.GITHUB_PR_DETAIL('octo', 'repo', 9)).toBe('github:response:octo:repo:pr:9');
-    expect(CACHE_KEYS.GITHUB_PR_METADATA('octo', 'repo', 9)).toBe(
-      'github:response:octo:repo:pr:9:metadata',
+    expect.assertions(5);
+    expect(CACHE_KEYS.GITHUB_PR_DETAIL('octo', 'repo', 9, 42)).toBe(
+      'github:response:octo:repo:pr:9:installation:42',
+    );
+    expect(CACHE_KEYS.GITHUB_PR_DETAIL_PATTERN('octo', 'repo', 9)).toBe(
+      'github:response:octo:repo:pr:9:installation:*',
+    );
+    expect(CACHE_KEYS.GITHUB_PR_METADATA('octo', 'repo', 9, 42)).toBe(
+      'github:response:octo:repo:pr:9:metadata:installation:42',
+    );
+    expect(CACHE_KEYS.GITHUB_PR_METADATA_PATTERN('octo', 'repo', 9)).toBe(
+      'github:response:octo:repo:pr:9:metadata:installation:*',
     );
     expect(CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(3, 9, 'sha123')).toBe(
       'github:response:repository:3:pr:9:head:sha123:diff-context',
     );
+  });
+
+  // Criterion 2: the partition is asserted on the generated key, not on a
+  // returned value, so it holds regardless of what the fetch function does.
+  it('gives two installations different keys for the same pull request', () => {
+    expect.assertions(4);
+    const forInstallationA = CACHE_KEYS.GITHUB_PR_DETAIL('octo', 'repo', 9, 11);
+    const forInstallationB = CACHE_KEYS.GITHUB_PR_DETAIL('octo', 'repo', 9, 22);
+    expect(forInstallationA).not.toBe(forInstallationB);
+
+    expect(CACHE_KEYS.GITHUB_PR_METADATA('octo', 'repo', 9, 11)).not.toBe(
+      CACHE_KEYS.GITHUB_PR_METADATA('octo', 'repo', 9, 22),
+    );
+    expect(CACHE_KEYS.GITHUB_PRS_LIST(7, 11, 's:open')).not.toBe(
+      CACHE_KEYS.GITHUB_PRS_LIST(7, 22, 's:open'),
+    );
+
+    // Installation is a trailing segment, so the repository-wide sweeps that
+    // predate the partition still match both entries.
+    expect(
+      [forInstallationA, forInstallationB].every((key) =>
+        key.startsWith('github:response:octo:repo:pr:9:'),
+      ),
+    ).toBe(true);
   });
 
   it('builds review comments list, thread lookup, and thread validate keys', () => {

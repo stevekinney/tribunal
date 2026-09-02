@@ -17,8 +17,16 @@ export const CACHE_KEYS = {
     `github:repository:${repositoryId}:issues:list:*`,
 
   // GitHub PRs list (Redis)
-  GITHUB_PRS_LIST: (repositoryId: number, filterKey: string) =>
-    `github:repository:${repositoryId}:prs:list:${filterKey}`,
+  //
+  // `installationId` is part of the key because `cachedRead` answers a hit
+  // without invoking the Octokit client, so the credential that would have
+  // been access-checked is never used. A repository can carry link rows for
+  // more than one installation (a transfer that leaves the old row behind),
+  // and without this segment the first installation to populate an entry
+  // serves its content to every other one. Always the installation whose
+  // credentials authenticated the fetch — never a repository's "primary".
+  GITHUB_PRS_LIST: (repositoryId: number, installationId: number, filterKey: string) =>
+    `github:repository:${repositoryId}:prs:list:installation:${installationId}:${filterKey}`,
   GITHUB_PRS_LIST_PATTERN: (repositoryId: number) => `github:repository:${repositoryId}:prs:list:*`,
 
   // GitHub API response caches (Redis)
@@ -32,10 +40,17 @@ export const CACHE_KEYS = {
     filterKey: string,
   ) => `github:response:${owner}:${repo}:issue:${issueNumber}:comments:${filterKey}`,
 
-  GITHUB_PR_DETAIL: (owner: string, repo: string, pullNumber: number) =>
-    `github:response:${owner}:${repo}:pr:${pullNumber}`,
-  GITHUB_PR_METADATA: (owner: string, repo: string, pullNumber: number) =>
-    `github:response:${owner}:${repo}:pr:${pullNumber}:metadata`,
+  // Installation is a trailing segment rather than a prefix so the existing
+  // `github:response:{owner}:{repo}:pr:{n}:*` sweeps keep matching. See
+  // GITHUB_PRS_LIST above for why these are partitioned at all.
+  GITHUB_PR_DETAIL: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    `github:response:${owner}:${repo}:pr:${pullNumber}:installation:${installationId}`,
+  GITHUB_PR_DETAIL_PATTERN: (owner: string, repo: string, pullNumber: number) =>
+    `github:response:${owner}:${repo}:pr:${pullNumber}:installation:*`,
+  GITHUB_PR_METADATA: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    `github:response:${owner}:${repo}:pr:${pullNumber}:metadata:installation:${installationId}`,
+  GITHUB_PR_METADATA_PATTERN: (owner: string, repo: string, pullNumber: number) =>
+    `github:response:${owner}:${repo}:pr:${pullNumber}:metadata:installation:*`,
   GITHUB_PR_DIFF_CONTEXT: (repositoryId: number, pullNumber: number, headSha: string) =>
     `github:response:repository:${repositoryId}:pr:${pullNumber}:head:${headSha}:diff-context`,
 

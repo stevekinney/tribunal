@@ -29,7 +29,10 @@ const pullRequestResponse = {
 };
 
 const pullRequestDetailCacheKey = 'github:response:lostgradient:tribunal:pr:42';
-const pullRequestMetadataCacheKey = 'github:response:lostgradient:tribunal:pr:42:metadata';
+// Metadata entries are partitioned by the installation that fetched them;
+// every case in this file authenticates as installation 1.
+const pullRequestMetadataCacheKey =
+  'github:response:lostgradient:tribunal:pr:42:metadata:installation:1';
 
 function createContext(
   listFiles: ReturnType<typeof vi.fn>,

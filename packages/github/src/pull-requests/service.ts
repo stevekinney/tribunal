@@ -223,6 +223,7 @@ export async function listPullRequests(
   owner: string,
   repo: string,
   filters: PullRequestFilterOptions,
+  installationId: number,
   repositoryId?: number,
 ): Promise<PullRequestListResult> {
   const fetchPullRequests = async (): Promise<PullRequestListResult> => {
@@ -255,7 +256,7 @@ export async function listPullRequests(
     context.cache,
     policy,
     async () => ({ data: await fetchPullRequests() }),
-    [repositoryId, buildPullRequestFilterKey(filters)],
+    [repositoryId, installationId, buildPullRequestFilterKey(filters)],
   );
   return value;
 }
@@ -271,6 +272,9 @@ export async function listPullRequests(
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param pullNumber - Pull request number
+ * @param installationId - Installation whose credentials authenticated `octokit`.
+ *   This partitions the cache entry; passing any other installation's id would
+ *   let one installation read another's cached content.
  */
 export async function getPullRequest(
   context: GithubServiceContext,
@@ -278,6 +282,7 @@ export async function getPullRequest(
   owner: string,
   repo: string,
   pullNumber: number,
+  installationId: number,
 ): Promise<PullRequestDetail | null> {
   try {
     const policy = requirePolicy('get-pull-request');
@@ -303,7 +308,7 @@ export async function getPullRequest(
           throw error;
         }
       },
-      [owner, repo, pullNumber],
+      [owner, repo, pullNumber, installationId],
     );
     return value;
   } catch (error) {
@@ -322,9 +327,10 @@ export async function getPullRequestOperationalStatus(
   repo: string,
   pullNumber: number,
   headSha: string,
+  installationId: number,
 ): Promise<PullRequestOperationalStatus> {
   const [detailResult, ciResult, threadCountsResult] = await Promise.allSettled([
-    getPullRequest(context, octokit, owner, repo, pullNumber),
+    getPullRequest(context, octokit, owner, repo, pullNumber, installationId),
     getFailingCheckCount(context, octokit, owner, repo, headSha),
     getPullRequestReviewThreadCounts(context, octokit, owner, repo, pullNumber),
   ]);

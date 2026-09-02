@@ -250,6 +250,9 @@ async function buildRepositoryRow(
       repository.owner,
       repository.name,
       DASHBOARD_PULL_REQUEST_FILTERS,
+      // Same installation the Octokit above was built from — the cache entry
+      // must be attributed to the credential that fetched it.
+      repository.installationId,
       repository.id,
     );
     pullRequests = result.pullRequests;
