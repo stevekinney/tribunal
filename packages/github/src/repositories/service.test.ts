@@ -22,6 +22,7 @@ import {
   updateRepositoryDefaultBranch,
   updateRepositoryCommit,
   getInstallationForRepository,
+  getInstallationForRepositoryAsCaller,
   markInstallationRepositoryInactive,
   type RepositoryListItem,
 } from './service.js';
@@ -1205,6 +1206,224 @@ describe('getInstallationForRepository', () => {
       expect(result.repo).toBe('widgets');
       expect(result.octokit).toBeDefined();
     }
+  });
+});
+
+describe('getInstallationForRepositoryAsCaller', () => {
+  let testContext: TestContext;
+
+  beforeAll(async () => {
+    testContext = await createTestContext();
+  });
+
+  afterAll(async () => {
+    await testContext.close();
+  });
+
+  beforeEach(async () => {
+    await testContext.reset();
+  });
+
+  it('returns not_found when the repository does not exist', async () => {
+    const context = createGithubContext(testContext, []);
+
+    const result = await getInstallationForRepositoryAsCaller(context, 999_999, 810);
+
+    expect(result).toEqual({ ok: false, error: 'Repository not found', code: 'not_found' });
+  });
+
+  it('refuses an installation with no link row for the repository', async () => {
+    await testContext.factories.githubInstallation.create({
+      installationId: 810,
+      accountLogin: 'acme',
+      status: 'active',
+    });
+    await testContext.factories.repository.create({
+      id: 810,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 810,
+    });
+    const context = createGithubContext(testContext, []);
+
+    // The repository column names 810, but no link row does. The supplied id
+    // is re-checked against the link table rather than trusted, so a caller
+    // cannot mint a client by naming an installation that does not cover this
+    // repository.
+    const result = await getInstallationForRepositoryAsCaller(context, 810, 810);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'Repository is not linked to this GitHub installation',
+      code: 'no_installation',
+    });
+  });
+
+  it('refuses an installation whose link row is inactive', async () => {
+    await testContext.factories.githubInstallation.create({
+      installationId: 811,
+      accountLogin: 'acme',
+      status: 'active',
+    });
+    await testContext.factories.repository.create({
+      id: 811,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 811,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 811,
+      repositoryId: 811,
+      isActive: false,
+    });
+    const context = createGithubContext(testContext, []);
+
+    const result = await getInstallationForRepositoryAsCaller(context, 811, 811);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'Repository is not linked to this GitHub installation',
+      code: 'no_installation',
+    });
+  });
+
+  // The regression case this function exists for. Both installations link the
+  // repository and both are active; 813 was added most recently, so
+  // `getInstallationForRepository` would return it for every caller. A caller
+  // authorized through 812 must get 812.
+  it('honours the caller’s installation over the most recently linked one', async () => {
+    for (const installationId of [812, 813]) {
+      await testContext.factories.githubInstallation.create({
+        installationId,
+        accountLogin: `acme-${installationId}`,
+        status: 'active',
+      });
+    }
+    await testContext.factories.repository.create({
+      id: 812,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 813,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 812,
+      repositoryId: 812,
+      isActive: true,
+      addedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 813,
+      repositoryId: 812,
+      isActive: true,
+      addedAt: new Date('2026-06-01T00:00:00Z'),
+    });
+    const context = createGithubContext(testContext, []);
+    const getOctokit = vi.fn().mockResolvedValue({});
+    context.getInstallationOctokit = getOctokit;
+
+    const result = await getInstallationForRepositoryAsCaller(context, 812, 812);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.installationId).toBe(812);
+    }
+    // The credential must be minted for the caller's installation, not the
+    // repository's most recent link — that divergence is the whole defect.
+    expect(getOctokit).toHaveBeenCalledWith(812);
+    expect(getOctokit).not.toHaveBeenCalledWith(813);
+
+    // The unscoped selector still answers 813, which is why a user-facing read
+    // must not use it.
+    const unscoped = await getInstallationForRepository(context, 812);
+    expect(unscoped.ok).toBe(true);
+    if (unscoped.ok) {
+      expect(unscoped.installationId).toBe(813);
+    }
+  });
+
+  it('returns suspended when the caller’s installation is suspended', async () => {
+    await testContext.factories.githubInstallation.create({
+      installationId: 814,
+      accountLogin: 'acme',
+      status: 'suspended',
+    });
+    await testContext.factories.repository.create({
+      id: 814,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 814,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 814,
+      repositoryId: 814,
+      isActive: true,
+    });
+    const context = createGithubContext(testContext, []);
+
+    const result = await getInstallationForRepositoryAsCaller(context, 814, 814);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'GitHub installation is suspended',
+      code: 'suspended',
+    });
+  });
+
+  it('returns error when the caller’s installation is neither active nor suspended', async () => {
+    await testContext.factories.githubInstallation.create({
+      installationId: 815,
+      accountLogin: 'acme',
+      status: 'needs_permissions',
+    });
+    await testContext.factories.repository.create({
+      id: 815,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 815,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 815,
+      repositoryId: 815,
+      isActive: true,
+    });
+    const context = createGithubContext(testContext, []);
+
+    const result = await getInstallationForRepositoryAsCaller(context, 815, 815);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'GitHub installation is needs_permissions',
+      code: 'error',
+    });
+  });
+
+  it('returns error when the Octokit client cannot be constructed', async () => {
+    await testContext.factories.githubInstallation.create({
+      installationId: 816,
+      accountLogin: 'acme',
+      status: 'active',
+    });
+    await testContext.factories.repository.create({
+      id: 816,
+      owner: 'acme',
+      name: 'widgets',
+      installationId: 816,
+    });
+    await testContext.db.insert(githubInstallationRepository).values({
+      installationId: 816,
+      repositoryId: 816,
+      isActive: true,
+    });
+    const context = createGithubContext(testContext, []);
+    context.getInstallationOctokit = vi.fn().mockResolvedValue(null);
+
+    const result = await getInstallationForRepositoryAsCaller(context, 816, 816);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'Failed to create GitHub client - check app configuration',
+      code: 'error',
+    });
   });
 });
 

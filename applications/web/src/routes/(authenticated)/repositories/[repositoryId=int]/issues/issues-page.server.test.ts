@@ -7,12 +7,14 @@ const {
   mockGetRepositoryById,
   mockGetInstallationForRepository,
   mockUserCanAccessRepository,
+  mockResolveAuthorizedInstallationId,
   mockListIssues,
   mockParseIssueFilters,
 } = vi.hoisted(() => ({
   mockGetRepositoryById: vi.fn(),
   mockGetInstallationForRepository: vi.fn(),
   mockUserCanAccessRepository: vi.fn(),
+  mockResolveAuthorizedInstallationId: vi.fn(),
   mockListIssues: vi.fn(),
   mockParseIssueFilters: vi.fn(),
 }));
@@ -28,7 +30,7 @@ vi.mock('@sveltejs/kit', () => ({
 
 vi.mock('@tribunal/github/repositories/service', () => ({
   getRepositoryById: mockGetRepositoryById,
-  getInstallationForRepository: mockGetInstallationForRepository,
+  getInstallationForRepositoryAsCaller: mockGetInstallationForRepository,
 }));
 
 vi.mock('@tribunal/github/issues/service', () => ({
@@ -42,6 +44,7 @@ vi.mock('$lib/server/github-context', () => ({
 
 vi.mock('$lib/server/repositories', () => ({
   userCanAccessRepository: mockUserCanAccessRepository,
+  resolveAuthorizedInstallationId: mockResolveAuthorizedInstallationId,
 }));
 
 import { load } from './+page.server';
@@ -93,6 +96,7 @@ describe('repository issues page load', () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(false);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(null);
 
     await expect(runLoad()).rejects.toMatchObject({ status: 404 });
   });
@@ -101,15 +105,37 @@ describe('repository issues page load', () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({ ok: false, error: 'not_found' });
 
     await expect(runLoad()).rejects.toMatchObject({ status: 502 });
   });
 
+  // A local link-table or repository-row condition is not a GitHub outage.
+  // Reaching it after authorization already passed means access was lost
+  // between the two queries, so it fails closed like the authorization check
+  // rather than telling the user GitHub is down.
+  it.each([['not_found'], ['no_installation']])(
+    'returns 404 when installation resolution fails locally with %s',
+    async (code) => {
+      expect.assertions(1);
+      mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+      mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
+      mockGetInstallationForRepository.mockResolvedValue({
+        ok: false,
+        code,
+        error: 'Repository is not linked to this GitHub installation',
+      });
+
+      await expect(runLoad()).rejects.toMatchObject({ status: 404 });
+    },
+  );
+
   it('lists issues for an accessible repository', async () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -131,10 +157,53 @@ describe('repository issues page load', () => {
     });
   });
 
+  // TRI-111: authorization admits a caller through *one* of their
+  // installations, and a repository can carry active links for two. Building
+  // the client from the repository rather than from that authorization is how a
+  // user of the stale installation ends up reading the current one's content —
+  // a cross-account read assembled out of two individually correct steps.
+  it('builds the client from the installation that authorized the caller', async () => {
+    expect.assertions(2);
+    const authorizingInstallation = 100;
+    mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+    // The caller reached this repository through installation 100 only. Suppose
+    // installation 200 also links it and was added more recently — that is what
+    // the repository-scoped selector would have returned instead.
+    mockResolveAuthorizedInstallationId.mockResolvedValue(authorizingInstallation);
+    mockGetInstallationForRepository.mockResolvedValue({
+      ok: true,
+      installationId: authorizingInstallation,
+      octokit: {},
+      owner: 'acme',
+      repo: 'widgets',
+    });
+    mockListIssues.mockResolvedValue({ issues: [], filters: defaultFilters, hasNextPage: false });
+
+    await runLoad();
+
+    expect(mockGetInstallationForRepository).toHaveBeenCalledWith(
+      expect.anything(),
+      1,
+      authorizingInstallation,
+    );
+    // The same installation partitions the cache entry, so the credential and
+    // the cache key cannot disagree.
+    expect(mockListIssues).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'acme',
+      'widgets',
+      defaultFilters,
+      authorizingInstallation,
+      1,
+    );
+  });
+
   it('parses filters from the request URL', async () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -155,6 +224,7 @@ describe('repository issues page load', () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -178,6 +248,7 @@ describe('repository issues page load', () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -204,6 +275,7 @@ describe('repository issues page load', () => {
     // disabled the Issues feature entirely.
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -233,6 +305,7 @@ describe('repository issues page load', () => {
     // generic 500.
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
       installationId: 4242,
@@ -256,6 +329,7 @@ describe('repository issues page load', () => {
     expect.assertions(1);
     mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
     mockUserCanAccessRepository.mockResolvedValue(true);
+    mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
     const octokit = { rest: {} };
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,

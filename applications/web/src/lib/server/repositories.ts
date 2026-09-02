@@ -15,7 +15,7 @@
  * loses access to an installation on GitHub, they immediately stop seeing its
  * repositories here.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 import {
@@ -228,10 +228,23 @@ export async function getRepositoriesForUser(
         eq(githubInstallation.status, 'active'),
         eq(githubInstallationRepository.isActive, true),
       ),
+    )
+    // Ordered so the dedup below is deterministic. Without it the row the
+    // database happened to return first decides which installation a caller
+    // reads through — and since TRI-111 that choice also decides which
+    // credential is used and which cache partition is written, so it must not
+    // vary between requests.
+    .orderBy(
+      desc(githubInstallationRepository.addedAt),
+      desc(githubInstallationRepository.installationId),
     );
 
-  // Deduplicate by repository ID — a repo can only belong to one installation,
-  // but guard against duplicate link rows defensively.
+  // Deduplicate by repository ID. A repository can carry active links for more
+  // than one installation — a transfer that leaves the previous organization's
+  // link behind is the ordinary way — so this is a real case, not a defensive
+  // guard. When a caller is reachable through both, the most recently linked
+  // installation wins; both are legitimately theirs, and the tie is broken
+  // consistently rather than by row order.
   const seen = new Set<number>();
   const repositories: UserRepository[] = [];
   for (const row of rows) {
@@ -279,6 +292,13 @@ async function getLocalRepositoriesForUser(userId: number): Promise<UserReposito
         eq(githubInstallation.status, 'active'),
         eq(githubInstallationRepository.isActive, true),
       ),
+    )
+    // Same reason as the live path above: the dedup below picks the first row
+    // per repository, and that choice now determines which credential and
+    // cache partition a caller gets. Order it rather than inherit row order.
+    .orderBy(
+      desc(githubInstallationRepository.addedAt),
+      desc(githubInstallationRepository.installationId),
     );
 
   const installationMap = new Map<number, UserRepositoryInstallation>();
@@ -333,4 +353,40 @@ export async function userCanAccessRepository(
   const result = await getRepositoriesForUser(userId, options);
   if (!result.ok) return false;
   return result.repositories.some((entry) => entry.repository.id === repositoryId);
+}
+
+/**
+ * Authorize a repository read **and** report which installation granted it.
+ *
+ * {@link userCanAccessRepository} answers the same question and discards the
+ * answer's most useful half. It resolves the user's repositories through their
+ * live installations — so it already knows *which* installation admitted them —
+ * and then returns a bare boolean. A caller that needs a GitHub client is left
+ * to re-derive one, and the only repository-scoped resolver available
+ * (`getInstallationForRepository`) takes no user and picks the most recently
+ * added active link. When a repository carries links for two installations,
+ * those two answers can differ, and the caller is handed a client for an
+ * installation they were never authorized through.
+ *
+ * Prefer this on any path that goes on to call GitHub.
+ *
+ * `null` means the repository is not in the caller's reachable set — either
+ * because they genuinely cannot reach it, or because the set could not be
+ * determined (a GitHub outage while listing their installations). Those two
+ * are deliberately not distinguished, matching what `userCanAccessRepository`
+ * has always reported as `false`, and callers keep treating both as
+ * not-found. Telling an unauthorized caller that a repository exists but is
+ * temporarily unreachable would be its own small disclosure; distinguishing
+ * them for authorized callers would need a third state this signature does
+ * not have.
+ */
+export async function resolveAuthorizedInstallationId(
+  userId: number,
+  repositoryId: number,
+  options: RepositoryResolutionOptions = {},
+): Promise<number | null> {
+  const result = await getRepositoriesForUser(userId, options);
+  if (!result.ok) return null;
+  const entry = result.repositories.find((candidate) => candidate.repository.id === repositoryId);
+  return entry?.installation.installationId ?? null;
 }

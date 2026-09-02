@@ -806,6 +806,79 @@ export async function getInstallationForRepository(
 }
 
 /**
+ * Resolve the Octokit client for a repository **through a specific
+ * installation** — the one that authorized the caller.
+ *
+ * {@link getInstallationForRepository} takes no caller identity: it picks the
+ * most recently added active link, the same answer for everybody. A repository
+ * can carry active links for more than one installation — the ordinary way is
+ * a transfer that leaves the previous organization's link behind — and a user
+ * authorized through the older one would then be handed a client built for the
+ * newer one. Authorization says the caller may read *a* repository; it does not
+ * say which installation's view of it they are entitled to. Both steps are
+ * individually correct and the pair is a cross-account read.
+ *
+ * Use this on any user-facing path. Pass the installation the caller's own
+ * access resolved to, never one re-derived from the repository.
+ *
+ * The supplied installation is re-checked against the link table rather than
+ * trusted, so a stale or fabricated id cannot mint a client for a repository
+ * it no longer covers.
+ *
+ * @param authorizedInstallationId - The installation through which this caller
+ *   was granted access to this repository.
+ */
+export async function getInstallationForRepositoryAsCaller(
+  context: GithubServiceContext,
+  repositoryId: number,
+  authorizedInstallationId: number,
+): Promise<RepositoryInstallationResult> {
+  const [repo] = await context.db
+    .select({ owner: repository.owner, name: repository.name })
+    .from(repository)
+    .where(eq(repository.id, repositoryId));
+
+  if (!repo) {
+    return { ok: false, error: 'Repository not found', code: 'not_found' };
+  }
+
+  const linked = await installationHasActiveLink(context, repositoryId, authorizedInstallationId);
+  if (!linked) {
+    // Deliberately distinct from `getInstallationForRepository`'s wording. That
+    // one means the repository has no installation at all; this one means it
+    // has none *for this caller*, which is a different situation to debug and
+    // reads as a different thing in telemetry.
+    return {
+      ok: false,
+      error: 'Repository is not linked to this GitHub installation',
+      code: 'no_installation',
+    };
+  }
+
+  const validated = await assertInstallationUsable(context, authorizedInstallationId);
+  if (!validated.ok) {
+    return validated;
+  }
+
+  const octokit = await context.getInstallationOctokit(validated.installationId);
+  if (!octokit) {
+    return {
+      ok: false,
+      error: 'Failed to create GitHub client - check app configuration',
+      code: 'error',
+    };
+  }
+
+  return {
+    ok: true,
+    octokit,
+    installationId: validated.installationId,
+    owner: repo.owner,
+    repo: repo.name,
+  };
+}
+
+/**
  * Shared installation validation: resolves installation ID from the link table
  * (preferred) or falls back to the repository column, then verifies the
  * installation exists and is active.
@@ -828,6 +901,19 @@ async function validateInstallationForRepository(
     };
   }
 
+  return assertInstallationUsable(context, installationId);
+}
+
+/**
+ * Verify one installation exists and is usable, independent of how it was
+ * chosen. Split out of {@link validateInstallationForRepository} so a caller
+ * that already knows which installation it must use gets the same suspension
+ * and status checks as one that selects globally.
+ */
+async function assertInstallationUsable(
+  context: GithubServiceContext,
+  installationId: number,
+): Promise<ValidatedInstallationResult> {
   const installation = await getInstallationById(context, installationId);
   if (!installation) {
     return { ok: false, error: 'GitHub installation not found', code: 'no_installation' };
@@ -842,6 +928,32 @@ async function validateInstallationForRepository(
   }
 
   return { ok: true, installationId };
+}
+
+/**
+ * Check whether one specific installation still has an active link to a
+ * repository. {@link getInstallationIdFromLinkTable} answers "which
+ * installation" and takes no caller into account; this answers "may *this*
+ * installation", which is the question a user-facing read needs.
+ */
+async function installationHasActiveLink(
+  context: GithubServiceContext,
+  repositoryId: number,
+  installationId: number,
+): Promise<boolean> {
+  const [link] = await context.db
+    .select({ installationId: githubInstallationRepository.installationId })
+    .from(githubInstallationRepository)
+    .where(
+      and(
+        eq(githubInstallationRepository.repositoryId, repositoryId),
+        eq(githubInstallationRepository.installationId, installationId),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .limit(1);
+
+  return link !== undefined;
 }
 
 /**

@@ -4,7 +4,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { pullRequestReviewRun, tribunalRun } from '@tribunal/database/schema';
 import {
   getRepositoryById,
-  getInstallationForRepository,
+  getInstallationForRepositoryAsCaller,
 } from '@tribunal/github/repositories/service';
 import {
   getPullRequestOperationalStatus,
@@ -17,7 +17,7 @@ import type {
 } from '@tribunal/github/types/pull-requests';
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
-import { userCanAccessRepository } from '$lib/server/repositories';
+import { resolveAuthorizedInstallationId, userCanAccessRepository } from '$lib/server/repositories';
 import {
   getRepositoryOperatorDetails,
   listAgents,
@@ -144,9 +144,11 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     error(404, 'Repository not found');
   }
 
-  // Authorize: the user must reach this repository via one of their installations.
-  const canAccess = await userCanAccessRepository(user.id, repositoryId);
-  if (!canAccess) {
+  // Authorize: the user must reach this repository via one of their
+  // installations — and we keep which one, rather than discarding it and
+  // re-deriving a possibly different installation for the GitHub reads below.
+  const authorizedInstallationId = await resolveAuthorizedInstallationId(user.id, repositoryId);
+  if (authorizedInstallationId === null) {
     error(404, 'Repository not found');
   }
 
@@ -163,7 +165,7 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     listAgents(user.id),
     shouldUseE2EPullRequests()
       ? listE2EPullRequests(user.id, repository, filters)
-      : listLivePullRequests(repositoryId, filters),
+      : listLivePullRequests(repositoryId, filters, authorizedInstallationId),
   ]);
 
   return {
@@ -186,9 +188,31 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
   };
 };
 
-async function listLivePullRequests(repositoryId: number, filters: PullRequestFilterOptions) {
-  const installation = await getInstallationForRepository(githubContext, repositoryId);
+async function listLivePullRequests(
+  repositoryId: number,
+  filters: PullRequestFilterOptions,
+  authorizedInstallationId: number,
+) {
+  // Resolve the installation from the authorization that admitted this user,
+  // not from the repository. A repository can carry active links for two
+  // installations, and the global selector would hand this caller a client for
+  // whichever was added most recently — an installation they may never have
+  // been authorized through.
+  const installation = await getInstallationForRepositoryAsCaller(
+    githubContext,
+    repositoryId,
+    authorizedInstallationId,
+  );
   if (!installation.ok) {
+    // `not_found` and `no_installation` are local conditions, not GitHub
+    // connectivity: the repository row is gone, or the caller's installation
+    // no longer links it. Reaching either after authorization already
+    // succeeded means access was lost between the two queries, so it fails
+    // closed the same way the authorization check itself does rather than
+    // blaming GitHub for a 502.
+    if (installation.code === 'not_found' || installation.code === 'no_installation') {
+      error(404, 'Repository not found');
+    }
     error(502, `Could not reach GitHub for this repository: ${installation.error}`);
   }
 
