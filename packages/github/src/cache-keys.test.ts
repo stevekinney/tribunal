@@ -11,8 +11,8 @@ describe('CACHE_KEYS', () => {
 
   it('builds GitHub issues list keys and their invalidation pattern', () => {
     expect.assertions(2);
-    expect(CACHE_KEYS.GITHUB_ISSUES_LIST(7, 's:open')).toBe(
-      'github:repository:7:issues:list:s:open',
+    expect(CACHE_KEYS.GITHUB_ISSUES_LIST(7, 42, 's:open')).toBe(
+      'github:repository:7:issues:list:installation:42:s:open',
     );
     expect(CACHE_KEYS.GITHUB_ISSUES_LIST_PATTERN(7)).toBe('github:repository:7:issues:list:*');
   });

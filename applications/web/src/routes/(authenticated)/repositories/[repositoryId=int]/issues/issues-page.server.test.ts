@@ -112,6 +112,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -136,6 +137,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -155,6 +157,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -177,6 +180,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -202,6 +206,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -230,6 +235,7 @@ describe('repository issues page load', () => {
     mockUserCanAccessRepository.mockResolvedValue(true);
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit: {},
       owner: 'acme',
       repo: 'widgets',
@@ -253,6 +259,7 @@ describe('repository issues page load', () => {
     const octokit = { rest: {} };
     mockGetInstallationForRepository.mockResolvedValue({
       ok: true,
+      installationId: 4242,
       octokit,
       owner: 'acme',
       repo: 'widgets',
@@ -261,7 +268,18 @@ describe('repository issues page load', () => {
 
     await runLoad();
 
-    expect(mockListIssues).toHaveBeenCalledWith({}, octokit, 'acme', 'widgets', defaultFilters, 1);
+    expect(mockListIssues).toHaveBeenCalledWith(
+      {},
+      octokit,
+      'acme',
+      'widgets',
+      defaultFilters,
+      // The installation that authorized this caller — it partitions the cache
+      // entry, so forwarding the wrong one would reintroduce the
+      // cross-installation read this argument exists to prevent.
+      4242,
+      1,
+    );
   });
 });
 

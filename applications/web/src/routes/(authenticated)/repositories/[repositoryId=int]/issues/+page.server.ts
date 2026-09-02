@@ -45,6 +45,10 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     installation.owner,
     installation.repo,
     filters,
+    // The installation that authorized this caller and built the Octokit
+    // above. Cache entries are partitioned by it so a repository linked to
+    // two installations cannot serve one's issue list to the other.
+    installation.installationId,
     repositoryId,
   ).catch((cause: unknown) => {
     // GitHub's "List repository issues" endpoint requires the app's

@@ -11,7 +11,7 @@ import type { Octokit as OctokitType } from 'octokit';
 import { transformAuthor, encodeFilterValue } from '@tribunal/github/shared';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
-import { requirePolicy } from '../core/cache-policy.js';
+import { requirePolicy, assertPartitionInstallationId } from '../core/cache-policy.js';
 
 // ============================================================================
 // Types derived from Octokit
@@ -215,6 +215,9 @@ function buildIssueFilterKey(filters: IssueFilterOptions): string {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param filters - Filter and pagination options
+ * @param installationId - Installation whose credentials authenticated `octokit`.
+ *   This partitions the cache entry; passing any other installation's id would
+ *   let one installation read another's cached content.
  * @param repositoryId - Internal repository ID for Redis caching (optional)
  */
 export async function listIssues(
@@ -223,8 +226,12 @@ export async function listIssues(
   owner: string,
   repo: string,
   filters: IssueFilterOptions,
+  installationId: number,
   repositoryId?: number,
 ): Promise<IssueListResult> {
+  // Before any cache access: an id that cannot partition a key must fail
+  // rather than quietly share one.
+  assertPartitionInstallationId(installationId);
   const fetchIssues = async (): Promise<IssueListResult> => {
     const response = await octokit.rest.issues.listForRepo({
       owner,
@@ -263,7 +270,7 @@ export async function listIssues(
     context.cache,
     policy,
     async () => ({ data: await fetchIssues() }),
-    [repositoryId, buildIssueFilterKey(filters)],
+    [repositoryId, installationId, buildIssueFilterKey(filters)],
   );
   return value;
 }
