@@ -133,6 +133,21 @@
     return `${action} details for ${eventTone(event)}: ${summarizeEvent(event)}`;
   }
 
+  // SvelteKit reuses this component across `/runs/[runId]` navigations, so the
+  // expansion set would otherwise carry into the next run and grow without
+  // bound. Compare against the previous id explicitly rather than resetting in
+  // a plain effect: a same-run `invalidateAll()` from the event stream re-runs
+  // this on every appended event, and collapsing an open panel underneath a
+  // reader would be its own bug.
+  let lastRunId = untrack(() => run.id);
+  $effect(() => {
+    const currentRunId = run.id;
+    if (currentRunId !== lastRunId) {
+      expandedEventIds.clear();
+      lastRunId = currentRunId;
+    }
+  });
+
   function canStopAgent(status: string): boolean {
     return status === 'running' || status === 'queued';
   }
@@ -426,16 +441,17 @@
                 <p class="event-summary">{summarizeEvent(event)}</p>
                 {#if event.detail != null}
                   <div class="event-details-section">
-                    <button
+                    <Button
                       type="button"
-                      class="event-details-toggle"
+                      variant="ghost"
+                      size="xs"
                       aria-expanded={isEventExpanded(event)}
                       aria-controls={detailsPanelId(event)}
                       aria-label={detailsToggleLabel(event)}
                       onclick={() => toggleEventDetails(event)}
                     >
                       {isEventExpanded(event) ? 'Hide details' : 'Show details'}
-                    </button>
+                    </Button>
                     <div id={detailsPanelId(event)} hidden={!isEventExpanded(event)}>
                       {#if isEventExpanded(event)}
                         <JsonViewer value={event.detail} />
@@ -634,20 +650,6 @@
 
   .event-details-section {
     margin-top: var(--space-1);
-  }
-
-  .event-details-toggle {
-    padding: 0;
-    border: none;
-    background: none;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    cursor: pointer;
-    text-decoration: underline;
-  }
-
-  .event-details-toggle:hover {
-    color: var(--text);
   }
 
   /* ---- Findings ---- */

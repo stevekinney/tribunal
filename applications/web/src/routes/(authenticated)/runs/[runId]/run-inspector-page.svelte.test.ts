@@ -649,6 +649,31 @@ describe('/runs/[runId] page', () => {
     expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(true);
   });
 
+  it('drops expanded detail panels when the route swaps to a different run', async () => {
+    stubInertEventSource();
+    const rendered = render(RunInspectorPage, { data });
+
+    await page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+
+    // Same run, new data (what the event stream's invalidateAll does): the
+    // open panel must survive so a reader is not collapsed out from under.
+    await rendered.rerender({ data: { ...data, run: { ...data.run } } });
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+
+    // Different run: the expansion set belongs to the run that was showing.
+    await rendered.rerender({
+      data: { ...data, run: { ...data.run, id: 'run_2', runId: 'run_2' } },
+    });
+    await expect
+      .element(page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('omits the detail disclosure for an event that recorded no structured detail', async () => {
     stubInertEventSource();
     render(RunInspectorPage, {
