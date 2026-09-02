@@ -206,6 +206,38 @@ describe('metadata contract', () => {
     ).toContainEqual({ capability: firstTool.name, reason: 'duplicate-name' });
   });
 
+  it('checks a conformance-only fixture, which is served even though it is never grantable', () => {
+    expect.assertions(1);
+    const brokenRegistry = {
+      ...tribunalMcpRegistry,
+      conformanceOnlyTools: [
+        {
+          name: 'broken_fixture',
+          title: 'Broken fixture',
+          description: 'Advertised in conformance mode with no handler.',
+          inputSchema: undefined,
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+          },
+          requiredScope: 'conformance:read',
+        },
+      ],
+    } as unknown as McpRegistry;
+
+    // Excluded from `getSupportedScopes()` is a statement about what a client
+    // can be granted, not about whether the fixture is well-formed. TRI-30
+    // registers one; a fixture with no handler must not pass a gate that
+    // claims to check every advertised capability.
+    expect(
+      findMetadataContractViolations(brokenRegistry, {
+        isScope: (value) => tribunalScopeVocabulary.isScope(value),
+      }),
+    ).toContainEqual({ capability: 'broken_fixture', reason: 'missing-handler' });
+  });
+
   it('checks an advertised prompt too', () => {
     expect.assertions(1);
     const brokenRegistry = {

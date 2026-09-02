@@ -63,6 +63,15 @@ export function findMetadataContractViolations(
 
   const capabilities: Array<{ entry: AdvertisedCapability; isTool: boolean }> = [
     ...registry.tools.map((entry) => ({ entry: entry as AdvertisedCapability, isTool: true })),
+    // Conformance-only tools are excluded from `getSupportedScopes()`, which is
+    // a statement about what an OAuth client can be granted — not about whether
+    // the fixture is well-formed. It is still served and advertised in
+    // conformance mode, so a fixture with no handler or a duplicate name would
+    // otherwise pass a gate that claims to check every advertised capability.
+    ...(registry.conformanceOnlyTools ?? []).map((entry) => ({
+      entry: entry as AdvertisedCapability,
+      isTool: true,
+    })),
     ...registry.resources.map((entry) => ({ entry: entry as AdvertisedCapability, isTool: false })),
     ...registry.prompts.map((entry) => ({ entry: entry as AdvertisedCapability, isTool: false })),
   ];

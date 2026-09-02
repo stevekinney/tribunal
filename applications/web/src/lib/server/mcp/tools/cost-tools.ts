@@ -22,7 +22,6 @@ const costEventSchema = z.object({
   repositoryOwner: z.string().nullable(),
   repositoryName: z.string().nullable(),
   agentSlug: z.string().nullable(),
-  reviewRunId: z.string().nullable(),
 });
 
 const rollupSchema = z.array(z.object({ label: z.string(), amountUsd: z.number() }));

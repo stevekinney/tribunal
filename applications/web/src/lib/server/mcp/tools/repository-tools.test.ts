@@ -32,7 +32,6 @@ const publicRepository = {
   name: 'tribunal',
   defaultBranch: 'main',
   latestCommit: 'abc123',
-  installationAccount: 'lost-gradient',
 };
 
 function context(userId: string): McpContext {
@@ -147,7 +146,9 @@ describe('get_repository', () => {
     // `installationId` is how the server picks the client that authorized this
     // caller. It is not repository information anybody asked for, and the
     // output schema does not declare it.
-    expect(JSON.stringify(result.structuredContent)).not.toContain('installationId');
+    expect(JSON.stringify(result.structuredContent)).not.toMatch(
+      /installationId|installationAccount/,
+    );
   });
 
   it('reports a repository outside the caller access as not found', async () => {

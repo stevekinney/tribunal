@@ -22,7 +22,6 @@ const costEvent = {
   repositoryOwner: 'lost-gradient',
   repositoryName: 'tribunal',
   agentSlug: 'security',
-  reviewRunId: 'run-1',
 };
 
 function context(userId: string): McpContext {

@@ -12,15 +12,18 @@ import { withUntrustedContentFraming } from '../untrusted-content';
 import { resolveTribunalUserId } from '../user-identity';
 
 /**
- * Drops the internal authorization identifier before a repository reaches a
- * client.
+ * Reduces a repository to exactly what `repositories:read` discloses.
  *
- * `McpRepository` carries `installationId` so the pull request path can build
- * its client for the installation that granted access. That is server-side
- * plumbing: it is not repository information anybody asked for, and passing
- * the reader's object straight through would put a field on the wire that
- * `repositorySchema` does not declare — an output that disagrees with its own
- * advertised schema, which a strict client is entitled to reject.
+ * The consent sentence names the repository's name, owner, default branch, and
+ * latest commit. That is the whole list, and this function is where it is
+ * enforced — `disclosed-fields.test.ts` pins these keys against that sentence.
+ *
+ * Two fields are dropped here rather than never resolved, because the server
+ * needs both. `installationId` is how the pull request path builds a client for
+ * the installation that authorized the caller. `installationAccount` names the
+ * account that installation belongs to, which can differ from the repository's
+ * owner after a transfer or under a shared installation — separate
+ * organization metadata the consent screen does not mention.
  */
 function toPublicRepository(repository: McpRepository) {
   return {
@@ -29,7 +32,6 @@ function toPublicRepository(repository: McpRepository) {
     name: repository.name,
     defaultBranch: repository.defaultBranch,
     latestCommit: repository.latestCommit,
-    installationAccount: repository.installationAccount,
   };
 }
 
@@ -39,7 +41,6 @@ const repositorySchema = z.object({
   name: z.string(),
   defaultBranch: z.string().nullable(),
   latestCommit: z.string().nullable(),
-  installationAccount: z.string(),
 });
 
 export const listRepositoriesTool = tribunalScopeVocabulary.defineTool({

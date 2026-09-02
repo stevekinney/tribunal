@@ -17,7 +17,9 @@ export type McpCostEventSource = 'estimate' | 'reconciled';
  *
  * The row's `meta` payload and its idempotency key are omitted: neither is
  * "estimated review costs by repository and agent", which is what the consent
- * copy describes.
+ * copy describes. `reviewRunId` is omitted for the same reason and was caught
+ * by review rather than by me — a review run identifier is review metadata,
+ * and `reviews:read` is a scope the user can decline while granting this one.
  */
 export type McpCostEvent = {
   occurredAt: string;
@@ -27,7 +29,6 @@ export type McpCostEvent = {
   repositoryOwner: string | null;
   repositoryName: string | null;
   agentSlug: string | null;
-  reviewRunId: string | null;
 };
 
 export type McpCostSummary = {
@@ -48,7 +49,6 @@ const costEventColumns = {
   repositoryOwner: repository.owner,
   repositoryName: repository.name,
   agentSlug: agent.slug,
-  reviewRunId: costEvent.reviewRunId,
 };
 
 type CostEventRow = {
@@ -59,7 +59,6 @@ type CostEventRow = {
   repositoryOwner: string | null;
   repositoryName: string | null;
   agentSlug: string | null;
-  reviewRunId: string | null;
 };
 
 function projectCostEvent(row: CostEventRow): McpCostEvent {
@@ -76,7 +75,6 @@ function projectCostEvent(row: CostEventRow): McpCostEvent {
     repositoryOwner: row.repositoryOwner,
     repositoryName: row.repositoryName,
     agentSlug: row.agentSlug,
-    reviewRunId: row.reviewRunId,
   };
 }
 

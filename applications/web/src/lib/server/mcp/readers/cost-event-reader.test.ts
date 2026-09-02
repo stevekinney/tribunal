@@ -77,7 +77,6 @@ describe('cost event reader', () => {
         repositoryOwner: 'lost-gradient',
         repositoryName: 'tribunal',
         agentSlug: 'security',
-        reviewRunId: null,
       },
     ]);
     expect(JSON.stringify(page.items)).not.toMatch(/event-1|cacheReadTokens/);
