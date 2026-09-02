@@ -41,6 +41,9 @@ export type RepositoryListResult =
 export type RepositoryLookupResult =
   { ok: true; repository: McpRepository | null } | { ok: false; error: RepositoryReadError };
 
+export type RepositoryNameMatchResult =
+  { ok: true; matches: McpRepository[] } | { ok: false; error: RepositoryReadError };
+
 /**
  * Every repository read goes through `getRepositoriesForUser`, and that is the
  * whole authorization story for this scope family.
@@ -129,12 +132,20 @@ export async function findAccessibleRepository(
  *
  * Matching is case-insensitive because GitHub treats owner and repository names
  * that way, and the caller is typing what a person told them.
+ *
+ * Every match is returned rather than the first, because a name is not an
+ * identifier: `repository.id` is the primary key and nothing makes owner/name
+ * unique, so a rename that leaves the old row or a delete-and-recreate gives
+ * two accessible rows the same label. Picking one — even deterministically —
+ * would silently answer for a repository the caller did not choose, and the
+ * pull request reader would then echo that id and load stored state under it.
+ * The caller is told to disambiguate with an id instead.
  */
-export async function findAccessibleRepositoryByName(
+export async function findAccessibleRepositoriesByName(
   userId: number,
   owner: string,
   name: string,
-): Promise<RepositoryLookupResult> {
+): Promise<RepositoryNameMatchResult> {
   const result = await listAccessibleRepositories(userId);
   if (!result.ok) return result;
 
@@ -143,10 +154,9 @@ export async function findAccessibleRepositoryByName(
 
   return {
     ok: true,
-    repository:
-      result.repositories.find(
-        (entry) =>
-          entry.owner.toLowerCase() === wantedOwner && entry.name.toLowerCase() === wantedName,
-      ) ?? null,
+    matches: result.repositories.filter(
+      (entry) =>
+        entry.owner.toLowerCase() === wantedOwner && entry.name.toLowerCase() === wantedName,
+    ),
   };
 }

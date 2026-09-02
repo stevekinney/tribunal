@@ -8,7 +8,7 @@ vi.mock('$lib/server/repositories', () => ({
 
 import {
   findAccessibleRepository,
-  findAccessibleRepositoryByName,
+  findAccessibleRepositoriesByName,
   listAccessibleRepositories,
 } from './repository-reader';
 
@@ -126,9 +126,9 @@ describe('repository reader', () => {
 
     // GitHub treats owner and repository names case-insensitively, and the
     // caller is typing what a person told them.
-    const result = await findAccessibleRepositoryByName(7, 'Lost-Gradient', 'Cinder');
+    const result = await findAccessibleRepositoriesByName(7, 'Lost-Gradient', 'Cinder');
 
-    expect(result).toMatchObject({ ok: true, repository: { id: 9002 } });
+    expect(result).toMatchObject({ ok: true, matches: [{ id: 9002 }] });
   });
 
   it('reports a name outside the accessible set as absent', async () => {
@@ -139,16 +139,16 @@ describe('repository reader', () => {
       installations: [],
     });
 
-    const result = await findAccessibleRepositoryByName(7, 'someone-else', 'private-thing');
+    const result = await findAccessibleRepositoriesByName(7, 'someone-else', 'private-thing');
 
-    expect(result).toEqual({ ok: true, repository: null });
+    expect(result).toEqual({ ok: true, matches: [] });
   });
 
   it('passes a failure through when resolving by name', async () => {
     expect.assertions(1);
     mocks.getRepositoriesForUser.mockResolvedValue({ ok: false, error: 'no_github_token' });
 
-    const result = await findAccessibleRepositoryByName(7, 'lost-gradient', 'tribunal');
+    const result = await findAccessibleRepositoriesByName(7, 'lost-gradient', 'tribunal');
 
     expect(result).toEqual({ ok: false, error: 'no_github_token' });
   });
@@ -215,5 +215,24 @@ describe('repository reader', () => {
     const result = await listAccessibleRepositories(7);
 
     expect(result).toMatchObject({ ok: true, repositories: [{ id: 9001 }, { id: 9004 }] });
+  });
+
+  it('returns every repository a name matches rather than picking one', async () => {
+    expect.assertions(1);
+    mocks.getRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      repositories: [
+        accessibleRepository(9001, 'tribunal'),
+        accessibleRepository(9004, 'tribunal'),
+      ],
+      installations: [],
+    });
+
+    // A name is not an identifier. Returning one match would answer for a
+    // repository the caller never chose; the pull request reader refuses
+    // instead and asks for an id.
+    const result = await findAccessibleRepositoriesByName(7, 'lost-gradient', 'tribunal');
+
+    expect(result).toMatchObject({ ok: true, matches: [{ id: 9001 }, { id: 9004 }] });
   });
 });

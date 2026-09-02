@@ -10,7 +10,8 @@ import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
 import {
   findAccessibleRepository,
-  findAccessibleRepositoryByName,
+  findAccessibleRepositoriesByName,
+  type McpRepository,
   type RepositoryReadError,
 } from './repository-reader';
 
@@ -111,6 +112,8 @@ export type PullRequestReadError =
   | 'github_unreachable'
   | 'pull_request_not_found'
   /** GitHub refused the read for rate limiting — worth retrying later. */
+  /** The owner and name matched more than one accessible repository. */
+  | 'repository_name_ambiguous'
   | 'github_rate_limited'
   /** GitHub failed the read for some other reason — permissions, an outage. */
   | 'github_read_failed';
@@ -205,16 +208,43 @@ export function selectStoredPullRequestState(repositoryId: number, pullRequestNu
  * steps. Using the installation that granted access closes that, and removes a
  * second resolution nothing needed.
  */
-async function resolveAuthorizedInstallation(userId: number, selector: RepositorySelector) {
-  const accessible =
-    'repositoryId' in selector
-      ? await findAccessibleRepository(userId, selector.repositoryId)
-      : await findAccessibleRepositoryByName(userId, selector.owner, selector.name);
-  if (!accessible.ok) return { ok: false, error: accessible.error } as const;
-  if (!accessible.repository) return { ok: false, error: 'repository_not_found' } as const;
+async function resolveAuthorizedRepository(userId: number, selector: RepositorySelector) {
+  if ('repositoryId' in selector) {
+    const accessible = await findAccessibleRepository(userId, selector.repositoryId);
+    if (!accessible.ok) return { ok: false, error: accessible.error } as const;
+    if (!accessible.repository) return { ok: false, error: 'repository_not_found' } as const;
+    return { ok: true, repository: accessible.repository } as const;
+  }
 
-  const { id: repositoryId, owner, name, installationId } = accessible.repository;
-  const octokit = await githubContext.getInstallationOctokit(installationId);
+  const matched = await findAccessibleRepositoriesByName(userId, selector.owner, selector.name);
+  if (!matched.ok) return { ok: false, error: matched.error } as const;
+  if (matched.matches.length === 0) return { ok: false, error: 'repository_not_found' } as const;
+  // Two accessible rows can share an owner and name. Answering for either one
+  // would be a guess the caller never made, and it would surface as the wrong
+  // pull requests under a repository id they did not send.
+  if (matched.matches.length > 1) {
+    return { ok: false, error: 'repository_name_ambiguous' } as const;
+  }
+
+  return { ok: true, repository: matched.matches[0] as McpRepository } as const;
+}
+
+async function resolveAuthorizedInstallation(userId: number, selector: RepositorySelector) {
+  const authorized = await resolveAuthorizedRepository(userId, selector);
+  if (!authorized.ok) return { ok: false, error: authorized.error } as const;
+
+  const { id: repositoryId, owner, name, installationId } = authorized.repository;
+
+  // Minting an installation token is itself a GitHub call, and it fails the
+  // same ways a read does — a rate limit, a 5xx, a revoked installation. Left
+  // outside the classification the two service calls already have, those
+  // failures escaped the tool boundary as a generic internal error.
+  let octokit;
+  try {
+    octokit = await githubContext.getInstallationOctokit(installationId);
+  } catch (error) {
+    return { ok: false, error: classifyGitHubFailure(error) } as const;
+  }
   if (!octokit) return { ok: false, error: 'github_unreachable' } as const;
 
   return { ok: true, repositoryId, octokit, owner, repo: name } as const;

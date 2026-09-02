@@ -519,4 +519,79 @@ describe('pull request reader', () => {
 
     expect(result).toEqual({ ok: false, error: 'github_rate_limited' });
   });
+
+  it('passes a resolution failure through when addressing by name', async () => {
+    expect.assertions(1);
+    mocks.getRepositoriesForUser.mockResolvedValue({ ok: false, error: 'github_unavailable' });
+
+    const result = await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { owner: 'lost-gradient', name: 'tribunal' },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, error: 'github_unavailable' });
+  });
+
+  it('refuses a name that matches two accessible repositories', async () => {
+    expect.assertions(2);
+    grantAccess();
+    mocks.getRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      repositories: [9001, 9004].map((id) => ({
+        repository: {
+          id,
+          owner: 'lost-gradient',
+          name: 'tribunal',
+          defaultBranch: 'main',
+          commit: 'abc123',
+          installationId: 7001,
+        },
+        installation: {
+          installationId: 7001,
+          accountLogin: 'lost-gradient',
+          accountAvatarUrl: null,
+        },
+      })),
+      installations: [],
+    });
+
+    const result = await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { owner: 'lost-gradient', name: 'tribunal' },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    // Answering for either would surface the wrong pull requests under a
+    // repository id the caller never sent.
+    expect(result).toEqual({ ok: false, error: 'repository_name_ambiguous' });
+    expect(mocks.getInstallationOctokit).not.toHaveBeenCalled();
+  });
+
+  it('classifies a failure while minting the installation token', async () => {
+    expect.assertions(1);
+    grantAccess();
+    mocks.getInstallationOctokit.mockRejectedValue(
+      Object.assign(new Error('GitHub said no'), { status: 429 }),
+    );
+
+    const result = await withTestDatabase(() =>
+      listRepositoryPullRequests(7, {
+        repository: { repositoryId: 9001 },
+        state: 'open',
+        page: 1,
+        perPage: 25,
+      }),
+    );
+
+    // Minting a token is a GitHub call too, and it fails the same ways a read
+    // does. Outside the classification it escaped as a generic internal error.
+    expect(result).toEqual({ ok: false, error: 'github_rate_limited' });
+  });
 });

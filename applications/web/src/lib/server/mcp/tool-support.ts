@@ -56,6 +56,8 @@ export function describeReadError(error: McpReadError): string {
       return "That repository's GitHub App installation could not be resolved. Check the installation and try again.";
     case 'pull_request_not_found':
       return 'No pull request with that number exists in this repository.';
+    case 'repository_name_ambiguous':
+      return 'That owner and name match more than one repository you can reach. Send repositoryId instead.';
     case 'github_rate_limited':
       return 'GitHub rate-limited this read. Wait a little and try again.';
     case 'github_read_failed':

@@ -16,6 +16,7 @@ const everyReadError: McpReadError[] = [
   'review_finding_not_found',
   'repository_selector_missing',
   'repository_selector_conflict',
+  'repository_name_ambiguous',
   'github_rate_limited',
   'github_read_failed',
 ];
