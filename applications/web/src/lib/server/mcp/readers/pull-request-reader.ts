@@ -258,7 +258,10 @@ async function resolveAuthorizedInstallation(userId: number, selector: Repositor
   }
   if (!octokit) return { ok: false, error: 'github_unreachable' } as const;
 
-  return { ok: true, repositoryId, octokit, owner, repo: name } as const;
+  // `installationId` is returned, not just consumed above, because the pull
+  // request cache is partitioned by it: the entry must be attributed to the
+  // installation whose credentials actually fetched it, which is this one.
+  return { ok: true, repositoryId, installationId, octokit, owner, repo: name } as const;
 }
 
 /**
@@ -328,6 +331,7 @@ export async function listRepositoryPullRequests(
         page: input.page,
         perPage: input.perPage,
       },
+      installation.installationId,
       installation.repositoryId,
     );
   } catch (error) {
@@ -361,6 +365,7 @@ export async function getRepositoryPullRequest(
       installation.owner,
       installation.repo,
       input.pullRequestNumber,
+      installation.installationId,
     );
   } catch (error) {
     return { ok: false, error: classifyGitHubFailure(error) };
