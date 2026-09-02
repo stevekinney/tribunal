@@ -10,7 +10,7 @@ import { transformAuthor, encodeFilterValue, resolveHasNextPage } from '@tribuna
 import { isNotFoundError, isNotModifiedError } from '@tribunal/github/errors';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
-import { requirePolicy } from '../core/cache-policy.js';
+import { requirePolicy, assertPartitionInstallationId } from '../core/cache-policy.js';
 import { getFailingCheckCount } from './state/queries.js';
 
 // Re-export error helpers for external consumers
@@ -226,6 +226,9 @@ export async function listPullRequests(
   installationId: number,
   repositoryId?: number,
 ): Promise<PullRequestListResult> {
+  // Before any cache access: an id that cannot partition a key must fail
+  // rather than quietly share one.
+  assertPartitionInstallationId(installationId);
   const fetchPullRequests = async (): Promise<PullRequestListResult> => {
     const response = await octokit.rest.pulls.list({
       owner,
@@ -284,6 +287,8 @@ export async function getPullRequest(
   pullNumber: number,
   installationId: number,
 ): Promise<PullRequestDetail | null> {
+  // Outside the try: a partition failure is a programming error, never a 404.
+  assertPartitionInstallationId(installationId);
   try {
     const policy = requirePolicy('get-pull-request');
     const { value } = await cachedRead<PullRequestDetail>(

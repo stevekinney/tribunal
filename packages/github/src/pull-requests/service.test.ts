@@ -463,6 +463,75 @@ describe('listPullRequests', () => {
     expect(result.hasNextPage).toBe(true);
     expect(context.cache.setCache).toHaveBeenCalled();
   });
+
+  // The list is the surface the repositories page renders, so it gets the same
+  // stateful two-installation proof the detail path has rather than relying on
+  // key-shape assertions alone.
+  it('does not serve one installation the pull request list another installation cached', async () => {
+    expect.assertions(4);
+
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    const currentInstallationList = vi.fn().mockResolvedValue({
+      data: [
+        {
+          number: 5,
+          title: 'Private to the current installation',
+          state: 'open',
+          draft: false,
+          user: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          closed_at: null,
+          merged_at: null,
+          labels: [],
+          head: { ref: 'feature', sha: 'sha5' },
+          base: { ref: 'main' },
+          html_url: 'https://github.com/acme/widgets/pull/5',
+        },
+      ],
+      headers: {},
+    });
+    const populated = await listPullRequests(
+      context,
+      { rest: { pulls: { list: currentInstallationList } } } as never,
+      'acme',
+      'widgets',
+      defaultFilters,
+      200,
+      7,
+    );
+    expect(populated.pullRequests).toHaveLength(1);
+
+    // The installation the transfer left behind sees nothing of its own.
+    const staleInstallationList = vi.fn().mockResolvedValue({ data: [], headers: {} });
+    const leaked = await listPullRequests(
+      context,
+      { rest: { pulls: { list: staleInstallationList } } } as never,
+      'acme',
+      'widgets',
+      defaultFilters,
+      100,
+      7,
+    );
+
+    expect(staleInstallationList).toHaveBeenCalledOnce();
+    expect(leaked.pullRequests).toHaveLength(0);
+    expect([...store.keys()].every((key) => key.includes(':installation:'))).toBe(true);
+  });
 });
 
 describe('getPullRequest', () => {
@@ -586,6 +655,28 @@ describe('getPullRequest', () => {
     const result = await getPullRequest(context, octokit, 'owner', 'repo', 999, 55);
 
     expect(result).toBeNull();
+  });
+
+  // The guard exists because an unusable id would stringify into a shared
+  // literal segment (`installation:undefined`) and disable the partition for
+  // every caller on that path, with no error anywhere.
+  it.each([
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+  ])('refuses to read a pull request with a %s installation id', async (_label, badId) => {
+    expect.assertions(2);
+    const context = createMockContext();
+    const octokit = createMockOctokit({ number: 1 });
+
+    await expect(
+      getPullRequest(context, octokit, 'acme', 'widgets', 1, badId as unknown as number),
+    ).rejects.toThrow(/installationId must be a positive integer/);
+    // It must fail before touching the cache at all.
+    expect(context.cache.getCached).not.toHaveBeenCalled();
   });
 
   // Criterion 3: the transfer scenario, end to end through the real

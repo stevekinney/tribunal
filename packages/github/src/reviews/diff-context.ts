@@ -2,7 +2,7 @@ import type { Endpoints } from '@octokit/types';
 import type { Octokit } from 'octokit';
 import type { GithubServiceContext } from '../context.js';
 import { cachedRead } from '../core/github-read-client.js';
-import { requirePolicy } from '../core/cache-policy.js';
+import { requirePolicy, assertPartitionInstallationId } from '../core/cache-policy.js';
 import { isNotModifiedError } from '../errors.js';
 import { ValidationError } from '../error-taxonomy.js';
 import { validateNonEmptyString, withGitHubWriteErrorClassification } from './errors.js';
@@ -233,12 +233,16 @@ function validateDiffContextInput(input: {
   owner: string;
   repository: string;
   pullRequestNumber: number;
+  installationId: number;
 }): void {
   validateNonEmptyString(input.owner, 'owner');
   validateNonEmptyString(input.repository, 'repository');
   if (!Number.isInteger(input.pullRequestNumber) || input.pullRequestNumber <= 0) {
     throw new ValidationError('pullRequestNumber must be a positive integer.');
   }
+  // The metadata cache key is partitioned by this id; an unusable one must
+  // fail rather than collapse every installation onto a shared key.
+  assertPartitionInstallationId(input.installationId);
 }
 
 function normalizeLabelName(label: { name?: string | null } | string): string {

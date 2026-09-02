@@ -7,6 +7,7 @@
  */
 
 import { CACHE_KEYS } from '../cache-keys.js';
+import { ValidationError } from '../error-taxonomy.js';
 import { GITHUB_LIST_CACHE_TTL, GITHUB_RESPONSE_CACHE_TTL_SECONDS } from '@tribunal/github/shared';
 
 // ============================================================================
@@ -68,6 +69,26 @@ export function requirePolicy(operationId: string): CachePolicy<unknown[]> {
     throw new Error(`Cache policy "${operationId}" not found — was cache-policy.ts imported?`);
   }
   return policy;
+}
+
+/**
+ * Guard the installation dimension of a partitioned cache key.
+ *
+ * The pull request policies fold the installation into the key so that one
+ * installation cannot be served another's cached content. An id that is not a
+ * positive integer would stringify into a shared literal segment —
+ * `installation:undefined`, `installation:NaN` — which turns the partition off
+ * for every caller that hits the same path, silently. A cache key is doing
+ * access-control work here, so the failure mode has to be loud.
+ *
+ * @throws ValidationError when the id cannot safely partition a key.
+ */
+export function assertPartitionInstallationId(installationId: number): void {
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new ValidationError(
+      `installationId must be a positive integer to partition a cache key; received ${String(installationId)}.`,
+    );
+  }
 }
 
 /** Get all registered policies. Useful for testing and auditing. */
