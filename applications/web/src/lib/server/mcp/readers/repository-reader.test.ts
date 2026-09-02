@@ -152,4 +152,68 @@ describe('repository reader', () => {
 
     expect(result).toEqual({ ok: false, error: 'no_github_token' });
   });
+
+  it.each([
+    ['already ordered', ['lost-gradient', 'zzz-org']],
+    ['reversed', ['zzz-org', 'lost-gradient']],
+  ])(
+    'orders by owner before name, whatever order the resolver returned (%s)',
+    async (_label, owners) => {
+      expect.assertions(1);
+      mocks.getRepositoriesForUser.mockResolvedValue({
+        ok: true,
+        repositories: owners.map((owner, index) => {
+          const entry = accessibleRepository(9001 + index, 'tribunal');
+          return { ...entry, repository: { ...entry.repository, owner } };
+        }),
+        installations: [],
+      });
+
+      const result = await listAccessibleRepositories(7);
+
+      expect(result).toMatchObject({
+        ok: true,
+        repositories: [{ owner: 'lost-gradient' }, { owner: 'zzz-org' }],
+      });
+    },
+  );
+
+  it.each([
+    ['already ordered', ['agents', 'tribunal']],
+    ['reversed', ['tribunal', 'agents']],
+  ])('orders by name within an owner (%s)', async (_label, names) => {
+    expect.assertions(1);
+    mocks.getRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      repositories: names.map((name, index) => accessibleRepository(9001 + index, name)),
+      installations: [],
+    });
+
+    const result = await listAccessibleRepositories(7);
+
+    expect(result).toMatchObject({
+      ok: true,
+      repositories: [{ name: 'agents' }, { name: 'tribunal' }],
+    });
+  });
+
+  it('orders tied owner and name pairs by repository id', async () => {
+    expect.assertions(1);
+    mocks.getRepositoriesForUser.mockResolvedValue({
+      ok: true,
+      // The shared resolver orders by owner then name, which ties here. Offset
+      // paging resolves the set again on every call, so tied rows in
+      // unspecified database order can swap between calls and make a later
+      // page repeat one repository while omitting the other.
+      repositories: [
+        accessibleRepository(9004, 'tribunal'),
+        accessibleRepository(9001, 'tribunal'),
+      ],
+      installations: [],
+    });
+
+    const result = await listAccessibleRepositories(7);
+
+    expect(result).toMatchObject({ ok: true, repositories: [{ id: 9001 }, { id: 9004 }] });
+  });
 });

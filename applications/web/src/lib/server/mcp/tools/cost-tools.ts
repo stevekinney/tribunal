@@ -24,7 +24,20 @@ const costEventSchema = z.object({
   agentSlug: z.string().nullable(),
 });
 
-const rollupSchema = z.array(z.object({ label: z.string(), amountUsd: z.number() }));
+const agentRollupSchema = z.array(z.object({ label: z.string(), amountUsd: z.number() }));
+
+/**
+ * Repository rollups carry the identity they were grouped by, because a label
+ * is not unique: two repositories can share one owner/name pair, and merging
+ * them would report a combined amount as though it were one repository's.
+ */
+const repositoryRollupSchema = z.array(
+  z.object({
+    repositoryId: z.number().nullable(),
+    label: z.string(),
+    amountUsd: z.number(),
+  }),
+);
 
 export const listCostEventsTool = tribunalScopeVocabulary.defineTool({
   name: 'list_cost_events',
@@ -88,8 +101,8 @@ export const getCostSummaryTool = tribunalScopeVocabulary.defineTool({
     since: z.string(),
     eventCount: z.number(),
     totalUsd: z.number(),
-    byRepository: rollupSchema,
-    byAgent: rollupSchema,
+    byRepository: repositoryRollupSchema,
+    byAgent: agentRollupSchema,
   }),
   annotations: {
     readOnlyHint: true,

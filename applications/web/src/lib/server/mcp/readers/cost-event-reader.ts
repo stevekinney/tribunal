@@ -37,7 +37,14 @@ export type McpCostSummary = {
   since: string;
   eventCount: number;
   totalUsd: number;
-  byRepository: Array<{ label: string; amountUsd: number }>;
+  /**
+   * Grouped by repository identity, with the label alongside rather than
+   * instead of it. `repository.id` is the primary key and nothing makes
+   * owner/name unique, so grouping on the label alone merges two repositories
+   * that happen to share one — a renamed repository whose old row survives, or
+   * a deleted and recreated one — into a single combined amount.
+   */
+  byRepository: Array<{ repositoryId: number | null; label: string; amountUsd: number }>;
   byAgent: Array<{ label: string; amountUsd: number }>;
 };
 
@@ -128,12 +135,13 @@ export async function listCostEvents(
  * — is what a test has to pin directly rather than through a query whose input
  * order it cannot choose.
  */
-export function orderCostRollup(
-  rollup: Array<{ label: string; amountUsd: number }>,
-): Array<{ label: string; amountUsd: number }> {
+export function orderCostRollup<Entry extends { label: string; amountUsd: number }>(
+  rollup: Entry[],
+): Entry[] {
   return rollup.sort((left, right) => {
     if (left.amountUsd !== right.amountUsd) return right.amountUsd - left.amountUsd;
-    return left.label < right.label ? -1 : 1;
+    if (left.label !== right.label) return left.label < right.label ? -1 : 1;
+    return 0;
   });
 }
 
@@ -168,10 +176,11 @@ export async function summarizeCostEvents(
 
   const rows = await db
     .select({
+      repositoryId: costEvent.repositoryId,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
       agentSlug: agent.slug,
-      repositoryGrouped: sql<number>`grouping(${repository.owner}, ${repository.name})`,
+      repositoryGrouped: sql<number>`grouping(${costEvent.repositoryId})`,
       agentGrouped: sql<number>`grouping(${agent.slug})`,
       eventCount: count(),
       totalUsd: sum(costEvent.amountUsd),
@@ -186,7 +195,9 @@ export async function summarizeCostEvents(
         gte(costEvent.occurredAt, since),
       ),
     )
-    .groupBy(sql`grouping sets ((${repository.owner}, ${repository.name}), (${agent.slug}), ())`);
+    .groupBy(
+      sql`grouping sets ((${costEvent.repositoryId}, ${repository.owner}, ${repository.name}), (${agent.slug}), ())`,
+    );
 
   // Folded in one pass rather than filtered three times, and with the totals
   // seeded at zero rather than read back through an optional: `GROUPING SETS`
@@ -194,16 +205,17 @@ export async function summarizeCostEvents(
   // branch no test could reach and no reader could explain.
   let eventCount = 0;
   let totalUsd: string | null = null;
-  const byRepository: Array<{ label: string; amountUsd: number }> = [];
+  const byRepository: Array<{ repositoryId: number | null; label: string; amountUsd: number }> = [];
   const byAgent: Array<{ label: string; amountUsd: number }> = [];
 
   for (const row of rows) {
     if (row.repositoryGrouped === 0) {
       byRepository.push({
+        repositoryId: row.repositoryId,
         // `repository.owner` and `repository.name` are both non-null columns,
         // so the only way either is missing is the left join finding no row —
-        // a cost event whose repository was deleted. That is one group, not
-        // several.
+        // a cost event whose repository was deleted, or one that never named
+        // a repository at all.
         label:
           row.repositoryOwner && row.repositoryName
             ? `${row.repositoryOwner}/${row.repositoryName}`

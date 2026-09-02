@@ -74,15 +74,27 @@ export async function listAccessibleRepositories(userId: number): Promise<Reposi
 
   return {
     ok: true,
-    repositories: result.repositories.map((entry) => ({
-      id: entry.repository.id,
-      owner: entry.repository.owner,
-      name: entry.repository.name,
-      defaultBranch: entry.repository.defaultBranch,
-      latestCommit: entry.repository.commit,
-      installationAccount: entry.installation.accountLogin,
-      installationId: entry.installation.installationId,
-    })),
+    repositories: result.repositories
+      .map((entry) => ({
+        id: entry.repository.id,
+        owner: entry.repository.owner,
+        name: entry.repository.name,
+        defaultBranch: entry.repository.defaultBranch,
+        latestCommit: entry.repository.commit,
+        installationAccount: entry.installation.accountLogin,
+        installationId: entry.installation.installationId,
+      }))
+      // `getRepositoriesForUser` orders by owner then name, which is not a
+      // total order: `repository.id` is the primary key and nothing makes
+      // owner/name unique, so two rows can tie. Offset paging resolves the set
+      // afresh on every call, and tied rows in unspecified database order can
+      // swap between calls — repeating one repository on a later page while
+      // omitting the other. The id breaks every remaining tie.
+      .sort((left, right) => {
+        if (left.owner !== right.owner) return left.owner < right.owner ? -1 : 1;
+        if (left.name !== right.name) return left.name < right.name ? -1 : 1;
+        return left.id - right.id;
+      }),
   };
 }
 

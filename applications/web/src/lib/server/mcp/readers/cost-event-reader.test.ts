@@ -195,8 +195,8 @@ describe('cost event reader', () => {
     expect(summary.eventCount).toBe(2);
     expect(summary.totalUsd).toBe(4);
     expect(summary.byRepository).toEqual([
-      { label: 'lost-gradient/cinder', amountUsd: 2.5 },
-      { label: 'lost-gradient/tribunal', amountUsd: 1.5 },
+      { repositoryId: 9002, label: 'lost-gradient/cinder', amountUsd: 2.5 },
+      { repositoryId: 9001, label: 'lost-gradient/tribunal', amountUsd: 1.5 },
     ]);
     expect(summary.byAgent).toEqual([
       { label: 'Unassigned', amountUsd: 2.5 },
@@ -217,7 +217,37 @@ describe('cost event reader', () => {
     );
 
     expect(summary.totalUsd).toBe(0.3);
-    expect(summary.byRepository).toEqual([{ label: 'lost-gradient/tribunal', amountUsd: 0.3 }]);
+    expect(summary.byRepository).toEqual([
+      { repositoryId: 9001, label: 'lost-gradient/tribunal', amountUsd: 0.3 },
+    ]);
+  });
+
+  it('keeps two repositories sharing an owner and name apart', async () => {
+    expect.assertions(1);
+    const now = new Date();
+    // Nothing makes owner/name unique — `repository.id` is the primary key, and
+    // a rename that leaves the old row, or a delete and recreate, produces
+    // exactly this. Grouping on the label would report one combined amount.
+    await testDb.db
+      .insert(repository)
+      .values({ id: 9004, owner: 'lost-gradient', name: 'tribunal', defaultBranch: 'main' });
+    await seedEvent({ key: 'event-old-row', userId: ownerId, amountUsd: '1.00', occurredAt: now });
+    await seedEvent({
+      key: 'event-new-row',
+      userId: ownerId,
+      amountUsd: '2.00',
+      repositoryId: 9004,
+      occurredAt: now,
+    });
+
+    const summary = await withTestDatabase(() =>
+      summarizeCostEvents(ownerId, { source: 'estimate', windowDays: 30 }),
+    );
+
+    expect(summary.byRepository).toEqual([
+      { repositoryId: 9004, label: 'lost-gradient/tribunal', amountUsd: 2 },
+      { repositoryId: 9001, label: 'lost-gradient/tribunal', amountUsd: 1 },
+    ]);
   });
 
   it('summarizes an empty window as zero rather than as missing data', async () => {
@@ -266,9 +296,9 @@ describe('cost event reader', () => {
     );
 
     expect(summary.byRepository).toEqual([
-      { label: 'lost-gradient/agents', amountUsd: 1 },
-      { label: 'lost-gradient/cinder', amountUsd: 1 },
-      { label: 'lost-gradient/tribunal', amountUsd: 1 },
+      { repositoryId: 9003, label: 'lost-gradient/agents', amountUsd: 1 },
+      { repositoryId: 9002, label: 'lost-gradient/cinder', amountUsd: 1 },
+      { repositoryId: 9001, label: 'lost-gradient/tribunal', amountUsd: 1 },
     ]);
   });
 
@@ -287,7 +317,9 @@ describe('cost event reader', () => {
       summarizeCostEvents(ownerId, { source: 'estimate', windowDays: 1 }),
     );
 
-    expect(summary.byRepository).toEqual([{ label: 'Unassigned', amountUsd: 1 }]);
+    expect(summary.byRepository).toEqual([
+      { repositoryId: null, label: 'Unassigned', amountUsd: 1 },
+    ]);
   });
 
   it('never creates a settings row while reading', async () => {
@@ -316,6 +348,19 @@ describe('orderCostRollup', () => {
       { label: 'a', amountUsd: 2 },
       { label: 'b', amountUsd: 1 },
     ]);
+  });
+
+  it('leaves two entries with the same amount and label in the order given', () => {
+    expect.assertions(1);
+    // Two repositories can share a label, so equal-amount, equal-label pairs
+    // are reachable. The comparator reports them equal rather than inventing
+    // an order from fields it was not given.
+    const ordered = orderCostRollup([
+      { repositoryId: 9004, label: 'lost-gradient/tribunal', amountUsd: 1 },
+      { repositoryId: 9001, label: 'lost-gradient/tribunal', amountUsd: 1 },
+    ]);
+
+    expect(ordered.map((entry) => entry.repositoryId)).toEqual([9004, 9001]);
   });
 
   it.each([

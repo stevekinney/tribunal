@@ -126,6 +126,48 @@ const disclosedNestedFields: Record<string, string[]> = {
     'verificationStatus',
     'createdAt',
   ],
+  pullRequestDetail: [
+    'number',
+    'title',
+    'state',
+    'isDraft',
+    'authorLogin',
+    'headRef',
+    'headSha',
+    'baseRef',
+    'htmlUrl',
+    'updatedAt',
+    'mergedAt',
+    'description',
+    'additions',
+    'deletions',
+    'changedFiles',
+    'isMerged',
+    'commentCount',
+    'reviewCommentCount',
+    'commitCount',
+    'operationalState',
+  ],
+  operationalState: [
+    'state',
+    'isDraft',
+    'isMerged',
+    'headSha',
+    'baseSha',
+    'baseRef',
+    'ciStatus',
+    'failingCheckCount',
+    'ciUpdatedAt',
+    'reviewStatus',
+    'approvalCount',
+    'changesRequestedCount',
+    'unresolvedThreadCount',
+    'reviewUpdatedAt',
+    'mergeStatus',
+    'mergeUpdatedAt',
+    'pullRequestUpdatedAt',
+    'describesCurrentHead',
+  ],
   costEvent: [
     'occurredAt',
     'amountUsd',
@@ -203,10 +245,20 @@ describe('disclosed fields', () => {
   });
 
   it('discloses only pull request fields the consent sentence names', () => {
-    expect.assertions(1);
+    expect.assertions(3);
 
     expect(nestedKeysOf('list_pull_requests', ['pullRequests']).sort()).toEqual(
       [...disclosedNestedFields.pullRequestSummary].sort(),
+    );
+    // The detail shape and its nested stored state are pinned separately.
+    // Traversing only the summary left the fields unique to `get_pull_request`
+    // — and every field of `operationalState`, which is where Tribunal's own
+    // recorded data lives — outside a gate that claims to cover all of them.
+    expect(nestedKeysOf('get_pull_request', ['pullRequest']).sort()).toEqual(
+      [...disclosedNestedFields.pullRequestDetail].sort(),
+    );
+    expect(nestedKeysOf('get_pull_request', ['pullRequest', 'operationalState']).sort()).toEqual(
+      [...disclosedNestedFields.operationalState].sort(),
     );
   });
 
@@ -229,12 +281,19 @@ describe('disclosed fields', () => {
   });
 
   it('discloses only spending fields, never review metadata', () => {
-    expect.assertions(1);
+    expect.assertions(2);
 
     // Not `reviewRunId`: a review run identifier is review metadata, and
     // `reviews:read` is separately refusable.
     expect(nestedKeysOf('list_cost_events', ['costEvents']).sort()).toEqual(
       [...disclosedNestedFields.costEvent].sort(),
     );
+    // The repository rollup carries the identity it grouped by, so two
+    // repositories sharing an owner/name cannot be merged into one amount.
+    expect(nestedKeysOf('get_cost_summary', ['byRepository']).sort()).toEqual([
+      'amountUsd',
+      'label',
+      'repositoryId',
+    ]);
   });
 });
