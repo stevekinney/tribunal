@@ -44,8 +44,14 @@ vi.mock('$lib/server/github-context', () => ({ githubContext: {} }));
 
 vi.mock('@tribunal/github/repositories/service', () => ({
   getRepositoryById: mockGetRepositoryById,
-  getInstallationForRepository: vi.fn(() =>
-    Promise.resolve({ ok: true, octokit: {}, owner: 'test-org', repo: 'review-target' }),
+  getInstallationForRepositoryAsCaller: vi.fn(() =>
+    Promise.resolve({
+      ok: true,
+      octokit: {},
+      installationId: 4242,
+      owner: 'test-org',
+      repo: 'review-target',
+    }),
   ),
 }));
 
@@ -57,6 +63,9 @@ vi.mock('@tribunal/github/pull-requests/service', () => ({
 
 vi.mock('$lib/server/repositories', () => ({
   userCanAccessRepository: mockUserCanAccessRepository,
+  // The load path authorizes through this now, and needs the installation it
+  // returns rather than a boolean.
+  resolveAuthorizedInstallationId: vi.fn(() => Promise.resolve(4242)),
 }));
 
 vi.mock('$lib/server/review/operator', () => ({

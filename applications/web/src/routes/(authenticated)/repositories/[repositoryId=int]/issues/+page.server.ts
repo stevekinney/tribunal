@@ -1,12 +1,12 @@
 import { error, redirect } from '@sveltejs/kit';
 import {
   getRepositoryById,
-  getInstallationForRepository,
+  getInstallationForRepositoryAsCaller,
 } from '@tribunal/github/repositories/service';
 import { listIssues, parseIssueFilters } from '@tribunal/github/issues/service';
 import { isOctokitRequestError, isRateLimitError, isNotFoundError } from '@tribunal/github/errors';
 import { githubContext } from '$lib/server/github-context';
-import { userCanAccessRepository } from '$lib/server/repositories';
+import { resolveAuthorizedInstallationId } from '$lib/server/repositories';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -26,15 +26,26 @@ export const load: PageServerLoad = async ({ params, locals, url }) => {
     error(404, 'Repository not found');
   }
 
-  // Authorize: the user must reach this repository via one of their installations.
-  const canAccess = await userCanAccessRepository(user.id, repositoryId);
-  if (!canAccess) {
+  // Authorize: the user must reach this repository via one of their
+  // installations — and we keep which one, rather than discarding it and
+  // re-deriving a possibly different installation below.
+  const authorizedInstallationId = await resolveAuthorizedInstallationId(user.id, repositoryId);
+  if (authorizedInstallationId === null) {
     error(404, 'Repository not found');
   }
 
   const filters = parseIssueFilters(url);
 
-  const installation = await getInstallationForRepository(githubContext, repositoryId);
+  // Resolve the installation from the authorization that admitted this user,
+  // not from the repository. A repository can carry active links for two
+  // installations, and the global selector would hand this caller a client for
+  // whichever was added most recently — an installation they may never have
+  // been authorized through.
+  const installation = await getInstallationForRepositoryAsCaller(
+    githubContext,
+    repositoryId,
+    authorizedInstallationId,
+  );
   if (!installation.ok) {
     error(502, `Could not reach GitHub for this repository: ${installation.error}`);
   }

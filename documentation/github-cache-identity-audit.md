@@ -68,19 +68,25 @@ No missing user, installation, repository, pull request, issue, branch, or commi
 > private repository data; they read as less sensitive than a pull request
 > body, which is why they were missed twice.
 >
-> **The route picks the installation without reference to the caller** —
-> tracked as TRI-111. `getInstallationForRepository`
-> (`packages/github/src/repositories/service.ts`) delegates to the private
-> `getInstallationIdFromLinkTable`, which returns the most recently added
-> active link and takes no `userId`, while `userCanAccessRepository` admits a
-> caller reachable through _any_ of their live installations. The two can
-> disagree, and then the route hands out an Octokit the caller was never
-> authorized under — a leak on a cache _miss_, which no amount of cache
-> partitioning addresses.
+> **Closed by TRI-111**: the web routes used to pick their installation
+> without reference to the caller. `getInstallationForRepository` takes no
+> `userId` — it returns the most recently added active link, the same answer
+> for everybody — while `userCanAccessRepository` admits a caller reachable
+> through _any_ of their live installations. The two could disagree, and the
+> route then handed out an Octokit the caller was never authorized under: a
+> leak on a cache _miss_, which no amount of cache partitioning addresses.
 >
-> Do not read the table below as clearing either. A row marked correctly
-> scoped means its key carries the identity dimensions it needs, not that the
-> caller reaching it was resolved correctly.
+> User-facing repository reads now resolve through
+> `resolveAuthorizedInstallationId` (which returns the installation that
+> admitted the caller, rather than discarding it as the old boolean check did)
+> and build their client with `getInstallationForRepositoryAsCaller`, which
+> re-checks the supplied installation against the link table before minting.
+> `getInstallationForRepository` remains for paths with no caller identity —
+> webhook and background work — and should not be used on a user-facing read.
+>
+> Do not read the table below as clearing the seven above. A row marked
+> correctly scoped means its key carries the identity dimensions it needs, not
+> that the caller reaching it was resolved correctly.
 
 ## Inventory
 

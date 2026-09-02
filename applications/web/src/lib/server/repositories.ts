@@ -334,3 +334,32 @@ export async function userCanAccessRepository(
   if (!result.ok) return false;
   return result.repositories.some((entry) => entry.repository.id === repositoryId);
 }
+
+/**
+ * Authorize a repository read **and** report which installation granted it.
+ *
+ * {@link userCanAccessRepository} answers the same question and discards the
+ * answer's most useful half. It resolves the user's repositories through their
+ * live installations — so it already knows *which* installation admitted them —
+ * and then returns a bare boolean. A caller that needs a GitHub client is left
+ * to re-derive one, and the only repository-scoped resolver available
+ * (`getInstallationForRepository`) takes no user and picks the most recently
+ * added active link. When a repository carries links for two installations,
+ * those two answers can differ, and the caller is handed a client for an
+ * installation they were never authorized through.
+ *
+ * Prefer this on any path that goes on to call GitHub. Returning `null` means
+ * the user cannot reach this repository at all — the same condition
+ * `userCanAccessRepository` reports as `false`, and callers should keep
+ * treating it as not-found rather than as a GitHub failure.
+ */
+export async function resolveAuthorizedInstallationId(
+  userId: number,
+  repositoryId: number,
+  options: RepositoryResolutionOptions = {},
+): Promise<number | null> {
+  const result = await getRepositoriesForUser(userId, options);
+  if (!result.ok) return null;
+  const entry = result.repositories.find((candidate) => candidate.repository.id === repositoryId);
+  return entry?.installation.installationId ?? null;
+}
