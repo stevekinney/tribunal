@@ -199,7 +199,11 @@ export default defineConfig(
     // placed earlier resolves to severity 0 and silently enforces nothing —
     // verified by `eslint --print-config`, after the rule appeared to pass on
     // a file that violated it.
-    files: ['src/routes/**/*.ts', 'src/lib/server/**/*.ts'],
+    // Every server-only entry point, not just the two obvious directories.
+    // `src/hooks.server.ts` is top-level request-path code and a
+    // routes-plus-lib-server pair silently excluded it — the kind of gap a
+    // scope described as "request paths" invites.
+    files: ['src/routes/**/*.ts', 'src/lib/server/**/*.ts', 'src/hooks.server.ts'],
     ignores: ['**/*.test.ts', '**/*.spec.ts'],
     rules: {
       'no-restricted-imports': [

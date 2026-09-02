@@ -55,7 +55,11 @@ vi.mock('$lib/server/github-context', () => ({
   },
 }));
 
-import { getRepositoriesForUser, userCanAccessRepository } from './repositories';
+import {
+  getRepositoriesForUser,
+  resolveAuthorizedInstallationId,
+  userCanAccessRepository,
+} from './repositories';
 
 describe('getRepositoriesForUser', () => {
   let testDb: TestDatabase;
@@ -550,6 +554,98 @@ describe('getRepositoriesForUser', () => {
         'zzz-owner',
       ]);
     }
+  });
+
+  // TRI-111. The other half of the fix: `getInstallationForRepositoryAsCaller`
+  // honours whatever installation it is handed, so the security property only
+  // holds if this function hands it the caller's own. A resolver that returned
+  // the repository's newest link instead would satisfy that helper — the newest
+  // link is active, so it would pass every check there — and reintroduce the
+  // defect. This asserts the derivation, not the honouring.
+  it('resolves the installation the caller can reach, not the repository’s newest link', async () => {
+    const [caller] = await testDb.db
+      .insert(user)
+      .values({ username: 'transfer-old-org', neonAuthUserId: 'dev-github:old' })
+      .returning();
+    const [stranger] = await testDb.db
+      .insert(user)
+      .values({ username: 'transfer-new-org', neonAuthUserId: 'dev-github:new' })
+      .returning();
+
+    // 900 is the caller's. 901 belongs to somebody else — the organization the
+    // repository was transferred to — and is linked more recently.
+    await testDb.db.insert(githubInstallation).values([
+      {
+        installationId: 900,
+        userId: caller.id,
+        accountLogin: 'old-org',
+        accountId: 900,
+        status: 'active',
+      },
+      {
+        installationId: 901,
+        userId: stranger.id,
+        accountLogin: 'new-org',
+        accountId: 901,
+        status: 'active',
+      },
+    ]);
+    await testDb.db.insert(repository).values({
+      id: 3001,
+      owner: 'old-org',
+      name: 'widgets',
+      installationId: 901,
+    });
+    await testDb.db.insert(githubInstallationRepository).values([
+      {
+        installationId: 900,
+        repositoryId: 3001,
+        isActive: true,
+        addedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        installationId: 901,
+        repositoryId: 3001,
+        isActive: true,
+        addedAt: new Date('2026-06-01T00:00:00Z'),
+      },
+    ]);
+
+    mockEnv.DEV_AUTH_BYPASS = '1';
+    mockEnv.DEV_AUTH_BYPASS_MODE = 'github';
+    mockGetUserOctokit.mockResolvedValue({
+      ok: false,
+      error: 'no_token',
+      message: 'No GitHub connection found. Please connect your GitHub account.',
+    });
+
+    const resolved = await withTestDatabase(() => resolveAuthorizedInstallationId(caller.id, 3001));
+
+    expect(resolved).toBe(900);
+    // The stranger's installation is never the answer for this caller, even
+    // though it is the repository's most recent active link.
+    expect(resolved).not.toBe(901);
+  });
+
+  it('returns null when the caller cannot reach the repository at all', async () => {
+    const [caller] = await testDb.db
+      .insert(user)
+      .values({ username: 'unrelated-user', neonAuthUserId: 'dev-github:unrelated' })
+      .returning();
+
+    mockEnv.DEV_AUTH_BYPASS = '1';
+    mockEnv.DEV_AUTH_BYPASS_MODE = 'github';
+    mockGetUserOctokit.mockResolvedValue({
+      ok: false,
+      error: 'no_token',
+      message: 'No GitHub connection found. Please connect your GitHub account.',
+    });
+
+    const resolved = await withTestDatabase(() =>
+      resolveAuthorizedInstallationId(caller.id, 999_999),
+    );
+
+    expect(resolved).toBeNull();
   });
 
   it('sorts local (dev-bypass) repositories and installations deterministically, including a same-owner tie', async () => {
