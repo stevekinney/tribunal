@@ -83,11 +83,11 @@ describe('conformance fixture over the protocol', () => {
       { versionNegotiation: { mode: { pin: '2026-07-28' } } },
     );
     const transport = new StreamableHTTPClientTransport(new URL('http://localhost/mcp'), {
-      fetch: (input, init) => {
-        const request = new Request(input, init);
-        request.headers.set('host', 'localhost');
-        return handler.fetch(request);
-      },
+      // No explicit Host header: the loopback URL already supplies a loopback
+      // Host, so the handler's rebinding check passes without one. The upstream
+      // harness sets it belt-and-suspenders; here it is redundant, and setting
+      // it through `Request.headers` is a mutation some fetch runtimes forbid.
+      fetch: (input, init) => handler.fetch(new Request(input, init)),
     });
     await client.connect(transport);
     return client;
