@@ -177,6 +177,27 @@ describe('repository pull requests page load', () => {
     );
   });
 
+  // A local link-table or repository-row condition is not a GitHub outage.
+  // Reaching it after authorization already passed means access was lost
+  // between the two queries, so it fails closed like the authorization check
+  // rather than telling the user GitHub is down.
+  it.each([['not_found'], ['no_installation']])(
+    'returns 404 when installation resolution fails locally with %s',
+    async (code) => {
+      expect.assertions(1);
+      mockGetRepositoryById.mockResolvedValue({ id: 1, owner: 'acme', name: 'widgets' });
+      mockUserCanAccessRepository.mockResolvedValue(true);
+      mockResolveAuthorizedInstallationId.mockResolvedValue(4242);
+      mockGetInstallationForRepository.mockResolvedValue({
+        ok: false,
+        code,
+        error: 'Repository is not linked to this GitHub installation',
+      });
+
+      await expect(runLoad()).rejects.toMatchObject({ status: 404 });
+    },
+  );
+
   // TRI-111: authorization admits a caller through *one* of their
   // installations, and a repository can carry active links for two. Building
   // the client from the repository rather than from that authorization is how a
