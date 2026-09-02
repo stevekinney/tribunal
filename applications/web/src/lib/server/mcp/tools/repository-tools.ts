@@ -1,11 +1,37 @@
 import { z } from 'zod';
 import { createToolStructuredResponse } from '@lostgradient/mcp';
 import { tribunalScopeVocabulary } from '../scope-vocabulary';
-import { findAccessibleRepository, listAccessibleRepositories } from '../readers/repository-reader';
+import {
+  findAccessibleRepository,
+  listAccessibleRepositories,
+  type McpRepository,
+} from '../readers/repository-reader';
 import { paginateResolvedItems, paginationInputFields } from '../pagination';
 import { readErrorResponse, unresolvedSubjectError } from '../tool-support';
 import { withUntrustedContentFraming } from '../untrusted-content';
 import { resolveTribunalUserId } from '../user-identity';
+
+/**
+ * Drops the internal authorization identifier before a repository reaches a
+ * client.
+ *
+ * `McpRepository` carries `installationId` so the pull request path can build
+ * its client for the installation that granted access. That is server-side
+ * plumbing: it is not repository information anybody asked for, and passing
+ * the reader's object straight through would put a field on the wire that
+ * `repositorySchema` does not declare — an output that disagrees with its own
+ * advertised schema, which a strict client is entitled to reject.
+ */
+function toPublicRepository(repository: McpRepository) {
+  return {
+    id: repository.id,
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: repository.defaultBranch,
+    latestCommit: repository.latestCommit,
+    installationAccount: repository.installationAccount,
+  };
+}
 
 const repositorySchema = z.object({
   id: z.number(),
@@ -50,7 +76,12 @@ export const listRepositoriesTool = tribunalScopeVocabulary.defineTool({
     const page = paginateResolvedItems(result.repositories, input);
 
     return createToolStructuredResponse(
-      { repositories: page.items, limit: page.limit, offset: page.offset, hasMore: page.hasMore },
+      {
+        repositories: page.items.map(toPublicRepository),
+        limit: page.limit,
+        offset: page.offset,
+        hasMore: page.hasMore,
+      },
       withUntrustedContentFraming(
         `${page.items.length} connected repositories${page.hasMore ? ', more available' : ''}.`,
       ),
@@ -87,7 +118,7 @@ export const getRepositoryTool = tribunalScopeVocabulary.defineTool({
     if (!result.repository) return readErrorResponse('repository_not_found');
 
     return createToolStructuredResponse(
-      { repository: result.repository },
+      { repository: toPublicRepository(result.repository) },
       withUntrustedContentFraming(`${result.repository.owner}/${result.repository.name}.`),
     );
   },

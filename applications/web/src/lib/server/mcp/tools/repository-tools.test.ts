@@ -24,6 +24,17 @@ const repositoryProjection = {
   installationId: 7001,
 };
 
+/** What a client is entitled to see: the reader's record without the
+ * installation identifier the server uses to authorize it. */
+const publicRepository = {
+  id: 9001,
+  owner: 'lost-gradient',
+  name: 'tribunal',
+  defaultBranch: 'main',
+  latestCommit: 'abc123',
+  installationAccount: 'lost-gradient',
+};
+
 function context(userId: string): McpContext {
   return {
     userId,
@@ -47,7 +58,7 @@ describe('list_repositories', () => {
     const result = await listRepositoriesTool.handler({ limit: 25, offset: 0 }, context('7'));
 
     expect(result.structuredContent).toEqual({
-      repositories: [repositoryProjection],
+      repositories: [publicRepository],
       limit: 25,
       offset: 0,
       hasMore: false,
@@ -121,7 +132,22 @@ describe('get_repository', () => {
 
     const result = await getRepositoryTool.handler({ repositoryId: 9001 }, context('7'));
 
-    expect(result.structuredContent).toEqual({ repository: repositoryProjection });
+    expect(result.structuredContent).toEqual({ repository: publicRepository });
+  });
+
+  it('does not put the authorization identifier on the wire', async () => {
+    expect.assertions(1);
+    mocks.findAccessibleRepository.mockResolvedValue({
+      ok: true,
+      repository: repositoryProjection,
+    });
+
+    const result = await getRepositoryTool.handler({ repositoryId: 9001 }, context('7'));
+
+    // `installationId` is how the server picks the client that authorized this
+    // caller. It is not repository information anybody asked for, and the
+    // output schema does not declare it.
+    expect(JSON.stringify(result.structuredContent)).not.toContain('installationId');
   });
 
   it('reports a repository outside the caller access as not found', async () => {

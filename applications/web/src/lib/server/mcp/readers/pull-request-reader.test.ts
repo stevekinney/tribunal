@@ -14,10 +14,16 @@ vi.mock('$lib/server/repositories', () => ({
   getRepositoriesForUser: mocks.getRepositoriesForUser,
 }));
 
-vi.mock('@tribunal/github/pull-requests/service', () => ({
-  listPullRequests: mocks.listPullRequests,
-  getPullRequest: mocks.getPullRequest,
-}));
+vi.mock('@tribunal/github/pull-requests/service', async () => {
+  // The real classifier, not a stand-in: whether a 403 is a rate limit turns
+  // on its headers and message, and a mocked predicate would test the mock.
+  const { isRateLimitError } = await import('@tribunal/github/errors');
+  return {
+    listPullRequests: mocks.listPullRequests,
+    getPullRequest: mocks.getPullRequest,
+    isRateLimitError,
+  };
+});
 
 vi.mock('$lib/server/github-context', () => ({
   githubContext: { cache: {}, getInstallationOctokit: mocks.getInstallationOctokit },
@@ -460,5 +466,57 @@ describe('pull request reader', () => {
       ok: true,
       pullRequest: { operationalState: { ciStatus: 'passing' } },
     });
+  });
+
+  it.each([
+    ['a secondary rate limit', { status: 429 }, 'github_rate_limited'],
+    [
+      'a primary rate limit',
+      { status: 403, response: { headers: { 'x-ratelimit-remaining': '0' }, data: {} } },
+      'github_rate_limited',
+    ],
+    [
+      'a permission failure',
+      { status: 403, response: { headers: {}, data: {} } },
+      'github_read_failed',
+    ],
+    ['an outage', { status: 502 }, 'github_read_failed'],
+  ])(
+    'reports %s as an actionable error rather than throwing',
+    async (_label, failure, expected) => {
+      expect.assertions(1);
+      grantAccess();
+      mocks.listPullRequests.mockRejectedValue(Object.assign(new Error('GitHub said no'), failure));
+
+      const result = await withTestDatabase(() =>
+        listRepositoryPullRequests(7, {
+          repository: { repositoryId: 9001 },
+          state: 'open',
+          page: 1,
+          perPage: 25,
+        }),
+      );
+
+      // An uncaught throw leaves the tool boundary as a generic internal
+      // failure, which tells a client nothing about whether to wait and retry.
+      expect(result).toEqual({ ok: false, error: expected });
+    },
+  );
+
+  it('reports a failed detail read as an actionable error', async () => {
+    expect.assertions(1);
+    grantAccess();
+    mocks.getPullRequest.mockRejectedValue(
+      Object.assign(new Error('GitHub said no'), { status: 429 }),
+    );
+
+    const result = await withTestDatabase(() =>
+      getRepositoryPullRequest(7, {
+        repository: { repositoryId: 9001 },
+        pullRequestNumber: 412,
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, error: 'github_rate_limited' });
   });
 });

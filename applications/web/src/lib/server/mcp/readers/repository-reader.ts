@@ -24,6 +24,10 @@ export type McpRepository = {
    * the ordinary way it happens — and re-resolving picks one globally rather
    * than the one that authorized this caller. See
    * `pull-request-reader.ts`'s `resolveAuthorizedInstallation`.
+   *
+   * Internal to the server. It is an authorization identifier, not repository
+   * information a client asked for, and `repository-tools.ts` drops it before
+   * anything reaches the wire — see `toPublicRepository` there.
    */
   installationId: number;
 };

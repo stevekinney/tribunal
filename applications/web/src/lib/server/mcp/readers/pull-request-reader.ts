@@ -1,6 +1,10 @@
 import { and, eq } from 'drizzle-orm';
 import { pullRequestState } from '@tribunal/database/schema';
-import { getPullRequest, listPullRequests } from '@tribunal/github/pull-requests/service';
+import {
+  getPullRequest,
+  isRateLimitError,
+  listPullRequests,
+} from '@tribunal/github/pull-requests/service';
 import type { PullRequestFilterState } from '@tribunal/github/types/pull-requests';
 import { db } from '$lib/server/database';
 import { githubContext } from '$lib/server/github-context';
@@ -105,7 +109,11 @@ export type PullRequestReadError =
   | 'repository_not_found'
   /** The repository is the caller's, but its GitHub App installation did not resolve. */
   | 'github_unreachable'
-  | 'pull_request_not_found';
+  | 'pull_request_not_found'
+  /** GitHub refused the read for rate limiting — worth retrying later. */
+  | 'github_rate_limited'
+  /** GitHub failed the read for some other reason — permissions, an outage. */
+  | 'github_read_failed';
 
 export type PullRequestListResult =
   | {
@@ -212,6 +220,19 @@ async function resolveAuthorizedInstallation(userId: number, selector: Repositor
   return { ok: true, repositoryId, octokit, owner, repo: name } as const;
 }
 
+/**
+ * Turns a thrown GitHub failure into an error the caller can act on.
+ *
+ * The shared service throws on a 403, a 429, or a 5xx, and an uncaught throw
+ * leaves the tool boundary as a generic internal failure — which tells a
+ * client nothing about whether to wait and retry, ask the user to check an
+ * installation, or stop. Rate limiting is separated from everything else
+ * because it is the one case where retrying later is exactly right.
+ */
+function classifyGitHubFailure(error: unknown): PullRequestReadError {
+  return isRateLimitError(error) ? 'github_rate_limited' : 'github_read_failed';
+}
+
 function summarize(pullRequest: {
   number: number;
   title: string;
@@ -252,20 +273,25 @@ export async function listRepositoryPullRequests(
   const installation = await resolveAuthorizedInstallation(userId, input.repository);
   if (!installation.ok) return { ok: false, error: installation.error };
 
-  const result = await listPullRequests(
-    githubContext,
-    installation.octokit,
-    installation.owner,
-    installation.repo,
-    {
-      state: input.state,
-      sort: 'updated',
-      direction: 'desc',
-      page: input.page,
-      perPage: input.perPage,
-    },
-    installation.repositoryId,
-  );
+  let result;
+  try {
+    result = await listPullRequests(
+      githubContext,
+      installation.octokit,
+      installation.owner,
+      installation.repo,
+      {
+        state: input.state,
+        sort: 'updated',
+        direction: 'desc',
+        page: input.page,
+        perPage: input.perPage,
+      },
+      installation.repositoryId,
+    );
+  } catch (error) {
+    return { ok: false, error: classifyGitHubFailure(error) };
+  }
 
   return {
     ok: true,
@@ -286,13 +312,18 @@ export async function getRepositoryPullRequest(
   const installation = await resolveAuthorizedInstallation(userId, input.repository);
   if (!installation.ok) return { ok: false, error: installation.error };
 
-  const detail = await getPullRequest(
-    githubContext,
-    installation.octokit,
-    installation.owner,
-    installation.repo,
-    input.pullRequestNumber,
-  );
+  let detail;
+  try {
+    detail = await getPullRequest(
+      githubContext,
+      installation.octokit,
+      installation.owner,
+      installation.repo,
+      input.pullRequestNumber,
+    );
+  } catch (error) {
+    return { ok: false, error: classifyGitHubFailure(error) };
+  }
   if (!detail) return { ok: false, error: 'pull_request_not_found' };
 
   const [storedState] = await selectStoredPullRequestState(
