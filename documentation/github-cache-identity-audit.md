@@ -44,10 +44,26 @@ No missing user, installation, repository, pull request, issue, branch, or commi
 > `get-branch-ci-status`, `get-branch-head-sha`, `get-branch-rules`, and
 > `get-pull-request-diff-context`. Their rows below are marked accordingly;
 > a row that still reads "Correctly scoped" is claiming only that its key
-> carries the dimensions it needs. The first two are reached through
+> carries the dimensions it needs.
+>
+> Two of the seven deserve calling out separately, because they fail
+> differently. `get-review-thread-counts` is reached through
 > `getPullRequestOperationalStatus`, whose `getPullRequest` call _is_
 > partitioned — so that surface is currently partitioned for detail and
-> unpartitioned for its sibling reads, which is worse than uniformly either.
+> unpartitioned for a sibling read, which is worse than uniformly either
+> because it looks addressed.
+>
+> `get-unresolved-review-thread-count` is not on that surface at all. It is
+> called by `handleReviewStateUpdate`
+> (`packages/github/src/pull-requests/state/handlers.ts:94`) on
+> `pull_request_review` webhook deliveries, using the delivery installation's
+> Octokit, and its result is persisted through `upsertPRState` on the next
+> line. A cross-installation hit there does not merely show one installation
+> another's data — it **writes** a wrong unresolved-thread count into stored
+> pull request state, which the dashboard then reads back. Remediation for
+> that one has to cover the write path, and its regression test has to assert
+> on persisted state rather than a returned value.
+>
 > Head SHAs, branch names, CI conclusions, and unresolved-thread counts are
 > private repository data; they read as less sensitive than a pull request
 > body, which is why they were missed twice.
