@@ -22,9 +22,9 @@
     "test:coverage:client": "vitest run --project client --coverage --coverage.include='src/**/*.svelte' --coverage.include='src/**/*.svelte.ts' --coverage.thresholds.lines=100 --coverage.thresholds.functions=100"
   },
   "dependencies": {
-    "@lostgradient/cinder": "0.21.0",
-    "@lostgradient/editor": "0.3.0",
-    "@lostgradient/markdown": "0.2.0",
+    "@lostgradient/cinder": "0.25.0",
+    "@lostgradient/editor": "0.13.0",
+    "@lostgradient/markdown": "0.4.0",
     "@lostgradient/mcp": "0.2.0",
     "@lostgradient/weft": "0.20.0",
     "@milkdown/ctx": "^7.22.1",

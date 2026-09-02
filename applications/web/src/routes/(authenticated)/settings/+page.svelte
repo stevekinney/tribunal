@@ -84,7 +84,7 @@
             step={0.01}
             required
             label="Daily cost cap in US dollars"
-            hideLabel
+            labelVisible={false}
           >
             {#snippet leading()}<span aria-hidden="true">$</span>{/snippet}
           </Input>
@@ -104,7 +104,7 @@
           bind:value={defaultModel}
           options={modelOptions}
           label="Default model"
-          hideLabel
+          labelVisible={false}
         />
       </div>
     </Card>
@@ -188,7 +188,7 @@
     font-weight: var(--font-semibold);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wide, 0.05em);
-    color: var(--cinder-color-danger-fg);
+    color: var(--cinder-status-danger-text);
     margin: 0 0 var(--space-1);
   }
 
@@ -198,7 +198,7 @@
     gap: var(--space-1-5);
     font-size: var(--text-sm);
     font-weight: var(--font-medium);
-    color: var(--cinder-color-danger-fg);
+    color: var(--cinder-status-danger-text);
     margin: 0;
   }
 

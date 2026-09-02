@@ -310,7 +310,7 @@
   .brand-name {
     font-size: var(--text-base);
     font-weight: var(--font-semibold);
-    color: var(--cinder-text);
+    color: var(--cinder-text-default);
   }
 
   .desktop-brand-link {

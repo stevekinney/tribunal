@@ -149,6 +149,28 @@ async function expectStatusDotLiveLabel(label: string) {
   );
 }
 
+/**
+ * Replace EventSource with an inert stub.
+ *
+ * A running run opens a real EventSource against
+ * `/api/review/runs/:id/events` on mount. In browser tests that is a live
+ * request to the Vitest dev server, which then has to evaluate that route
+ * module — and any failure there paints a `<vite-error-overlay>` over the
+ * page that swallows pointer events for every later test in the run. Tests
+ * that only assert rendering have no reason to open that connection.
+ */
+function stubInertEventSource(): void {
+  vi.stubGlobal(
+    'EventSource',
+    class {
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      addEventListener(): void {}
+      close(): void {}
+    },
+  );
+}
+
 describe('/runs/[runId] page', () => {
   afterEach(() => {
     cleanup();
@@ -568,5 +590,110 @@ describe('/runs/[runId] page', () => {
     source.onopen?.();
     source.onerror?.();
     await expectStatusDotLiveLabel(streamStatusLabel('disconnected'));
+  });
+
+  // `Feed kind="log"` renders authored children, so it cannot detect an empty
+  // stream the way `EventStreamViewer` did from its `events` array. The page
+  // owns the empty state now, and the log region (with its connection
+  // indicator) must survive so a running agent still reports transport state
+  // before its first event lands.
+  it('states an empty event stream explicitly while keeping the live log region', async () => {
+    stubInertEventSource();
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [{ ...data.run.agentRuns[0], events: [] }],
+        },
+      },
+    });
+
+    await expect
+      .element(page.getByRole('log', { name: 'security event stream' }))
+      .toBeInTheDocument();
+    await expect.element(page.getByText('No events to display.')).toBeVisible();
+    expect(document.querySelector('.event-empty-status')?.getAttribute('role')).toBe('status');
+    // The list item itself keeps its listitem role inside Feed's <ol>.
+    expect(document.querySelector('.event-empty')?.hasAttribute('role')).toBe(false);
+    await expect
+      .element(page.getByRole('button', { name: 'Show details' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('expands and collapses the structured detail panel for an event', async () => {
+    stubInertEventSource();
+    render(RunInspectorPage, { data });
+
+    const toggle = page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' });
+    await expect.element(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    const panelId = (toggle.element() as HTMLElement).getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(true);
+
+    await toggle.click();
+
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(false);
+    // The structured detail itself renders, not just the panel wrapper.
+    await expect.element(page.getByText('denied')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }).click();
+
+    await expect
+      .element(page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(panelId!)?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('drops expanded detail panels when the route swaps to a different run', async () => {
+    stubInertEventSource();
+    const rendered = render(RunInspectorPage, { data });
+
+    await page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }).click();
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+
+    // Same run, new data (what the event stream's invalidateAll does): the
+    // open panel must survive so a reader is not collapsed out from under.
+    await rendered.rerender({ data: { ...data, run: { ...data.run } } });
+    await expect
+      .element(page.getByRole('button', { name: 'Hide details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'true');
+
+    // Different run: the expansion set belongs to the run that was showing.
+    await rendered.rerender({
+      data: { ...data, run: { ...data.run, id: 'run_2', runId: 'run_2' } },
+    });
+    await expect
+      .element(page.getByRole('button', { name: 'Show details for warning: tool_pre: Read' }))
+      .toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('omits the detail disclosure for an event that recorded no structured detail', async () => {
+    stubInertEventSource();
+    render(RunInspectorPage, {
+      data: {
+        ...data,
+        run: {
+          ...data.run,
+          agentRuns: [
+            {
+              ...data.run.agentRuns[0],
+              events: [{ ...data.run.agentRuns[0].events[0], detail: null }],
+            },
+          ],
+        },
+      },
+    });
+
+    await expect.element(page.getByText('tool_pre: Read')).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Show details' }))
+      .not.toBeInTheDocument();
   });
 });

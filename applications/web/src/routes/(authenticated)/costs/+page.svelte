@@ -120,11 +120,11 @@
         <SegmentedControl
           id="breakdown-dimension"
           label="Breakdown dimension"
-          hideLabel
+          labelVisible={false}
           density="toolbar"
           value={activeDimension}
-          onchange={(v) => {
-            if (isDimensionKey(v)) activeDimension = v;
+          onValueChange={(next) => {
+            if (isDimensionKey(next)) activeDimension = next;
           }}
         >
           {#each dimensions as dim (dim.key)}

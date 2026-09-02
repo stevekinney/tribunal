@@ -11,9 +11,9 @@
   import { EmptyState } from '@lostgradient/cinder/empty-state';
   import { Table } from '@lostgradient/cinder/table';
   import { Pagination } from '@lostgradient/cinder/pagination';
-  import { FacetedFilterBar } from '@lostgradient/cinder/faceted-filter-bar';
+  import { FilterBar } from '@lostgradient/cinder/filter-bar';
   import { Input } from '@lostgradient/cinder/input';
-  import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/faceted-filter-bar';
+  import type { AppliedFilter, FacetDefinition } from '@lostgradient/cinder/filter-bar';
   import CircleDot from 'lucide-svelte/icons/circle-dot';
 
   let { data } = $props();
@@ -221,18 +221,21 @@
 
 {#snippet assigneeControl({
   value,
-  onchange,
+  onValueChange,
+  disabled,
 }: {
   value: string;
-  onchange: (value: string) => void;
+  onValueChange: (value: string) => void;
+  disabled: boolean;
 })}
   <Input
     id="issue-assignee-filter"
     label="Assignee"
-    hideLabel
+    labelVisible={false}
     placeholder="Assignee username"
     value={value ?? ''}
-    onchange={(event) => onchange(event.currentTarget.value)}
+    {disabled}
+    onchange={(event) => onValueChange(event.currentTarget.value)}
     onkeydown={(event) => {
       if (event.key === 'Enter') {
         event.currentTarget.blur();
@@ -242,7 +245,7 @@
 {/snippet}
 
 <Page title="Issues" {subtitle} {breadcrumbs}>
-  <FacetedFilterBar
+  <FilterBar
     aria-label="Issue filters"
     {facets}
     {appliedFilters}

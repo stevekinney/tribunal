@@ -6,8 +6,10 @@
   import { Button } from '@lostgradient/cinder/button';
   import { Card } from '@lostgradient/cinder/card';
   import { EmptyState } from '@lostgradient/cinder/empty-state';
-  import { EventStreamViewer } from '@lostgradient/cinder/event-stream-viewer';
-  import type { EventStreamState, StreamEvent } from '@lostgradient/cinder/event-stream-viewer';
+  import { Feed } from '@lostgradient/cinder/feed';
+  import type { FeedConnectionState } from '@lostgradient/cinder/feed';
+  import type { FeedEventTone } from '@lostgradient/cinder/feed-event';
+  import { JsonViewer } from '@lostgradient/cinder/json-viewer';
   import { Link } from '@lostgradient/cinder/link';
   import { StatisticGroup } from '@lostgradient/cinder/statistic-group';
   import { StatusDot } from '@lostgradient/cinder/status-dot';
@@ -16,6 +18,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import { Square } from 'lucide-svelte';
   import { untrack } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
@@ -26,7 +29,7 @@
   const run = $derived(data.run);
   let connectionState = $state<'connecting' | 'streaming' | 'disconnected'>('disconnected');
   const canStopRun = $derived(run.status === 'running' || run.status === 'queued');
-  const eventStreamConnectionState = $derived<EventStreamState>(
+  const eventStreamConnectionState = $derived<FeedConnectionState>(
     canStopRun && connectionState === 'streaming'
       ? 'connected'
       : connectionState === 'connecting'
@@ -96,23 +99,54 @@
     return event.kind === 'tool_pre' && isDeniedToolEvent(event.detail) ? `${base} blocked` : base;
   }
 
-  function eventSeverity(event: AgentEvent): StreamEvent['severity'] {
+  function eventTone(event: AgentEvent): FeedEventTone {
     if (event.kind === 'tool_pre' && isDeniedToolEvent(event.detail)) return 'warning';
     if (event.kind.includes('error') || event.kind.includes('failed')) return 'error';
     return 'info';
   }
 
-  function toStreamEvents(events: AgentEvent[]): StreamEvent[] {
-    return events.map((event) => ({
-      id: String(event.id),
-      datetime: toDateTime(event.at),
-      timestamp: toTimestamp(event.at),
-      severity: eventSeverity(event),
-      source: event.tool ?? undefined,
-      summary: summarizeEvent(event),
-      details: event.detail ?? undefined,
-    }));
+  // `Feed` renders authored children, so the detail disclosure that
+  // `EventStreamViewer` provided built-in is composed here instead. Agent
+  // event ids are unique across the whole run, so one set covers every
+  // agent card on the page.
+  const expandedEventIds = new SvelteSet<number>();
+  const detailsIdPrefix = $props.id();
+
+  function detailsPanelId(event: AgentEvent): string {
+    return `${detailsIdPrefix}-event-${event.id}-details`;
   }
+
+  function isEventExpanded(event: AgentEvent): boolean {
+    return expandedEventIds.has(event.id);
+  }
+
+  function toggleEventDetails(event: AgentEvent): void {
+    if (expandedEventIds.has(event.id)) {
+      expandedEventIds.delete(event.id);
+    } else {
+      expandedEventIds.add(event.id);
+    }
+  }
+
+  function detailsToggleLabel(event: AgentEvent): string {
+    const action = isEventExpanded(event) ? 'Hide' : 'Show';
+    return `${action} details for ${eventTone(event)}: ${summarizeEvent(event)}`;
+  }
+
+  // SvelteKit reuses this component across `/runs/[runId]` navigations, so the
+  // expansion set would otherwise carry into the next run and grow without
+  // bound. Compare against the previous id explicitly rather than resetting in
+  // a plain effect: a same-run `invalidateAll()` from the event stream re-runs
+  // this on every appended event, and collapsing an open panel underneath a
+  // reader would be its own bug.
+  let lastRunId = untrack(() => run.id);
+  $effect(() => {
+    const currentRunId = run.id;
+    if (currentRunId !== lastRunId) {
+      expandedEventIds.clear();
+      lastRunId = currentRunId;
+    }
+  });
 
   function canStopAgent(status: string): boolean {
     return status === 'running' || status === 'queued';
@@ -364,11 +398,71 @@
           <p class="agent-description">{agentRun.description}</p>
         {/if}
 
-        <EventStreamViewer
-          events={toStreamEvents(agentRun.events)}
-          connectionState={canStopAgent(agentRun.status) ? eventStreamConnectionState : undefined}
+        <Feed
+          kind="log"
           label={`${agentRun.slug} event stream`}
-        />
+          connectionState={canStopAgent(agentRun.status) ? eventStreamConnectionState : undefined}
+        >
+          {#if agentRun.events.length === 0}
+            <!--
+              `Feed` renders authored children, so it cannot tell an empty
+              stream from one that has not been authored. State it explicitly.
+              The live region is an inner element, not the `<li>` (which keeps
+              its `listitem` role) and not EmptyState (which pins its own
+              `role="group"` after its prop spread, silently overriding any
+              role passed to it).
+            -->
+            <li class="event-empty">
+              <div class="event-empty-status" role="status">
+                <EmptyState
+                  title="No events"
+                  description="No events to display."
+                  headingLevel={3}
+                />
+              </div>
+            </li>
+          {:else}
+            {#each agentRun.events as event (event.id)}
+              <Feed.Event
+                variant="minimal"
+                tone={eventTone(event)}
+                datetime={toDateTime(event.at)}
+                timestamp={toTimestamp(event.at)}
+              >
+                <div class="event-meta">
+                  <!-- Tone is colour-only, so the severity stays in the text. -->
+                  <span class="event-tone" aria-label={`Severity: ${eventTone(event)}`}>
+                    {eventTone(event)}
+                  </span>
+                  {#if event.tool}
+                    <span class="event-source">{event.tool}</span>
+                  {/if}
+                </div>
+                <p class="event-summary">{summarizeEvent(event)}</p>
+                {#if event.detail != null}
+                  <div class="event-details-section">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      aria-expanded={isEventExpanded(event)}
+                      aria-controls={detailsPanelId(event)}
+                      aria-label={detailsToggleLabel(event)}
+                      onclick={() => toggleEventDetails(event)}
+                    >
+                      {isEventExpanded(event) ? 'Hide details' : 'Show details'}
+                    </Button>
+                    <div id={detailsPanelId(event)} hidden={!isEventExpanded(event)}>
+                      {#if isEventExpanded(event)}
+                        <JsonViewer value={event.detail} />
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </Feed.Event>
+            {/each}
+          {/if}
+        </Feed>
 
         <div class="findings">
           <h3 class="findings-heading">Findings ({agentRun.findings.length})</h3>
@@ -522,6 +616,40 @@
     padding: var(--space-3) var(--space-4) 0;
     font-size: var(--text-sm);
     color: var(--text-muted);
+  }
+
+  /* ---- Event stream entries ---- */
+  .event-empty {
+    list-style: none;
+  }
+
+  .event-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--text-subtle);
+  }
+
+  .event-tone {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: var(--font-medium);
+  }
+
+  .event-source {
+    font-family: var(--font-mono);
+  }
+
+  .event-summary {
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text);
+    line-height: 1.4;
+  }
+
+  .event-details-section {
+    margin-top: var(--space-1);
   }
 
   /* ---- Findings ---- */
