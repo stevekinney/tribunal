@@ -90,7 +90,23 @@ export type UserRepositoriesResult =
  * valid GitHub connection but no installations or no synced repositories — the
  * caller renders an empty state and a prompt to connect the app.
  */
-export async function getRepositoriesForUser(userId: number): Promise<UserRepositoriesResult> {
+/**
+ * How a caller wants a revoked GitHub token handled.
+ *
+ * The default records the revocation, which is what every interactive route
+ * wants: the next request then prompts for a reconnect instead of re-using a
+ * dead token. A read-only caller passes `recordTokenInvalidation: false` — see
+ * the MCP readers, whose tools are advertised `readOnlyHint: true` and must
+ * not write to `oauth_connection` as a side effect of answering a question.
+ */
+export type RepositoryResolutionOptions = {
+  recordTokenInvalidation?: boolean;
+};
+
+export async function getRepositoriesForUser(
+  userId: number,
+  options: RepositoryResolutionOptions = {},
+): Promise<UserRepositoriesResult> {
   if (env.NODE_ENV !== 'production' && env.E2E_TEST_MODE === '1' && env.E2E_TEST_SECRET) {
     return getLocalRepositoriesForUser(userId);
   }
@@ -139,7 +155,14 @@ export async function getRepositoriesForUser(userId: number): Promise<UserReposi
       // next request returns `no_github_token` (a reconnect prompt) instead of
       // re-using the dead token and repeating this 401 on every load. Mirrors
       // the invalid-token handling in access.ts.
-      await markGitHubTokenInvalid(userId);
+      //
+      // A read-only caller opts out: the revocation is GitHub's fact rather
+      // than this request's, and an interactive route will record it on the
+      // user's next page load either way. What matters is that a tool
+      // advertised as read-only does not write.
+      if (options.recordTokenInvalidation !== false) {
+        await markGitHubTokenInvalid(userId);
+      }
       return {
         ok: false,
         error: 'no_github_token',
@@ -305,8 +328,9 @@ async function getLocalRepositoriesForUser(userId: number): Promise<UserReposito
 export async function userCanAccessRepository(
   userId: number,
   repositoryId: number,
+  options: RepositoryResolutionOptions = {},
 ): Promise<boolean> {
-  const result = await getRepositoriesForUser(userId);
+  const result = await getRepositoriesForUser(userId, options);
   if (!result.ok) return false;
   return result.repositories.some((entry) => entry.repository.id === repositoryId);
 }

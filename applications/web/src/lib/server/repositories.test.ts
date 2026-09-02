@@ -362,6 +362,24 @@ describe('getRepositoriesForUser', () => {
     expect(mockMarkGitHubTokenInvalid).toHaveBeenCalledWith(7);
   });
 
+  it('records nothing on a 401 when the caller asked for a side-effect-free read', async () => {
+    // `markGitHubTokenInvalid` writes `oauth_connection.status = 'invalid'`.
+    // The MCP readers advertise `readOnlyHint: true`, so they opt out: a tool
+    // that answers a question must not mutate integration state on the way.
+    // The revocation is GitHub's fact rather than this request's, and the next
+    // interactive page load still records it.
+    mockGithubRequest.mockImplementation(async () => {
+      throw Object.assign(new Error('Bad credentials'), { status: 401 });
+    });
+
+    const result = await withTestDatabase(() =>
+      getRepositoriesForUser(7, { recordTokenInvalidation: false }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: 'no_github_token' });
+    expect(mockMarkGitHubTokenInvalid).not.toHaveBeenCalled();
+  });
+
   it('falls back to an installation-id label and the account slug/name when a live installation has no login', async () => {
     mockGithubRequest.mockImplementation(async (endpoint: string, options?: { page?: number }) => {
       if (endpoint !== 'GET /user/installations') {
