@@ -178,4 +178,43 @@ export default defineConfig(
     },
   },
   ...oxlint.buildFromOxlintConfigFile('../../.oxlintrc.json'),
+  {
+    // TRI-111. `getInstallationForRepository` takes no user: it returns the
+    // repository's most recently added active link, the same answer for every
+    // caller. A repository can carry active links for two installations — a
+    // transfer that leaves the previous organization's link behind is the
+    // ordinary way — so on a user-facing path it can hand a caller a client
+    // for an installation they were never authorized through. Authorization
+    // says a caller may read *a* repository; it does not say which
+    // installation's view of it they are entitled to.
+    //
+    // Resolve the installation from the caller's own access
+    // (`resolveAuthorizedInstallationId`) and build the client with
+    // `getInstallationForRepositoryAsCaller`, which re-checks that
+    // installation against the link table. The unscoped helper remains correct
+    // for webhook and background work, which has no caller to scope to.
+    // Declared after the oxlint spread below deliberately:
+    // `buildFromOxlintConfigFile` switches off every ESLint rule oxlint also
+    // owns, `no-restricted-imports` among them, and it is spread last. A block
+    // placed earlier resolves to severity 0 and silently enforces nothing —
+    // verified by `eslint --print-config`, after the rule appeared to pass on
+    // a file that violated it.
+    files: ['src/routes/**/*.ts', 'src/lib/server/**/*.ts'],
+    ignores: ['**/*.test.ts', '**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@tribunal/github/repositories/service',
+              importNames: ['getInstallationForRepository'],
+              message:
+                'Takes no user, so it can return an installation the caller was not authorized through. On a request path use resolveAuthorizedInstallationId + getInstallationForRepositoryAsCaller. See TRI-111.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );
