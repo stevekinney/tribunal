@@ -17,14 +17,14 @@ import { defineScopes } from '@lostgradient/mcp';
  * this vocabulary must not undermine: every primitive declares exactly one
  * scope from this set, and there is no generic all-access scope.
  *
- * `conformance:read` is deliberately part of the vocabulary and deliberately
- * declared by no production primitive. `getSupportedScopes()` walks the
- * production registries alone, so the scope is excluded from advertised
- * metadata structurally rather than by a second exclusion list somebody has to
- * remember to update — and the authorize endpoint's "reject any scope outside
- * the supported set" rule then makes it unobtainable as a consequence of the
- * mechanism. Its fixture tool's payload is TRI-30's decision, not this
- * issue's, so nothing here registers one.
+ * `conformance:read` is deliberately part of the vocabulary and declared only
+ * by the conformance-only fixture (`conformance-fixture.ts`, registered under
+ * `conformanceOnlyTools` by TRI-30), never by a production primitive.
+ * `getSupportedScopes()` walks the production registries alone, so the scope is
+ * excluded from advertised metadata structurally rather than by a second
+ * exclusion list somebody has to remember to update — and the authorize
+ * endpoint's "reject any scope outside the supported set" rule then makes it
+ * unobtainable as a consequence of the mechanism.
  */
 export const tribunalScopeVocabulary = defineScopes({
   'repositories:read':
