@@ -243,7 +243,9 @@ The rule the copy has to satisfy is symmetric, and an earlier revision of this s
 
 **Ownership is enforced on every path.** Repository and pull request reads resolve the caller's own installation set first and authorize the repository before resolving its installation; review run, finding, and cost reads filter on the caller's user id. In every case "belongs to somebody else" and "does not exist" return the same answer.
 
-**`conformance:read` is reserved and unregistered.** The scope is in the vocabulary with its consent copy, and no production or conformance-only primitive declares it, so `getSupportedScopes()` excludes it structurally. What Tribunal's fixture tool returns remains TRI-30's decision; TRI-29 registered no `conformanceOnlyTools`.
+**`conformance:read` is reserved, and TRI-30 registered its fixture.** The scope is in the vocabulary with its consent copy. TRI-29 registered no `conformanceOnlyTools`, leaving the payload to TRI-30, which decided it: one tool, `conformance_echo`, in `applications/web/src/lib/server/mcp/conformance-fixture.ts`. It takes an optional `label`, echoes it back inside a fixed structured payload marked `synthetic: true`, and touches no reader — no database, no GitHub, nothing derived from the caller — so a failure driving it is a protocol failure and never a data one. It uses the same `createToolStructuredResponse` path with a declared `outputSchema` as the production tools, because a fixture that took an easier path would prove the easier path works.
+
+With the fixture present, `getSupportedScopes()` still returns exactly the five production scopes: it walks `tools`, `resources`, and `prompts` and never `conformanceOnlyTools`, which is the structural exclusion this document required, now proven against a real fixture rather than an empty slot. Two further facts about the published harness, recorded because they were not obvious: `runMcpConformance` invokes only the tools it is handed probes for, so Tribunal's conformance run names all ten; and it constructs its handler with conformance mode off, so the fixture is not served during that run and is proven by its own tests instead.
 
 ## Open questions
 

@@ -40,11 +40,20 @@ describe("Tribunal's MCP registry", () => {
   });
 
   it('serves no resources and no prompts in this release', () => {
-    expect.assertions(3);
+    expect.assertions(2);
 
     expect(tribunalMcpRegistry.resources).toEqual([]);
     expect(tribunalMcpRegistry.prompts).toEqual([]);
-    expect(tribunalMcpRegistry.conformanceOnlyTools).toBeUndefined();
+  });
+
+  it('registers exactly one conformance-only fixture, outside the production tools', () => {
+    expect.assertions(3);
+
+    expect(tribunalMcpRegistry.conformanceOnlyTools?.map((tool) => tool.name)).toEqual([
+      'conformance_echo',
+    ]);
+    expect(tribunalMcpRegistry.conformanceOnlyTools?.[0]?.requiredScope).toBe('conformance:read');
+    expect(tribunalMcpRegistry.tools.map((tool) => tool.name)).not.toContain('conformance_echo');
   });
 });
 
@@ -204,6 +213,23 @@ describe('metadata contract', () => {
         isScope: (value) => tribunalScopeVocabulary.isScope(value),
       }),
     ).toContainEqual({ capability: firstTool.name, reason: 'duplicate-name' });
+  });
+
+  it('treats a registry with no conformance slot as having no fixtures to check', () => {
+    expect.assertions(1);
+    // `conformanceOnlyTools` is optional on `McpRegistry`. A consumer that
+    // never declares it must pass the gate on its production primitives alone
+    // rather than trip on the absent slot.
+    const registryWithoutSlot = {
+      ...tribunalMcpRegistry,
+      conformanceOnlyTools: undefined,
+    } as unknown as McpRegistry;
+
+    expect(
+      findMetadataContractViolations(registryWithoutSlot, {
+        isScope: (value) => tribunalScopeVocabulary.isScope(value),
+      }),
+    ).toEqual([]);
   });
 
   it('checks a conformance-only fixture, which is served even though it is never grantable', () => {

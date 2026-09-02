@@ -23,6 +23,13 @@ vi.mock('$env/dynamic/private', () => ({ env: { MCP_SERVER_NAME: 'tribunal-mcp-s
  * The consent text is quoted rather than imported so a change to either side
  * has to be reconciled by hand. Two copies that must agree, with a test
  * between them, is the point.
+ *
+ * The conformance-only fixture is deliberately outside this gate. It is keyed
+ * off the production operations map, and the fixture discloses nothing a
+ * consent sentence governs — its payload is a fixed synthetic object with no
+ * field derived from any repository, pull request, review, finding, or cost
+ * record. Adding it here would pin a shape against a sentence that promises
+ * no data at all, which is not the mismatch this file exists to catch.
  */
 const disclosedFields: Record<
   TribunalMcpOperationName,

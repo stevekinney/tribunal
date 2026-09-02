@@ -1,4 +1,5 @@
 import { tribunalScopeVocabulary } from './scope-vocabulary';
+import { conformanceFixtureTool } from './conformance-fixture';
 import { tribunalMcpInstructions } from './instructions';
 import { tribunalMcpServerName, tribunalMcpServerVersion } from './server-identity';
 import { getRepositoryTool, listRepositoriesTool } from './tools/repository-tools';
@@ -54,10 +55,13 @@ export type TribunalMcpOperationName = keyof typeof tribunalMcpOperations;
  * rather than by the engine, and no client requirement asks for it. Adding one
  * later is additive.
  *
- * `conformanceOnlyTools` is likewise absent: the `conformance:read` scope is
- * reserved in the vocabulary, but what its fixture returns is TRI-30's
- * decision against Tribunal's real conformance needs, not a payload to guess
- * here.
+ * `conformanceOnlyTools` holds the one synthetic fixture behind
+ * `conformance:read`. It is a separate slot rather than a flag on a tool
+ * because the separation is what `getSupportedScopes()` reads: that function
+ * walks the production three and never this one, so a scope declared only by a
+ * fixture cannot reach a real OAuth client. Collapsing them into one list with
+ * a boolean would move that guarantee out of the shape of the data and into a
+ * filter somebody has to remember.
  */
 export const tribunalMcpRegistry = tribunalScopeVocabulary.defineRegistry({
   instructions: tribunalMcpInstructions,
@@ -65,4 +69,5 @@ export const tribunalMcpRegistry = tribunalScopeVocabulary.defineRegistry({
   tools: Object.values(tribunalMcpOperations),
   resources: [],
   prompts: [],
+  conformanceOnlyTools: [conformanceFixtureTool],
 });
