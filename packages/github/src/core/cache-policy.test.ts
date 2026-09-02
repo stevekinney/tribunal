@@ -65,36 +65,50 @@ describe('cache-policy', () => {
         },
         {
           operationId: 'list-pull-requests',
-          baselineArguments: [7, 's:open|sort:updated'],
+          // Three arguments since the installation partition landed. A stale
+          // two-argument baseline still produced distinct keys, but by feeding
+          // the filter in as `installationId` and leaving `filterKey`
+          // permanently `undefined` — so it silently stopped checking that two
+          // filters cannot coalesce. Vary each dimension on its own.
+          baselineArguments: [7, 55, 's:open|sort:updated'],
           variantArguments: [
-            [8, 's:open|sort:updated'],
-            [7, 's:closed|sort:updated'],
+            [8, 55, 's:open|sort:updated'],
+            [7, 99, 's:open|sort:updated'],
+            [7, 55, 's:closed|sort:updated'],
           ],
         },
         {
           operationId: 'list-issues',
-          baselineArguments: [7, 's:open|sort:updated'],
+          // Three arguments since the installation partition landed. A stale
+          // two-argument baseline still produced distinct keys, but by feeding
+          // the filter in as `installationId` and leaving `filterKey`
+          // permanently `undefined` — so it silently stopped checking that two
+          // filters cannot coalesce. Vary each dimension on its own.
+          baselineArguments: [7, 55, 's:open|sort:updated'],
           variantArguments: [
-            [8, 's:open|sort:updated'],
-            [7, 's:closed|sort:updated'],
+            [8, 55, 's:open|sort:updated'],
+            [7, 99, 's:open|sort:updated'],
+            [7, 55, 's:closed|sort:updated'],
           ],
         },
         {
           operationId: 'get-pull-request',
-          baselineArguments: ['owner', 'repo', 42],
+          baselineArguments: ['owner', 'repo', 42, 55],
           variantArguments: [
-            ['other-owner', 'repo', 42],
-            ['owner', 'other-repo', 42],
-            ['owner', 'repo', 43],
+            ['other-owner', 'repo', 42, 55],
+            ['owner', 'other-repo', 42, 55],
+            ['owner', 'repo', 43, 55],
+            ['owner', 'repo', 42, 99],
           ],
         },
         {
           operationId: 'get-pull-request-metadata',
-          baselineArguments: ['owner', 'repo', 42],
+          baselineArguments: ['owner', 'repo', 42, 55],
           variantArguments: [
-            ['other-owner', 'repo', 42],
-            ['owner', 'other-repo', 42],
-            ['owner', 'repo', 43],
+            ['other-owner', 'repo', 42, 55],
+            ['owner', 'other-repo', 42, 55],
+            ['owner', 'repo', 43, 55],
+            ['owner', 'repo', 42, 99],
           ],
         },
         {

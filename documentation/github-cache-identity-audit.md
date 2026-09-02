@@ -27,12 +27,12 @@ No missing user, installation, repository, pull request, issue, branch, or commi
 >
 > Still open: `get-pull-request-diff-context` keys on
 > `(repositoryId, pullNumber, headSha)` with no installation segment, and the
-> web routes select an installation with
-> `resolveInstallationForRepository`, which returns the most recently added
-> active link rather than the installation the caller was authorized through —
-> so those routes can hand a caller another installation's Octokit even on a
-> cache miss. Tracked separately; do not read the table below as clearing
-> either.
+> web routes select an installation with `getInstallationForRepository`
+> (`packages/github/src/repositories/service.ts`), whose private
+> `getInstallationIdFromLinkTable` returns the most recently added active link
+> rather than the installation the caller was authorized through — so those
+> routes can hand a caller another installation's Octokit even on a cache
+> miss. Tracked as TRI-111; do not read the table below as clearing either.
 
 ## Inventory
 
