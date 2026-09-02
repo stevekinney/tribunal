@@ -248,24 +248,26 @@ describe('cache-policy', () => {
 
     it('list-pull-requests generates correct cache key', () => {
       const policy = getPolicy('list-pull-requests')!;
-      const key = policy.keyFactory(123, 's:open|sort:updated');
+      const key = policy.keyFactory(123, 55, 's:open|sort:updated');
       expect(key).toContain('123');
       expect(key).toContain('s:open|sort:updated');
+      expect(key).toContain('installation:55');
     });
 
     it('get-pull-request generates correct cache key', () => {
       const policy = getPolicy('get-pull-request')!;
-      const key = policy.keyFactory('owner', 'repo', 42);
+      const key = policy.keyFactory('owner', 'repo', 42, 55);
       expect(key).toContain('owner');
       expect(key).toContain('repo');
       expect(key).toContain('42');
+      expect(key).toContain('installation:55');
     });
 
     it('get-pull-request-metadata generates a distinct raw metadata cache key', () => {
       const policy = getPolicy('get-pull-request-metadata')!;
-      const key = policy.keyFactory('owner', 'repo', 42);
-      expect(key).toBe('github:response:owner:repo:pr:42:metadata');
-      expect(key).not.toBe(getPolicy('get-pull-request')!.keyFactory('owner', 'repo', 42));
+      const key = policy.keyFactory('owner', 'repo', 42, 55);
+      expect(key).toBe('github:response:owner:repo:pr:42:metadata:installation:55');
+      expect(key).not.toBe(getPolicy('get-pull-request')!.keyFactory('owner', 'repo', 42, 55));
     });
 
     it('list-issues generates correct cache key', () => {

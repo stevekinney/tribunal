@@ -198,6 +198,10 @@ async function listLivePullRequests(repositoryId: number, filters: PullRequestFi
     installation.owner,
     installation.repo,
     filters,
+    // The installation that authorized this caller and built the Octokit
+    // above. Cache entries are partitioned by it so a repository linked to
+    // two installations cannot serve one's content to the other.
+    installation.installationId,
     repositoryId,
   );
 
@@ -227,6 +231,7 @@ async function listLivePullRequests(repositoryId: number, filters: PullRequestFi
         installation.repo,
         pullRequest.number,
         pullRequest.headSha,
+        installation.installationId,
       ),
     }),
   );

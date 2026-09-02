@@ -1222,7 +1222,7 @@ describe('buildRepositoryDashboard', () => {
       ([key]) => key,
     );
     expect(cacheKeys).toContain(
-      'github:repository:42:prs:list:s:open|sort:updated|dir:desc|p:1|pp:100',
+      'github:repository:42:prs:list:installation:100:s:open|sort:updated|dir:desc|p:1|pp:100',
     );
   });
 

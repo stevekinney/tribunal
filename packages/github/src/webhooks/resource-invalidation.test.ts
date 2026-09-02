@@ -133,8 +133,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         CACHE_KEYS.GITHUB_RESPONSE_ISSUE_PATTERN('acme', 'widgets', 10),
       );
       // Should not invalidate PR detail for regular issues
-      expect(context.cache.deleteCache).not.toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 10),
+      expect(context.cache.deleteCacheByPattern).not.toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL_PATTERN('acme', 'widgets', 10),
       );
     });
 
@@ -152,8 +152,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_ISSUE_PATTERN('acme', 'widgets', 10),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 10),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL_PATTERN('acme', 'widgets', 10),
       );
     });
 
@@ -194,8 +194,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       expect(context.cache.deleteCache).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_ISSUE_DETAIL('acme', 'widgets', 10),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 10),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_PR_DETAIL_PATTERN('acme', 'widgets', 10),
       );
     });
   });
@@ -213,9 +213,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'pull_request', 'opened', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 5),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN('acme', 'widgets', 5),
       );
@@ -248,9 +247,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
       );
       // PR detail/pattern invalidation still happens even though the
       // repository lookup (used only for list-cache invalidation) failed.
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 5),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
 
       consoleErrorSpy.mockRestore();
     });
@@ -273,9 +271,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         data,
       );
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 8),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN('acme', 'widgets', 8),
       );
@@ -299,9 +296,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         data,
       );
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 3),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN('acme', 'widgets', 3),
       );
@@ -326,9 +322,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         data,
       );
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 15),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       expect(context.cache.deleteCache).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_REVIEW_THREAD_VALIDATE('PRRT_abc123', 'acme', 'widgets'),
       );
@@ -350,9 +345,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         data,
       );
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 15),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       // Thread validate should not be called
       expect(context.cache.deleteCache).not.toHaveBeenCalledWith(
         expect.stringContaining('thread:'),
@@ -391,9 +385,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
         data,
       );
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_PR_DETAIL('acme', 'widgets', 15),
-      );
+      // Detail entries carry an installation suffix; the
+      // GITHUB_RESPONSE_PR_PATTERN assertion below sweeps all of them.
       expect(context.cache.deleteCache).toHaveBeenCalledWith(
         CACHE_KEYS.GITHUB_REVIEW_THREAD_VALIDATE('PRRT_abc123', 'acme', 'widgets'),
       );

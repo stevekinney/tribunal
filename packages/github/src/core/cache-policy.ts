@@ -7,6 +7,7 @@
  */
 
 import { CACHE_KEYS } from '../cache-keys.js';
+import { ValidationError } from '../error-taxonomy.js';
 import { GITHUB_LIST_CACHE_TTL, GITHUB_RESPONSE_CACHE_TTL_SECONDS } from '@tribunal/github/shared';
 
 // ============================================================================
@@ -70,6 +71,26 @@ export function requirePolicy(operationId: string): CachePolicy<unknown[]> {
   return policy;
 }
 
+/**
+ * Guard the installation dimension of a partitioned cache key.
+ *
+ * The pull request policies fold the installation into the key so that one
+ * installation cannot be served another's cached content. An id that is not a
+ * positive integer would stringify into a shared literal segment —
+ * `installation:undefined`, `installation:NaN` — which turns the partition off
+ * for every caller that hits the same path, silently. A cache key is doing
+ * access-control work here, so the failure mode has to be loud.
+ *
+ * @throws ValidationError when the id cannot safely partition a key.
+ */
+export function assertPartitionInstallationId(installationId: number): void {
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new ValidationError(
+      `installationId must be a positive integer to partition a cache key; received ${String(installationId)}.`,
+    );
+  }
+}
+
 /** Get all registered policies. Useful for testing and auditing. */
 export function getAllPolicies(): ReadonlyMap<string, CachePolicy<unknown[]>> {
   return registry;
@@ -81,24 +102,24 @@ export function getAllPolicies(): ReadonlyMap<string, CachePolicy<unknown[]>> {
 
 registerPolicy({
   operationId: 'list-pull-requests',
-  keyFactory: (repositoryId: number, filterKey: string) =>
-    CACHE_KEYS.GITHUB_PRS_LIST(repositoryId, filterKey),
+  keyFactory: (repositoryId: number, installationId: number, filterKey: string) =>
+    CACHE_KEYS.GITHUB_PRS_LIST(repositoryId, installationId, filterKey),
   ttlSeconds: GITHUB_LIST_CACHE_TTL,
   supportsEtag: false, // List fetch callbacks do not forward eTag headers
 });
 
 registerPolicy({
   operationId: 'get-pull-request',
-  keyFactory: (owner: string, repo: string, pullNumber: number) =>
-    CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, pullNumber),
+  keyFactory: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, pullNumber, installationId),
   ttlSeconds: GITHUB_RESPONSE_CACHE_TTL_SECONDS,
   supportsEtag: true,
 });
 
 registerPolicy({
   operationId: 'get-pull-request-metadata',
-  keyFactory: (owner: string, repo: string, pullNumber: number) =>
-    CACHE_KEYS.GITHUB_PR_METADATA(owner, repo, pullNumber),
+  keyFactory: (owner: string, repo: string, pullNumber: number, installationId: number) =>
+    CACHE_KEYS.GITHUB_PR_METADATA(owner, repo, pullNumber, installationId),
   ttlSeconds: GITHUB_RESPONSE_CACHE_TTL_SECONDS,
   supportsEtag: true,
 });

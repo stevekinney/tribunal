@@ -162,10 +162,16 @@ async function invalidateIssueCommentCache(
     invalidateExistingListCaches(context, owner, repo),
   ];
 
-  // If the issue is actually a PR, also invalidate PR detail (comment count changes)
+  // If the issue is actually a PR, also invalidate PR detail (comment count changes).
+  // Detail entries are partitioned by installation, so this must sweep the
+  // pattern — an exact-key delete would match nothing. The narrow
+  // DETAIL pattern is deliberate: the broader PR response pattern would also
+  // evict review-comment and thread-lookup entries this event did not touch.
   if (issuePullRequest) {
     invalidations.push(
-      context.cache.deleteCache(CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, issueNumber)),
+      context.cache.deleteCacheByPattern(
+        CACHE_KEYS.GITHUB_PR_DETAIL_PATTERN(owner, repo, issueNumber),
+      ),
     );
   }
 
@@ -188,7 +194,8 @@ async function invalidatePullRequestCache(
   });
 
   await Promise.all([
-    context.cache.deleteCache(CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, pullRequest.number)),
+    // No exact-key detail delete: detail entries carry an installation suffix,
+    // and GITHUB_RESPONSE_PR_PATTERN below already matches every one of them.
     context.cache.deleteCacheByPattern(
       CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN(owner, repo, pullRequest.number),
     ),
@@ -222,7 +229,8 @@ async function invalidatePullRequestReviewRelatedCache(
   if (!prNumber) return;
 
   const invalidations: Promise<unknown>[] = [
-    context.cache.deleteCache(CACHE_KEYS.GITHUB_PR_DETAIL(owner, repo, prNumber)),
+    // No exact-key detail delete: detail entries carry an installation suffix,
+    // and GITHUB_RESPONSE_PR_PATTERN below already matches every one of them.
     // GITHUB_RESPONSE_PR_PATTERN covers: review-comments, thread-lookup, review thread counts, and check counts
     // for this PR. Thread-validate entries use a different key shape (keyed by threadId, not PR number)
     // and are invalidated individually below when thread.node_id is present.
