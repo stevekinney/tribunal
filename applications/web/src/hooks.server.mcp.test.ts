@@ -38,6 +38,14 @@ vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
   return { ...actual, createTribunalMcpMount };
 });
 
+// Capture the process termination handlers rather than emitting real signals,
+// which would disturb other test files sharing this worker's process.
+const signalHandlers = new Map<string, () => void>();
+vi.spyOn(process, 'once').mockImplementation((event, handler) => {
+  signalHandlers.set(String(event), handler as () => void);
+  return process;
+});
+
 await import('./hooks.server');
 
 function fakeEvent(): RequestEvent {
@@ -53,8 +61,7 @@ function fakeEvent(): RequestEvent {
 const resolve = () => Promise.resolve(new Response('nf', { status: 404 }));
 
 afterAll(() => {
-  process.removeAllListeners('SIGTERM');
-  process.removeAllListeners('SIGINT');
+  vi.restoreAllMocks();
 });
 
 describe('hooks.server MCP wiring (enabled)', () => {
@@ -72,14 +79,14 @@ describe('hooks.server MCP wiring (enabled)', () => {
   });
 
   it('disposes the mount on SIGTERM', async () => {
-    process.emit('SIGTERM');
+    signalHandlers.get('SIGTERM')!();
     await vi.waitFor(() => expect(mountDispose).toHaveBeenCalled());
   });
 
   it('logs rather than throwing when disposal fails on SIGINT', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     mountDispose.mockRejectedValueOnce(new Error('dispose boom'));
-    process.emit('SIGINT');
+    signalHandlers.get('SIGINT')!();
     await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
         '[hooks.server] MCP mount dispose failed',
