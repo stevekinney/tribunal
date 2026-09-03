@@ -158,6 +158,10 @@ describe('cost ledger PostgreSQL reservation concurrency', () => {
   });
 
   afterAll(async () => {
+    // The last case can still be running if it overran its timeout, and its body
+    // polls and verifies through adminClient. Closing that underneath it produces
+    // exactly the noisy rejections the gate exists to prevent.
+    await previousCaseTeardown;
     await adminClient.end();
   });
 
