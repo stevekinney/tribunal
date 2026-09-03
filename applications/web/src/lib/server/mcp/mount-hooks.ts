@@ -1,3 +1,4 @@
+import { dev } from '$app/environment';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import {
   primeSvelteKitMcpIdentity,
@@ -5,6 +6,43 @@ import {
 } from '@lostgradient/mcp/sveltekit';
 import { identityFromUser } from '$lib/server/oauth/identity';
 import type { TribunalMcpMount } from './mount';
+
+/** True for the paths the mount owns (`/mcp`, OAuth endpoints, discovery docs). */
+export function isMcpSurfacePath(pathname: string): boolean {
+  return (
+    pathname === '/mcp' ||
+    pathname.startsWith('/oauth/') ||
+    pathname.startsWith('/.well-known/oauth-')
+  );
+}
+
+/**
+ * Applies security headers to the mounted surface's responses (AC4/AC5). Only
+ * responses for mount-owned paths are decorated, so the disabled-state 404 —
+ * which reaches `resolve` for a path with no route — stays byte-indistinguishable
+ * from an ordinary 404 (AC7). The library sets `Cache-Control` on its own JSON
+ * responses, so this only sets caching headers on HTML (the consent page),
+ * avoiding a conflict. Headers are mutated in place; the mount builds its
+ * responses with `new Response`, whose headers are mutable.
+ */
+export function applyMcpSecurityHeaders(response: Response, pathname: string): Response {
+  const headers = response.headers;
+  headers.set('x-content-type-options', 'nosniff');
+  headers.set('permissions-policy', 'camera=(), microphone=(), geolocation=(), browsing-topics=()');
+  if (!dev) {
+    headers.set('strict-transport-security', 'max-age=63072000; includeSubDomains');
+  }
+  // Transaction-carrying OAuth paths must not leak the transaction id or CSRF
+  // token through the Referer header.
+  if (pathname.startsWith('/oauth/')) {
+    headers.set('referrer-policy', 'no-referrer');
+  }
+  if ((headers.get('content-type') ?? '').includes('text/html')) {
+    headers.set('cache-control', 'no-store, private');
+    headers.set('vary', 'Cookie');
+  }
+  return response;
+}
 
 /**
  * The library's mount works against a structural subset of SvelteKit's event
@@ -61,10 +99,13 @@ export function createMcpMountHandle(getMount: MountAccessor): Handle {
     const mountPromise = getMount();
     if (!mountPromise) return resolve(event);
     const { mount } = await mountPromise;
-    return mount.handle({
+    const response = await mount.handle({
       event: asMountEvent(event),
       resolve: (mountEvent) => resolve(mountEvent as unknown as RequestEvent),
     });
+    return isMcpSurfacePath(event.url.pathname)
+      ? applyMcpSecurityHeaders(response, event.url.pathname)
+      : response;
   };
 }
 

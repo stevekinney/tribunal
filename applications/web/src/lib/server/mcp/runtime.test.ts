@@ -3,6 +3,7 @@ import { createOAuthStores } from '@tribunal/database/queries';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import type { SvelteKitMcpRuntime } from '@lostgradient/mcp/sveltekit';
 import { mcpLogger } from '$lib/server/mcp-logger';
+import { mcpSlidingWindowStore } from '$lib/server/oauth/configuration';
 import {
   createTribunalMcpRuntime,
   logAuthenticationEvent,
@@ -65,5 +66,32 @@ describe('runtime request handling', () => {
 
   it('publishes a grant revocation without error', async () => {
     await expect(runtime.publishGrantRevocation('42')).resolves.toBeUndefined();
+  });
+
+  it('distinguishes requests by client address rather than collapsing them', async () => {
+    const consume = vi.spyOn(mcpSlidingWindowStore, 'consume');
+
+    const send = (socketAddress: string) => {
+      const requestUrl = new URL('http://localhost:5173/mcp');
+      return runtime.handle({
+        request: new Request(requestUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
+          body: '{}',
+        }),
+        requestUrl,
+        requestId: 'req-addr',
+        socketAddress,
+        identity: null,
+      });
+    };
+
+    await send('10.0.0.1');
+    await send('10.0.0.2');
+
+    const keys = consume.mock.calls.map(([input]) => input.key);
+    expect(keys.some((key) => key.includes('10.0.0.1'))).toBe(true);
+    expect(keys.some((key) => key.includes('10.0.0.2'))).toBe(true);
+    consume.mockRestore();
   });
 });
