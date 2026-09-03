@@ -78,11 +78,13 @@ export type NewOAuthRefreshToken = typeof oauthRefreshTokens.$inferInsert;
  * through these, so they validate the real persisted shapes rather than an
  * assumed one.
  */
-// A timestamp column reads back as a `Date` through a drizzle select and as an
-// ISO `string` through a raw-SQL reader, so the row validators accept either.
-const isoOrDate = z.union([z.string(), z.date()]);
+// A timestamp column reads back as a `Date` through a drizzle select and as a
+// textual timestamp `string` through a raw-SQL reader. Postgres's text form
+// (e.g. `2026-09-03 16:21:30.123+00`) is not strict ISO-8601, so this accepts
+// any string rather than over-promising a format the reader never guarantees.
+const timestampValue = z.union([z.string(), z.date()]);
 
-export const oauthClientRowSchema = z.object({
+export const oauthClientRowSchema = z.strictObject({
   clientId: z.string(),
   clientSecretHash: z.string().nullable(),
   clientName: z.string(),
@@ -93,12 +95,12 @@ export const oauthClientRowSchema = z.object({
   grantTypes: z.array(z.string()),
   responseTypes: z.array(z.string()),
   clientIdMetadataUrl: z.string().nullable(),
-  clientSecretExpiresAt: isoOrDate.nullable(),
-  createdAt: isoOrDate,
-  updatedAt: isoOrDate,
+  clientSecretExpiresAt: timestampValue.nullable(),
+  createdAt: timestampValue,
+  updatedAt: timestampValue,
 });
 
-export const oauthAuthorizationTransactionRowSchema = z.object({
+export const oauthAuthorizationTransactionRowSchema = z.strictObject({
   transactionIdHash: z.string(),
   csrfTokenHash: z.string(),
   consentBindingHash: z.string(),
@@ -111,12 +113,12 @@ export const oauthAuthorizationTransactionRowSchema = z.object({
   issuer: z.string(),
   resource: z.string(),
   scope: z.string(),
-  expiresAt: isoOrDate,
-  consumedAt: isoOrDate.nullable(),
-  createdAt: isoOrDate,
+  expiresAt: timestampValue,
+  consumedAt: timestampValue.nullable(),
+  createdAt: timestampValue,
 });
 
-export const oauthCodeRowSchema = z.object({
+export const oauthCodeRowSchema = z.strictObject({
   codeHash: z.string(),
   clientId: z.string(),
   userId: z.number().int(),
@@ -126,23 +128,23 @@ export const oauthCodeRowSchema = z.object({
   scope: z.string().nullable(),
   state: z.string().nullable(),
   resource: z.string(),
-  expiresAt: isoOrDate,
-  usedAt: isoOrDate.nullable(),
-  createdAt: isoOrDate,
+  expiresAt: timestampValue,
+  usedAt: timestampValue.nullable(),
+  createdAt: timestampValue,
 });
 
-export const oauthAccessTokenRowSchema = z.object({
+export const oauthAccessTokenRowSchema = z.strictObject({
   accessTokenHash: z.string(),
   clientId: z.string(),
   userId: z.number().int(),
   scope: z.string().nullable(),
   resource: z.string(),
-  expiresAt: isoOrDate,
-  revokedAt: isoOrDate.nullable(),
-  createdAt: isoOrDate,
+  expiresAt: timestampValue,
+  revokedAt: timestampValue.nullable(),
+  createdAt: timestampValue,
 });
 
-export const oauthRefreshTokenRowSchema = z.object({
+export const oauthRefreshTokenRowSchema = z.strictObject({
   refreshTokenHash: z.string(),
   clientId: z.string(),
   userId: z.number().int(),
@@ -150,7 +152,7 @@ export const oauthRefreshTokenRowSchema = z.object({
   resource: z.string(),
   accessTokenHash: z.string(),
   familyId: z.string(),
-  expiresAt: isoOrDate,
-  revokedAt: isoOrDate.nullable(),
-  createdAt: isoOrDate,
+  expiresAt: timestampValue,
+  revokedAt: timestampValue.nullable(),
+  createdAt: timestampValue,
 });
