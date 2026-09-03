@@ -22,6 +22,7 @@ export * from './finding';
 export * from './github-installation';
 export * from './github-installation-repository';
 export * from './github-webhook-delivery';
+export * from './oauth';
 export * from './oauth-connection';
 export * from './pull-request-action-item';
 export * from './pull-request-review-run';
