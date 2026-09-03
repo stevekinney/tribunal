@@ -113,13 +113,13 @@ describe('resolveUserProfile', () => {
   });
 
   it('returns null when no user row matches', async () => {
-    await runWithDatabase(testDatabase.db, async () => {
+    await runWithDatabase(testDatabase.db as never, async () => {
       await expect(resolveUserProfile('123')).resolves.toBeNull();
     });
   });
 
   it('resolves the profile for an existing user', async () => {
-    await runWithDatabase(testDatabase.db, async () => {
+    await runWithDatabase(testDatabase.db as never, async () => {
       const [row] = await testDatabase.db
         .insert(user)
         .values({ username: 'octocat', email: 'octo@example.com', name: 'Octo Cat' })
