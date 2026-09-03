@@ -58,8 +58,18 @@ export const CACHE_KEYS = {
     `github:response:${owner}:${repo}:pr:${pullNumber}:metadata:installation:${installationId}`,
   GITHUB_PR_METADATA_PATTERN: (owner: string, repo: string, pullNumber: number) =>
     `github:response:${owner}:${repo}:pr:${pullNumber}:metadata:installation:*`,
-  GITHUB_PR_DIFF_CONTEXT: (repositoryId: number, pullNumber: number, headSha: string) =>
-    `github:response:repository:${repositoryId}:pr:${pullNumber}:head:${headSha}:diff-context`,
+  // Installation is a trailing segment for the same reason as GITHUB_PR_DETAIL
+  // above — `cachedRead` answers a hit without invoking the Octokit client,
+  // so without this a repository carrying link rows for two installations
+  // (a transfer leaves the old row behind) would let one installation's
+  // fetched diff context leak to the other.
+  GITHUB_PR_DIFF_CONTEXT: (
+    repositoryId: number,
+    pullNumber: number,
+    headSha: string,
+    installationId: number,
+  ) =>
+    `github:response:repository:${repositoryId}:pr:${pullNumber}:head:${headSha}:diff-context:installation:${installationId}`,
 
   GITHUB_REVIEW_COMMENTS_LIST: (
     owner: string,
@@ -96,18 +106,37 @@ export const CACHE_KEYS = {
   GITHUB_USER_INSTALLATIONS_PATTERN: 'github:response:user:*:installations',
 
   // GitHub review thread and CI check caches (Redis)
-  GITHUB_REVIEW_THREAD_COUNTS: (owner: string, repo: string, prNumber: number) =>
-    `github:response:${owner}:${repo}:pr:${prNumber}:review-thread-counts`,
+  //
+  // Installation is a trailing segment rather than a prefix — same rationale
+  // as GITHUB_PR_DETAIL above — so the existing `github:response:{owner}:{repo}:pr:{n}:*`
+  // sweep (GITHUB_RESPONSE_PR_PATTERN) keeps matching this entry.
+  GITHUB_REVIEW_THREAD_COUNTS: (
+    owner: string,
+    repo: string,
+    prNumber: number,
+    installationId: number,
+  ) =>
+    `github:response:${owner}:${repo}:pr:${prNumber}:review-thread-counts:installation:${installationId}`,
   GITHUB_UNRESOLVED_REVIEW_THREAD_COUNT: (owner: string, repo: string, prNumber: number) =>
     `github:response:${owner}:${repo}:pr:${prNumber}:unresolved-review-thread-count`,
-  GITHUB_CHECK_COUNTS: (owner: string, repo: string, headSha: string) =>
-    `github:response:${owner}:${repo}:checks:${headSha}`,
-  GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string) =>
-    `github:response:${owner}:${repo}:branch:${branch}:ci-status`,
-  GITHUB_BRANCH_HEAD_SHA: (owner: string, repo: string, branch: string) =>
-    `github:response:${owner}:${repo}:branch:${branch}:head-sha`,
-  GITHUB_BRANCH_RULES: (owner: string, repo: string, branch: string) =>
-    `github:response:${owner}:${repo}:branch:${branch}:rules`,
+  // Installation is a trailing segment so the exact-key invalidation sites in
+  // resource-invalidation.ts move to `deleteCacheByPattern` against
+  // GITHUB_CHECK_COUNTS_PATTERN rather than needing to know the installation
+  // id that populated the entry.
+  GITHUB_CHECK_COUNTS: (owner: string, repo: string, headSha: string, installationId: number) =>
+    `github:response:${owner}:${repo}:checks:${headSha}:installation:${installationId}`,
+  GITHUB_CHECK_COUNTS_PATTERN: (owner: string, repo: string, headSha: string) =>
+    `github:response:${owner}:${repo}:checks:${headSha}:installation:*`,
+  GITHUB_BRANCH_CI_STATUS: (owner: string, repo: string, branch: string, installationId: number) =>
+    `github:response:${owner}:${repo}:branch:${branch}:ci-status:installation:${installationId}`,
+  GITHUB_BRANCH_CI_STATUS_PATTERN: (owner: string, repo: string, branch: string) =>
+    `github:response:${owner}:${repo}:branch:${branch}:ci-status:installation:*`,
+  GITHUB_BRANCH_HEAD_SHA: (owner: string, repo: string, branch: string, installationId: number) =>
+    `github:response:${owner}:${repo}:branch:${branch}:head-sha:installation:${installationId}`,
+  GITHUB_BRANCH_HEAD_SHA_PATTERN: (owner: string, repo: string, branch: string) =>
+    `github:response:${owner}:${repo}:branch:${branch}:head-sha:installation:*`,
+  GITHUB_BRANCH_RULES: (owner: string, repo: string, branch: string, installationId: number) =>
+    `github:response:${owner}:${repo}:branch:${branch}:rules:installation:${installationId}`,
   GITHUB_SINGLE_REPOSITORY_READ_TOKEN: (installationId: number, repositoryId: number) =>
     `github:installation:${installationId}:repository:${repositoryId}:read-token`,
 

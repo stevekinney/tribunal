@@ -191,11 +191,11 @@ describe('getDiffContext', () => {
 
     expect(context.cache.getCached).toHaveBeenNthCalledWith(
       1,
-      'github:response:repository:123:pr:42:head:aaa111:diff-context',
+      'github:response:repository:123:pr:42:head:aaa111:diff-context:installation:1',
     );
     expect(context.cache.getCached).toHaveBeenNthCalledWith(
       2,
-      'github:response:repository:123:pr:42:head:bbb222:diff-context',
+      'github:response:repository:123:pr:42:head:bbb222:diff-context:installation:1',
     );
     expect(listFiles).toHaveBeenCalledTimes(2);
   });
@@ -233,6 +233,75 @@ describe('getDiffContext', () => {
 
     expect(context.cache.getCached).toHaveBeenCalledTimes(2);
     expect(listFiles).toHaveBeenCalledTimes(1);
+  });
+
+  // Transfer scenario, end to end through the real `cachedRead`. A repository
+  // that still carries a link row for its previous installation stays
+  // readable by that installation's users. If the cache is not partitioned,
+  // the entry the current installation populated is handed to them — diff
+  // content their own credentials would be refused.
+  it('does not serve one installation the diff context another installation cached', async () => {
+    const currentListFiles = vi
+      .fn()
+      .mockResolvedValue({ data: [createPullRequestFile(1, '@@ -1 +1 @@\n-old\n+current')] });
+    const staleListFiles = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+
+    const store = new Map<string, unknown>();
+    const cache = {
+      getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+      setCache: vi.fn(async (key: string, value: unknown) => {
+        store.set(key, value);
+        return true;
+      }),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    };
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+    const context: GithubServiceContext = {
+      db: {} as GithubServiceContext['db'],
+      cache,
+      getInstallationOctokit: vi.fn(async (installationId: number) =>
+        installationId === currentInstallationId
+          ? ({ rest: { pulls: { listFiles: currentListFiles } } } as unknown as Octokit)
+          : ({ rest: { pulls: { listFiles: staleListFiles } } } as unknown as Octokit),
+      ),
+    };
+
+    const cachedResult = await getDiffContext(context, {
+      installationId: currentInstallationId,
+      owner: 'acme',
+      repository: 'widgets',
+      pullRequestNumber: 5,
+      repositoryId: 123,
+      headSha: 'sha5',
+      currentHeadSha: 'sha5',
+    });
+    expect(cachedResult.changedFiles[0].patch).toBe('@@ -1 +1 @@\n-old\n+current');
+
+    // The installation the transfer left behind no longer has access, so its
+    // live call 404s — it must reach GitHub (a genuine miss) rather than
+    // reuse the other installation's cached diff.
+    await expect(
+      getDiffContext(context, {
+        installationId: staleInstallationId,
+        owner: 'acme',
+        repository: 'widgets',
+        pullRequestNumber: 5,
+        repositoryId: 123,
+        headSha: 'sha5',
+        currentHeadSha: 'sha5',
+      }),
+    ).rejects.toThrow('Not Found');
+
+    expect(staleListFiles).toHaveBeenCalledOnce();
+    expect([...store.keys()].sort()).toStrictEqual(
+      ['github:response:repository:123:pr:5:head:sha5:diff-context:installation:200'].sort(),
+    );
   });
 
   it.each([

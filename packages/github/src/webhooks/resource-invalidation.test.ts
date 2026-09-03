@@ -498,8 +498,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'abc123sha'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'abc123sha'),
       );
     });
 
@@ -511,8 +511,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'def456sha'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'def456sha'),
       );
       // No PR-specific invalidation
       expect(context.cache.deleteCache).not.toHaveBeenCalledWith(
@@ -531,8 +531,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'main'),
       );
     });
 
@@ -562,11 +562,11 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_run', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'typed-sha'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'typed-sha'),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'main'),
       );
     });
   });
@@ -583,8 +583,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_suite', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'suite789sha'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'suite789sha'),
       );
     });
 
@@ -599,8 +599,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_suite', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/phase-two'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'feature/phase-two'),
       );
     });
 
@@ -617,11 +617,11 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'check_suite', 'completed', data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'typed-suite-sha'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'typed-suite-sha'),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/typed'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'feature/typed'),
       );
     });
   });
@@ -638,8 +638,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'status', null, data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_CHECK_COUNTS('acme', 'widgets', 'statussha123'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('acme', 'widgets', 'statussha123'),
       );
     });
 
@@ -651,11 +651,11 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'status', null, data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'main'),
       );
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'feature/phase-two'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('acme', 'widgets', 'feature/phase-two'),
       );
     });
 
@@ -680,8 +680,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'push', null, data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA_PATTERN('acme', 'widgets', 'main'),
       );
     });
 
@@ -707,8 +707,8 @@ describe('invalidateGitHubResourceCacheForEvent', () => {
 
       await invalidateGitHubResourceCacheForEvent(context, 'push', null, data);
 
-      expect(context.cache.deleteCache).toHaveBeenCalledWith(
-        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      expect(context.cache.deleteCacheByPattern).toHaveBeenCalledWith(
+        CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA_PATTERN('acme', 'widgets', 'main'),
       );
     });
   });

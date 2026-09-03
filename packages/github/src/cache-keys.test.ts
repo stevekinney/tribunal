@@ -51,8 +51,8 @@ describe('CACHE_KEYS', () => {
     expect(CACHE_KEYS.GITHUB_PR_METADATA_PATTERN('octo', 'repo', 9)).toBe(
       'github:response:octo:repo:pr:9:metadata:installation:*',
     );
-    expect(CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(3, 9, 'sha123')).toBe(
-      'github:response:repository:3:pr:9:head:sha123:diff-context',
+    expect(CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(3, 9, 'sha123', 42)).toBe(
+      'github:response:repository:3:pr:9:head:sha123:diff-context:installation:42',
     );
   });
 
@@ -112,28 +112,45 @@ describe('CACHE_KEYS', () => {
   });
 
   it('builds review thread count and CI check keys', () => {
-    expect.assertions(3);
-    expect(CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS('octo', 'repo', 9)).toBe(
-      'github:response:octo:repo:pr:9:review-thread-counts',
+    expect.assertions(5);
+    expect(CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS('octo', 'repo', 9, 42)).toBe(
+      'github:response:octo:repo:pr:9:review-thread-counts:installation:42',
     );
     expect(CACHE_KEYS.GITHUB_UNRESOLVED_REVIEW_THREAD_COUNT('octo', 'repo', 9)).toBe(
       'github:response:octo:repo:pr:9:unresolved-review-thread-count',
     );
-    expect(CACHE_KEYS.GITHUB_CHECK_COUNTS('octo', 'repo', 'sha123')).toBe(
-      'github:response:octo:repo:checks:sha123',
+    expect(CACHE_KEYS.GITHUB_CHECK_COUNTS('octo', 'repo', 'sha123', 42)).toBe(
+      'github:response:octo:repo:checks:sha123:installation:42',
+    );
+    expect(CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN('octo', 'repo', 'sha123')).toBe(
+      'github:response:octo:repo:checks:sha123:installation:*',
+    );
+    // The pattern must still sweep every installation's entry.
+    expect(CACHE_KEYS.GITHUB_CHECK_COUNTS('octo', 'repo', 'sha123', 42)).toMatch(
+      /^github:response:octo:repo:checks:sha123:installation:/,
     );
   });
 
   it('builds branch CI status, head sha, and rules keys', () => {
-    expect.assertions(3);
-    expect(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('octo', 'repo', 'main')).toBe(
-      'github:response:octo:repo:branch:main:ci-status',
+    expect.assertions(6);
+    expect(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('octo', 'repo', 'main', 42)).toBe(
+      'github:response:octo:repo:branch:main:ci-status:installation:42',
     );
-    expect(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('octo', 'repo', 'main')).toBe(
-      'github:response:octo:repo:branch:main:head-sha',
+    expect(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN('octo', 'repo', 'main')).toBe(
+      'github:response:octo:repo:branch:main:ci-status:installation:*',
     );
-    expect(CACHE_KEYS.GITHUB_BRANCH_RULES('octo', 'repo', 'main')).toBe(
-      'github:response:octo:repo:branch:main:rules',
+    expect(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('octo', 'repo', 'main', 42)).toBe(
+      'github:response:octo:repo:branch:main:head-sha:installation:42',
+    );
+    expect(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA_PATTERN('octo', 'repo', 'main')).toBe(
+      'github:response:octo:repo:branch:main:head-sha:installation:*',
+    );
+    expect(CACHE_KEYS.GITHUB_BRANCH_RULES('octo', 'repo', 'main', 42)).toBe(
+      'github:response:octo:repo:branch:main:rules:installation:42',
+    );
+    // Installation is a trailing segment, so a repository-wide sweep still matches.
+    expect(CACHE_KEYS.GITHUB_BRANCH_RULES('octo', 'repo', 'main', 42)).toMatch(
+      /^github:response:octo:repo:branch:main:rules:/,
     );
   });
 

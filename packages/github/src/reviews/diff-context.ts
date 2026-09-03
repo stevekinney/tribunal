@@ -121,7 +121,7 @@ export async function getDiffContext(
       const files = await fetchFiles();
       return { data: files };
     },
-    [input.repositoryId, input.pullRequestNumber, input.headSha],
+    [input.repositoryId, input.pullRequestNumber, input.headSha, input.installationId],
   );
 
   return toDiffContext(input, value);

@@ -128,7 +128,7 @@ describe('getFailingCheckCount', () => {
   ] as const)('maps check runs to %s', async (expected, checkRuns, totalCount) => {
     expect.assertions(1);
     const octokit = createMockOctokit([{ total_count: totalCount, check_runs: [...checkRuns] }]);
-    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123', 55);
     expect(result.ciStatus).toBe(expected);
   });
 
@@ -139,7 +139,7 @@ describe('getFailingCheckCount', () => {
       { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
     ]);
 
-    const result = await getFailingCheckCount(context, octokit, 'acme', 'widgets', 'sha-abc');
+    const result = await getFailingCheckCount(context, octokit, 'acme', 'widgets', 'sha-abc', 55);
 
     expect(result.ciStatus).toBe('passing');
     expect(context.cache.setCache).toHaveBeenCalledTimes(1);
@@ -157,7 +157,7 @@ describe('getFailingCheckCount', () => {
         ],
       },
     ]);
-    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123', 55);
     expect(result.ciStatus).toBe('failing');
   });
 
@@ -166,8 +166,75 @@ describe('getFailingCheckCount', () => {
     const octokit = createMockOctokit([
       { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'action_required' }] },
     ]);
-    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    const result = await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123', 55);
     expect(result.ciStatus).toBe('error');
+  });
+
+  // Transfer scenario, end to end through the real `cachedRead`. A repository
+  // that still carries a link row for its previous installation stays
+  // readable by that installation's users. If the cache is not partitioned,
+  // the entry the current installation populated is handed to them — content
+  // their own credentials would be refused for (a private commit's CI state).
+  it('does not serve one installation the check count another installation cached', async () => {
+    expect.assertions(3);
+
+    // A real store, not a mock that always misses — see the analogous
+    // getPullRequest test in pull-requests/service.test.ts.
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+
+    // The installation that currently owns the repository reads it and
+    // populates the cache with a passing rollup.
+    const currentOctokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+    const cached = await getFailingCheckCount(
+      context,
+      currentOctokit,
+      'acme',
+      'widgets',
+      'sha5',
+      currentInstallationId,
+    );
+    expect(cached.ciStatus).toBe('passing');
+
+    // The installation the transfer left behind sees the commit differently
+    // (its own live call reports failing) — a partitioned cache must reach
+    // GitHub again rather than replaying the other installation's rollup.
+    const staleOctokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'failure' }] },
+    ]);
+    const leaked = await getFailingCheckCount(
+      context,
+      staleOctokit,
+      'acme',
+      'widgets',
+      'sha5',
+      staleInstallationId,
+    );
+
+    expect(leaked.ciStatus).toBe('failing');
+    expect([...store.keys()].sort()).toStrictEqual(
+      [
+        'github:response:acme:widgets:checks:sha5:installation:200',
+        'github:response:acme:widgets:checks:sha5:installation:100',
+      ].sort(),
+    );
   });
 });
 
@@ -191,6 +258,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'commitsha1',
+      55,
     );
 
     expect(result.ciStatus).toBe('passing');
@@ -206,11 +274,11 @@ describe('getDefaultBranchCiStatus', () => {
       { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
     ]);
 
-    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc');
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc', 55);
 
     expect(context.cache.setCache).toHaveBeenCalledTimes(1);
     const [cacheKey] = (context.cache.setCache as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(cacheKey).toBe('github:response:acme:widgets:branch:main:ci-status');
+    expect(cacheKey).toBe('github:response:acme:widgets:branch:main:ci-status:installation:55');
   });
 
   it('maps no check runs to unknown', async () => {
@@ -223,6 +291,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
     expect(result.ciStatus).toBe('unknown');
   });
@@ -263,6 +332,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'new-sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('failing');
@@ -314,6 +384,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha-1',
+      55,
       undefined,
       [{ context: 'New Check', appId: null }],
     );
@@ -345,10 +416,19 @@ describe('getDefaultBranchCiStatus', () => {
     // refetch for the new commit is immediately truncated.
     const budget = { canSpend: vi.fn().mockReturnValue(false), spend: vi.fn() };
 
-    await getDefaultBranchCiStatus(context, octokit, 'owner', 'repo', 'main', 'new-sha', budget);
+    await getDefaultBranchCiStatus(
+      context,
+      octokit,
+      'owner',
+      'repo',
+      'main',
+      'new-sha',
+      55,
+      budget,
+    );
 
     expect(context.cache.deleteCache).toHaveBeenCalledWith(
-      'github:response:owner:repo:branch:main:ci-status',
+      'github:response:owner:repo:branch:main:ci-status:installation:55',
     );
   });
 
@@ -372,6 +452,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
       budget,
     );
 
@@ -404,6 +485,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
       budget,
     );
 
@@ -429,6 +511,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('passing');
@@ -448,6 +531,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('failing');
@@ -467,6 +551,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('passing');
@@ -486,6 +571,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('error');
@@ -505,6 +591,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
     );
 
     expect(result.ciStatus).toBe('pending');
@@ -532,6 +619,7 @@ describe('getDefaultBranchCiStatus', () => {
       'repo',
       'main',
       'sha',
+      55,
       budget,
     );
 
@@ -545,7 +633,7 @@ describe('getDefaultBranchCiStatus', () => {
       { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
     ]);
 
-    await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123');
+    await getFailingCheckCount(undefined, octokit, 'owner', 'repo', 'sha123', 55);
 
     const { getCombinedStatusForRef } = (
       octokit as unknown as {
@@ -572,10 +660,10 @@ describe('getDefaultBranchCiStatus', () => {
       spend: vi.fn(),
     };
 
-    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha', budget);
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha', 55, budget);
 
     expect(context.cache.deleteCache).toHaveBeenCalledWith(
-      'github:response:acme:widgets:branch:main:ci-status',
+      'github:response:acme:widgets:branch:main:ci-status:installation:55',
     );
   });
 
@@ -586,9 +674,70 @@ describe('getDefaultBranchCiStatus', () => {
       { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
     ]);
 
-    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc');
+    await getDefaultBranchCiStatus(context, octokit, 'acme', 'widgets', 'main', 'sha-abc', 55);
 
     expect(context.cache.deleteCache).not.toHaveBeenCalled();
+  });
+
+  // Transfer scenario, end to end through the real `cachedRead`. A repository
+  // that still carries a link row for its previous installation stays
+  // readable by that installation's users. If the cache is not partitioned,
+  // the entry the current installation populated is handed to them.
+  it('does not serve one installation the branch CI rollup another installation cached', async () => {
+    expect.assertions(3);
+
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+
+    const currentOctokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'success' }] },
+    ]);
+    const cached = await getDefaultBranchCiStatus(
+      context,
+      currentOctokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      currentInstallationId,
+    );
+    expect(cached.ciStatus).toBe('passing');
+
+    const staleOctokit = createMockOctokit([
+      { total_count: 1, check_runs: [{ status: 'completed', conclusion: 'failure' }] },
+    ]);
+    const leaked = await getDefaultBranchCiStatus(
+      context,
+      staleOctokit,
+      'acme',
+      'widgets',
+      'main',
+      'sha-abc',
+      staleInstallationId,
+    );
+
+    expect(leaked.ciStatus).toBe('failing');
+    expect([...store.keys()].sort()).toStrictEqual(
+      [
+        'github:response:acme:widgets:branch:main:ci-status:installation:200',
+        'github:response:acme:widgets:branch:main:ci-status:installation:100',
+      ].sort(),
+    );
   });
 });
 
@@ -609,6 +758,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: null }],
     );
@@ -635,6 +785,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: null }],
     );
@@ -653,6 +804,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [],
     );
@@ -677,6 +829,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [
         { context: 'Unit Tests', appId: null },
@@ -716,6 +869,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: null }],
     );
@@ -743,6 +897,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: 42 }],
     );
@@ -773,6 +928,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: 42 }],
     );
@@ -801,6 +957,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: 42 }],
     );
@@ -825,6 +982,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Unit Tests', appId: 42 }],
     );
@@ -858,6 +1016,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Required Legacy Status', appId: null }],
     );
@@ -896,6 +1055,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       budget,
       [
         { context: 'Required Error Status', appId: null },
@@ -933,6 +1093,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       budget,
       [{ context: 'Required Legacy Status', appId: null }],
     );
@@ -971,6 +1132,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       budget,
       [{ context: 'Required Legacy Status', appId: null }],
     );
@@ -1018,6 +1180,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       budget,
       [{ context: 'Unit Tests', appId: null }],
     );
@@ -1078,6 +1241,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       budget,
       [{ context: 'Unit Tests', appId: null }],
     );
@@ -1122,6 +1286,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Legacy Status Check', appId: null }],
     );
@@ -1163,6 +1328,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Deploy Gate', appId: null }],
     );
@@ -1199,6 +1365,7 @@ describe('getDefaultBranchCiStatus with required checks', () => {
       'widgets',
       'main',
       'sha-abc',
+      55,
       undefined,
       [{ context: 'Required Status', appId: null }],
     );

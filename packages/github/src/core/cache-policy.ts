@@ -126,8 +126,8 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'get-pull-request-diff-context',
-  keyFactory: (repositoryId: number, pullNumber: number, headSha: string) =>
-    CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber, headSha),
+  keyFactory: (repositoryId: number, pullNumber: number, headSha: string, installationId: number) =>
+    CACHE_KEYS.GITHUB_PR_DIFF_CONTEXT(repositoryId, pullNumber, headSha, installationId),
   ttlSeconds: 30,
   supportsEtag: false,
 });
@@ -233,8 +233,8 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'get-review-thread-counts',
-  keyFactory: (owner: string, repo: string, prNumber: number) =>
-    CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS(owner, repo, prNumber),
+  keyFactory: (owner: string, repo: string, prNumber: number, installationId: number) =>
+    CACHE_KEYS.GITHUB_REVIEW_THREAD_COUNTS(owner, repo, prNumber, installationId),
   ttlSeconds: 30, // Short TTL — review threads change frequently
   supportsEtag: false, // GraphQL — no eTag support
 });
@@ -249,8 +249,8 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'get-failing-check-count',
-  keyFactory: (owner: string, repo: string, headSha: string) =>
-    CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha),
+  keyFactory: (owner: string, repo: string, headSha: string, installationId: number) =>
+    CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha, installationId),
   ttlSeconds: 30, // Short TTL — CI status changes frequently
   supportsEtag: false, // Multi-page aggregation, no single eTag
 });
@@ -284,24 +284,24 @@ registerPolicy({
 
 registerPolicy({
   operationId: 'get-branch-ci-status',
-  keyFactory: (owner: string, repo: string, branch: string) =>
-    CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, branch),
+  keyFactory: (owner: string, repo: string, branch: string, installationId: number) =>
+    CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, branch, installationId),
   ttlSeconds: 30, // Short TTL — branch CI changes frequently
   supportsEtag: false, // GraphQL — no eTag support
 });
 
 registerPolicy({
   operationId: 'get-branch-head-sha',
-  keyFactory: (owner: string, repo: string, branch: string) =>
-    CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch),
+  keyFactory: (owner: string, repo: string, branch: string, installationId: number) =>
+    CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch, installationId),
   ttlSeconds: 30, // Short TTL — a branch can move at any time via push
   supportsEtag: false, // repos.getBranch — no conditional-request support wired here
 });
 
 registerPolicy({
   operationId: 'get-branch-rules',
-  keyFactory: (owner: string, repo: string, branch: string) =>
-    CACHE_KEYS.GITHUB_BRANCH_RULES(owner, repo, branch),
+  keyFactory: (owner: string, repo: string, branch: string, installationId: number) =>
+    CACHE_KEYS.GITHUB_BRANCH_RULES(owner, repo, branch, installationId),
   ttlSeconds: 30, // Short TTL — matches get-branch-head-sha's required-check freshness window
   supportsEtag: false, // repos.getBranchRules — no conditional-request support wired here
 });

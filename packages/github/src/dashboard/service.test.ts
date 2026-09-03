@@ -475,7 +475,7 @@ describe('buildRepositoryDashboard', () => {
       db: withDbSelectResult([]),
       cache: {
         getCached: vi.fn(async (key: string) => {
-          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main', 100)) {
             return {
               // Pre-#156 shape: no `requiredChecks` field.
               value: { sha: 'commit-sha-1', requiredCheckNames: ['Unit Tests'] },
@@ -718,7 +718,7 @@ describe('buildRepositoryDashboard', () => {
       db: withDbSelectResult([]),
       cache: {
         getCached: vi.fn(async (key: string) => {
-          if (key === CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main')) {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_CI_STATUS('acme', 'widgets', 'main', 100)) {
             return {
               value: {
                 ciStatus: 'passing',
@@ -780,7 +780,7 @@ describe('buildRepositoryDashboard', () => {
     // the next dashboard build (or a cache hit within the TTL) doesn't repeat
     // the live call.
     expect(context.cache.setCache).toHaveBeenCalledWith(
-      CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main'),
+      CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main', 100),
       expect.anything(),
       expect.anything(),
     );
@@ -829,7 +829,7 @@ describe('buildRepositoryDashboard', () => {
       db: withDbSelectResult([]),
       cache: {
         getCached: vi.fn(async (key: string) => {
-          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main', 100)) {
             return {
               value: 'cached-sha',
               fetchedAt: now,
@@ -1020,7 +1020,7 @@ describe('buildRepositoryDashboard', () => {
       db: withDbSelectResult([]),
       cache: {
         getCached: vi.fn(async (key: string) => {
-          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main')) {
+          if (key === CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA('acme', 'widgets', 'main', 100)) {
             return {
               // Malformed envelope: no `requiredChecks` or `requiredCheckNames` field.
               value: { sha: 'commit-sha-1' },
@@ -1346,5 +1346,76 @@ describe('buildRepositoryDashboard', () => {
     } finally {
       consoleWarn.mockRestore();
     }
+  });
+
+  // Transfer scenario, end to end through the real `cachedRead`. A repository
+  // that still carries a link row for its previous installation stays
+  // readable by that installation's users. If the cache is not partitioned,
+  // the entry the current installation populated is handed to them — a
+  // branch head SHA and ruleset their own credentials would compute
+  // differently.
+  it('does not serve one installation the branch head SHA or branch rules another installation cached', async () => {
+    expect.assertions(4);
+
+    const store = new Map<string, unknown>();
+    const cache = {
+      getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+      setCache: vi.fn(async (key: string, value: unknown) => {
+        store.set(key, value);
+        return true;
+      }),
+      setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+      deleteCache: vi.fn().mockResolvedValue(true),
+      deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+      resetCacheClient: vi.fn(),
+    };
+
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+
+    const currentOctokit = makeOctokit({
+      pullRequests: [],
+      getBranch: vi.fn().mockResolvedValue({ data: { commit: { sha: 'current-sha' } } }),
+      getBranchRules: vi.fn().mockResolvedValue({ data: [], headers: {} }),
+    });
+    const staleOctokit = makeOctokit({
+      pullRequests: [],
+      getBranch: vi.fn().mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 })),
+      getBranchRules: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 })),
+    });
+
+    const context = createMockContext({
+      cache,
+      getInstallationOctokit: vi.fn(async (installationId: number) =>
+        installationId === currentInstallationId ? currentOctokit : staleOctokit,
+      ),
+    });
+
+    const [currentRow] = await buildRepositoryDashboard(context, [
+      makeRepository({ installationId: currentInstallationId, commit: null }),
+    ]);
+    expect(currentRow.defaultBranchStatus).toBe('unknown');
+
+    // The installation the transfer left behind no longer has access, so its
+    // own live calls 404 — a partitioned cache must reach GitHub again for
+    // both the head SHA and the branch rules rather than reuse the other
+    // installation's cached entries.
+    await buildRepositoryDashboard(context, [
+      makeRepository({ installationId: staleInstallationId, commit: null }),
+    ]);
+
+    expect(store.has('github:response:acme:widgets:branch:main:head-sha:installation:200')).toBe(
+      true,
+    );
+    expect(store.has('github:response:acme:widgets:branch:main:rules:installation:200')).toBe(true);
+    // The stale installation's branch reads failed live and were never
+    // cached under either its own or the current installation's key.
+    expect(
+      [...store.keys()].some(
+        (key) => key.includes('branch:main') && key.includes('installation:100'),
+      ),
+    ).toBe(false);
   });
 });

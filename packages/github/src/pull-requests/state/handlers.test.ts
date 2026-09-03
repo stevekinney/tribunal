@@ -163,13 +163,14 @@ describe('handleCheckSuiteCompleted', () => {
       repository: { id: 100, owner: { login: 'test-org' }, name: 'test-repo' },
     };
 
-    await handleCheckSuiteCompleted(context, payload, mockOctokit);
+    await handleCheckSuiteCompleted(context, payload, mockOctokit, 55);
     expect(getFailingCheckCount).toHaveBeenCalledWith(
       context,
       mockOctokit,
       'test-org',
       'test-repo',
       'sha123',
+      55,
     );
     expect(upsertPRState).toHaveBeenCalledTimes(2);
   });
@@ -184,7 +185,7 @@ describe('handleCheckSuiteCompleted', () => {
       repository: { id: 100, owner: { login: 'test-org' }, name: 'test-repo' },
     };
 
-    await handleCheckSuiteCompleted(context, payload, mockOctokit);
+    await handleCheckSuiteCompleted(context, payload, mockOctokit, 55);
     expect(getFailingCheckCount).not.toHaveBeenCalled();
   });
 });
