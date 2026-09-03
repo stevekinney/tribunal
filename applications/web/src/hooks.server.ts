@@ -15,6 +15,42 @@ import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/w
 import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured';
 import { setLogger } from '@lostgradient/mcp';
 import { mcpLogger } from '$lib/server/mcp-logger';
+import { createTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
+import {
+  cacheControlOn404Handle,
+  createMcpIdentityHandle,
+  createMcpMountHandle,
+} from '$lib/server/mcp/mount-hooks';
+import { isMcpEnabled } from '$lib/server/oauth/configuration';
+
+/**
+ * The process's single MCP + OAuth mount, constructed once at module scope when
+ * the surface is enabled (and never during build/prerender). Disabled by
+ * default via `MCP_ENABLED` (TRI-26 rollout flag); when null, the MCP handles
+ * are inert and MCP/OAuth paths fall through to SvelteKit's ordinary 404.
+ */
+const mcpMount: Promise<TribunalMcpMount> | null =
+  !building && isMcpEnabled() ? createTribunalMcpMount() : null;
+
+const getMcpMount = (): Promise<TribunalMcpMount> | null => mcpMount;
+
+if (mcpMount) {
+  // Wire dispose into process termination so the mount's cleanup timer,
+  // handler cache, and connection pool are released on shutdown. Nothing
+  // disposes it merely because the module was imported.
+  const disposeMcpMount = (): void => {
+    void mcpMount
+      .then((active) => active.dispose())
+      .catch((error) => {
+        console.error('[hooks.server] MCP mount dispose failed', error);
+      });
+  };
+  process.once('SIGTERM', disposeMcpMount);
+  process.once('SIGINT', disposeMcpMount);
+}
+
+const mcpIdentityHandle = createMcpIdentityHandle(getMcpMount);
+const mcpMountHandle = createMcpMountHandle(getMcpMount);
 
 /**
  * Runs once before the server responds to its first request.
@@ -131,9 +167,12 @@ export const authHandle: Handle = async ({ event, resolve }) => {
  *   so it wins over authHandle's cookie-derived session.
  */
 export const handle = sequence(
+  cacheControlOn404Handle,
   correlationHandle,
   e2eHandle,
   respondWithJsonForApiEndpoints,
   authHandle,
   devAuthBypassHandle,
+  mcpIdentityHandle,
+  mcpMountHandle,
 );
