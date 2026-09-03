@@ -37,7 +37,6 @@
   },
   "devDependencies": {
     "@neondatabase/api-client": "^2.7.3",
-    "@tribunal/test": "workspace:*",
     "@tribunal/typescript": "workspace:*",
     "@types/pg": "^8.21.0",
     "change-case": "^5.4.4",

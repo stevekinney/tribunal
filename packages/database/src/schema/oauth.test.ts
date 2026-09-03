@@ -1,4 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+// `@tribunal/test` is resolved via the workspace hoist rather than declared in
+// this package's devDependencies, matching every other database test that uses
+// it. It cannot be declared here: `@tribunal/test` depends on
+// `@tribunal/database`, so a back-dependency would create a package cycle that
+// Turbo refuses to build.
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { createPostgresOAuthStores, type OAuthStores } from '@lostgradient/mcp/oauth/postgres';
 import { eq } from '../operators';
