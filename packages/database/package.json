@@ -28,6 +28,7 @@
     "test:coverage": "vitest run --config vitest.configuration.ts --coverage"
   },
   "dependencies": {
+    "@lostgradient/mcp": "0.2.1",
     "@neondatabase/serverless": "^1.1.0",
     "chalk": "^6.0.0",
     "drizzle-orm": "^0.45.2",
