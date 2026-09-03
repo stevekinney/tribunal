@@ -1798,6 +1798,10 @@ export class ReviewWorkflowEngine {
       repositoryId: reviewRun.repositoryId,
       reviewRunId: reviewRun.id,
       agentId: agentIdForPersistence,
+      // Mirrors `agentId`: only specialist runs have a configured agent, so
+      // only they get a label. Triage/verifier runs keep the '' default and
+      // stay grouped under "Unassigned", matching today's behavior.
+      agentLabel: agentIdForPersistence === null ? '' : agentRun.agentSlug,
       amountUsd: result.costEstimateUsd,
       idempotencyKey: createLlmEstimateIdempotencyKey(agentRunId),
     });

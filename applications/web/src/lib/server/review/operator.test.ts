@@ -2863,4 +2863,35 @@ describe('review operator server helpers', () => {
     ]);
     expect(overview.cacheTokens).toEqual({ cacheReadTokens: 25, cacheCreationTokens: 25 });
   });
+
+  it('keeps a deleted agent label out of the Unassigned rollup bucket', async () => {
+    const { owner, reviewAgent } = await seedRepositoryOwnership();
+    await insertReviewRun({
+      id: 'run_cost_deleted_agent',
+      userId: owner.id,
+      repositoryId: 9001,
+      prNumber: 24,
+      headSha: 'jkl012',
+      trigger: 'manual',
+      status: 'posted',
+    });
+    await testDb.db.insert(costEvent).values({
+      userId: owner.id,
+      source: 'estimate',
+      repositoryId: 9001,
+      reviewRunId: 'run_cost_deleted_agent',
+      agentId: reviewAgent.id,
+      amountUsd: '1.25',
+      idempotencyKey: 'cost_deleted_agent',
+    });
+
+    await testDb.db.delete(agent).where(eq(agent.id, reviewAgent.id));
+
+    const overview = await withTestDatabase(() => getCostOverview(owner.id, 'estimate'));
+
+    expect(overview.rollups.byAgent).toEqual([{ label: 'security', amountUsd: 1.25 }]);
+    expect(overview.rollups.byAgentPerRepository).toEqual([
+      { label: 'security @ lost-gradient/tribunal', amountUsd: 1.25 },
+    ]);
+  });
 });

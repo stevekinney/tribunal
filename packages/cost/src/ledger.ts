@@ -157,6 +157,7 @@ async function recordLlmEstimateEvent(
         "repository_id",
         "review_run_id",
         "agent_id",
+        "agent_label",
         "amount_usd",
         "occurred_at",
         "idempotency_key"
@@ -167,6 +168,7 @@ async function recordLlmEstimateEvent(
         ${event.repositoryId},
         ${event.reviewRunId},
         ${event.agentId},
+        ${event.agentLabel},
         ${amountUsd}::numeric,
         ${eventOccurredAt},
         ${event.idempotencyKey}

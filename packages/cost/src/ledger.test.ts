@@ -73,6 +73,7 @@ async function createCostFixture() {
       userId: user.id,
       runId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       status: 'succeeded',
     })
     .returning()
@@ -176,6 +177,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.4,
       idempotencyKey: `llm:${run.id}:direct-estimate`,
     });
@@ -184,6 +186,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.8,
       idempotencyKey: `llm:${run.id}:estimate`,
     });
@@ -206,6 +209,38 @@ describe('cost ledger', () => {
     expect(rows.some((row) => row.source === 'reconciled')).toBe(false);
   });
 
+  it('persists a non-empty agent label snapshot that survives the agent being deleted', async () => {
+    const { user, repository, review, reviewer } = await createCostFixture();
+
+    await recordLlmEstimate(testDatabase.db, {
+      userId: user.id,
+      repositoryId: repository.id,
+      reviewRunId: review.id,
+      agentId: reviewer.id,
+      agentLabel: reviewer.slug,
+      amountUsd: 0.4,
+      idempotencyKey: `llm:${review.id}:label-snapshot-estimate`,
+    });
+
+    const [beforeDeletion] = await testDatabase.db
+      .select({ agentId: costEvent.agentId, agentLabel: costEvent.agentLabel })
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, `llm:${review.id}:label-snapshot-estimate`));
+
+    expect(beforeDeletion.agentLabel).toBe('security');
+    expect(beforeDeletion.agentLabel).not.toBe('');
+
+    await testDatabase.db.delete(agent).where(eq(agent.id, reviewer.id));
+
+    const [afterDeletion] = await testDatabase.db
+      .select({ agentId: costEvent.agentId, agentLabel: costEvent.agentLabel })
+      .from(costEvent)
+      .where(eq(costEvent.idempotencyKey, `llm:${review.id}:label-snapshot-estimate`));
+
+    expect(afterDeletion.agentId).toBeNull();
+    expect(afterDeletion.agentLabel).toBe('security');
+  });
+
   it('enforces the daily cap with estimate rows only and prevents a caller from recording LLM cost', async () => {
     const { user, review, reviewer } = await createCostFixture();
     await testDatabase.db
@@ -217,6 +252,7 @@ describe('cost ledger', () => {
         source: 'estimate',
         reviewRunId: review.id,
         agentId: reviewer.id,
+        agentLabel: reviewer.slug,
         amountUsd: '2.00',
         idempotencyKey: 'llm:estimate',
         occurredAt: new Date('2026-06-17T08:00:00.000Z'),
@@ -226,6 +262,7 @@ describe('cost ledger', () => {
         source: 'reconciled',
         reviewRunId: review.id,
         agentId: reviewer.id,
+        agentLabel: reviewer.slug,
         amountUsd: '999.00',
         idempotencyKey: 'llm:reconciled',
         occurredAt: new Date('2026-06-17T08:00:00.000Z'),
@@ -244,6 +281,7 @@ describe('cost ledger', () => {
         repositoryId: review.repositoryId,
         reviewRunId: review.id,
         agentId: reviewer.id,
+        agentLabel: reviewer.slug,
         amountUsd: 0.5,
         idempotencyKey: 'llm:blocked:estimate',
       });
@@ -264,6 +302,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.8,
       idempotencyKey: `llm:${run.id}:estimate`,
     });
@@ -325,6 +364,7 @@ describe('cost ledger', () => {
       source: 'estimate',
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: '1.00',
       idempotencyKey: 'llm:estimate',
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
@@ -350,6 +390,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.01,
       idempotencyKey: `llm:${run.id}:estimate`,
     });
@@ -445,6 +486,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.01,
       idempotencyKey: allowedReservation.idempotencyKey,
     };
@@ -809,6 +851,7 @@ describe('cost ledger', () => {
       source: 'estimate',
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: '0.01',
       idempotencyKey: 'llm:utc-day-estimate',
       occurredAt: new Date('2026-06-17T02:00:00.000Z'),
@@ -850,6 +893,7 @@ describe('cost ledger', () => {
       source: 'estimate',
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: '0.02',
       idempotencyKey: 'llm:after-cached-budget',
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
@@ -903,6 +947,7 @@ describe('cost ledger', () => {
       source: 'estimate',
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: '0.01',
       idempotencyKey: 'llm:today-exhausted',
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
@@ -952,6 +997,7 @@ describe('cost ledger', () => {
       repositoryId: repository.id,
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: 0.05,
       idempotencyKey,
     });
@@ -976,6 +1022,7 @@ describe('cost ledger', () => {
       source: 'estimate',
       reviewRunId: review.id,
       agentId: reviewer.id,
+      agentLabel: reviewer.slug,
       amountUsd: '3.00',
       idempotencyKey: 'llm:default-cap-estimate',
       occurredAt: new Date('2026-06-17T08:00:00.000Z'),
