@@ -310,6 +310,29 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
     rather than eliminated, and stage three should know that before it
     starts debugging.
 
+### Disabled-state expected-status table
+
+Recorded by TRI-41, enumerated from the mount's route table rather than from
+memory. With `MCP_ENABLED = "false"`, every mounted path returns SvelteKit's
+ordinary `404` — the mount handle falls through to `resolve(event)` and Tribunal
+has no route at any of these paths, so the response is byte-indistinguishable
+from any unknown URL, and carries `Cache-Control: no-store` (applied to every
+404). Stage-one gate 1 asserts against this table; the enabled-state table is
+TRI-60's.
+
+| Method | Path                                        | Disabled status |
+| ------ | ------------------------------------------- | --------------- |
+| POST   | `/mcp`                                      | 404             |
+| GET    | `/oauth/authorize`                          | 404             |
+| POST   | `/oauth/approve`                            | 404             |
+| POST   | `/oauth/deny`                               | 404             |
+| POST   | `/oauth/token`                              | 404             |
+| POST   | `/oauth/revoke`                             | 404             |
+| POST   | `/oauth/register`                           | 404             |
+| GET    | `/.well-known/oauth-authorization-server`   | 404             |
+| GET    | `/.well-known/oauth-protected-resource`     | 404             |
+| GET    | `/.well-known/oauth-protected-resource/mcp` | 404             |
+
 ## Disabling `/mcp` in production
 
 ### Mechanism
