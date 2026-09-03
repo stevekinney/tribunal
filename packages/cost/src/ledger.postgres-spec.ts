@@ -72,13 +72,19 @@ let previousCaseTeardown: Promise<unknown> = Promise.resolve();
  * user id the next case just recreated, and that case then sees a row it never
  * seeded. Waiting here turns that contamination into an honest wait.
  */
-async function claimCase(): Promise<() => void> {
-  await previousCaseTeardown;
+function claimCase(): Promise<() => void> {
+  // Claim the slot synchronously. Awaiting first and assigning afterwards leaves a
+  // window where the variable still holds the predecessor, so a second claimant
+  // arriving in it waits on the same promise and is admitted alongside the first.
+  // That window is reachable exactly when a case overruns for longer than the next
+  // case's own timeout, which is the regime this gate exists for.
+  const predecessor = previousCaseTeardown;
   let finishCase!: () => void;
-  previousCaseTeardown = new Promise<void>((resolve) => {
+  const thisCase = new Promise<void>((resolve) => {
     finishCase = resolve;
   });
-  return finishCase;
+  previousCaseTeardown = predecessor.then(() => thisCase);
+  return predecessor.then(() => finishCase);
 }
 
 /** Asserts the seeded ledger state a case depends on rather than assuming the truncate achieved it. */
