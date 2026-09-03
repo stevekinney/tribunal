@@ -1,5 +1,6 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import type { OAuthStores } from '@lostgradient/mcp/oauth/stores';
 
 const mockEnv: Record<string, string | undefined> = {};
 vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
@@ -17,9 +18,17 @@ const { createTribunalMcpMount } = await import('./mount');
 const CONNECTION_STRING = 'postgresql://user:pass@localhost:5432/db';
 
 let database: TestDatabase;
+let stores: OAuthStores;
+
+// Build the PGlite database once under the 30s hook budget; PGlite cold-start
+// exceeds the 5s per-test timeout under full-suite load.
+beforeAll(async () => {
+  database = await createTestDatabase();
+  stores = createOAuthStores(database.db);
+});
 
 afterAll(async () => {
-  if (database) await database.close();
+  await database.close();
 });
 
 describe('createTribunalMcpMount', () => {
@@ -29,12 +38,8 @@ describe('createTribunalMcpMount', () => {
   });
 
   it('constructs the mount and disposes storage alongside it', async () => {
-    database = await createTestDatabase();
     mockEnv.DATABASE_URL = CONNECTION_STRING;
-    createOAuthStorageSeam.mockReturnValue({
-      stores: createOAuthStores(database.db),
-      dispose: storageDispose,
-    });
+    createOAuthStorageSeam.mockReturnValue({ stores, dispose: storageDispose });
 
     const { mount, dispose } = await createTribunalMcpMount();
     expect(mount).toBeDefined();
@@ -49,10 +54,7 @@ describe('createTribunalMcpMount', () => {
     // the factory must release the freshly-opened storage pool before rethrowing.
     storageDispose.mockClear();
     mockEnv.DATABASE_URL = CONNECTION_STRING;
-    createOAuthStorageSeam.mockReturnValue({
-      stores: createOAuthStores(database.db),
-      dispose: storageDispose,
-    });
+    createOAuthStorageSeam.mockReturnValue({ stores, dispose: storageDispose });
 
     await expect(createTribunalMcpMount()).rejects.toThrow();
     expect(storageDispose).toHaveBeenCalledOnce();

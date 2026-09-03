@@ -167,8 +167,8 @@ export const authHandle: Handle = async ({ event, resolve }) => {
  *   so it wins over authHandle's cookie-derived session.
  */
 export const handle = sequence(
-  cacheControlOn404Handle,
   correlationHandle,
+  cacheControlOn404Handle,
   e2eHandle,
   respondWithJsonForApiEndpoints,
   authHandle,
