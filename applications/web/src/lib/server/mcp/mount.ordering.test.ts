@@ -66,4 +66,15 @@ describe('MCP mount hook ordering', () => {
     const response = await chain(identityHandle, mountHandle, discoveryRequest());
     expect(response.status).toBe(200);
   });
+
+  it('falls through to resolve for a non-MCP path', async () => {
+    // A path the mount does not own reaches resolve, which the mount handle
+    // wraps to continue Tribunal's chain.
+    const response = await chain(
+      identityHandle,
+      mountHandle,
+      new Request('http://localhost:5173/'),
+    );
+    expect(response.status).toBe(404);
+  });
 });

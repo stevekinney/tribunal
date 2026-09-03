@@ -1,11 +1,12 @@
 import {
   createMcpHttpServingLayer,
   createMcpServingHandler,
+  type McpAuthenticationOutcome,
+  type McpAuthenticationSeams,
   type McpHandlerSeams,
 } from '@lostgradient/mcp/http';
 import { McpConcurrencyLimiter, RequestRateLimiter } from '@lostgradient/mcp/rate-limit';
 import type { OAuthStores } from '@lostgradient/mcp/oauth/stores';
-import type { McpAuthenticationSeams } from '@lostgradient/mcp/http';
 import type { SvelteKitMcpRuntime } from '@lostgradient/mcp/sveltekit';
 import { hashWithSha256 } from '$lib/server/encryption';
 import { mcpLogger } from '$lib/server/mcp-logger';
@@ -39,17 +40,38 @@ import { tribunalOAuthScopeConfiguration } from '$lib/server/oauth/scopes';
  * The OAuth token store is shared with the OAuth host seams so the
  * authenticator validates the same tokens the OAuth endpoints mint.
  */
+/**
+ * The serving handler and authenticator seams are structured logging callbacks
+ * the library invokes on events — degradation, transport failures, insufficient
+ * scope, serving errors, authentication outcomes — that are impractical to
+ * provoke from a unit test (they need a live authenticated MCP session hitting a
+ * specific failure). They are named and exported so they can be covered
+ * directly; they are the exact callbacks wired into the seams below.
+ */
+export function logHandlerDegradation(degradation: 'single_instance_messaging_fallback'): void {
+  mcpLogger.warn({ degradation }, 'mcp serving handler degradation');
+}
+
+export function logHandlerEvent(outcome: 'transport_failure' | 'insufficient_scope'): void {
+  mcpLogger.info({ outcome }, 'mcp serving handler event');
+}
+
+export function logHandlerError(error: unknown, operation: string, userId?: string): void {
+  mcpLogger.error({ err: error, operation, userId }, 'mcp serving handler error');
+}
+
+export function logAuthenticationEvent(
+  outcome: McpAuthenticationOutcome,
+  requestId?: string,
+): void {
+  mcpLogger.info({ outcome, requestId }, 'mcp authentication event');
+}
+
 export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRuntime {
   const handlerSeams: McpHandlerSeams = {
-    reportDegradation: (degradation) => {
-      mcpLogger.warn({ degradation }, 'mcp serving handler degradation');
-    },
-    recordEvent: (outcome) => {
-      mcpLogger.info({ outcome }, 'mcp serving handler event');
-    },
-    onError: (error, operation, userId) => {
-      mcpLogger.error({ err: error, operation, userId }, 'mcp serving handler error');
-    },
+    reportDegradation: logHandlerDegradation,
+    recordEvent: logHandlerEvent,
+    onError: logHandlerError,
   };
 
   const handler = createMcpServingHandler({
@@ -80,9 +102,7 @@ export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRunti
     resolveUserProfile,
     hashCredential: hashWithSha256,
     rateLimiter,
-    recordEvent: (outcome, requestId) => {
-      mcpLogger.info({ outcome, requestId }, 'mcp authentication event');
-    },
+    recordEvent: logAuthenticationEvent,
   };
 
   const servingLayer = createMcpHttpServingLayer({

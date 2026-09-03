@@ -81,6 +81,12 @@ describe('resolveIdentityBinding', () => {
     await expect(resolveIdentityBinding(requestWithCookie())).resolves.toBeNull();
   });
 
+  it('returns null when the cookie header lacks the session cookie', async () => {
+    await expect(
+      resolveIdentityBinding(requestWithCookie('other=1; another=2')),
+    ).resolves.toBeNull();
+  });
+
   it('returns null when the token is invalid', async () => {
     validateNeonSessionFromToken.mockRejectedValue(new Error('invalid'));
     await expect(
