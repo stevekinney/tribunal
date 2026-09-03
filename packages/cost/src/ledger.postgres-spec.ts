@@ -80,6 +80,9 @@ function claimCase(): Promise<() => void> {
   // case's own timeout, which is the regime this gate exists for.
   const predecessor = previousCaseTeardown;
   let finishCase!: () => void;
+  // thisCase must only ever be resolved, never rejected. The slot is claimed before
+  // the await, so routing a teardown failure in here would leave it pending forever
+  // and every later case would hang to its timeout instead of failing fast.
   const thisCase = new Promise<void>((resolve) => {
     finishCase = resolve;
   });
