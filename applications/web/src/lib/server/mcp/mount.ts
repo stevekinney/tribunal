@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { createSvelteKitMcpMount, type SvelteKitMcpMount } from '@lostgradient/mcp/sveltekit';
+import type { OAuthStores } from '@lostgradient/mcp/oauth/stores';
 import { createOAuthStorageSeam } from '@tribunal/database/queries';
 import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 import { createTribunalMcpRuntime } from '$lib/server/mcp/runtime';
@@ -29,6 +30,26 @@ export type TribunalMcpMount = {
  * The storage seam is built once and shared between the OAuth endpoints and the
  * MCP authenticator so they operate on the same tokens and connection.
  */
+/**
+ * Assembles the SvelteKit mount against a caller-supplied storage instance.
+ * Shared by the production factory (which owns a connection pool) and the test
+ * fixture (which injects PGlite-backed stores), so both exercise the same
+ * runtime, seams, and mount configuration.
+ */
+export async function assembleTribunalMcpMount(stores: OAuthStores): Promise<SvelteKitMcpMount> {
+  const runtime = createTribunalMcpRuntime(stores);
+  const oauthSeams = createTribunalOAuthSeams(stores);
+  return createSvelteKitMcpMount({
+    oauthSeams,
+    discoveryConfiguration: tribunalOAuthDiscoveryConfiguration,
+    registry: tribunalMcpRegistry,
+    identityHandleName: MCP_IDENTITY_HANDLE_NAME,
+    longLivedProcess: true,
+    getRequestId: (event) => (event.locals.requestId as string | undefined) ?? crypto.randomUUID(),
+    mcp: runtime,
+  });
+}
+
 export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
   const connectionString = env.DATABASE_URL;
   if (!connectionString) {
@@ -37,19 +58,7 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
 
   const storage = createOAuthStorageSeam(connectionString);
   try {
-    const runtime = createTribunalMcpRuntime(storage.stores);
-    const oauthSeams = createTribunalOAuthSeams(storage.stores);
-    const mount = await createSvelteKitMcpMount({
-      oauthSeams,
-      discoveryConfiguration: tribunalOAuthDiscoveryConfiguration,
-      registry: tribunalMcpRegistry,
-      identityHandleName: MCP_IDENTITY_HANDLE_NAME,
-      longLivedProcess: true,
-      getRequestId: (event) =>
-        (event.locals.requestId as string | undefined) ?? crypto.randomUUID(),
-      mcp: runtime,
-    });
-
+    const mount = await assembleTribunalMcpMount(storage.stores);
     return {
       mount,
       dispose: async () => {
