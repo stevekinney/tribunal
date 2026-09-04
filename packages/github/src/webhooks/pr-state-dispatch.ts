@@ -73,7 +73,7 @@ export function dispatchPRStateTracking(
         .getInstallationOctokit(installationId)
         .then((octokit) => {
           if (octokit) {
-            return handleCheckSuiteCompleted(context, data, octokit);
+            return handleCheckSuiteCompleted(context, data, octokit, installationId);
           }
         })
         .catch((e) => console.error('PR state: check_suite handler failed:', e));

@@ -339,8 +339,8 @@ export async function getPullRequestOperationalStatus(
 ): Promise<PullRequestOperationalStatus> {
   const [detailResult, ciResult, threadCountsResult] = await Promise.allSettled([
     getPullRequest(context, octokit, owner, repo, pullNumber, installationId),
-    getFailingCheckCount(context, octokit, owner, repo, headSha),
-    getPullRequestReviewThreadCounts(context, octokit, owner, repo, pullNumber),
+    getFailingCheckCount(context, octokit, owner, repo, headSha, installationId),
+    getPullRequestReviewThreadCounts(context, octokit, owner, repo, pullNumber, installationId),
   ]);
 
   const pullRequest = detailResult.status === 'fulfilled' ? detailResult.value : null;
@@ -363,7 +363,11 @@ async function getPullRequestReviewThreadCounts(
   owner: string,
   repo: string,
   pullNumber: number,
+  installationId: number,
 ): Promise<PullRequestReviewThreadCounts> {
+  // Before any cache access: an id that cannot partition a key must fail
+  // rather than quietly share one.
+  assertPartitionInstallationId(installationId);
   const fetchThreadCounts = async (): Promise<PullRequestReviewThreadCounts> => {
     let resolvedReviewThreadCount = 0;
     let unresolvedReviewThreadCount = 0;
@@ -420,7 +424,7 @@ async function getPullRequestReviewThreadCounts(
     context.cache,
     policy,
     async () => ({ data: await fetchThreadCounts() }),
-    [owner, repo, pullNumber],
+    [owner, repo, pullNumber, installationId],
   );
   return value;
 }

@@ -2,7 +2,7 @@ import type { Octokit } from 'octokit';
 import type { CIStatus, MergeStatus } from '@tribunal/database/schema';
 import type { GithubServiceContext } from '../../context.js';
 import { cachedRead } from '../../core/github-read-client.js';
-import { requirePolicy } from '../../core/cache-policy.js';
+import { requirePolicy, assertPartitionInstallationId } from '../../core/cache-policy.js';
 
 // ============================================================================
 // MERGE STATUS
@@ -493,6 +493,11 @@ async function paginateCheckRunsRollup(
  *
  * @param context - Optional service context. When provided, results are cached via Redis.
  * @param octokit - Authenticated Octokit client
+ * @param installationId - Installation whose credentials authenticated `octokit`.
+ *   This partitions the cache entry; passing any other installation's id would
+ *   let one installation read another's cached content. Always required by the
+ *   signature; only validated when `context` is provided, since an uncached
+ *   call touches no cache key.
  */
 export async function getFailingCheckCount(
   context: GithubServiceContext | undefined,
@@ -500,6 +505,7 @@ export async function getFailingCheckCount(
   owner: string,
   repo: string,
   headSha: string,
+  installationId: number,
 ): Promise<CIState> {
   const fetchCIState = () => paginateCheckRunsRollup(octokit, owner, repo, headSha);
 
@@ -507,12 +513,15 @@ export async function getFailingCheckCount(
     return fetchCIState();
   }
 
+  // Before any cache access: an id that cannot partition a key must fail
+  // rather than quietly share one.
+  assertPartitionInstallationId(installationId);
   const policy = requirePolicy('get-failing-check-count');
   const { value } = await cachedRead<CIState>(
     context.cache,
     policy,
     async () => ({ data: await fetchCIState() }),
-    [owner, repo, headSha],
+    [owner, repo, headSha, installationId],
   );
   return value;
 }
@@ -543,13 +552,19 @@ interface BranchCIState extends CIState {
  * fall back to guessing `main` or re-resolving a missing SHA.
  *
  * Cached under the `get-branch-ci-status` policy, keyed by
- * `(owner, repo, branch)` — distinct from the PR-head CI cache key, which
- * is keyed by `(owner, repo, headSha)`. Because the cache key does not
- * include the commit SHA, a cached entry from before the default branch
- * advanced would otherwise be replayed for the new commit. The cached
- * envelope stores the commit SHA it was computed for; a mismatch bypasses
- * the cache and refetches for the requested SHA instead of silently
- * reusing a different commit's rollup.
+ * `(owner, repo, branch, installationId)` — distinct from the PR-head CI
+ * cache key, which is keyed by `(owner, repo, headSha, installationId)`.
+ * Because the cache key does not include the commit SHA, a cached entry
+ * from before the default branch advanced would otherwise be replayed for
+ * the new commit. The cached envelope stores the commit SHA it was
+ * computed for; a mismatch bypasses the cache and refetches for the
+ * requested SHA instead of silently reusing a different commit's rollup.
+ *
+ * @param installationId - Installation whose credentials authenticated
+ *   `octokit`. This partitions the cache entry; passing any other
+ *   installation's id would let one installation read another's cached
+ *   content. Always required by the signature; only validated when `context`
+ *   is provided, since an uncached call touches no cache key.
  */
 export async function getDefaultBranchCiStatus(
   context: GithubServiceContext | undefined,
@@ -558,6 +573,7 @@ export async function getDefaultBranchCiStatus(
   repo: string,
   branch: string,
   commitSha: string,
+  installationId: number,
   budget?: CheckRunBudget,
   requiredChecks?: ReadonlyArray<RequiredCheck>,
 ): Promise<CIState> {
@@ -584,14 +600,17 @@ export async function getDefaultBranchCiStatus(
     return fetchCIState();
   }
 
+  // Before any cache access: an id that cannot partition a key must fail
+  // rather than quietly share one.
+  assertPartitionInstallationId(installationId);
   const policy = requirePolicy('get-branch-ci-status');
-  const cacheKey = policy.keyFactory(owner, repo, branch);
+  const cacheKey = policy.keyFactory(owner, repo, branch, installationId);
 
   const { value, source } = await cachedRead<BranchCIState>(
     context.cache,
     policy,
     async () => ({ data: await fetchCIState() }),
-    [owner, repo, branch],
+    [owner, repo, branch, installationId],
   );
 
   // A budget-truncated rollup is incomplete by construction. Letting it sit
@@ -612,7 +631,7 @@ export async function getDefaultBranchCiStatus(
     context.cache,
     policy,
     async () => ({ data: await fetchCIState() }),
-    [owner, repo, branch],
+    [owner, repo, branch, installationId],
     { bypass: true },
   );
   if (refreshed.truncated && refreshedSource !== 'cache') {

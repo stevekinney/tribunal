@@ -113,11 +113,12 @@ describe('cache-policy', () => {
         },
         {
           operationId: 'get-pull-request-diff-context',
-          baselineArguments: [7, 42, 'aaa111'],
+          baselineArguments: [7, 42, 'aaa111', 55],
           variantArguments: [
-            [8, 42, 'aaa111'],
-            [7, 43, 'aaa111'],
-            [7, 42, 'bbb222'],
+            [8, 42, 'aaa111', 55],
+            [7, 43, 'aaa111', 55],
+            [7, 42, 'bbb222', 55],
+            [7, 42, 'aaa111', 99],
           ],
         },
         {
@@ -188,11 +189,12 @@ describe('cache-policy', () => {
         },
         {
           operationId: 'get-review-thread-counts',
-          baselineArguments: ['owner', 'repo', 42],
+          baselineArguments: ['owner', 'repo', 42, 55],
           variantArguments: [
-            ['other-owner', 'repo', 42],
-            ['owner', 'other-repo', 42],
-            ['owner', 'repo', 43],
+            ['other-owner', 'repo', 42, 55],
+            ['owner', 'other-repo', 42, 55],
+            ['owner', 'repo', 43, 55],
+            ['owner', 'repo', 42, 99],
           ],
         },
         {
@@ -206,38 +208,42 @@ describe('cache-policy', () => {
         },
         {
           operationId: 'get-failing-check-count',
-          baselineArguments: ['owner', 'repo', 'aaa111'],
+          baselineArguments: ['owner', 'repo', 'aaa111', 55],
           variantArguments: [
-            ['other-owner', 'repo', 'aaa111'],
-            ['owner', 'other-repo', 'aaa111'],
-            ['owner', 'repo', 'bbb222'],
+            ['other-owner', 'repo', 'aaa111', 55],
+            ['owner', 'other-repo', 'aaa111', 55],
+            ['owner', 'repo', 'bbb222', 55],
+            ['owner', 'repo', 'aaa111', 99],
           ],
         },
         {
           operationId: 'get-branch-ci-status',
-          baselineArguments: ['owner', 'repo', 'main'],
+          baselineArguments: ['owner', 'repo', 'main', 55],
           variantArguments: [
-            ['other-owner', 'repo', 'main'],
-            ['owner', 'other-repo', 'main'],
-            ['owner', 'repo', 'release'],
+            ['other-owner', 'repo', 'main', 55],
+            ['owner', 'other-repo', 'main', 55],
+            ['owner', 'repo', 'release', 55],
+            ['owner', 'repo', 'main', 99],
           ],
         },
         {
           operationId: 'get-branch-head-sha',
-          baselineArguments: ['owner', 'repo', 'main'],
+          baselineArguments: ['owner', 'repo', 'main', 55],
           variantArguments: [
-            ['other-owner', 'repo', 'main'],
-            ['owner', 'other-repo', 'main'],
-            ['owner', 'repo', 'release'],
+            ['other-owner', 'repo', 'main', 55],
+            ['owner', 'other-repo', 'main', 55],
+            ['owner', 'repo', 'release', 55],
+            ['owner', 'repo', 'main', 99],
           ],
         },
         {
           operationId: 'get-branch-rules',
-          baselineArguments: ['owner', 'repo', 'main'],
+          baselineArguments: ['owner', 'repo', 'main', 55],
           variantArguments: [
-            ['other-owner', 'repo', 'main'],
-            ['owner', 'other-repo', 'main'],
-            ['owner', 'repo', 'release'],
+            ['other-owner', 'repo', 'main', 55],
+            ['owner', 'other-repo', 'main', 55],
+            ['owner', 'repo', 'release', 55],
+            ['owner', 'repo', 'main', 99],
           ],
         },
         {
@@ -329,30 +335,33 @@ describe('cache-policy', () => {
 
     it('get-pull-request-diff-context keys by reviewed head SHA', () => {
       const policy = getPolicy('get-pull-request-diff-context')!;
-      const firstHeadKey = policy.keyFactory(123, 42, 'aaa111');
-      const secondHeadKey = policy.keyFactory(123, 42, 'bbb222');
+      const firstHeadKey = policy.keyFactory(123, 42, 'aaa111', 55);
+      const secondHeadKey = policy.keyFactory(123, 42, 'bbb222', 55);
 
       expect(firstHeadKey).toContain('123');
       expect(firstHeadKey).toContain('42');
       expect(firstHeadKey).toContain('aaa111');
+      expect(firstHeadKey).toContain('installation:55');
       expect(secondHeadKey).toContain('bbb222');
       expect(secondHeadKey).not.toBe(firstHeadKey);
     });
 
     it('get-failing-check-count generates correct cache key', () => {
       const policy = getPolicy('get-failing-check-count')!;
-      const key = policy.keyFactory('owner', 'repo', 'abc123sha');
+      const key = policy.keyFactory('owner', 'repo', 'abc123sha', 55);
       expect(key).toContain('checks');
       expect(key).toContain('abc123sha');
+      expect(key).toContain('installation:55');
     });
 
     it('get-review-thread-counts generates correct cache key', () => {
       const policy = getPolicy('get-review-thread-counts')!;
-      const key = policy.keyFactory('owner', 'repo', 42);
+      const key = policy.keyFactory('owner', 'repo', 42, 55);
       expect(key).toContain('owner');
       expect(key).toContain('repo');
       expect(key).toContain('42');
       expect(key).toContain('review-thread-counts');
+      expect(key).toContain('installation:55');
     });
 
     it('get-unresolved-review-thread-count generates correct cache key', () => {

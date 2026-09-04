@@ -231,9 +231,15 @@ async function invalidatePullRequestReviewRelatedCache(
   const invalidations: Promise<unknown>[] = [
     // No exact-key detail delete: detail entries carry an installation suffix,
     // and GITHUB_RESPONSE_PR_PATTERN below already matches every one of them.
-    // GITHUB_RESPONSE_PR_PATTERN covers: review-comments, thread-lookup, review thread counts, and check counts
-    // for this PR. Thread-validate entries use a different key shape (keyed by threadId, not PR number)
-    // and are invalidated individually below when thread.node_id is present.
+    // GITHUB_RESPONSE_PR_PATTERN covers: review-comments, thread-lookup, and
+    // review thread counts for this PR — review thread counts also carry an
+    // installation suffix, which this pattern's trailing wildcard still
+    // matches. Check counts are keyed under `checks:{headSha}`, not
+    // `pr:{n}:*`, so they are invalidated separately in
+    // `invalidateCheckRelatedCache`/`invalidateStatusEventCache` below.
+    // Thread-validate entries use a different key shape (keyed by threadId,
+    // not PR number) and are invalidated individually below when
+    // thread.node_id is present.
     context.cache.deleteCacheByPattern(
       CACHE_KEYS.GITHUB_RESPONSE_PR_PATTERN(owner, repo, prNumber),
     ),
@@ -291,19 +297,26 @@ async function invalidateCheckRelatedCache(
 
   const invalidations: Promise<unknown>[] = [];
 
-  // Invalidate cached failing check counts for this commit SHA
+  // Invalidate cached failing check counts for this commit SHA. Entries carry
+  // an installation suffix, so an exact-key delete would match nothing —
+  // sweep the pattern instead.
   if (headSha) {
     invalidations.push(
-      context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, headSha)),
+      context.cache.deleteCacheByPattern(
+        CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN(owner, repo, headSha),
+      ),
     );
   }
 
   // Invalidate the cached branch CI rollup for whatever branch these checks
   // ran on. Correct regardless of whether it's the repository's default
   // branch, since the cache key is keyed by branch name, not "is default".
+  // Entries carry an installation suffix, so sweep the pattern.
   if (headBranch) {
     invalidations.push(
-      context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, headBranch)),
+      context.cache.deleteCacheByPattern(
+        CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN(owner, repo, headBranch),
+      ),
     );
   }
 
@@ -333,13 +346,17 @@ async function invalidateStatusEventCache(
   const invalidations: Promise<unknown>[] = [];
 
   if (sha) {
-    invalidations.push(context.cache.deleteCache(CACHE_KEYS.GITHUB_CHECK_COUNTS(owner, repo, sha)));
+    invalidations.push(
+      context.cache.deleteCacheByPattern(CACHE_KEYS.GITHUB_CHECK_COUNTS_PATTERN(owner, repo, sha)),
+    );
   }
 
   for (const branch of branches ?? []) {
     if (branch?.name) {
       invalidations.push(
-        context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_CI_STATUS(owner, repo, branch.name)),
+        context.cache.deleteCacheByPattern(
+          CACHE_KEYS.GITHUB_BRANCH_CI_STATUS_PATTERN(owner, repo, branch.name),
+        ),
       );
     }
   }
@@ -361,7 +378,11 @@ async function invalidatePushCache(
   if (!ref?.startsWith('refs/heads/')) return;
 
   const branch = ref.replace('refs/heads/', '');
-  await context.cache.deleteCache(CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA(owner, repo, branch));
+  // Entries carry an installation suffix, so an exact-key delete would match
+  // nothing — sweep the pattern instead.
+  await context.cache.deleteCacheByPattern(
+    CACHE_KEYS.GITHUB_BRANCH_HEAD_SHA_PATTERN(owner, repo, branch),
+  );
 }
 
 async function invalidateInstallationRepositoriesCache(

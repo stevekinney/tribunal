@@ -25,7 +25,7 @@
  * requests.
  */
 import type { GithubServiceContext } from '../context.js';
-import { requirePolicy } from '../core/cache-policy.js';
+import { requirePolicy, assertPartitionInstallationId } from '../core/cache-policy.js';
 import { cachedRead, CachedReadAbortedError } from '../core/github-read-client.js';
 import { isRateLimitError } from '../errors.js';
 import { resolveHasNextPage } from '@tribunal/github/shared';
@@ -527,6 +527,12 @@ async function readRulesetRequiredChecks(
   budget: ApiBudget,
 ): Promise<RulesetReadResult> {
   try {
+    // Same installation the octokit above was built from — buildRepositoryRow
+    // has already confirmed `repository.installationId` is non-null before
+    // this function is ever reached. Before any cache access: an id that
+    // cannot partition a key must fail rather than quietly share one.
+    const installationId = repository.installationId as number;
+    assertPartitionInstallationId(installationId);
     const policy = requirePolicy('get-branch-rules');
     const { value } = await cachedRead<RulesetReadResult | RequiredCheck[]>(
       context.cache,
@@ -573,7 +579,7 @@ async function readRulesetRequiredChecks(
         const { checks, hasWorkflowsRule } = extractRequiredChecksFromRules(rules);
         return { data: { checks, incomplete: hasWorkflowsRule } };
       },
-      [repository.owner, repository.name, repository.defaultBranch],
+      [repository.owner, repository.name, repository.defaultBranch, installationId],
     );
     return normalizeCachedRulesetResult(value);
   } catch (error) {
@@ -611,6 +617,12 @@ async function readDefaultBranchStatus(
   // default-branch change cannot make the dashboard trust the old SHA.
   let commitSha = repository.commit;
   let requiredChecks: RequiredCheck[] = [];
+  // Same installation the octokit above was built from — buildRepositoryRow
+  // has already confirmed `repository.installationId` is non-null before
+  // this function is ever reached. Before any cache access: an id that
+  // cannot partition a key must fail rather than quietly share one.
+  const installationId = repository.installationId as number;
+  assertPartitionInstallationId(installationId);
   try {
     const policy = requirePolicy('get-branch-head-sha');
     const { value } = await cachedRead<BranchHead | LegacyBranchHead | string>(
@@ -635,7 +647,7 @@ async function readDefaultBranchStatus(
           data: { sha: branch.commit.sha, requiredChecks: extractRequiredChecks(branch) },
         };
       },
-      [repository.owner, repository.name, repository.defaultBranch],
+      [repository.owner, repository.name, repository.defaultBranch, installationId],
     );
     // Tolerate a bare-string value, or the pre-#156 envelope shape
     // (`{ sha, requiredCheckNames: string[] }`) cached by a previous build —
@@ -692,6 +704,10 @@ async function readDefaultBranchStatus(
       repository.name,
       repository.defaultBranch,
       commitSha,
+      // Same installation the octokit above was built from — buildRepositoryRow
+      // has already confirmed `repository.installationId` is non-null before
+      // this function is ever reached.
+      repository.installationId as number,
       budget,
       mergedRequiredChecks,
     );

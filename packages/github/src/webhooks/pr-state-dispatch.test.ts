@@ -165,7 +165,7 @@ describe('dispatchPRStateTracking', () => {
     await vi.waitFor(() => expect(mockHandleCheckSuiteCompleted).toHaveBeenCalled());
 
     expect(context.getInstallationOctokit).toHaveBeenCalledWith(999);
-    expect(mockHandleCheckSuiteCompleted).toHaveBeenCalledWith(context, data, octokit);
+    expect(mockHandleCheckSuiteCompleted).toHaveBeenCalledWith(context, data, octokit, 999);
   });
 
   it('does not fetch an octokit for a check_suite event with no installation id', async () => {

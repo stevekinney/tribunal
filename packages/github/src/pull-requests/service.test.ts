@@ -1095,6 +1095,97 @@ describe('getPullRequestOperationalStatus', () => {
 
     expect(status.mergeConflictStatus).toBe('unknown');
   });
+
+  // Transfer scenario, end to end through the real `cachedRead`. A repository
+  // that still carries a link row for its previous installation stays
+  // readable by that installation's users. If the cache is not partitioned,
+  // the entry the current installation populated is handed to them — thread
+  // counts their own credentials would compute differently.
+  it('does not serve one installation the review thread counts another installation cached', async () => {
+    expect.assertions(3);
+
+    const store = new Map<string, unknown>();
+    const context = createMockContext({
+      cache: {
+        getCached: vi.fn(async (key: string) => store.get(key) ?? null),
+        setCache: vi.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+          return true;
+        }),
+        setCacheIndefinitely: vi.fn().mockResolvedValue(true),
+        deleteCache: vi.fn().mockResolvedValue(true),
+        deleteCacheByPattern: vi.fn().mockResolvedValue(0),
+        resetCacheClient: vi.fn(),
+      },
+    } as unknown as Partial<GithubServiceContext>);
+
+    // Isolate the review-thread-counts surface: the PR-detail and
+    // failing-check-count reads fail (and are not asserted on), leaving only
+    // the review-thread GraphQL read to populate the cache.
+    const makeOctokit = (nodes: Array<{ isResolved: boolean }>) =>
+      ({
+        rest: {
+          pulls: {
+            get: vi.fn().mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 })),
+          },
+          checks: { listForRef: vi.fn().mockRejectedValue(new Error('checks unavailable')) },
+        },
+        graphql: vi.fn().mockResolvedValue({
+          repository: {
+            pullRequest: {
+              reviewThreads: { nodes, pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+        }),
+      }) as never;
+
+    const currentInstallationId = 200;
+    const staleInstallationId = 100;
+
+    await getPullRequestOperationalStatus(
+      context,
+      makeOctokit([{ isResolved: true }, { isResolved: true }]),
+      'acme',
+      'widgets',
+      5,
+      'sha5',
+      currentInstallationId,
+    );
+    const cachedEntry = store.get(
+      'github:response:acme:widgets:pr:5:review-thread-counts:installation:200',
+    ) as { value: { resolvedReviewThreadCount: number; unresolvedReviewThreadCount: number } };
+    expect(cachedEntry.value).toStrictEqual({
+      resolvedReviewThreadCount: 2,
+      unresolvedReviewThreadCount: 0,
+    });
+
+    // The installation the transfer left behind computes a different count
+    // from its own live call — a partitioned cache must reach GitHub again
+    // rather than replaying the other installation's counts.
+    await getPullRequestOperationalStatus(
+      context,
+      makeOctokit([{ isResolved: false }]),
+      'acme',
+      'widgets',
+      5,
+      'sha5',
+      staleInstallationId,
+    );
+    const leakedEntry = store.get(
+      'github:response:acme:widgets:pr:5:review-thread-counts:installation:100',
+    ) as { value: { resolvedReviewThreadCount: number; unresolvedReviewThreadCount: number } };
+    expect(leakedEntry.value).toStrictEqual({
+      resolvedReviewThreadCount: 0,
+      unresolvedReviewThreadCount: 1,
+    });
+
+    expect([...store.keys()].sort()).toStrictEqual(
+      [
+        'github:response:acme:widgets:pr:5:review-thread-counts:installation:200',
+        'github:response:acme:widgets:pr:5:review-thread-counts:installation:100',
+      ].sort(),
+    );
+  });
 });
 
 describe('isRateLimitError', () => {

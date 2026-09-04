@@ -132,6 +132,7 @@ export async function handleCheckSuiteCompleted(
   context: GithubServiceContext,
   payload: CheckSuitePayload,
   octokit: Octokit,
+  installationId: number,
 ): Promise<void> {
   const { check_suite, repository } = payload;
 
@@ -144,6 +145,7 @@ export async function handleCheckSuiteCompleted(
     repository.owner.login,
     repository.name,
     check_suite.head_sha,
+    installationId,
   );
 
   const ciUpdatedAt = check_suite.updated_at ? new Date(check_suite.updated_at) : new Date();
