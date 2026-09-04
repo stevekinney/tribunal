@@ -495,9 +495,9 @@ async function paginateCheckRunsRollup(
  * @param octokit - Authenticated Octokit client
  * @param installationId - Installation whose credentials authenticated `octokit`.
  *   This partitions the cache entry; passing any other installation's id would
- *   let one installation read another's cached content. Only required (and
- *   checked) when `context` is provided — an uncached call touches no cache
- *   key.
+ *   let one installation read another's cached content. Always required by the
+ *   signature; only validated when `context` is provided, since an uncached
+ *   call touches no cache key.
  */
 export async function getFailingCheckCount(
   context: GithubServiceContext | undefined,
@@ -563,7 +563,8 @@ interface BranchCIState extends CIState {
  * @param installationId - Installation whose credentials authenticated
  *   `octokit`. This partitions the cache entry; passing any other
  *   installation's id would let one installation read another's cached
- *   content. Only required (and checked) when `context` is provided.
+ *   content. Always required by the signature; only validated when `context`
+ *   is provided, since an uncached call touches no cache key.
  */
 export async function getDefaultBranchCiStatus(
   context: GithubServiceContext | undefined,
