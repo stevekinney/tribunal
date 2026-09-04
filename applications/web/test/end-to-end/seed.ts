@@ -101,6 +101,14 @@ const workerSeedCounters = new Map<string, number>();
 const DEFAULT_WORKER_ID = 'default';
 
 /**
+ * The seeded agent's slug. Shared because three rows have to agree on it: the `agent`
+ * row itself, `agent_run.agent_slug`, and `cost_event.agent_label`. The latter two are
+ * snapshots that outlive the agent, and the cost rollups group by the label -- so a
+ * seed that omits it renders every cost row as "Unassigned".
+ */
+const SEEDED_AGENT_SLUG = 'security-review';
+
+/**
  * Gets the next seed ID for a worker (thread-safe within a single process)
  */
 function getNextSeedId(workerId?: string): number {
@@ -230,7 +238,7 @@ export async function seedOperatorData(
     .values({
       id: agentId,
       userId: options.userId,
-      slug: 'security-review',
+      slug: SEEDED_AGENT_SLUG,
       description: 'Finds authentication and permission issues',
       body: 'Review the pull request for security issues.',
       model: 'sonnet',
@@ -307,6 +315,7 @@ export async function seedOperatorData(
       userId: options.userId,
       runId: reviewRunId,
       agentId,
+      agentSlug: SEEDED_AGENT_SLUG,
       modelUsed: 'sonnet',
       effortUsed: 'medium',
       status: 'succeeded',
@@ -357,6 +366,7 @@ export async function seedOperatorData(
       repositoryId: options.repositoryId,
       reviewRunId,
       agentId,
+      agentLabel: SEEDED_AGENT_SLUG,
       amountUsd: '0.42',
       meta: { cacheReadTokens: 200, cacheCreationTokens: 50 },
       occurredAt: now,
@@ -468,6 +478,7 @@ export async function applyFakeReviewLifecycleEvent(
           userId: input.userId,
           runId,
           agentId,
+          agentSlug: SEEDED_AGENT_SLUG,
           modelUsed: 'sonnet',
           effortUsed: 'medium',
           status: 'succeeded',
@@ -487,6 +498,7 @@ export async function applyFakeReviewLifecycleEvent(
           repositoryId: input.repositoryId,
           reviewRunId: runId,
           agentId,
+          agentLabel: SEEDED_AGENT_SLUG,
           amountUsd: '0.31',
           meta: { deliveryId },
           occurredAt: now,

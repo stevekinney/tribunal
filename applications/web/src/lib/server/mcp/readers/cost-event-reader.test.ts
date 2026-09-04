@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
 import { agent, costEvent, repository, user, userReviewSettings } from '@tribunal/database/schema';
 import { runWithDatabase } from '$lib/server/database';
@@ -47,15 +48,22 @@ describe('cost event reader', () => {
     amountUsd: string;
     repositoryId?: number | null;
     agentId?: string | null;
+    // Omitted (the default): the insert trigger derives it from the live
+    // `agent` row named by `agentId`, exercising the same path a real writer
+    // that only supplies `agentId` takes. Pass explicitly to simulate a row
+    // whose agent was already deleted before this migration's backfill ran.
+    agentLabel?: string;
     source?: string;
     occurredAt?: Date;
   }) {
+    const agentId = input.agentId === undefined ? 'agent-1' : input.agentId;
     await testDb.db.insert(costEvent).values({
       idempotencyKey: input.key,
       userId: input.userId,
       source: input.source ?? 'estimate',
       repositoryId: input.repositoryId === undefined ? 9001 : input.repositoryId,
-      agentId: input.agentId === undefined ? 'agent-1' : input.agentId,
+      agentId,
+      ...(input.agentLabel === undefined ? {} : { agentLabel: input.agentLabel }),
       amountUsd: input.amountUsd,
       meta: { cacheReadTokens: 12 },
       occurredAt: input.occurredAt ?? new Date('2026-08-01T00:00:00.000Z'),
@@ -202,6 +210,22 @@ describe('cost event reader', () => {
       { label: 'Unassigned', amountUsd: 2.5 },
       { label: 'security', amountUsd: 1.5 },
     ]);
+  });
+
+  it('keeps a deleted agent label distinct from Unassigned in the rollup and the row projection', async () => {
+    expect.assertions(2);
+    const now = new Date();
+    await seedEvent({ key: 'event-1', userId: ownerId, amountUsd: '1.50', occurredAt: now });
+
+    await testDb.db.delete(agent).where(eq(agent.id, 'agent-1'));
+
+    const page = await withTestDatabase(() => listCostEvents(ownerId, { limit: 25, offset: 0 }));
+    expect(page.items[0]?.agentSlug).toBe('security');
+
+    const summary = await withTestDatabase(() =>
+      summarizeCostEvents(ownerId, { source: 'estimate', windowDays: 30 }),
+    );
+    expect(summary.byAgent).toEqual([{ label: 'security', amountUsd: 1.5 }]);
   });
 
   it('totals decimal amounts exactly rather than through binary floats', async () => {

@@ -1113,12 +1113,10 @@ export async function getCostOverview(userId: number, source: 'estimate' | 'reco
   const rows = await db
     .select({
       event: costEvent,
-      agentSlug: agent.slug,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
     })
     .from(costEvent)
-    .leftJoin(agent, eq(agent.id, costEvent.agentId))
     .leftJoin(repository, eq(repository.id, costEvent.repositoryId))
     .where(and(eq(costEvent.userId, userId), eq(costEvent.source, source)))
     .orderBy(desc(costEvent.occurredAt));
@@ -1144,9 +1142,9 @@ export async function getCostOverview(userId: number, source: 'estimate' | 'reco
           ? `${row.repositoryOwner}/${row.repositoryName}`
           : 'Unassigned',
       ),
-      byAgent: rollup(rows, (row) => row.agentSlug ?? 'Unassigned'),
+      byAgent: rollup(rows, (row) => row.event.agentLabel || 'Unassigned'),
       byAgentPerRepository: rollup(rows, (row) => {
-        const agentLabel = row.agentSlug ?? 'Unassigned agent';
+        const agentLabel = row.event.agentLabel || 'Unassigned agent';
         const repositoryLabel =
           row.repositoryOwner && row.repositoryName
             ? `${row.repositoryOwner}/${row.repositoryName}`

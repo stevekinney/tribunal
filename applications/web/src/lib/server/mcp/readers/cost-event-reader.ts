@@ -1,5 +1,5 @@
 import { and, count, desc, eq, gte, sql, sum } from 'drizzle-orm';
-import { agent, costEvent, repository } from '@tribunal/database/schema';
+import { costEvent, repository } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
 import { buildPage, type Page, type PaginationInput } from '../pagination';
 
@@ -55,7 +55,7 @@ const costEventColumns = {
   repositoryId: costEvent.repositoryId,
   repositoryOwner: repository.owner,
   repositoryName: repository.name,
-  agentSlug: agent.slug,
+  agentLabel: costEvent.agentLabel,
 };
 
 type CostEventRow = {
@@ -65,7 +65,7 @@ type CostEventRow = {
   repositoryId: number | null;
   repositoryOwner: string | null;
   repositoryName: string | null;
-  agentSlug: string | null;
+  agentLabel: string;
 };
 
 function projectCostEvent(row: CostEventRow): McpCostEvent {
@@ -81,7 +81,10 @@ function projectCostEvent(row: CostEventRow): McpCostEvent {
     repositoryId: row.repositoryId,
     repositoryOwner: row.repositoryOwner,
     repositoryName: row.repositoryName,
-    agentSlug: row.agentSlug,
+    // `agentLabel` is a snapshot column defaulting to '' for events with no
+    // configured agent (sandbox, triage, verifier) -- normalized to `null`
+    // here to keep the wire field's existing shape stable.
+    agentSlug: row.agentLabel || null,
   };
 }
 
@@ -100,7 +103,6 @@ function costEventQuery() {
   return db
     .select(costEventColumns)
     .from(costEvent)
-    .leftJoin(agent, eq(agent.id, costEvent.agentId))
     .leftJoin(repository, eq(repository.id, costEvent.repositoryId));
 }
 
@@ -179,14 +181,13 @@ export async function summarizeCostEvents(
       repositoryId: costEvent.repositoryId,
       repositoryOwner: repository.owner,
       repositoryName: repository.name,
-      agentSlug: agent.slug,
+      agentLabel: costEvent.agentLabel,
       repositoryGrouped: sql<number>`grouping(${costEvent.repositoryId})`,
-      agentGrouped: sql<number>`grouping(${agent.slug})`,
+      agentGrouped: sql<number>`grouping(${costEvent.agentLabel})`,
       eventCount: count(),
       totalUsd: sum(costEvent.amountUsd),
     })
     .from(costEvent)
-    .leftJoin(agent, eq(agent.id, costEvent.agentId))
     .leftJoin(repository, eq(repository.id, costEvent.repositoryId))
     .where(
       and(
@@ -196,7 +197,7 @@ export async function summarizeCostEvents(
       ),
     )
     .groupBy(
-      sql`grouping sets ((${costEvent.repositoryId}, ${repository.owner}, ${repository.name}), (${agent.slug}), ())`,
+      sql`grouping sets ((${costEvent.repositoryId}, ${repository.owner}, ${repository.name}), (${costEvent.agentLabel}), ())`,
     );
 
   // Folded in one pass rather than filtered three times, and with the totals
@@ -226,7 +227,7 @@ export async function summarizeCostEvents(
     }
 
     if (row.agentGrouped === 0) {
-      byAgent.push({ label: row.agentSlug ?? 'Unassigned', amountUsd: toAmount(row.totalUsd) });
+      byAgent.push({ label: row.agentLabel || 'Unassigned', amountUsd: toAmount(row.totalUsd) });
       continue;
     }
 

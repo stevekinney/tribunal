@@ -81,6 +81,14 @@ export interface LlmEstimateInput {
   reviewRunId: string;
   /** `null` for `triage`/`verifier` runs, which have no user-configured `agent` row. */
   agentId: string | null;
+  /**
+   * Label snapshot written alongside `agentId`, surviving deletion of the
+   * `agent` row it names. `''` for `triage`/`verifier` runs and anything
+   * else with no configured agent -- mirrors `agentId: null` exactly, so
+   * readers can fall back to "Unassigned" for the same set of rows they do
+   * today.
+   */
+  agentLabel: string;
   amountUsd: number;
   idempotencyKey: string;
 }
