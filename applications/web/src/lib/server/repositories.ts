@@ -103,30 +103,40 @@ export type RepositoryResolutionOptions = {
   recordTokenInvalidation?: boolean;
 };
 
-export async function getRepositoriesForUser(
+/**
+ * Which of the user's GitHub App installations they can currently reach,
+ * resolved live from GitHub (or, in local/dev-bypass paths, deferred to the
+ * caller's own database lookup).
+ *
+ * This is the piece that both {@link getRepositoriesForUser} (the full-set
+ * list) and {@link resolveAuthorizedInstallationId} (the single-repository
+ * lookup) share, so that a revoked installation fails both paths identically
+ * — the narrow path is not allowed to become a second, divergent source of
+ * truth for "which installations can this user reach".
+ */
+type LiveInstallationResolution =
+  | { kind: 'local' }
+  | { kind: 'live'; installationIds: number[]; liveInstallations: UserRepositoryInstallation[] }
+  | { kind: 'error'; error: UserRepositoriesError; message: string };
+
+async function resolveLiveInstallationSet(
   userId: number,
-  options: RepositoryResolutionOptions = {},
-): Promise<UserRepositoriesResult> {
+  options: RepositoryResolutionOptions,
+): Promise<LiveInstallationResolution> {
   if (env.NODE_ENV !== 'production' && env.E2E_TEST_MODE === '1' && env.E2E_TEST_SECRET) {
-    return getLocalRepositoriesForUser(userId);
+    return { kind: 'local' };
   }
 
   const octokitResult = await getUserOctokit(userId);
   if (!octokitResult.ok) {
     if (shouldUseDevGitHubBypassRepositories()) {
-      return getLocalRepositoriesForUser(userId);
+      return { kind: 'local' };
     }
 
     // Token problems (missing/expired/invalid) all collapse to "connect GitHub".
-    return {
-      ok: false,
-      error: 'no_github_token',
-      message: octokitResult.message,
-    };
+    return { kind: 'error', error: 'no_github_token', message: octokitResult.message };
   }
 
-  let installationIds: number[];
-  let liveInstallations: UserRepositoryInstallation[];
   try {
     const installations = await listUserInstallations(
       githubContext.cache,
@@ -138,16 +148,18 @@ export async function getRepositoriesForUser(
       ? installations.filter((installation) => installation.app_slug === applicationSlug)
       : [];
 
-    installationIds = applicationInstallations.map((installation) => installation.id);
-    liveInstallations = applicationInstallations.map((installation) => ({
+    const installationIds = applicationInstallations.map((installation) => installation.id);
+    const liveInstallations = applicationInstallations.map((installation) => ({
       installationId: installation.id,
       accountLogin: getLiveInstallationAccountLogin(installation),
       accountAvatarUrl: installation.account?.avatar_url ?? null,
     }));
+
+    return { kind: 'live', installationIds, liveInstallations };
   } catch (error) {
     console.error('Failed to list GitHub installations for user', userId, error);
     if (shouldUseDevGitHubBypassRepositories() && isForbiddenError(error)) {
-      return getLocalRepositoriesForUser(userId);
+      return { kind: 'local' };
     }
 
     if (isUnauthorizedError(error)) {
@@ -164,17 +176,34 @@ export async function getRepositoriesForUser(
         await markGitHubTokenInvalid(userId);
       }
       return {
-        ok: false,
+        kind: 'error',
         error: 'no_github_token',
         message: 'Your GitHub connection is no longer valid. Reconnect GitHub to continue.',
       };
     }
     return {
-      ok: false,
+      kind: 'error',
       error: 'github_unavailable',
       message: 'Could not reach GitHub to list your installations. Please try again.',
     };
   }
+}
+
+export async function getRepositoriesForUser(
+  userId: number,
+  options: RepositoryResolutionOptions = {},
+): Promise<UserRepositoriesResult> {
+  const resolution = await resolveLiveInstallationSet(userId, options);
+
+  if (resolution.kind === 'local') {
+    return getLocalRepositoriesForUser(userId);
+  }
+
+  if (resolution.kind === 'error') {
+    return { ok: false, error: resolution.error, message: resolution.message };
+  }
+
+  const { installationIds, liveInstallations } = resolution;
 
   if (installationIds.length === 0) {
     return { ok: true, repositories: [], installations: [] };
@@ -341,34 +370,112 @@ async function getLocalRepositoriesForUser(userId: number): Promise<UserReposito
 }
 
 /**
- * Confirm the user can reach a single repository through one of their GitHub App
- * installations. Used to authorize repository-scoped routes (e.g. pull
- * requests) without trusting the URL alone.
+ * Resolve one repository's authorizing installation for a caller whose
+ * live installation set could not be resolved from GitHub (dev/E2E local
+ * bypass), by trusting the stored `github_installation.user_id` binding
+ * instead of a live token.
+ *
+ * Selects only `installation_id` — never the `repository` table. A matching
+ * `github_installation_repository` row is sufficient proof the repository
+ * exists, because `github_installation_repository.repository_id` carries
+ * `onDelete: 'cascade'` to `repository.id`; joining `repository` here would
+ * only re-derive an invariant the foreign key already enforces.
+ *
+ * Ordered `desc(addedAt), desc(installationId)` and capped to one row for the
+ * same reason {@link getRepositoriesForUser}'s full-set join is: a repository
+ * can carry active links to more than one of the caller's own installations
+ * (an org transfer that leaves the old link active is the ordinary case), and
+ * since TRI-111 that choice also decides which credential and cache
+ * partition a caller reads through. This ordering must match the full-set
+ * path's dedup exactly, or the narrow and wide paths could resolve the same
+ * repository to two different installations for the same caller.
+ *
+ * Exported (like `selectStoredPullRequestState` in the pull request reader)
+ * only so a test can assert against its generated SQL rather than a call
+ * result — a value-level assertion would pass just as well against a query
+ * that joined and projected the whole repository set.
  */
-export async function userCanAccessRepository(
-  userId: number,
+export function selectLocalAuthorizedInstallationId(userId: number, repositoryId: number) {
+  return db
+    .select({ installationId: githubInstallationRepository.installationId })
+    .from(githubInstallationRepository)
+    .innerJoin(
+      githubInstallation,
+      eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+    )
+    .where(
+      and(
+        eq(githubInstallationRepository.repositoryId, repositoryId),
+        eq(githubInstallation.userId, userId),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .orderBy(
+      desc(githubInstallationRepository.addedAt),
+      desc(githubInstallationRepository.installationId),
+    )
+    .limit(1);
+}
+
+/**
+ * Resolve one repository's authorizing installation against the caller's
+ * LIVE installation set (`installationIds`, just resolved from GitHub).
+ *
+ * Same shape and same ordering rationale as
+ * {@link selectLocalAuthorizedInstallationId} above, but gated by
+ * `inArray(installationId, installationIds)` — the caller's live GitHub
+ * membership — rather than the stored `github_installation.user_id` binding.
+ * This is what keeps the narrow path authoritative: it never joins or reads
+ * the `repository` table, and it never trusts a stored
+ * `repository.installationId` alone, only an active link into an
+ * installation GitHub, right now, says this user can reach.
+ */
+export function selectLiveAuthorizedInstallationId(
   repositoryId: number,
-  options: RepositoryResolutionOptions = {},
-): Promise<boolean> {
-  const result = await getRepositoriesForUser(userId, options);
-  if (!result.ok) return false;
-  return result.repositories.some((entry) => entry.repository.id === repositoryId);
+  installationIds: number[],
+) {
+  return db
+    .select({ installationId: githubInstallationRepository.installationId })
+    .from(githubInstallationRepository)
+    .innerJoin(
+      githubInstallation,
+      eq(githubInstallation.installationId, githubInstallationRepository.installationId),
+    )
+    .where(
+      and(
+        eq(githubInstallationRepository.repositoryId, repositoryId),
+        inArray(githubInstallationRepository.installationId, installationIds),
+        eq(githubInstallation.status, 'active'),
+        eq(githubInstallationRepository.isActive, true),
+      ),
+    )
+    .orderBy(
+      desc(githubInstallationRepository.addedAt),
+      desc(githubInstallationRepository.installationId),
+    )
+    .limit(1);
 }
 
 /**
  * Authorize a repository read **and** report which installation granted it.
  *
- * {@link userCanAccessRepository} answers the same question and discards the
- * answer's most useful half. It resolves the user's repositories through their
- * live installations — so it already knows *which* installation admitted them —
- * and then returns a bare boolean. A caller that needs a GitHub client is left
- * to re-derive one, and the only repository-scoped resolver available
- * (`getInstallationForRepository`) takes no user and picks the most recently
- * added active link. When a repository carries links for two installations,
- * those two answers can differ, and the caller is handed a client for an
- * installation they were never authorized through.
+ * Resolves the same live installation set {@link getRepositoriesForUser}
+ * does — so a revoked installation fails this immediately, just as it does
+ * for the full list — but then issues a single `repositoryId`-scoped query
+ * against `github_installation_repository` joined only to
+ * `github_installation`. It never reads or projects the caller's full
+ * repository set: a point lookup no longer pays for every repository the
+ * caller can reach just to authorize one.
  *
- * Prefer this on any path that goes on to call GitHub.
+ * Prefer this on any path that goes on to call GitHub: it is the only
+ * repository-scoped resolver that reports *which* installation admitted the
+ * caller, rather than a bare boolean. The only other repository-scoped
+ * resolver (`getInstallationForRepository`) takes no user and picks the
+ * repository's most recently added active link — irrespective of whether
+ * this caller can reach it — so when a repository carries links to two
+ * installations, that answer can differ from this one and hand a caller a
+ * client for an installation they were never authorized through.
  *
  * `null` means the repository is not in the caller's reachable set — either
  * because they genuinely cannot reach it, or because the set could not be
@@ -385,8 +492,35 @@ export async function resolveAuthorizedInstallationId(
   repositoryId: number,
   options: RepositoryResolutionOptions = {},
 ): Promise<number | null> {
-  const result = await getRepositoriesForUser(userId, options);
-  if (!result.ok) return null;
-  const entry = result.repositories.find((candidate) => candidate.repository.id === repositoryId);
-  return entry?.installation.installationId ?? null;
+  const resolution = await resolveLiveInstallationSet(userId, options);
+
+  if (resolution.kind === 'error') return null;
+
+  if (resolution.kind === 'local') {
+    const [row] = await selectLocalAuthorizedInstallationId(userId, repositoryId);
+    return row?.installationId ?? null;
+  }
+
+  if (resolution.installationIds.length === 0) return null;
+
+  const [row] = await selectLiveAuthorizedInstallationId(repositoryId, resolution.installationIds);
+  return row?.installationId ?? null;
+}
+
+/**
+ * Confirm the user can reach a single repository through one of their GitHub App
+ * installations. Used to authorize repository-scoped routes (e.g. pull
+ * requests) without trusting the URL alone.
+ *
+ * A thin wrapper over {@link resolveAuthorizedInstallationId} — it discards
+ * which installation granted access, keeping only whether one did — so it
+ * inherits that function's narrow, single-repository query path rather than
+ * resolving (and discarding) the caller's entire repository set.
+ */
+export async function userCanAccessRepository(
+  userId: number,
+  repositoryId: number,
+  options: RepositoryResolutionOptions = {},
+): Promise<boolean> {
+  return (await resolveAuthorizedInstallationId(userId, repositoryId, options)) !== null;
 }

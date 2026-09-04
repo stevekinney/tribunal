@@ -58,6 +58,8 @@ vi.mock('$lib/server/github-context', () => ({
 import {
   getRepositoriesForUser,
   resolveAuthorizedInstallationId,
+  selectLiveAuthorizedInstallationId,
+  selectLocalAuthorizedInstallationId,
   userCanAccessRepository,
 } from './repositories';
 
@@ -860,5 +862,172 @@ describe('getRepositoriesForUser', () => {
     });
 
     await expect(withTestDatabase(() => userCanAccessRepository(1, 98765))).resolves.toBe(false);
+  });
+
+  it('stops resolving a repository the instant GitHub revokes the installation, even though the local link row is still active', async () => {
+    // This is the criterion-2 regression test: access must derive from the
+    // user's LIVE installation set, never from the stored
+    // `github_installation`/`github_installation_repository` rows alone.
+    // The DB rows below never change across this test -- only the mocked
+    // `GET /user/installations` response does.
+    const { owner } = await createLocalRepositoryGraph();
+
+    // Sanity check: with the installation still live, the narrow path grants
+    // access exactly as `createLocalRepositoryGraph`'s default mock intends.
+    await expect(
+      withTestDatabase(() => resolveAuthorizedInstallationId(owner.id, 98765)),
+    ).resolves.toBe(12345);
+    await expect(withTestDatabase(() => userCanAccessRepository(owner.id, 98765))).resolves.toBe(
+      true,
+    );
+
+    // Simulate the user losing installation access on GitHub -- the app was
+    // uninstalled, or the user's own access to the org was revoked. Nothing
+    // in the local database changes: `github_installation` and
+    // `github_installation_repository` still have active rows for
+    // installation 12345 and repository 98765.
+    //
+    // The live response still returns a (different) installation for this
+    // app, rather than an empty list, so the narrow query's `inArray` gate
+    // is the thing that rejects 98765 -- not the earlier
+    // `installationIds.length === 0` short-circuit, which would pass this
+    // test even if that gate were missing entirely.
+    mockGithubRequest.mockImplementation(async (endpoint: string, options?: { page?: number }) => {
+      if (endpoint !== 'GET /user/installations') {
+        throw new Error(`Unexpected GitHub endpoint: ${endpoint}`);
+      }
+      return {
+        data: {
+          installations:
+            (options?.page ?? 1) === 1
+              ? [
+                  {
+                    id: 99999,
+                    app_slug: 'tribunal-review',
+                    account: { login: 'other-org', avatar_url: null },
+                  },
+                ]
+              : [],
+        },
+      };
+    });
+
+    await expect(
+      withTestDatabase(() => resolveAuthorizedInstallationId(owner.id, 98765)),
+    ).resolves.toBeNull();
+    await expect(withTestDatabase(() => userCanAccessRepository(owner.id, 98765))).resolves.toBe(
+      false,
+    );
+  });
+
+  it('issues a single repository-row read, never the caller full-set projection, for the live narrow path', async () => {
+    // Criterion 5: asserted against the GENERATED QUERY, not the returned
+    // value -- a value-level assertion passes whether the narrow path reads
+    // one row or projects the caller's whole repository set.
+    const { sql } = await withTestDatabase(async () =>
+      selectLiveAuthorizedInstallationId(98765, [12345, 67890]).toSQL(),
+    );
+
+    // Scoped to exactly one repository...
+    expect(sql).toMatch(/"repository_id"\s*=\s*\$/);
+    // ...gated by the caller's live installation set...
+    expect(sql).toMatch(/"installation_id"\s*(in|=\s*any)/i);
+    // ...and it never joins or selects from the `repository` table itself --
+    // a matching `github_installation_repository` link row is sufficient
+    // proof the repository exists (the FK cascade enforces that invariant),
+    // so the narrow path has no reason to touch that table.
+    expect(sql).not.toMatch(/\b(from|join)\s+"repository"/i);
+    // A single-row read, not a full-set scan.
+    expect(sql).toMatch(/limit\s+\$/i);
+  });
+
+  it('also scopes the local (dev-bypass) narrow path to a single repository, never the repository table', async () => {
+    const { sql } = await withTestDatabase(async () =>
+      selectLocalAuthorizedInstallationId(1, 98765).toSQL(),
+    );
+
+    expect(sql).toMatch(/"repository_id"\s*=\s*\$/);
+    expect(sql).not.toMatch(/\b(from|join)\s+"repository"/i);
+    expect(sql).toMatch(/limit\s+\$/i);
+  });
+
+  it('resolves the narrow live path to the same installation as the full-set path when a repository carries two of the caller’s own links', async () => {
+    // Same shape as the TRI-111 fixture above ("resolves the installation
+    // the caller can reach, not the repository's newest link"), but on the
+    // LIVE path (both installations belong to this caller, both come back
+    // from GitHub) rather than the local dev-bypass path. The narrow query's
+    // `orderBy(desc(addedAt), desc(installationId)).limit(1)` must pick the
+    // same installation `getRepositoriesForUser`'s dedup would -- this is
+    // the one scenario where the narrow and wide paths could diverge.
+    const [caller] = await testDb.db
+      .insert(user)
+      .values({ username: 'live-multi-link', neonAuthUserId: 'live:multi' })
+      .returning();
+
+    await testDb.db.insert(githubInstallation).values([
+      {
+        installationId: 8001,
+        userId: caller.id,
+        accountLogin: 'org-a',
+        accountId: 8001,
+        status: 'active',
+      },
+      {
+        installationId: 8002,
+        userId: caller.id,
+        accountLogin: 'org-b',
+        accountId: 8002,
+        status: 'active',
+      },
+    ]);
+    await testDb.db.insert(repository).values({
+      id: 5001,
+      owner: 'org-a',
+      name: 'shared',
+      installationId: 8001,
+    });
+    await testDb.db.insert(githubInstallationRepository).values([
+      {
+        installationId: 8001,
+        repositoryId: 5001,
+        isActive: true,
+        addedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        installationId: 8002,
+        repositoryId: 5001,
+        isActive: true,
+        addedAt: new Date('2026-06-01T00:00:00Z'),
+      },
+    ]);
+
+    mockGithubRequest.mockImplementation(async (endpoint: string, options?: { page?: number }) => {
+      if (endpoint !== 'GET /user/installations') {
+        throw new Error(`Unexpected GitHub endpoint: ${endpoint}`);
+      }
+      return {
+        data: {
+          installations:
+            (options?.page ?? 1) === 1
+              ? [
+                  { id: 8001, app_slug: 'tribunal-review', account: { login: 'org-a' } },
+                  { id: 8002, app_slug: 'tribunal-review', account: { login: 'org-b' } },
+                ]
+              : [],
+        },
+      };
+    });
+
+    const fullSet = await withTestDatabase(() => getRepositoriesForUser(caller.id));
+    const narrow = await withTestDatabase(() => resolveAuthorizedInstallationId(caller.id, 5001));
+
+    expect(fullSet.ok).toBe(true);
+    const fullSetEntry =
+      fullSet.ok && fullSet.repositories.find((entry) => entry.repository.id === 5001);
+    expect(fullSetEntry).toBeTruthy();
+    expect(narrow).toBe(8002);
+    if (fullSetEntry) {
+      expect(narrow).toBe(fullSetEntry.installation.installationId);
+    }
   });
 });
