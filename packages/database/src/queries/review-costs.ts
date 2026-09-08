@@ -25,13 +25,20 @@ export interface RepositoryCostRollup {
   amountUsd: number;
 }
 
+/**
+ * Attribution is by `cost_event.agent_label`, the snapshot written at insert time,
+ * not by the nullable `agent_id`. `agent_id` is set to null when its agent is
+ * deleted, which would merge that agent's historical spend with sandbox costs and
+ * with every other deleted agent under a single null bucket. `''` means genuinely
+ * no configured agent (sandbox, triage, verifier) and reads back as "Unassigned".
+ */
 export interface AgentCostRollup {
-  agentId: string | null;
+  agentLabel: string;
   amountUsd: number;
 }
 
 export interface AgentRepositoryCostRollup {
-  agentId: string | null;
+  agentLabel: string;
   repositoryId: number | null;
   amountUsd: number;
 }
@@ -126,15 +133,15 @@ export async function getCostPerAgent(
   options: CostRollupOptions,
 ): Promise<AgentCostRollup[]> {
   let query = database
-    .select({ agentId: costEvent.agentId, amountUsd: amountSql })
+    .select({ agentLabel: costEvent.agentLabel, amountUsd: amountSql })
     .from(costEvent)
     .$dynamic();
 
   const where = rollupWhere(options);
   if (where) query = query.where(where);
 
-  const rows = await query.groupBy(costEvent.agentId).orderBy(asc(costEvent.agentId));
-  return rows.map((row) => ({ agentId: row.agentId, amountUsd: toNumber(row.amountUsd) }));
+  const rows = await query.groupBy(costEvent.agentLabel).orderBy(asc(costEvent.agentLabel));
+  return rows.map((row) => ({ agentLabel: row.agentLabel, amountUsd: toNumber(row.amountUsd) }));
 }
 
 export async function getCostPerAgentPerRepository(
@@ -143,7 +150,7 @@ export async function getCostPerAgentPerRepository(
 ): Promise<AgentRepositoryCostRollup[]> {
   let query = database
     .select({
-      agentId: costEvent.agentId,
+      agentLabel: costEvent.agentLabel,
       repositoryId: costEvent.repositoryId,
       amountUsd: amountSql,
     })
@@ -154,10 +161,10 @@ export async function getCostPerAgentPerRepository(
   if (where) query = query.where(where);
 
   const rows = await query
-    .groupBy(costEvent.agentId, costEvent.repositoryId)
-    .orderBy(asc(costEvent.agentId), asc(costEvent.repositoryId));
+    .groupBy(costEvent.agentLabel, costEvent.repositoryId)
+    .orderBy(asc(costEvent.agentLabel), asc(costEvent.repositoryId));
   return rows.map((row) => ({
-    agentId: row.agentId,
+    agentLabel: row.agentLabel,
     repositoryId: row.repositoryId,
     amountUsd: toNumber(row.amountUsd),
   }));
