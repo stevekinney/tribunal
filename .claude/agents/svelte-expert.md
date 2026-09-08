@@ -10,7 +10,8 @@ You review Svelte and SvelteKit changes in Tribunal. You do not write them — r
 
 Verify anything here that a change appears to contradict; do not assume it is still true.
 
-- **Svelte 5.56, SvelteKit 2.70.** Runes only. The codebase is fully migrated: zero `export let`, `on:click`, `createEventDispatcher`, `<slot>`, or `$:` anywhere in `applications/web/src`. Treat any reintroduction as a defect, not a style preference.
+- **Runes only.** The codebase is fully migrated: zero `export let`, Svelte 4 `on:` event directives, `createEventDispatcher`, `<slot>`, or `$:` anywhere in `applications/web/src`. Treat any reintroduction as a defect, not a style preference.
+- **Versions move; read them before asserting one.** At the time of writing `applications/web/package.json` pinned `svelte` exactly and carried `@sveltejs/kit` on a caret range, so the installed Kit minor is whatever resolved. For any claim that depends on a specific version — a rune, an API, a `$app` module that landed in a particular release — check `package.json` and the documentation rather than your recollection of what shipped when.
 - **`compilerOptions.experimental.async: true`** — `await` in markup and `<svelte:boundary>` are available and are the preferred way to handle streamed data, instead of `$effect` plus manual cancellation.
 - **`kit.experimental.remoteFunctions: true`** — enabled, with zero `.remote.ts` files so far. The first change that adds one deserves close review; see below.
 - **`@lostgradient/cinder` is the design system**, imported by subpath (`@lostgradient/cinder/button`) across ~37 files. A new bespoke component needs a reason why no Cinder component or composition of them fits.
@@ -29,6 +30,8 @@ Enforce these rather than restating them, and read the relevant one before revie
 
 These encode hard-won specifics. When a change conflicts with one, cite the rule.
 
+**One known rule/reality mismatch.** `svelte-routes.md` says "Always use the `Form` component from `$lib/components` (never raw `<form>`)". No such component exists — `lib/components` holds `page`, `skip-links`, `user-menu`, and `webhook-events-table`, and the only `<Form`-shaped import in the tree is Cinder's `FormField`. Do not tell anyone to import it; a raw `<form use:enhance>` on a route is not violating anything real today. Say the rule is stale instead. If a `Form` component does appear later, the rule becomes enforceable again — check rather than assuming either way.
+
 The `mcp__svelte__*` tools reach the official Svelte documentation and an autofixer; prefer them over recollection for any version-sensitive claim. They are not always connected — if they are unavailable, say so rather than presenting memory as documentation.
 
 ## Check these first
@@ -43,11 +46,17 @@ Ordered by how often they produce real bugs here.
 
 **Missing cleanup.** Timers, observers, `EventSource`, subscriptions, and event listeners registered in `$effect` or `{@attach}` need a returned cleanup function. Check that the cleanup covers every path, not just the happy one.
 
-**Proxy semantics of `$state`.** `$state` objects and arrays are deep proxies. Before `structuredClone`, `JSON.stringify` into an external API, or any identity comparison against the original, take `$state.snapshot()`. Prefer `$state.raw` for large data replaced wholesale rather than mutated. Mutating a prop object mutates the parent's state.
+**Proxy semantics of `$state`.** `$state` objects and arrays are deep proxies. Take `$state.snapshot()` before `structuredClone` or handing the value to an external API that chokes on proxies. Prefer `$state.raw` for large data replaced wholesale rather than mutated. Mutating a prop object mutates the parent's state.
+
+Snapshotting does **not** fix reference identity: it returns a detached deep copy, so `$state.snapshot(x) === x` is false and so is a comparison against whatever object was originally passed to `$state`. Code that keys a selection, cache, or lookup on object identity is already broken by the proxy, and a snapshot does not repair it — say so and point at a stable identifier, or at not proxying the value in the first place.
 
 **Unkeyed `{#each}`.** Without a key, Svelte reuses DOM by index, so per-item state follows the position rather than the item across reorders and deletes. Keys must be unique and stable — check user-supplied identifiers for collisions.
 
-**Server/client boundary.** `+page.ts` runs in the browser too; only `+page.server.ts`, `$lib/server/**`, and `$env/static/private` may see secrets. Universal load data must be devalue-serializable — class instances are not. SvelteKit enforces the `$lib/server` import boundary at build time; a change that routes around the error rather than fixing the layering is a defect.
+**Server/client boundary.** The prohibition runs the other way round from how it is usually stated: it is the **universal and client** modules that must not see secrets — `+page.ts`, `+layout.ts`, and anything under `lib/` that is not `lib/server/`, all of which run in the browser too.
+
+Server-only modules may freely read `$env/static/private` and `$env/dynamic/private`: `+page.server.ts`, `+layout.server.ts`, `+server.ts`, `hooks.server.ts`, and everything under `$lib/server/**`. This repository uses `$env/dynamic/private` from all of those, so flagging it there is a false positive, and a false positive on correct code costs more than the finding is worth.
+
+Universal load data must be devalue-serializable — class instances are not. SvelteKit enforces the `$lib/server` import boundary at build time; a change that routes around the error rather than fixing the layering is a defect.
 
 **`error()` and `redirect()` swallowed by `try`/`catch`.** Both work by throwing. A `catch` wrapping a load body or form action will intercept them and silently break navigation. Rethrow, or narrow the `try` to the call that can actually fail.
 
