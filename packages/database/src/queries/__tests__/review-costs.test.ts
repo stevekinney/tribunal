@@ -428,13 +428,13 @@ describe('review cost rollups', () => {
       { repositoryId: secondaryRepository.id, amountUsd: 2 },
     ]);
     expect(await getCostPerAgent(testDatabase.db, options)).toEqual([
-      { agentId: firstAgent.id, amountUsd: 3.25 },
-      { agentId: secondAgent.id, amountUsd: 0.75 },
+      { agentLabel: firstAgent.slug, amountUsd: 3.25 },
+      { agentLabel: secondAgent.slug, amountUsd: 0.75 },
     ]);
     expect(await getCostPerAgentPerRepository(testDatabase.db, options)).toEqual([
-      { agentId: firstAgent.id, repositoryId: repository.id, amountUsd: 1.25 },
-      { agentId: firstAgent.id, repositoryId: secondaryRepository.id, amountUsd: 2 },
-      { agentId: secondAgent.id, repositoryId: repository.id, amountUsd: 0.75 },
+      { agentLabel: firstAgent.slug, repositoryId: repository.id, amountUsd: 1.25 },
+      { agentLabel: firstAgent.slug, repositoryId: secondaryRepository.id, amountUsd: 2 },
+      { agentLabel: secondAgent.slug, repositoryId: repository.id, amountUsd: 0.75 },
     ]);
     expect(await getCostPerUserPerDay(testDatabase.db, options)).toEqual([
       { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 4 },
@@ -534,13 +534,13 @@ describe('review cost rollups', () => {
       { repositoryId: secondaryRepository.id, amountUsd: 2 },
     ]);
     expect(await getCostPerAgent(testDatabase.db, options)).toEqual([
-      { agentId: firstAgent.id, amountUsd: 3.25 },
-      { agentId: secondAgent.id, amountUsd: 0.75 },
+      { agentLabel: firstAgent.slug, amountUsd: 3.25 },
+      { agentLabel: secondAgent.slug, amountUsd: 0.75 },
     ]);
     expect(await getCostPerAgentPerRepository(testDatabase.db, options)).toEqual([
-      { agentId: firstAgent.id, repositoryId: repository.id, amountUsd: 1.25 },
-      { agentId: firstAgent.id, repositoryId: secondaryRepository.id, amountUsd: 2 },
-      { agentId: secondAgent.id, repositoryId: repository.id, amountUsd: 0.75 },
+      { agentLabel: firstAgent.slug, repositoryId: repository.id, amountUsd: 1.25 },
+      { agentLabel: firstAgent.slug, repositoryId: secondaryRepository.id, amountUsd: 2 },
+      { agentLabel: secondAgent.slug, repositoryId: repository.id, amountUsd: 0.75 },
     ]);
     expect(await getCostPerUserPerDay(testDatabase.db, options)).toEqual([
       { userId: user.id, day: new Date('2026-06-17T00:00:00.000Z'), amountUsd: 4 },
@@ -548,5 +548,82 @@ describe('review cost rollups', () => {
     await expect(
       spendTodayEstimate(testDatabase.db, user.id, new Date('2026-06-17T20:00:00.000Z')),
     ).resolves.toBe(4);
+  });
+
+  it('keeps two deleted agents attributed and distinct from each other and from sandbox spend', async () => {
+    const factories = createFactories(testDatabase.db);
+    const user = await factories.user.create();
+    const repository = await factories.repository.create({ id: 1003 });
+    await insertReviewRun({
+      id: 'run_deleted',
+      userId: user.id,
+      repositoryId: repository.id,
+      prNumber: 21,
+      headSha: 'sha_deleted',
+      trigger: 'opened',
+    });
+
+    for (const [id, slug] of [
+      ['agent_alpha', 'alpha-reviewer'],
+      ['agent_beta', 'beta-reviewer'],
+    ]) {
+      await testDatabase.db.insert(agent).values({
+        id,
+        userId: user.id,
+        slug,
+        description: `${slug} description`,
+        body: `${slug} body`,
+      });
+    }
+
+    // The trigger snapshots each label from the agent that is live at insert time.
+    await testDatabase.db.insert(costEvent).values([
+      {
+        userId: user.id,
+        repositoryId: repository.id,
+        reviewRunId: 'run_deleted',
+        agentId: 'agent_alpha',
+        amountUsd: '1',
+        occurredAt: new Date('2026-06-17T10:00:00.000Z'),
+        idempotencyKey: 'llm:deleted-alpha:estimate',
+      },
+      {
+        userId: user.id,
+        repositoryId: repository.id,
+        reviewRunId: 'run_deleted',
+        agentId: 'agent_beta',
+        amountUsd: '2',
+        occurredAt: new Date('2026-06-17T11:00:00.000Z'),
+        idempotencyKey: 'llm:deleted-beta:estimate',
+      },
+      // Sandbox spend has no configured agent and must stay its own bucket.
+      {
+        userId: user.id,
+        repositoryId: repository.id,
+        reviewRunId: 'run_deleted',
+        agentId: null,
+        amountUsd: '4',
+        occurredAt: new Date('2026-06-17T12:00:00.000Z'),
+        idempotencyKey: 'sandbox:deleted:estimate',
+      },
+    ]);
+
+    // Delete both agents. `agent_id` goes null on every one of their cost events, which
+    // is precisely what used to merge them into a single indistinguishable bucket.
+    await testDatabase.db.delete(agent).where(eq(agent.id, 'agent_alpha'));
+    await testDatabase.db.delete(agent).where(eq(agent.id, 'agent_beta'));
+
+    const options = { userId: user.id, source: 'estimate' as const };
+
+    expect(await getCostPerAgent(testDatabase.db, options)).toEqual([
+      { agentLabel: '', amountUsd: 4 },
+      { agentLabel: 'alpha-reviewer', amountUsd: 1 },
+      { agentLabel: 'beta-reviewer', amountUsd: 2 },
+    ]);
+    expect(await getCostPerAgentPerRepository(testDatabase.db, options)).toEqual([
+      { agentLabel: '', repositoryId: repository.id, amountUsd: 4 },
+      { agentLabel: 'alpha-reviewer', repositoryId: repository.id, amountUsd: 1 },
+      { agentLabel: 'beta-reviewer', repositoryId: repository.id, amountUsd: 2 },
+    ]);
   });
 });
