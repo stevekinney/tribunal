@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setupMcpMountFixture, type McpMountFixture } from '$testing/mcp/mount-fixture';
 import { runWithDatabase } from '$lib/server/database';
 import { user } from '@tribunal/database/schema';
+import { mcpBaseUrl, mcpIssuer, mcpResourceUrl } from '$lib/server/oauth/configuration';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 
 /**
@@ -18,9 +19,13 @@ import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session
  * use; the approve/deny POSTs need no wrapper.
  */
 
-const BASE = 'http://localhost:5173';
-const ISSUER = 'http://localhost:5173';
-const RESOURCE = 'http://localhost:5173/mcp';
+// Derive the origin, issuer, and resource from the same configuration module the
+// mount reads, so the test tracks MCP_BASE_URL rather than assuming localhost. A
+// root .env or production-like CI value would otherwise make the mount derive a
+// different issuer/resource and fail every valid request with invalid_target.
+const BASE = mcpBaseUrl.origin;
+const ISSUER = mcpIssuer;
+const RESOURCE = mcpResourceUrl.href;
 const CLIENT_ID = 'authorize-verify-client';
 const REDIRECT_URI = 'https://client.example/callback';
 const LOOPBACK_REGISTERED = 'http://127.0.0.1:8080/callback';
@@ -148,7 +153,7 @@ describe('authorize path — handlers respond through the mount (behaviour 1)', 
 describe('authorize path — RFC 8707 resource + RFC 9207 iss (behaviours 2, 3)', () => {
   it('rejects a mismatched resource with invalid_target on an iss-carrying redirect', async () => {
     const response = await fixture.handle(
-      new Request(authorizeUrl({ resource: 'http://localhost:5173/wrong' })),
+      new Request(authorizeUrl({ resource: new URL('/wrong', mcpBaseUrl).href })),
       { user: applicationUser },
     );
     expect(response.status).toBe(302);
