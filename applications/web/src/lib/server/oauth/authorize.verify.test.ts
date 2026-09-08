@@ -103,6 +103,16 @@ function extractField(html: string, name: string): string {
   return match[1]!;
 }
 
+/** Drives a valid authorize GET and returns the live transaction's approve/deny fields. */
+async function mintTransaction(): Promise<{ transactionId: string; csrfToken: string }> {
+  const consent = await getAuthorize(authorizeUrl());
+  const html = await consent.text();
+  return {
+    transactionId: extractField(html, 'transaction_id'),
+    csrfToken: extractField(html, 'csrf_token'),
+  };
+}
+
 describe('authorize path — handlers respond through the mount (behaviour 1)', () => {
   it('serves the consent prompt for a valid authorize request', async () => {
     const response = await getAuthorize(authorizeUrl());
@@ -113,15 +123,22 @@ describe('authorize path — handlers respond through the mount (behaviour 1)', 
     expect(html).toContain('name="csrf_token"');
   });
 
-  it('routes approve and deny (not 404)', async () => {
-    const approve = await fixture.handle(formPost('/oauth/authorize/approve', ''), {
-      user: applicationUser,
-    });
-    const deny = await fixture.handle(formPost('/oauth/authorize/deny', ''), {
-      user: applicationUser,
-    });
-    expect(approve.status).not.toBe(404);
-    expect(deny.status).not.toBe(404);
+  it('routes deny to an access_denied redirect carrying state and iss', async () => {
+    const { transactionId, csrfToken } = await mintTransaction();
+    const response = await fixture.handle(
+      formPost('/oauth/authorize/deny', `transaction_id=${transactionId}&csrf_token=${csrfToken}`, {
+        'sec-fetch-site': 'same-origin',
+      }),
+      { user: applicationUser },
+    );
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get('location')!);
+    expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+    expect(location.searchParams.get('error')).toBe('access_denied');
+    expect(location.searchParams.get('state')).toBe('xyz');
+    expect(location.searchParams.get('iss')).toBe(ISSUER);
+    // Distinguishes deny from approve: no authorization code is issued.
+    expect(location.searchParams.get('code')).toBeNull();
   });
 });
 
@@ -172,11 +189,13 @@ describe('authorize path — redirect-URI matching (behaviour 4)', () => {
 });
 
 describe('authorize path — CSRF/origin gate precedes body parsing (behaviour 5)', () => {
-  it('rejects a cross-site approve before parsing the body', async () => {
+  it('rejects a cross-site approve BEFORE parsing the body', async () => {
+    // The body exceeds the 4 KiB parse cap: if the handler read the body before
+    // checking the origin, this would be 413 (payload too large). A 403 proves
+    // the cross-site rejection happens first, before the body is consumed.
+    const oversizedBody = `transaction_id=${'a'.repeat(5000)}&csrf_token=b`;
     const response = await fixture.handle(
-      formPost('/oauth/authorize/approve', 'transaction_id=x&csrf_token=y', {
-        'sec-fetch-site': 'cross-site',
-      }),
+      formPost('/oauth/authorize/approve', oversizedBody, { 'sec-fetch-site': 'cross-site' }),
       { user: applicationUser },
     );
     expect(response.status).toBe(403);
@@ -193,35 +212,31 @@ describe('authorize path — CSRF/origin gate precedes body parsing (behaviour 5
   });
 });
 
-describe('authorize path — single-consume under concurrent approve (behaviour 6)', () => {
-  it('consumes the transaction exactly once', async () => {
-    const consent = await getAuthorize(authorizeUrl());
-    const html = await consent.text();
-    const transactionId = extractField(html, 'transaction_id');
-    const csrfToken = extractField(html, 'csrf_token');
+describe('authorize path — transaction is single-use through the mount (behaviour 6)', () => {
+  // Proves the wired approve flow consumes a transaction only once: a second
+  // approve of the same transaction is rejected, and a successful approve
+  // issues a code+iss redirect. The library's consume is a single conditional
+  // `UPDATE ... WHERE consumed_at IS NULL RETURNING`; proving that atomic under
+  // genuinely concurrent database sessions belongs to the library's own suite
+  // against real PostgreSQL — one in-process PGlite serializes SQL, so a test
+  // here could not distinguish a race-prone read-then-write.
+  it('rejects a second approve and issues a code on the first', async () => {
+    const { transactionId, csrfToken } = await mintTransaction();
     const body = `transaction_id=${transactionId}&csrf_token=${csrfToken}`;
+    const headers = { 'sec-fetch-site': 'same-origin' };
 
-    const [first, second] = await Promise.all([
-      fixture.handle(
-        formPost('/oauth/authorize/approve', body, { 'sec-fetch-site': 'same-origin' }),
-        {
-          user: applicationUser,
-        },
-      ),
-      fixture.handle(
-        formPost('/oauth/authorize/approve', body, { 'sec-fetch-site': 'same-origin' }),
-        {
-          user: applicationUser,
-        },
-      ),
-    ]);
+    const first = await fixture.handle(formPost('/oauth/authorize/approve', body, headers), {
+      user: applicationUser,
+    });
+    const second = await fixture.handle(formPost('/oauth/authorize/approve', body, headers), {
+      user: applicationUser,
+    });
 
-    const statuses = [first.status, second.status].sort();
-    expect(statuses).toEqual([302, 400]);
-    const success = first.status === 302 ? first : second;
-    const location = new URL(success.headers.get('location')!);
+    expect(first.status).toBe(302);
+    const location = new URL(first.headers.get('location')!);
     expect(location.searchParams.get('code')).toBeTruthy();
     expect(location.searchParams.get('iss')).toBe(ISSUER);
+    expect(second.status).toBe(400);
   });
 });
 
