@@ -49,6 +49,17 @@
   let selectedAction = $state(untrack(() => listener?.action ?? ''));
   let agentId = $state(untrack(() => listener?.agentId ?? agents[0]?.id ?? ''));
   let instructionsMarkdown = $state(untrack(() => listener?.instructionsMarkdown ?? ''));
+
+  /**
+   * Imperative handle onto the editor's live document.
+   *
+   * `bind:value` below is debounced -- `changeDebounceMs` stacked on top of
+   * Milkdown's own listener debounce -- so `instructionsMarkdown` lags the
+   * document by a few hundred milliseconds after every keystroke. Submitting
+   * inside that window would post the previous markdown and silently drop the
+   * user's last edit, so the submit handler reads through this instead.
+   */
+  let instructionsEditor = $state<ReturnType<typeof MarkdownEditor> | undefined>();
   let enabled = $state(untrack(() => listener?.enabled ?? true));
   let editorMode = $state<'source' | 'wysiwyg'>('source');
   let filterRef = $state(untrack(() => listenerFilters.ref ?? ''));
@@ -93,7 +104,20 @@
 {/if}
 
 <Card title={mode === 'new' ? 'New event listener' : 'Edit event listener'} headingLevel={2}>
-  <form method="POST" action={actionUrl} class="listener-form" use:enhance>
+  <form
+    method="POST"
+    action={actionUrl}
+    class="listener-form"
+    use:enhance={({ formData }) => {
+      // Read the live document rather than the debounced binding, so a submit
+      // within the debounce window still carries the user's last keystrokes.
+      // The hidden input below stays as the value for a non-enhanced submit.
+      formData.set(
+        'instructionsMarkdown',
+        instructionsEditor?.getMarkdown() ?? instructionsMarkdown,
+      );
+    }}
+  >
     {#if listener}
       <input type="hidden" name="listenerId" value={listener.id} />
     {/if}
@@ -186,6 +210,7 @@
 
     <div class="instructions-field">
       <MarkdownEditor
+        bind:this={instructionsEditor}
         id="listener-instructions"
         label="Instructions"
         bind:value={instructionsMarkdown}
