@@ -70,7 +70,10 @@ const SCOPES_DOC = readFileSync(
 function documentedScopes(): { production: string[]; conformanceOnly: string[] } {
   const production: string[] = [];
   const conformanceOnly: string[] = [];
-  const rowPattern = /^\|\s*`([a-z_]+:[a-z_]+)`\s*\|([^|]*)\|/gm;
+  // Capture whatever the first cell's code span holds — not a restricted scope
+  // grammar — so a documented scope with other characters (e.g. issues-v2:read)
+  // is still parsed and still checked against the injected set.
+  const rowPattern = /^\|\s*`([^`]+)`\s*\|([^|]*)\|/gm;
   let match: RegExpExecArray | null;
   while ((match = rowPattern.exec(SCOPES_DOC)) !== null) {
     const scope = match[1]!;
@@ -233,6 +236,16 @@ describe('scope enforcement — conformance:read is unobtainable (AC4)', () => {
     expect(params.get('error')).toBe('invalid_scope');
     expect(params.get('iss')).toBe(ISSUER);
   });
+
+  it('rejects conformance:read even when mixed with a supported scope', async () => {
+    // Every scope in the request must be supported — an implementation that
+    // accepted a request with any one valid scope would let conformance:read
+    // ride along into the grant. The mix must still be rejected wholesale.
+    const params = await rejectionFor(
+      authorizeUrl({ scope: 'repositories:read conformance:read' }),
+    );
+    expect(params.get('error')).toBe('invalid_scope');
+  });
 });
 
 describe('scope enforcement — the four policy behaviours hold through the mount (AC5)', () => {
@@ -256,5 +269,14 @@ describe('scope enforcement — the four policy behaviours hold through the moun
       authorizeUrl({ scope: 'repositories:read reviews:read' }),
     );
     expect(granted).toEqual(['repositories:read', 'reviews:read'].sort());
+  });
+
+  it('grants an explicit list that omits the baseline scope without re-adding it', async () => {
+    // Every other granted-scope request here includes repositories:read, so a
+    // regression that silently added it to every grant would pass unnoticed.
+    // Request only reviews:read and assert repositories:read is absent.
+    const granted = await grantedScopeFor(authorizeUrl({ scope: 'reviews:read' }));
+    expect(granted).toEqual(['reviews:read']);
+    expect(granted).not.toContain('repositories:read');
   });
 });
