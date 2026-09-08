@@ -1,12 +1,13 @@
+import type { RequestEvent } from '@sveltejs/kit';
 import { createOAuthStores } from '@tribunal/database/queries';
 import { createTestDatabase, type TestDatabase } from '@tribunal/test/database';
+import type { OAuthStores } from '@lostgradient/mcp/oauth/stores';
 import {
-  primeSvelteKitMcpIdentity,
   type SvelteKitLikeRequestEvent,
   type SvelteKitMcpMount,
 } from '@lostgradient/mcp/sveltekit';
-import { assembleTribunalMcpMount } from '$lib/server/mcp/mount';
-import { identityFromUser } from '$lib/server/oauth/identity';
+import { assembleTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
+import { createMcpIdentityHandle, createMcpMountHandle } from '$lib/server/mcp/mount-hooks';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 
 /**
@@ -27,6 +28,8 @@ export type MountRequestOptions = {
 export type McpMountFixture = {
   mount: SvelteKitMcpMount;
   database: TestDatabase;
+  /** The OAuth stores the mount uses, for seeding clients/tokens in tests. */
+  stores: OAuthStores;
   /** Builds a mount event from a request without priming identity. */
   buildEvent(request: Request, options?: MountRequestOptions): SvelteKitLikeRequestEvent;
   /** Primes identity from the options and routes the request through the mount. */
@@ -44,6 +47,16 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   const stores = createOAuthStores(database.db);
   const mount = await assembleTribunalMcpMount(stores);
 
+  // Route requests through the MCP-specific handles hooks.server.ts composes —
+  // the identity-priming handle and the mount handle (with its security-header
+  // decorator) — so tests see real priming, routing, and headers rather than a
+  // partial stand-in. It does not run the outer chain (correlation, auth, dev
+  // bypass); the `user` option stands in for what those handles would populate.
+  const mountRecord: TribunalMcpMount = { mount, dispose: () => mount.dispose() };
+  const getMount = (): Promise<TribunalMcpMount> => Promise.resolve(mountRecord);
+  const identityHandle = createMcpIdentityHandle(getMount);
+  const mountHandle = createMcpMountHandle(getMount);
+
   const buildEvent = (
     request: Request,
     options: MountRequestOptions = {},
@@ -57,11 +70,15 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   return {
     mount,
     database,
+    stores,
     buildEvent,
     handle: (request, options = {}) => {
-      const event = buildEvent(request, options);
-      primeSvelteKitMcpIdentity(event, options.user ? identityFromUser(options.user) : null);
-      return mount.handle({ event, resolve: notFoundResolve });
+      // The one unavoidable cast: buildEvent returns the library's structural
+      // subset of a SvelteKit RequestEvent (see asMountEvent in mount-hooks).
+      const event = buildEvent(request, options) as unknown as RequestEvent;
+      const resolveThroughMount = (mountEvent: RequestEvent) =>
+        mountHandle({ event: mountEvent, resolve: notFoundResolve });
+      return Promise.resolve(identityHandle({ event, resolve: resolveThroughMount }));
     },
     dispose: async () => {
       await mount.dispose();
