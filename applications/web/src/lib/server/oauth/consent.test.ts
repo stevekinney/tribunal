@@ -27,8 +27,8 @@ describe('renderConsent', () => {
     const html = await response.text();
     expect(html).toContain('name="transaction_id" value="txn-1"');
     expect(html).toContain('name="csrf_token" value="csrf-1"');
-    expect(html).toContain('action="/oauth/approve"');
-    expect(html).toContain('action="/oauth/deny"');
+    expect(html).toContain('action="/oauth/authorize/approve"');
+    expect(html).toContain('action="/oauth/authorize/deny"');
     expect(html).toContain('repositories:read');
     expect(html).toContain('Read your repositories');
     expect(html).toContain('My &lt;App&gt;');

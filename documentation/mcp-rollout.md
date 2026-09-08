@@ -324,8 +324,8 @@ TRI-60's.
 | ------ | ------------------------------------------- | --------------- |
 | POST   | `/mcp`                                      | 404             |
 | GET    | `/oauth/authorize`                          | 404             |
-| POST   | `/oauth/approve`                            | 404             |
-| POST   | `/oauth/deny`                               | 404             |
+| POST   | `/oauth/authorize/approve`                  | 404             |
+| POST   | `/oauth/authorize/deny`                     | 404             |
 | POST   | `/oauth/token`                              | 404             |
 | POST   | `/oauth/revoke`                             | 404             |
 | POST   | `/oauth/register`                           | 404             |

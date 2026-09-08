@@ -5,7 +5,7 @@ import { authorizeFormParameterNames, type RenderConsent } from '@lostgradient/m
  *
  * The mount intercepts `/oauth/*` itself, so this seam returns the page
  * directly rather than through a SvelteKit route. The prompt posts the
- * transaction id and CSRF token back to `/oauth/approve` (or `/oauth/deny`)
+ * transaction id and CSRF token back to `/oauth/authorize/approve` (or `/oauth/authorize/deny`)
  * using the library's own field names, so the values never travel in a URL.
  * Every interpolated value (client name, requester, scope copy) is
  * HTML-escaped — the client name in particular is attacker-controlled via
@@ -69,8 +69,8 @@ export const renderConsent: RenderConsent = (presentation) => {
 <p><strong>${escapeHtml(client.name)}</strong> is requesting access to your Tribunal account (${escapeHtml(requester.email || requester.name)}).</p>
 <p>It will be able to:</p>
 <ul>${scopeItems}</ul>
-<form method="post" action="/oauth/approve">${hidden}<button type="submit">Approve</button></form>
-<form method="post" action="/oauth/deny">${hidden}<button type="submit">Deny</button></form>`,
+<form method="post" action="/oauth/authorize/approve">${hidden}<button type="submit">Approve</button></form>
+<form method="post" action="/oauth/authorize/deny">${hidden}<button type="submit">Deny</button></form>`,
   );
 
   return htmlResponse(body, 200);

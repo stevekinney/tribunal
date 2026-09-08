@@ -37,7 +37,11 @@ const getMcpMount = (): Promise<TribunalMcpMount> | null => mcpMount;
 if (mcpMount) {
   // Wire dispose into process termination so the mount's cleanup timer,
   // handler cache, and connection pool are released on shutdown. Nothing
-  // disposes it merely because the module was imported.
+  // disposes it merely because the module was imported. This satisfies AC3
+  // (dispose is reached on SIGTERM); the full graceful-shutdown ordering —
+  // draining in-flight requests before disposal so none reach a disposed
+  // mount, and coordinating with adapter-node's own signal handling — is
+  // TRI-51's scope. adapter-node still owns process termination.
   const disposeMcpMount = (): void => {
     void mcpMount
       .then((active) => active.dispose())

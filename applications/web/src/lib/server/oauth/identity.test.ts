@@ -87,6 +87,13 @@ describe('resolveIdentityBinding', () => {
     ).resolves.toBeNull();
   });
 
+  it('does not throw on a malformed percent-encoded cookie value', async () => {
+    validateNeonSessionFromToken.mockRejectedValue(new Error('invalid'));
+    await expect(
+      resolveIdentityBinding(requestWithCookie('tribunal-neon-auth-token=%E0%A4%A')),
+    ).resolves.toBeNull();
+  });
+
   it('returns null when the token is invalid', async () => {
     validateNeonSessionFromToken.mockRejectedValue(new Error('invalid'));
     await expect(

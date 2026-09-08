@@ -64,7 +64,15 @@ function readCookie(request: Request, name: string): string | null {
     const separator = part.indexOf('=');
     if (separator === -1) continue;
     if (part.slice(0, separator).trim() === name) {
-      return decodeURIComponent(part.slice(separator + 1).trim());
+      const raw = part.slice(separator + 1).trim();
+      // A malformed percent-encoding must not throw a URIError out of an
+      // unauthenticated request; fall back to the raw value, which then fails
+      // token validation and resolves to null like any other bad cookie.
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
     }
   }
   return null;

@@ -38,4 +38,20 @@ describe('applyMcpSecurityHeaders', () => {
     expect(response.headers.get('cache-control')).toBe('no-store, private');
     expect(response.headers.get('vary')).toBe('Cookie');
   });
+
+  it('appends Cookie to an existing Vary rather than overwriting it', () => {
+    const response = applyMcpSecurityHeaders(
+      new Response('<html></html>', { headers: { 'content-type': 'text/html', vary: 'Origin' } }),
+      '/oauth/authorize',
+    );
+    expect(response.headers.get('vary')).toBe('Origin, Cookie');
+  });
+
+  it('does not duplicate Cookie already present in Vary', () => {
+    const response = applyMcpSecurityHeaders(
+      new Response('<html></html>', { headers: { 'content-type': 'text/html', vary: 'Cookie' } }),
+      '/oauth/authorize',
+    );
+    expect(response.headers.get('vary')).toBe('Cookie');
+  });
 });

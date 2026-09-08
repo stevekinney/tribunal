@@ -39,7 +39,13 @@ export function applyMcpSecurityHeaders(response: Response, pathname: string): R
   }
   if ((headers.get('content-type') ?? '').includes('text/html')) {
     headers.set('cache-control', 'no-store, private');
-    headers.set('vary', 'Cookie');
+    // Append to any existing Vary (e.g. Origin the mount may set) rather than
+    // overwriting it, and avoid duplicating Cookie.
+    const existingVary = headers.get('vary');
+    const varyValues = existingVary ? existingVary.split(',').map((value) => value.trim()) : [];
+    if (!varyValues.some((value) => value.toLowerCase() === 'cookie')) {
+      headers.set('vary', [...varyValues, 'Cookie'].join(', '));
+    }
   }
   return response;
 }
@@ -88,11 +94,14 @@ export function createMcpIdentityHandle(getMount: MountAccessor): Handle {
 }
 
 /**
- * Routes MCP and OAuth paths through the mount. When the surface is disabled,
- * it simply continues the chain: Tribunal has no routes at `/mcp` or
- * `/oauth/*`, so SvelteKit's own 404 is returned — byte-indistinguishable from
- * any other unknown path, which is the point (an unauthenticated prober must
- * not learn the surface exists).
+ * Routes MCP and OAuth paths through the mount. When enabled, the mount is
+ * given every request (it inspects the path itself, serving the paths it owns
+ * and calling `resolve` to continue the chain for the rest); security headers
+ * are applied only to responses for mount-owned paths. When disabled, this
+ * continues the chain directly: Tribunal has no route at `/mcp` or `/oauth/*`,
+ * so SvelteKit's own 404 is returned — byte-indistinguishable from any other
+ * unknown path, which is the point (an unauthenticated prober must not learn
+ * the surface exists).
  */
 export function createMcpMountHandle(getMount: MountAccessor): Handle {
   return async ({ event, resolve }) => {
@@ -116,7 +125,8 @@ export function createMcpMountHandle(getMount: MountAccessor): Handle {
  * keep being served after the rollout flag flips and leave the surface
  * undiscoverable. Applying `no-store` to all 404s (not only MCP paths) keeps the
  * disabled response indistinguishable from an ordinary one while closing that
- * window. Runs first so it wraps the whole chain and sees the final response.
+ * window. Sequenced right after `correlationHandle` so it wraps every
+ * downstream handle and sees the final response.
  */
 export const cacheControlOn404Handle: Handle = async ({ event, resolve }) => {
   const response = await resolve(event);
