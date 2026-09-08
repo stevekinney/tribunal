@@ -20,7 +20,8 @@ For detailed patterns and code examples, see `component-standards` references.
 
 ## Forms
 
-- Route forms are a plain `<form method="POST" action="?/name" use:enhance>` with `<input type="hidden">` for values not bound to a visible control. There is no shared `Form` component; earlier revisions of this rule mandated one from `$lib/components` that has never existed in this repository, along with `isSubmitting`, `onresult`, `values` and `form={null}` props that came with it. If a shared form component is introduced later, restore that guidance then.
+- A form posting to a named page action is a plain `<form method="POST" action="?/name" use:enhance>` with `<input type="hidden">` for values not bound to a visible control. `use:enhance` belongs only on that shape — it is for POSTs to SvelteKit page actions, so leave it off the GET filter forms and the forms that post to an API endpoint, both of which exist here and are correct as they are.
+- There is no shared `Form` component. Earlier revisions of this rule mandated one from `$lib/components` that has never existed in this repository, along with the `isSubmitting`, `onresult`, `values` and `form={null}` props that came with it. If a shared form component is introduced later, restore that guidance then.
 - Render `form?.error` yourself, once. Two alerts for one failure is the usual symptom of copying an error block into both a page and the component beneath it.
 - Mirror server validation limits (e.g., `max(10)`) in the UI: gate the submit button and surface a clear message before submission.
 - Keep that gate consistent with normalized input rules (for example, trimmed length vs raw `minlength`). Avoid states where HTML validation allows submission but the guard disables the button, or vice versa.

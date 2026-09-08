@@ -94,7 +94,7 @@ For code examples, see `component-standards` references.
 
 - Capture submitted values at submit time, not after the response arrives, to prevent race conditions.
 - Deep copy objects in snapshots (use `.map(object => ({ ...object }))`, not spread on arrays of objects).
-- Do not pass wrapper functions to Form's `onsubmit`; capture snapshots via a container submit event listener during the capture phase.
+- Do not capture the snapshot in a wrapper passed as the form's `onsubmit`; use a container submit listener during the capture phase, or `use:enhance`'s submit function, which still owns the `FormData` at that point.
 
 ## Anti-patterns
 
