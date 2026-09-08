@@ -47,10 +47,11 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   const stores = createOAuthStores(database.db);
   const mount = await assembleTribunalMcpMount(stores);
 
-  // Route requests through the same handles production composes in
-  // hooks.server.ts, so tests see the real behaviour — identity priming, the
-  // security-header decorator, and the mount's own routing — not a partial
-  // stand-in that skips them.
+  // Route requests through the MCP-specific handles hooks.server.ts composes —
+  // the identity-priming handle and the mount handle (with its security-header
+  // decorator) — so tests see real priming, routing, and headers rather than a
+  // partial stand-in. It does not run the outer chain (correlation, auth, dev
+  // bypass); the `user` option stands in for what those handles would populate.
   const mountRecord: TribunalMcpMount = { mount, dispose: () => mount.dispose() };
   const getMount = (): Promise<TribunalMcpMount> => Promise.resolve(mountRecord);
   const identityHandle = createMcpIdentityHandle(getMount);
@@ -72,14 +73,12 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
     stores,
     buildEvent,
     handle: (request, options = {}) => {
+      // The one unavoidable cast: buildEvent returns the library's structural
+      // subset of a SvelteKit RequestEvent (see asMountEvent in mount-hooks).
       const event = buildEvent(request, options) as unknown as RequestEvent;
-      return Promise.resolve(
-        identityHandle({
-          event,
-          resolve: ((nextEvent: RequestEvent) =>
-            mountHandle({ event: nextEvent, resolve: notFoundResolve as never })) as never,
-        } as never),
-      ) as Promise<Response>;
+      const resolveThroughMount = (mountEvent: RequestEvent) =>
+        mountHandle({ event: mountEvent, resolve: notFoundResolve });
+      return Promise.resolve(identityHandle({ event, resolve: resolveThroughMount }));
     },
     dispose: async () => {
       await mount.dispose();

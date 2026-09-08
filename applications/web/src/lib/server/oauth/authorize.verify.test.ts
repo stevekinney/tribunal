@@ -12,9 +12,10 @@ import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session
  * hold end to end. The mounted-surface fixture is imported from the mount issue
  * (TRI-41), not reimplemented (AC5).
  *
- * `resolveUserProfile` reads the app `db` singleton, so requests that reach it
- * (the consent happy path and approve) run inside `runWithDatabase` to route
- * that read to the same PGlite instance the stores use.
+ * `resolveUserProfile` reads the app `db` singleton, and only the authorize GET
+ * reaches it (approve and deny do not), so the GET helpers run inside
+ * `runWithDatabase` to route that read to the same PGlite instance the stores
+ * use; the approve/deny POSTs need no wrapper.
  */
 
 const BASE = 'http://localhost:5173';
@@ -98,7 +99,9 @@ function formPost(path: string, body: string, headers: Record<string, string> = 
 }
 
 function extractField(html: string, name: string): string {
-  const match = html.match(new RegExp(`name="${name}" value="([^"]+)"`));
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Allow other attributes between name and value rather than assuming order.
+  const match = html.match(new RegExp(`name="${escaped}"[^>]*\\bvalue="([^"]*)"`));
   if (!match) throw new Error(`field ${name} not found in consent HTML`);
   return match[1]!;
 }
@@ -244,6 +247,12 @@ describe('authorize path — response headers (AC3)', () => {
   it('serves the consent HTML with no-store, private and Vary: Cookie', async () => {
     const response = await getAuthorize(authorizeUrl());
     expect(response.headers.get('cache-control')).toBe('no-store, private');
-    expect(response.headers.get('vary')).toBe('Cookie');
+    // Vary must include Cookie; it may carry other values (the decorator appends).
+    expect(
+      response.headers
+        .get('vary')
+        ?.split(',')
+        .map((value) => value.trim()),
+    ).toContain('Cookie');
   });
 });
