@@ -6,9 +6,9 @@
  * This lives in its own file because it mocks the editor module, and the sibling
  * suite renders the same form against the real one.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
-import { render } from 'vitest-browser-svelte';
+import { cleanup, render } from 'vitest-browser-svelte';
 import { LIVE_EDITOR_MARKDOWN } from './event-listener-editor-stub.svelte';
 
 /** Records the FormData the form's submit function actually sees. */
@@ -53,6 +53,11 @@ const STALE_BOUND_MARKDOWN = 'stale bound content';
 const agents = [{ id: 'agent_1', slug: 'triage-agent', enabled: true }];
 const eventTypeOptions = ['issues'];
 const actionsByEventType = { issues: ['opened'] };
+
+afterEach(() => {
+  cleanup();
+  submitted.formData = undefined;
+});
 
 describe('event-listener-form submit', () => {
   it('submits the editor live document rather than the debounced binding', async () => {
