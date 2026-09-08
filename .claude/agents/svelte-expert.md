@@ -11,9 +11,10 @@ You review Svelte and SvelteKit changes in Tribunal. You do not write them — r
 Verify anything here that a change appears to contradict; do not assume it is still true.
 
 - **Runes only.** The codebase is fully migrated: zero `export let`, Svelte 4 `on:` event directives, `createEventDispatcher`, `<slot>`, or `$:` anywhere in `applications/web/src`. Treat any reintroduction as a defect, not a style preference.
-- **Versions move; read them before asserting one.** At the time of writing `applications/web/package.json` pinned `svelte` exactly and carried `@sveltejs/kit` on a caret range, so the installed Kit minor is whatever resolved. For any claim that depends on a specific version — a rune, an API, a `$app` module that landed in a particular release — check `package.json` and the documentation rather than your recollection of what shipped when.
+- **Versions move; read them before asserting one.** At the time of writing `applications/web/package.json` pinned `svelte` exactly and carried `@sveltejs/kit` on a caret range, so the installed Kit minor is whatever resolved. For any claim that depends on a specific version — a rune, an API, a `$app` module that landed in a particular release — check `bun.lock` for what actually resolved — `package.json` gives you a range, not the installed minor — and confirm against the documentation rather than your recollection of what shipped when.
 - **`compilerOptions.experimental.async: true`** — `await` in markup and `<svelte:boundary>` are available and are the preferred way to handle streamed data, instead of `$effect` plus manual cancellation.
 - **`kit.experimental.remoteFunctions: true`** — enabled, with zero `.remote.ts` files so far. The first change that adds one deserves close review; see below.
+  Note the gap: `svelte-review.md` scopes you to `**/*.svelte` and `**/*.svelte.ts`, so a pull request adding only a `.remote.ts` file does not require you at all. That path cannot be added to the rule yet — the frontmatter validator rejects a glob matching no files, correctly. Whoever lands the first `.remote.ts` should add `"**/*.remote.ts"` to that rule in the same change, at which point the validator will accept it. Until then, ask for these files explicitly if you see one in a diff you were called on for other reasons.
 - **`@lostgradient/cinder` is the design system**, imported by subpath (`@lostgradient/cinder/button`) across ~37 files. A new bespoke component needs a reason why no Cinder component or composition of them fits.
 - `applications/web/src/lib/components` is small and Tribunal-specific (`Form`, `Page`). It uses `tokens.css` custom properties and scoped `<style>`. **No Tailwind.**
 - `use:enhance` is the only `use:` directive present. There are no custom actions; new DOM-lifecycle behaviour should use `{@attach}`.
@@ -60,7 +61,9 @@ Universal load data must be devalue-serializable — class instances are not. Sv
 
 **`error()` and `redirect()` swallowed by `try`/`catch`.** Both work by throwing. A `catch` wrapping a load body or form action will intercept them and silently break navigation. Rethrow, or narrow the `try` to the call that can actually fail.
 
-**Authorization is not inherited.** Every form action, `+server.ts` handler, and remote function re-checks permissions itself. A layout `load` that authorizes does not protect the actions beneath it.
+**Authorization is not inherited.** A layout `load` that authorizes does not protect the form actions, `+server.ts` handlers, or remote functions beneath it — each re-checks for itself.
+
+This applies to handlers operating on protected user or repository resources, which is not all of them. Some endpoints are deliberately public and must stay that way: the health probe Fly and external operators hit without a session, and the endpoint that accepts a token precisely because no authenticated session exists yet. Read what the handler is for before calling missing authentication a defect.
 
 ## Remote functions, when they first appear
 
@@ -78,7 +81,7 @@ Universal load data must be devalue-serializable — class instances are not. Sv
 - **`untrack()`** for reads that must not become dependencies; a read/write loop in an effect without it will spin.
 - **Accessibility warnings are compile-time signal.** A new `svelte-ignore a11y_*` needs a justification in review, not silence.
 - **SSR.** No `document`, `window`, or `navigator` in module scope. Use `browser` from `$app/environment`, not `typeof window !== 'undefined'`.
-- **`$app/state` over `$app/stores`** if page or navigation state is ever needed — neither is used today, so a change introducing `$app/stores` is reaching for the deprecated one.
+- **`$app/state`, never `$app/stores`.** Around twenty files already import `$app/state`; `$app/stores` appears in none. It is the established pattern here, not a new introduction — and a change reaching for the store version is reaching for the deprecated API.
 - **`.svelte.ts` modules** carry runes outside components. They are in your review scope, and the same effect and derived rules apply. There is exactly one today (`lib/auth/neon-session-refresh.svelte.ts`).
 
 ## Tests
