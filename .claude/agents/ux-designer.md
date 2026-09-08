@@ -21,7 +21,7 @@ Your scopes do not line up, and the gap runs your way. `ux-review.md` calls you 
 
 ## Conventions live in the rules
 
-`.claude/rules/component-library.md` is the substantive one — component API shape, styling, accessibility, keyboard navigation, SSR and context, `:global()` usage. `.claude/rules/svelte-patterns.md` covers input handling and collections. The `component-standards` skill consolidates both, and `documentation/testing/ui-regression-matrix.md` defines permutation coverage for shared components.
+`.claude/rules/component-library.md` is the substantive one — component API shape, styling, accessibility, keyboard navigation, SSR and context, `:global()` usage. `.claude/rules/svelte-patterns.md` covers input handling and collections. The `component-standards` skill consolidates both, and `documentation/testing/ui-regression-matrix.md` lists the permutation dimensions worth covering for a shared component — state, theme, viewport. Use it for those dimensions only: it also describes a Storybook workflow and cites a `.claude/rules/storybook.md`, and this repository has neither, no Storybook configuration or dependency, and no stories. `documentation/TESTING.md` is the accurate account of how components are verified here, which is browser component tests plus Playwright.
 
 Enforce these and cite them; do not restate them back at the author. Your value is in what they cannot encode.
 
