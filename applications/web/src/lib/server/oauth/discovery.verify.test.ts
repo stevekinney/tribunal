@@ -5,8 +5,12 @@ import {
   type OAuthRequestContext,
 } from '@lostgradient/mcp/oauth';
 import { setupMcpMountFixture, type McpMountFixture } from '$testing/mcp/mount-fixture';
-import { mcpBaseUrl, mcpIssuer, mcpResourceUrl } from '$lib/server/oauth/configuration';
-import { tribunalOAuthDiscoveryConfiguration } from '$lib/server/oauth/configuration';
+import {
+  mcpBaseUrl,
+  mcpIssuer,
+  mcpResourceUrl,
+  tribunalOAuthDiscoveryConfiguration,
+} from '$lib/server/oauth/configuration';
 import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 
 /**
@@ -64,6 +68,9 @@ async function getDocument(
 }
 
 function sortedScopes(value: unknown): string[] {
+  // A clear failure if a document ever omits scopes_supported or returns a
+  // non-array, rather than a bare TypeError from spreading undefined.
+  expect(Array.isArray(value)).toBe(true);
   return [...(value as string[])].sort();
 }
 
@@ -138,10 +145,20 @@ describe('discovery — scopes_supported derives mechanically from the registry 
     // it appear in the authorization-server document the library composes — the
     // set is walked from the registry, never restated. (Mirrors registry.test.ts'
     // minimal-tool augmentation; getSupportedScopes only reads requiredScope.)
+    // Clone a real tool and override its name and scope so the appended entry
+    // keeps a valid tool shape (getSupportedScopes reads requiredScope, but this
+    // stays correct if metadata code starts touching other fields). Only the
+    // out-of-vocabulary scope literal needs a cast.
+    const sampleTool = tribunalMcpRegistry.tools[0]!;
+    const probeTool = {
+      ...sampleTool,
+      name: 'discovery_probe',
+      requiredScope: 'discovery_probe:read' as (typeof sampleTool)['requiredScope'],
+    };
     const augmentedRegistry = {
       ...tribunalMcpRegistry,
-      tools: [...tribunalMcpRegistry.tools, { requiredScope: 'discovery_probe:read' }],
-    } as unknown as typeof tribunalMcpRegistry;
+      tools: [...tribunalMcpRegistry.tools, probeTool],
+    };
     const request = new Request(`${BASE}${AUTHORIZATION_SERVER_PATH}`);
     const context: OAuthRequestContext = {
       request,
