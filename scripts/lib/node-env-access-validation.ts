@@ -7,8 +7,15 @@
  * Tribunal's web app reads `NODE_ENV` through its validated environment schema
  * and SvelteKit's `$env`, both of which stay runtime reads (verified against the
  * adapter-node build output), so `process.env.NODE_ENV` must never appear in
- * `applications/web/src`. Bracket access (`process.env['NODE_ENV']`) is not
+ * the web server's shipped source. The caller scans `applications/web/src` plus
+ * `applications/web/test`, because the production entrypoint imports test-support
+ * modules (`$testing/end-to-end/handle`) into the server bundle, so that
+ * directory also ships. Bracket access (`process.env['NODE_ENV']`) is not
  * constant-folded and is intentionally not flagged.
+ *
+ * The tokenizer scans template-literal interpolations as code, so a read inside
+ * `${...}` (including nested templates) is caught; only the literal text spans
+ * of a template are treated as string content.
  */
 // Whitespace-tolerant between the member-access tokens, so an interstitial
 // comment (blanked to spaces, e.g. `process.env /* x */ .NODE_ENV`) or dot
@@ -70,6 +77,12 @@ function blankCommentsAndStrings(source: string): string {
   // where `/` is literal and does not close the literal.
   let lastSignificant: string | undefined;
   let inCharacterClass = false;
+  // Brace-depth stack for template interpolation. A `${` in a template opens a
+  // code context (pushing depth 0); `{`/`}` inside it are counted so an object
+  // literal does not close the interpolation early; the matching `}` at depth 0
+  // pops back to template. The stack lets nested templates each carry their own
+  // depth, so `${`${x}`}` tokenizes correctly.
+  const templateBraceDepths: number[] = [];
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
     const next = source[index + 1];
@@ -89,6 +102,22 @@ function blankCommentsAndStrings(source: string): string {
       } else if (character === "'" || character === '"' || character === '`') {
         state = character === "'" ? 'single' : character === '"' ? 'double' : 'template';
         result += character;
+      } else if (character === '{') {
+        if (templateBraceDepths.length > 0)
+          templateBraceDepths[templateBraceDepths.length - 1] += 1;
+        result += character;
+        lastSignificant = character;
+      } else if (character === '}' && templateBraceDepths.length > 0) {
+        if (templateBraceDepths[templateBraceDepths.length - 1] === 0) {
+          // Closes the interpolation: return to the enclosing template literal.
+          templateBraceDepths.pop();
+          state = 'template';
+          result += character;
+        } else {
+          templateBraceDepths[templateBraceDepths.length - 1] -= 1;
+          result += character;
+          lastSignificant = character;
+        }
       } else {
         result += character;
         if (!/\s/.test(character)) lastSignificant = character;
@@ -130,7 +159,17 @@ function blankCommentsAndStrings(source: string): string {
       // `process.env.NODE_ENV` in a message is not a false positive) while
       // keeping newlines and the quote delimiters; an escape consumes and blanks
       // the next character; the matching quote returns to code.
-      if (character === '\\') {
+      if (state === 'template' && character === '$' && next === '{') {
+        // A `${` opens an interpolation: it is code, not string content, so a
+        // read like `${process.env.NODE_ENV}` must be scanned. Emit `${`, open a
+        // brace-depth entry, and switch to code with `{` as the last significant
+        // token so a leading regex literal is recognized.
+        result += '${';
+        templateBraceDepths.push(0);
+        state = 'code';
+        lastSignificant = '{';
+        index += 1;
+      } else if (character === '\\') {
         result += '  ';
         index += 1;
       } else if (

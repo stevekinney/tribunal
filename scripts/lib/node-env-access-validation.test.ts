@@ -99,6 +99,41 @@ describe('findNodeEnvDotAccess', () => {
     );
   });
 
+  it('flags dot access inside a template-literal interpolation', () => {
+    // `${...}` is code, not string content — the mandatory gate must scan it.
+    expect(findNodeEnvDotAccess('const mode = `${process.env.NODE_ENV}`;', 't.ts')).toHaveLength(1);
+  });
+
+  it('flags dot access inside an object literal within an interpolation', () => {
+    // The inner `{ }` must not close the interpolation early (depth tracking).
+    const source = 'const o = `${ { mode: process.env.NODE_ENV } }`;';
+    expect(findNodeEnvDotAccess(source, 'obj.ts')).toHaveLength(1);
+  });
+
+  it('flags dot access inside a nested template interpolation', () => {
+    const source = 'const n = `${`${process.env.NODE_ENV}`}`;';
+    expect(findNodeEnvDotAccess(source, 'nested.ts')).toHaveLength(1);
+  });
+
+  it('does not flag the spelling in a template text span outside interpolation', () => {
+    const source = 'const warn = `avoid process.env.NODE_ENV in code`;';
+    expect(findNodeEnvDotAccess(source, 'text.ts')).toEqual([]);
+  });
+
+  it('treats a lone $ in a template (not followed by {) as text', () => {
+    // A `$` that does not open an interpolation stays blanked string content, so
+    // a later spelling in the same template is not a false positive.
+    const source = 'const price = `$5 not process.env.NODE_ENV`;';
+    expect(findNodeEnvDotAccess(source, 'dollar.ts')).toEqual([]);
+  });
+
+  it('recognizes a regex literal at the start of an interpolation', () => {
+    // Entering `${`, the last significant token is `{`, so a leading `/` is a
+    // regex (not division); its `//`-looking delimiters must not eat the read.
+    const source = 'const m = `${/x/.test(y) ? process.env.NODE_ENV : "a"}`;';
+    expect(findNodeEnvDotAccess(source, 'rgx.ts')).toHaveLength(1);
+  });
+
   it('returns no violations for source without NODE_ENV', () => {
     expect(findNodeEnvDotAccess('export const x = 1;\n', 'clean.ts')).toEqual([]);
   });

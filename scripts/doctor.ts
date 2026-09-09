@@ -12,6 +12,7 @@ const { createDatabase } = await import('@tribunal/database').catch(async () => 
 });
 import { loadEnv } from './lib/load-env';
 import { sectionHeader, status, success, error } from './lib/colors';
+import { validateEnvironmentValues } from './lib/environment-doctor';
 // Derive the web app's required variables from the same Zod schema the server
 // validates against (TRI-44 AC10), so a newly required variable is caught here
 // automatically rather than needing a second hand-maintained list. The env
@@ -57,7 +58,7 @@ function withTimeout(
   });
 }
 
-async function checkEnvironment(): Promise<CheckResult> {
+async function checkEnvironment(): Promise<CheckResult[]> {
   const { found } = loadEnv(repoRoot);
 
   const missing = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
@@ -65,20 +66,24 @@ async function checkEnvironment(): Promise<CheckResult> {
     const prefix = found
       ? 'Missing required env vars'
       : 'No .env file found and required env vars are missing';
-    return {
-      level: 'error',
-      message: `${prefix}: ${missing.join(', ')} (copy .env.example and configure)`,
-    };
+    // Report the missing keys alone: running the value schema now would repeat
+    // the same "required" issues the presence check already names.
+    return [
+      {
+        level: 'error',
+        message: `${prefix}: ${missing.join(', ')} (copy .env.example and configure)`,
+      },
+    ];
   }
 
-  if (!found) {
-    return {
-      level: 'warning',
-      message: 'Environment variables configured (no .env file found, using shell env)',
-    };
-  }
+  const presence: CheckResult = found
+    ? { level: 'success', message: 'Environment variables configured' }
+    : {
+        level: 'warning',
+        message: 'Environment variables configured (no .env file found, using shell env)',
+      };
 
-  return { level: 'success', message: 'Environment variables configured' };
+  return [presence, validateEnvironmentValues(process.env)];
 }
 
 async function checkDatabase(): Promise<CheckResult> {
@@ -157,7 +162,7 @@ async function run(): Promise<void> {
 
   const results: CheckResult[] = [];
 
-  results.push(await checkEnvironment());
+  results.push(...(await checkEnvironment()));
   results.push(await checkDatabase());
   results.push(await checkNodeVersion());
   results.push(checkBunVersion());

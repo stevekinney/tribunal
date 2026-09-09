@@ -3,19 +3,25 @@ import { join } from 'node:path';
 import { findNodeEnvDotAccess } from './lib/node-env-access-validation';
 
 /**
- * Fails if `process.env.NODE_ENV` dot-access appears anywhere under
- * `applications/web/src` (TRI-44 AC3). See `lib/node-env-access-validation.ts`
+ * Fails if `process.env.NODE_ENV` dot-access appears anywhere in the web
+ * server's shipped source (TRI-44 AC3). See `lib/node-env-access-validation.ts`
  * for why the dot form is banned and the bracket form is not.
+ *
+ * The scan covers `applications/web/src` and `applications/web/test`. The
+ * production entrypoint imports `$testing/end-to-end/handle` from the latter, so
+ * that directory ships in the server bundle and a fold-hazard read there would
+ * otherwise escape the gate.
  */
 const repositoryRoot = join(import.meta.dirname, '..');
 const SCANNED_EXTENSIONS = ['.ts', '.tsx', '.js', '.svelte'];
+const SCANNED_DIRECTORIES = ['applications/web/src', 'applications/web/test'];
 
-// Enumerate every tracked file under the web source directory and filter by
+// Enumerate every tracked file under the web source directories and filter by
 // extension in code rather than by a `**/*.ext` pathspec: git's `**/` requires
 // at least one intermediate directory, so a glob would silently omit root-level
 // files such as `hooks.server.ts` — the most likely home for environment logic.
 const trackedSourcesResult = Bun.spawnSync({
-  cmd: ['git', 'ls-files', '--', 'applications/web/src'],
+  cmd: ['git', 'ls-files', '--', ...SCANNED_DIRECTORIES],
   cwd: repositoryRoot,
   stdout: 'pipe',
   stderr: 'inherit',
@@ -24,7 +30,7 @@ const trackedSourcesResult = Bun.spawnSync({
 });
 
 if (trackedSourcesResult.exitCode !== 0) {
-  throw new Error('Failed to enumerate applications/web/src sources.');
+  throw new Error('Failed to enumerate web sources.');
 }
 
 const filePaths = trackedSourcesResult.stdout
