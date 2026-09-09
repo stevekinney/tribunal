@@ -64,6 +64,8 @@ jobs:
         run: bun run validate:reviewer-workspaces
       - name: Validate synchronous subprocess deadlines
         run: bun run validate:synchronous-subprocesses
+      - name: Validate NODE_ENV access in the web surface
+        run: bun run validate:node-env-access
       # .github/** is inside no Turborepo workspace, so these root-level
       # workflow-security gates (TRI-28) run directly rather than through
       # `bunx turbo run`. See .github/scripts/workflow-policy.ts.
