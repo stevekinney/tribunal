@@ -33,5 +33,20 @@ export default defineConfig({
      * leaks into its successor again, whatever this number is. See TRI-118.
      */
     testTimeout: 30_000,
+    /**
+     * Matched to `testTimeout` because the teardown hook waits on the same thing
+     * the timeout bounds. `afterAll` awaits `previousCaseTeardown` before closing
+     * the admin connection, so when a case overruns and Vitest abandons it, the
+     * hook inherits the remainder of that case's wait.
+     *
+     * Leaving this at Vitest's 10s default does not make a passing run fail --
+     * when every case finishes, the chain is already settled and the hook returns
+     * immediately. It only bites after a case has *already* failed, and there it
+     * makes things worse: the hook times out on top of the real failure, so the
+     * report leads with teardown noise instead of the case that overran, and
+     * `adminClient.end()` never runs, leaving a connection open and Vitest
+     * complaining that something is keeping the process alive.
+     */
+    hookTimeout: 30_000,
   },
 });
