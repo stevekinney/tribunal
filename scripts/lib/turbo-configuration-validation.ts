@@ -432,22 +432,28 @@ export function validateWebEnvironmentHashing(
   workspacePackages: WorkspacePackage[] = [],
 ): string[] {
   const inlined = new Set(buildInlinedKeys);
+  const globalEnv = configuration.globalEnv ?? [];
   const hashedScopes = collectHashedEnvironmentScopes(configuration, workspacePackages);
-  const isHashed = (key: string) =>
+  const isHashedAnywhere = (key: string) =>
     hashedScopes.some((scope) => environmentDeclarationMatches(key, scope));
 
   const runtimeKeysHashed = webEnvironmentKeys
-    .filter((key) => !inlined.has(key) && isHashed(key))
+    .filter((key) => !inlined.has(key) && isHashedAnywhere(key))
     .map(
       (key) =>
         `turbo.json: \`${key}\` is hashed into a cache key (globalEnv or a task \`env\`), but it is read at runtime rather than inlined at build time. A per-environment value there gives each distinct value a disjoint cache. Move it to globalPassThroughEnv.`,
     );
 
+  // A build-inlined key must be in globalEnv specifically. Only globalEnv hashes
+  // into every task unconditionally; a task-level `env` (even the root's) can be
+  // replaced by a package override that omits it (e.g. applications/web/turbo.json
+  // overrides `build` with no `env`), leaving the build cache reusable across the
+  // key's values.
   const buildKeysNotHashed = buildInlinedKeys
-    .filter((key) => !isHashed(key))
+    .filter((key) => !environmentDeclarationMatches(key, globalEnv))
     .map(
       (key) =>
-        `turbo.json: \`${key}\` is inlined into the build output but is hashed in no cache key (not in globalEnv or a task \`env\`). A build cache would be reused across different ${key} values. Keep it in globalEnv.`,
+        `turbo.json: \`${key}\` is inlined into the build output but is not in globalEnv. Only globalEnv hashes it into every task unconditionally — a task-level \`env\` can be dropped by a package override, so the build cache could be reused across different ${key} values. Add it to globalEnv.`,
     );
 
   return [...runtimeKeysHashed, ...buildKeysNotHashed];

@@ -709,6 +709,28 @@ describe('validateWebEnvironmentHashing', () => {
     expect(errors[0]).toContain('build');
   });
 
+  it('flags a build-inlined key hashed only in a task env, which a package override can drop', () => {
+    // NODE_ENV in root build.env but not globalEnv: applications/web overrides
+    // build without env, so its build hashes NODE_ENV nowhere.
+    const configuration: TurboConfiguration = { tasks: { build: { env: ['NODE_ENV'] } } };
+    const workspacePackages = [
+      makePackage({
+        directory: 'applications/web',
+        turboConfiguration: { tasks: { build: { outputs: ['build/**'] } } },
+      }),
+    ];
+    const errors = validateWebEnvironmentHashing(
+      configuration,
+      keys,
+      ['NODE_ENV'],
+      workspacePackages,
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('NODE_ENV');
+    expect(errors[0]).toContain('globalEnv');
+  });
+
   it('flags a runtime key hashed only in a package-level task override', () => {
     // The root does not hash MCP_ENABLED, but a package `build` override does —
     // the package-level blind spot Cursor flagged.
