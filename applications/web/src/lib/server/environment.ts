@@ -88,6 +88,12 @@ const webEnvironmentObject = z.object({
   NEON_AUTH_BASE_URL: optionalUrl,
   MCP_ENABLED: booleanFlag.default(false),
   MCP_CONFORMANCE_MODE: booleanFlag.default(false),
+  // The server's reported implementation name. Read at runtime via
+  // `$env/dynamic/private` in `mcp/server-identity.ts` (which keeps its own
+  // fallback so it never throws at import); owned by the schema here so the
+  // key is derivable — the doctor's required-list and the Turborepo
+  // environment-declaration guard both enumerate `webEnvironmentKeys`.
+  MCP_SERVER_NAME: z.string().optional(),
   MCP_BASE_URL: optionalUrl,
   // Optional, documented base URL (TRI-44 AC9). Nothing reads a bare BASE_URL
   // today; it is added to the schema and .env.example rather than made fatal.

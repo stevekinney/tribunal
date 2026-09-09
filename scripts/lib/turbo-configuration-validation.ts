@@ -293,10 +293,116 @@ function formatList(values: string[]): string {
   return values.map((value) => `\`${value}\``).join(', ');
 }
 
+/**
+ * Turborepo env declarations are a microsyntax, not literal names: a trailing
+ * `*` is a prefix wildcard (`MCP_*` covers `MCP_ENABLED`), a leading `!` negates
+ * (excludes a match), and a leading `\` escapes a literal `!`/`*`. Exact
+ * `Set.has` matching would both miss a variable a wildcard hashes and wrongly
+ * report a wildcard-covered variable as undeclared.
+ */
+function environmentPatternToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+/** Does `key` match the declaration list, with `!` exclusions winning over inclusions? */
+export function environmentDeclarationMatches(key: string, patterns: string[]): boolean {
+  const inclusions: string[] = [];
+  const exclusions: string[] = [];
+
+  for (const raw of patterns) {
+    if (raw.startsWith('!')) exclusions.push(raw.slice(1));
+    else inclusions.push(raw.startsWith('\\') ? raw.slice(1) : raw);
+  }
+
+  if (exclusions.some((pattern) => environmentPatternToRegExp(pattern).test(key))) return false;
+  return inclusions.some((pattern) => environmentPatternToRegExp(pattern).test(key));
+}
+
+/**
+ * Every declaration list that hashes a variable into a cache key, each kept
+ * separate: the global `globalEnv` list and each task's own `env` array.
+ * `passThroughEnv` is excluded — it forwards a value without hashing it. The
+ * lists stay separate so a `!` exclusion in one task's `env` cannot cancel an
+ * inclusion in another's; a key is hashed if any single scope hashes it.
+ */
+function collectHashedEnvironmentScopes(configuration: TurboConfiguration): string[][] {
+  return [
+    configuration.globalEnv ?? [],
+    ...Object.values(configuration.tasks ?? {}).map((task) => task.env ?? []),
+  ];
+}
+
+/**
+ * Every variable the web application's environment schema owns must be declared
+ * in a *global* turbo env list (`globalEnv` or `globalPassThroughEnv`). The web
+ * app reads these across `build`, `test`, and `dev`, so a per-task declaration
+ * leaves every other task blind under strict `envMode` (Turborepo 2.x's
+ * default), where a task process receives only its declared variables — the MCP
+ * env surface was invisible to every task before it was declared globally
+ * (TRI-55). Derived from `webEnvironmentKeys` so a newly added variable is
+ * caught here rather than needing a second hand-kept list.
+ */
+export function validateWebEnvironmentIsDeclared(
+  configuration: TurboConfiguration,
+  webEnvironmentKeys: string[],
+): string[] {
+  // `globalEnv` and `globalPassThroughEnv` are separate scopes, so a `!`
+  // exclusion in one cannot cancel an inclusion in the other; a key is declared
+  // if either scope declares it.
+  const globalScopes = [configuration.globalEnv ?? [], configuration.globalPassThroughEnv ?? []];
+
+  return webEnvironmentKeys
+    .filter((key) => !globalScopes.some((scope) => environmentDeclarationMatches(key, scope)))
+    .map(
+      (key) =>
+        `turbo.json: \`${key}\` is read by the web application's environment schema but is not declared in globalEnv or globalPassThroughEnv. Turborepo's envMode defaults to strict, so it never reaches a turbo-spawned task and a change to it invalidates no cache. A per-task \`env\` is not enough — the web app reads it across build, test, and dev. Add it to globalPassThroughEnv (read at runtime via $env/dynamic/private) or globalEnv (inlined at build time).`,
+    );
+}
+
+/**
+ * A web environment variable may be hashed into a cache key — placed in
+ * `globalEnv` or a task's `env` — only when it is genuinely inlined into the
+ * build output. A runtime (`$env/dynamic/private`) variable hashed anywhere
+ * partitions that cache by a per-environment value for no correctness benefit.
+ * `buildInlinedKeys` is the caller-supplied set of variables the build actually
+ * substitutes.
+ */
+export function validateWebEnvironmentHashing(
+  configuration: TurboConfiguration,
+  webEnvironmentKeys: string[],
+  buildInlinedKeys: string[],
+): string[] {
+  const inlined = new Set(buildInlinedKeys);
+  const hashedScopes = collectHashedEnvironmentScopes(configuration);
+
+  return webEnvironmentKeys
+    .filter(
+      (key) =>
+        !inlined.has(key) &&
+        hashedScopes.some((scope) => environmentDeclarationMatches(key, scope)),
+    )
+    .map(
+      (key) =>
+        `turbo.json: \`${key}\` is hashed into a cache key (globalEnv or a task \`env\`), but it is read at runtime rather than inlined at build time. A per-environment value there gives each distinct value a disjoint cache. Move it to globalPassThroughEnv.`,
+    );
+}
+
+/**
+ * The web application's environment surface, threaded from
+ * `scripts/validate-turbo-configuration.ts`, which reads the schema's
+ * `webEnvironmentKeys` and the set of build-inlined variables.
+ */
+export type WebEnvironmentDeclaration = {
+  keys: string[];
+  buildInlinedKeys: string[];
+};
+
 /** Run every rule and collect the findings. */
 export function validateTurboConfiguration(
   rootConfiguration: TurboConfiguration,
   workspacePackages: WorkspacePackage[],
+  webEnvironment?: WebEnvironmentDeclaration,
 ): string[] {
   return [
     ...validateBuildOutputs(rootConfiguration, workspacePackages),
@@ -312,5 +418,15 @@ export function validateTurboConfiguration(
     ),
     ...validateGlobalDependencies(rootConfiguration),
     ...validateRootFilesAreGated(rootConfiguration),
+    ...(webEnvironment
+      ? [
+          ...validateWebEnvironmentIsDeclared(rootConfiguration, webEnvironment.keys),
+          ...validateWebEnvironmentHashing(
+            rootConfiguration,
+            webEnvironment.keys,
+            webEnvironment.buildInlinedKeys,
+          ),
+        ]
+      : []),
   ];
 }
