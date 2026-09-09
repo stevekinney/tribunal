@@ -7,7 +7,7 @@ import type {
 import type { McpUserProfile } from '@lostgradient/mcp';
 import { user } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
-import { DEV_BYPASS_NEON_AUTH_ID_PREFIX } from '$lib/server/auth/dev-auth-bypass-flag';
+import { isDevBypassNeonAuthUserId } from '$lib/server/auth/dev-auth-bypass-flag';
 import {
   neonAuthTokenCookieName,
   validateNeonSessionFromToken,
@@ -104,12 +104,15 @@ export const resolveIdentityBinding: ResolveIdentityBinding = async (request) =>
  * Resolves a user profile from the OAuth subject (Tribunal's integer user id
  * as a string). Returns null for a malformed subject or a missing row.
  *
- * A synthetic dev-bypass user is refused: it is never a valid OAuth subject. The
- * mount no longer primes the bypass identity (TRI-45), but a token minted for a
- * bypass user before that fix — on a tunnelled dev database, say — would still
- * carry that user's id as its subject. Refusing it here makes the library treat
- * the token as invalid (an unresolved profile is a 401 on `/mcp` and a consent
- * error on `/oauth/authorize`), closing the persisted-credential path too.
+ * A synthetic bypass user (either `dev-bypass:` local mode or `dev-github:`
+ * GitHub mode) is refused: it is never a valid OAuth subject. The mount no
+ * longer primes the bypass identity (TRI-45), but a token minted for a bypass
+ * user before that fix — on a tunnelled dev database, say — would still carry
+ * that user's id as its subject. Refusing it here makes the library treat the
+ * token as invalid (an unresolved profile is a 401 on `/mcp` and a consent error
+ * on `/oauth/authorize`), closing the persisted-credential path for synthetic
+ * users too. GitHub mode can also reuse a real account whose genuine Neon
+ * subject carries no bypass prefix; those are addressed by revocation (TRI-121).
  */
 export const resolveUserProfile: ResolveUserProfile = async (subjectId) => {
   if (!/^[1-9][0-9]*$/.test(subjectId)) return null;
@@ -117,6 +120,6 @@ export const resolveUserProfile: ResolveUserProfile = async (subjectId) => {
   if (!Number.isSafeInteger(id) || id > 2_147_483_647) return null;
   const [row] = await db.select().from(user).where(eq(user.id, id));
   if (!row) return null;
-  if (row.neonAuthUserId?.startsWith(DEV_BYPASS_NEON_AUTH_ID_PREFIX)) return null;
+  if (isDevBypassNeonAuthUserId(row.neonAuthUserId)) return null;
   return profileFromUser(row);
 };

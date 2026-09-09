@@ -5,13 +5,32 @@ import { env } from '$env/dynamic/private';
 export const DEV_AUTH_BYPASS_FLAG = '1';
 
 /**
- * Prefix of the `neonAuthUserId` on the synthetic users the bypass seeds
- * (`dev-bypass:<username>`). Namespaced so a bypass row can never collide with a
- * real Neon Auth subject, and so consumers — the bypass itself, and the OAuth
- * profile seam that must refuse to resolve a bypass user as an OAuth subject —
- * can recognize one from its stored identity alone.
+ * Prefixes of the `neonAuthUserId` on the synthetic users the bypass seeds:
+ * `dev-bypass:<username>` (local mode) and `dev-github:<githubId>` (GitHub
+ * mode). Namespaced so a bypass row can never collide with a real Neon Auth
+ * subject, and so consumers — the bypass itself, and the OAuth profile seam that
+ * must refuse to resolve a bypass user as an OAuth subject — can recognize one
+ * from its stored identity alone.
  */
 export const DEV_BYPASS_NEON_AUTH_ID_PREFIX = 'dev-bypass:';
+export const DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX = 'dev-github:';
+
+/**
+ * Whether a `neonAuthUserId` belongs to a synthetic user either bypass mode
+ * seeds. Such a user is never a legitimate OAuth subject: it only ever arises
+ * from the dev auth bypass, never from real Neon Auth. Note this covers the
+ * synthetic rows only — GitHub mode can also reuse a real account (a GitHub
+ * connection or installation owner) whose genuine Neon subject carries no
+ * bypass prefix; credentials minted for those before the priming fix are
+ * addressed by revocation (TRI-121), not this predicate.
+ */
+export function isDevBypassNeonAuthUserId(neonAuthUserId: string | null | undefined): boolean {
+  return (
+    !!neonAuthUserId &&
+    (neonAuthUserId.startsWith(DEV_BYPASS_NEON_AUTH_ID_PREFIX) ||
+      neonAuthUserId.startsWith(DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX))
+  );
+}
 
 /**
  * Whether the dev auth bypass is effectively active. False in any production

@@ -136,18 +136,20 @@ describe('resolveUserProfile', () => {
     });
   });
 
-  it('refuses a synthetic dev-bypass user, so a token minted for one cannot resolve (TRI-45)', async () => {
-    await runWithDatabase(testDatabase.db as never, async () => {
-      const [row] = await testDatabase.db
-        .insert(user)
-        .values({
-          username: 'dev',
-          name: 'Dev User',
-          // The namespaced id the bypass seeds; never a valid OAuth subject.
-          neonAuthUserId: 'dev-bypass:dev',
-        })
-        .returning({ id: user.id });
-      await expect(resolveUserProfile(String(row!.id))).resolves.toBeNull();
-    });
-  });
+  it.each([
+    ['local mode', 'dev', 'dev-bypass:dev'],
+    ['GitHub mode', 'octobypass', 'dev-github:12345'],
+  ])(
+    'refuses a synthetic %s bypass user, so a token minted for one cannot resolve (TRI-45)',
+    async (_label, username, neonAuthUserId) => {
+      await runWithDatabase(testDatabase.db as never, async () => {
+        const [row] = await testDatabase.db
+          .insert(user)
+          // The namespaced id a bypass mode seeds; never a valid OAuth subject.
+          .values({ username, name: 'Bypass User', neonAuthUserId })
+          .returning({ id: user.id });
+        await expect(resolveUserProfile(String(row!.id))).resolves.toBeNull();
+      });
+    },
+  );
 });

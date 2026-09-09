@@ -3,7 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 // Control the dev auth bypass flag per test. The fixture routes requests through
 // the real createMcpIdentityHandle, which reads isDevAuthBypassEnabled() to
 // decide whether to prime a locals-derived identity into the mount.
-vi.mock('$lib/server/auth/dev-auth-bypass-flag', () => ({
+vi.mock('$lib/server/auth/dev-auth-bypass-flag', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/server/auth/dev-auth-bypass-flag')>()),
   isDevAuthBypassEnabled: vi.fn(() => false),
 }));
 
