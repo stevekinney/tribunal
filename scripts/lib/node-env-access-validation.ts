@@ -13,46 +13,83 @@
 const NODE_ENV_DOT_ACCESS = /process\.env\.NODE_ENV\b/;
 
 /**
- * Returns the line with any trailing `//` line comment removed, ignoring `//`
- * that appears inside a string literal. A naive `split('//')` would truncate on
- * a URL such as `'http://…'` and drop real code after it — hiding a violation in
- * this mandatory guard — so string state is tracked before treating `//` as a
- * comment.
+ * Blanks out comments while preserving string literals and newlines, in a
+ * single pass that tracks string and comment state together.
+ *
+ * A regex or line-split approach cannot tell a real comment from a comment
+ * marker inside a string (`'http://…'`, `'/*'`) or a quote inside a comment, so
+ * either direction leaks: blanking too much hides a real `process.env.NODE_ENV`
+ * after a string that happens to contain `//` or `/*` (a false negative in this
+ * mandatory guard), and blanking too little trips on the pattern named in a
+ * comment. Comments become spaces (newlines kept) so reported line numbers stay
+ * accurate; string contents pass through unchanged.
  */
-function stripLineComment(line: string): string {
-  let quote: "'" | '"' | '`' | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (quote) {
-      if (character === '\\') index += 1;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === "'" || character === '"' || character === '`') {
-      quote = character;
-    } else if (character === '/' && line[index + 1] === '/') {
-      return line.slice(0, index);
+function blankComments(source: string): string {
+  type State = 'code' | 'line' | 'block' | 'single' | 'double' | 'template';
+  let state: State = 'code';
+  let result = '';
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === 'code') {
+      if (character === '/' && next === '/') {
+        state = 'line';
+        result += '  ';
+        index += 1;
+      } else if (character === '/' && next === '*') {
+        state = 'block';
+        result += '  ';
+        index += 1;
+      } else if (character === "'" || character === '"' || character === '`') {
+        state = character === "'" ? 'single' : character === '"' ? 'double' : 'template';
+        result += character;
+      } else {
+        result += character;
+      }
+    } else if (state === 'line') {
+      if (character === '\n') {
+        state = 'code';
+        result += '\n';
+      } else {
+        result += ' ';
+      }
+    } else if (state === 'block') {
+      if (character === '*' && next === '/') {
+        state = 'code';
+        result += '  ';
+        index += 1;
+      } else {
+        result += character === '\n' ? '\n' : ' ';
+      }
+    } else {
+      // Inside a string literal: pass characters through; an escape consumes the
+      // next character; the matching quote returns to code.
+      result += character;
+      if (character === '\\') {
+        result += next ?? '';
+        index += 1;
+      } else if (
+        (state === 'single' && character === "'") ||
+        (state === 'double' && character === '"') ||
+        (state === 'template' && character === '`')
+      ) {
+        state = 'code';
+      }
     }
   }
-  return line;
+  return result;
 }
 
 export function findNodeEnvDotAccess(source: string, filePath: string): string[] {
   const violations: string[] = [];
-  // Blank out block comments (inline and multi-line) while preserving newlines,
-  // so a comment naming the pattern does not trip the guard and reported line
-  // numbers stay accurate; then drop any trailing line comment (string-aware)
-  // before matching.
-  const withoutBlockComments = source.replace(/\/\*[\s\S]*?\*\//g, (match) =>
-    match.replace(/[^\n]/g, ' '),
-  );
-  withoutBlockComments.split('\n').forEach((line, index) => {
-    const code = stripLineComment(line);
-    if (NODE_ENV_DOT_ACCESS.test(code)) {
-      violations.push(
-        `${filePath}:${index + 1}: process.env.NODE_ENV dot-access is banned — a bundler can fold it to a literal and make runtime checks vacuous. Read NODE_ENV via the validated environment schema, or process.env['NODE_ENV'] bracket form.`,
-      );
-    }
-  });
+  blankComments(source)
+    .split('\n')
+    .forEach((line, index) => {
+      if (NODE_ENV_DOT_ACCESS.test(line)) {
+        violations.push(
+          `${filePath}:${index + 1}: process.env.NODE_ENV dot-access is banned — a bundler can fold it to a literal and make runtime checks vacuous. Read NODE_ENV via the validated environment schema, or process.env['NODE_ENV'] bracket form.`,
+        );
+      }
+    });
   return violations;
 }

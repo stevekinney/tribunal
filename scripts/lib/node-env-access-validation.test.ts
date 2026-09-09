@@ -50,6 +50,13 @@ describe('findNodeEnvDotAccess', () => {
     ).toHaveLength(1);
   });
 
+  it('flags real code between string literals that contain block-comment markers', () => {
+    // The `/*` and `*/` live inside strings; a regex block-comment strip would
+    // blank the real read between them.
+    const source = "const marker = '/*'; const mode = process.env.NODE_ENV; const end = '*/';";
+    expect(findNodeEnvDotAccess(source, 'e.ts')).toHaveLength(1);
+  });
+
   it('handles an escaped quote inside a string without misreading the // that follows', () => {
     // The escaped quote does not close the string, so `//c` stays inside it and
     // the only real read is env.NODE_ENV (not process.env) — nothing to flag.
