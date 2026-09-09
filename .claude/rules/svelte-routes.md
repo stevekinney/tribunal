@@ -20,11 +20,13 @@ For detailed patterns and code examples, see `component-standards` references.
 
 ## Forms
 
-- Always use the `Form` component from `$lib/components` (never raw `<form>`). It provides `use:enhance`, `isSubmitting`, automatic `form.error` display, and `onresult` callback.
-- Pass `form={null}` to `Form` when rendering a custom `form?.error` alert outside it to avoid duplicate error messages.
-- Mirror server validation limits (e.g., `max(10)`) in the UI: gate `canSubmit` and surface a clear message before submission.
-- Keep `canSubmit` logic consistent with normalized input rules (for example, trimmed length vs raw `minlength`). Avoid states where HTML validation allows submission but the guard disables the button, or vice versa.
-- Use `values` prop for simple hidden inputs; use `<input type="hidden">` children for dynamic/conditional values.
+- A form posting to a named page action on the current page is `<form method="POST" action="?/name" use:enhance>`, with `<input type="hidden">` for values not bound to a visible control.
+- `use:enhance` is not universal, and several forms here are correct without it. It applies to POSTs to SvelteKit page actions, so it does not belong on the GET filter forms or on forms posting to an API endpoint. A cross-route action such as `action="/repositories?/watch"` may also be a deliberate plain cross-document submission — the repository settings page does exactly that, and both the component and its action document the choice. Read the form before calling a missing `use:enhance` a defect.
+- There is no shared `Form` component. Earlier revisions of this rule mandated one from `$lib/components` that has never existed in this repository, along with the `isSubmitting`, `onresult`, `values` and `form={null}` props that came with it. If a shared form component is introduced later, restore that guidance then.
+- Render `form?.error` yourself, once. Two alerts for one failure is the usual symptom of copying an error block into both a page and the component beneath it.
+- Mirror server validation limits (e.g., `max(10)`) in the UI: gate the submit button and surface a clear message before submission.
+- Keep that gate consistent with normalized input rules (for example, trimmed length vs raw `minlength`). Avoid states where HTML validation allows submission but the guard disables the button, or vice versa.
+- Mutate `formData` inside `use:enhance`'s submit function when a value cannot be trusted to be current in the DOM — a debounced editor binding is the case this repository actually hit. That callback receives the same `FormData` instance used to build the request, so it is the last point that still affects what is posted; see the "Input handling" section of `svelte-patterns.md`.
 - Always handle both success AND error states from form actions.
 - In `use:enhance` callbacks, do not call `update()` when `result.type === 'error'`; return early to avoid navigating to `+error.svelte`.
 - Each form action must re-validate permissions independently; auth is NOT inherited from layouts.
@@ -42,7 +44,7 @@ For detailed patterns and code examples, see `component-standards` references.
 ## Cache invalidation
 
 - When a page uses `depends(CACHE_KEY)`, invalidate the same key after successful form actions.
-- When multiple form actions share a page, invalidate in each `Form`'s `onresult` handler or return an explicit `actionType`.
+- When multiple form actions share a page, invalidate in each form's `use:enhance` result callback or return an explicit `actionType` so one handler can tell which action ran.
 
 ## Streamed data
 

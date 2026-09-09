@@ -16,7 +16,7 @@ Verify anything here that a change appears to contradict; do not assume it is st
 - **`kit.experimental.remoteFunctions: true`** — enabled, with zero `.remote.ts` files so far. The first change that adds one deserves close review; see below.
   Note the gap: `svelte-review.md` scopes you to `**/*.svelte` and `**/*.svelte.ts`, so a pull request adding only a `.remote.ts` file does not require you at all. That path cannot be added to the rule yet — the frontmatter validator rejects a glob matching no files, correctly. Whoever lands the first `.remote.ts` should add `"**/*.remote.ts"` to that rule in the same change, at which point the validator will accept it. Until then, ask for these files explicitly if you see one in a diff you were called on for other reasons.
 - **`@lostgradient/cinder` is the design system**, imported by subpath (`@lostgradient/cinder/button`) across ~37 files. A new bespoke component needs a reason why no Cinder component or composition of them fits.
-- `applications/web/src/lib/components` is small and Tribunal-specific (`Form`, `Page`). It uses `tokens.css` custom properties and scoped `<style>`. **No Tailwind.**
+- `applications/web/src/lib/components` is small and Tribunal-specific — `page`, `skip-links`, `user-menu`, `webhook-events-table`. It uses `tokens.css` custom properties and scoped `<style>`. **No Tailwind.**
 - `use:enhance` is the only `use:` directive present. There are no custom actions; new DOM-lifecycle behaviour should use `{@attach}`.
 
 ## Conventions live in the rules, not in you
@@ -31,7 +31,7 @@ Enforce these rather than restating them, and read the relevant one before revie
 
 These encode hard-won specifics. When a change conflicts with one, cite the rule.
 
-**One known rule/reality mismatch.** `svelte-routes.md` says "Always use the `Form` component from `$lib/components` (never raw `<form>`)". No such component exists — `lib/components` holds `page`, `skip-links`, `user-menu`, and `webhook-events-table`, and the only `<Form`-shaped import in the tree is Cinder's `FormField`. Do not tell anyone to import it; a raw `<form use:enhance>` on a route is not violating anything real today. Say the rule is stale instead. If a `Form` component does appear later, the rule becomes enforceable again — check rather than assuming either way.
+**There is no shared `Form` component.** An earlier revision of `svelte-routes.md` mandated one from `$lib/components`; it has never existed, and the rule now says so. The only `<Form`-shaped import in the tree is Cinder's `FormField`. A raw `<form use:enhance>` posting to a named page action is the correct pattern here — do not tell anyone to import a component that cannot resolve.
 
 The `mcp__svelte__*` tools reach the official Svelte documentation and an autofixer; prefer them over recollection for any version-sensitive claim. They are not always connected — if they are unavailable, say so rather than presenting memory as documentation.
 

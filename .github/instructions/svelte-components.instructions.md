@@ -34,8 +34,8 @@ These apply to the Svelte 5 components in `packages/components/src/**` (the
 
 ## Forms
 
-- Always use the `Form` component (`packages/components/src/form/form.svelte`) — never raw `<form>`.
-- `Form` wraps `use:enhance`, tracks `isSubmitting`, displays `form.error` automatically, and exposes an `onresult` callback. It also supports a standalone mode via `onsubmit` (which disables `use:enhance`).
+- There is no shared `Form` component. This instruction previously required one at `packages/components/src/form/form.svelte`, along with `isSubmitting`, `onresult` and a standalone `onsubmit` mode; neither that package nor that component has ever existed in this repository.
+- Write a plain `<form method="POST" action="?/name" use:enhance>` for a named page action on the current page, and render `form?.error` yourself. Leave `use:enhance` off GET filter forms, forms posting to an API endpoint, and deliberate plain cross-document submissions to another route's action.
 - Handle both success and error states from form actions.
 - Each form action must re-validate permissions independently.
 
