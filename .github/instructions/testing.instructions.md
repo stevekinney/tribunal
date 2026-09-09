@@ -4,7 +4,7 @@ applyTo: '**/*.test.ts,**/*.svelte.test.ts,**/*.spec.ts,**/test/**,**/*.stories.
 
 # Testing Review Heuristics
 
-These cover the Tribunal monorepo: the SvelteKit app in `applications/web` and the shared `@tribunal/*` packages (notably `@tribunal/components`). Use `@tribunal/*` package names in tests and stories; that is the only workspace namespace.
+These cover the Tribunal monorepo: the SvelteKit app in `applications/web` and the shared `@tribunal/*` packages -- `agents`, `cost`, `database`, `github`, `review-core`, `sandbox`, `test`, `typescript`. Use `@tribunal/*` package names in tests; that is the only workspace namespace. The design system is a third-party dependency, `@lostgradient/cinder`.
 
 ## Commands
 
@@ -32,23 +32,27 @@ These cover the Tribunal monorepo: the SvelteKit app in `applications/web` and t
 - Compute fixture positions dynamically with `indexOf()`; avoid hardcoded offsets.
 - If a test imports a package directly, declare it in that workspace's `devDependencies`.
 
-## Storybook stories
+## Component tests
 
-- Storybook lives in `@tribunal/components` (`packages/components/`); stories sit next to their component (for example `packages/components/src/spinner/spinner.stories.ts`).
-- Every new component under `packages/components/src/` must include at least one story.
-- Import interaction utilities from `storybook/test` (not `@storybook/test`).
+There is no Storybook in this repository -- no configuration, no dependency, no
+stories. Components are verified with browser component tests and Playwright;
+see `documentation/TESTING.md`. Earlier revisions of this file described a
+Storybook workflow inherited from another repository.
+
+- A component test lives alongside its component as `*.svelte.test.ts`, and runs in the client project (`test:unit:client`). A plain `*.test.ts` runs in the server project (`test:unit:server`).
+- Call `cleanup()` in `afterEach`.
 - Use `behavior: 'auto'` (not `'instant'`) for `scrollTo()` calls. Valid `ScrollBehavior` values: `'auto'` and `'smooth'`.
 - Use deterministic IDs and timestamps in test data factories — avoid module-level counters.
-- Cover all enum/union values in stories.
-- Use `waitFor()` with assertions inside the callback instead of custom polling loops.
-- For refresh flows, `waitFor` the stale badge or enabled button state before clicking.
-- If a story schedules timers on mount, return a cleanup to clear them.
+- Cover every enum and union value the component accepts.
+- Use `expect.element()` or `waitFor()` with assertions inside the callback instead of custom polling loops.
+- For refresh flows, wait for the stale badge or enabled button state before clicking.
+- If a component schedules timers on mount, clear them in its cleanup.
 
 ## Scroll testing
 
 - Use named constants for scroll thresholds (e.g., `SCROLL_TOLERANCE = { TOP: 50, BOTTOM: 200 }`).
 - Extract repetitive scroll calculations into helpers.
-- The `matchMedia` mock in `packages/components/.storybook/vitest.setup.ts` forces `prefers-reduced-motion: reduce` to `true`, making scroll operations instant.
+- A test that depends on reduced motion must stub `matchMedia` itself; there is no global mock forcing `prefers-reduced-motion: reduce`. `authenticated-layout.svelte.test.ts` shows the pattern.
 
 ## End-to-end tests
 
