@@ -8,6 +8,7 @@ const mockWarnOnGitHubAppConfigurationDriftAtStartup = vi.hoisted(() => vi.fn())
 const mockEnv = vi.hoisted(() => ({ E2E_TEST_MODE: '0' }));
 const mockApplicationEnvironment = vi.hoisted(() => ({ building: false, dev: true }));
 const mockAssertNeonAuthConfigured = vi.hoisted(() => vi.fn());
+const mockParseWebEnvironment = vi.hoisted(() => vi.fn());
 
 vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
 vi.mock('$app/environment', () => ({
@@ -21,6 +22,10 @@ vi.mock('$app/environment', () => ({
 
 vi.mock(import('$lib/server/auth/neon-auth-configured'), () => ({
   assertNeonAuthConfigured: mockAssertNeonAuthConfigured,
+}));
+
+vi.mock(import('$lib/server/environment'), () => ({
+  parseWebEnvironment: mockParseWebEnvironment,
 }));
 
 vi.mock(import('$lib/server/github/webhooks/subscription-drift'), () => ({
@@ -82,6 +87,7 @@ describe('hooks auth handle', () => {
     mockApplicationEnvironment.building = false;
     mockApplicationEnvironment.dev = true;
     mockAssertNeonAuthConfigured.mockReset();
+    mockParseWebEnvironment.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockResolvedValue(undefined);
   });
@@ -231,6 +237,7 @@ describe('init (server startup hook)', () => {
     mockApplicationEnvironment.building = false;
     mockApplicationEnvironment.dev = true;
     mockAssertNeonAuthConfigured.mockReset();
+    mockParseWebEnvironment.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockReset();
     mockWarnOnGitHubAppConfigurationDriftAtStartup.mockResolvedValue(undefined);
   });
@@ -242,6 +249,22 @@ describe('init (server startup hook)', () => {
     await init();
 
     expect(mockAssertNeonAuthConfigured).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates the environment at startup', async () => {
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockParseWebEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips environment validation while SvelteKit is building', async () => {
+    mockApplicationEnvironment.building = true;
+
+    const { init } = await import('./hooks.server');
+    await init();
+
+    expect(mockParseWebEnvironment).not.toHaveBeenCalled();
   });
 
   it('does not require runtime configuration while SvelteKit is building', async () => {

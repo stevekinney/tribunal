@@ -12,12 +12,19 @@ const { createDatabase } = await import('@tribunal/database').catch(async () => 
 });
 import { loadEnv } from './lib/load-env';
 import { sectionHeader, status, success, error } from './lib/colors';
+// Derive the web app's required variables from the same Zod schema the server
+// validates against (TRI-44 AC10), so a newly required variable is caught here
+// automatically rather than needing a second hand-maintained list. The env
+// module imports only `zod` (never SvelteKit `$env`), so it is importable here.
+import { webRequiredEnvironmentKeys } from '../applications/web/src/lib/server/environment.ts';
 
 const REQUIRED_ENV_VARS = [
-  'DATABASE_URL',
-  'ENCRYPTION_KEY',
-  'GITHUB_CLIENT_ID',
-  'GITHUB_CLIENT_SECRET',
+  ...new Set<string>([
+    ...webRequiredEnvironmentKeys,
+    'ENCRYPTION_KEY',
+    'GITHUB_CLIENT_ID',
+    'GITHUB_CLIENT_SECRET',
+  ]),
 ];
 
 const repoRoot = resolve(import.meta.dir, '..');
