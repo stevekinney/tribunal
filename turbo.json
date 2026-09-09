@@ -13,6 +13,13 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      // `documentation/mcp-scopes.md` is the authoritative scope vocabulary that
+      // applications/web's scope.verify.test.ts reads and asserts against at
+      // runtime. It lives outside every workspace, so without listing it here a
+      // documentation-only scope-table change would reuse a cached test result
+      // and skip the AC3 exactness gate. `$TURBO_DEFAULT$` keeps the normal
+      // per-package input set; `$TURBO_ROOT$` resolves the monorepo root.
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/documentation/mcp-scopes.md"],
       "env": ["CI"],
       "passThroughEnv": ["VITEST_*"]
     },
