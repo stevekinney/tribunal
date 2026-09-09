@@ -3,25 +3,21 @@
     "codex": {
       "type": "stdio",
       "command": "codex",
-      "args": ["mcp-server"],
-      "tools": ["*"]
+      "args": ["mcp-server"]
     },
     "svelte": {
       "type": "http",
-      "url": "https://mcp.svelte.dev/mcp",
-      "tools": ["*"]
+      "url": "https://mcp.svelte.dev/mcp"
     },
     "playwright": {
       "type": "stdio",
       "command": "npx",
-      "args": ["@playwright/mcp@latest"],
-      "tools": ["*"]
+      "args": ["@playwright/mcp@latest"]
     },
     "chrome-devtools": {
       "type": "stdio",
       "command": "npx",
-      "args": ["chrome-devtools-mcp@latest"],
-      "tools": ["*"]
+      "args": ["chrome-devtools-mcp@latest"]
     }
   }
 }
