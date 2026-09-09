@@ -27,10 +27,14 @@ import {
   resetDevGitHubBypassCacheForTests,
   resolveDevGitHubBypassSession,
 } from './dev-github-bypass';
+import { DEV_AUTH_BYPASS_FLAG, isDevAuthBypassEnabled } from './dev-auth-bypass-flag';
 import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 
-const BYPASS_FLAG = '1';
+// Re-exported so existing importers keep resolving it here; the flag predicate
+// itself lives in the lighter `dev-auth-bypass-flag` module.
+export { isDevAuthBypassEnabled };
+
 const DEFAULT_BYPASS_USERNAME = 'dev';
 const GITHUB_BYPASS_MODE = 'github';
 const LOCAL_BYPASS_MODE = 'local';
@@ -50,14 +54,6 @@ const userColumnsWithNeonAuthUserId = {
 } as const;
 
 type DevAuthBypassMode = typeof LOCAL_BYPASS_MODE | typeof GITHUB_BYPASS_MODE;
-
-/**
- * Whether the dev auth bypass is armed. False in any production runtime because
- * `dev` is false there, regardless of the flag.
- */
-export function isDevAuthBypassEnabled(): boolean {
-  return dev && env.DEV_AUTH_BYPASS === BYPASS_FLAG;
-}
 
 export function devAuthBypassMode(): DevAuthBypassMode {
   const configured = env.DEV_AUTH_BYPASS_MODE?.trim().toLowerCase();
@@ -80,7 +76,7 @@ export function assertDevAuthBypassNotInProduction(environment: {
   dev: boolean;
   DEV_AUTH_BYPASS?: string;
 }): void {
-  if (!environment.dev && environment.DEV_AUTH_BYPASS === BYPASS_FLAG) {
+  if (!environment.dev && environment.DEV_AUTH_BYPASS === DEV_AUTH_BYPASS_FLAG) {
     throw new Error(
       'Refusing to start: DEV_AUTH_BYPASS=1 is set outside a development runtime. ' +
         'The dev auth bypass auto-logs-in a local user and must never be reachable in production. ' +

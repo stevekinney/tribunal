@@ -4,6 +4,7 @@ import {
   primeSvelteKitMcpIdentity,
   type SvelteKitLikeRequestEvent,
 } from '@lostgradient/mcp/sveltekit';
+import { isDevAuthBypassEnabled } from '$lib/server/auth/dev-auth-bypass-flag';
 import { identityFromUser } from '$lib/server/oauth/identity';
 import type { TribunalMcpMount } from './mount';
 
@@ -76,17 +77,27 @@ type MountAccessor = () => Promise<TribunalMcpMount> | null;
 
 /**
  * Primes the request's OAuth identity from `event.locals.user`. This MUST run
- * after every identity-populating handle — including `devAuthBypassHandle`,
- * which populates the synthetic preview user — so the mount never sees an
- * authenticated request as anonymous. It reads the locals the auth handles
- * populate rather than validating a token itself (a second identity path would
- * diverge from the first). The mount throws if it is reached without this
- * priming, so a sequence that places the mount handle first fails loudly.
+ * after the real identity-populating handle (`authHandle`) so the mount never
+ * sees an authenticated request as anonymous. It reads the locals the auth
+ * handle populates rather than validating a token itself (a second identity
+ * path would diverge from the first). The mount throws if it is reached without
+ * this priming, so a sequence that places the mount handle first fails loudly.
+ *
+ * The dev auth bypass (`devAuthBypassHandle`) is deliberately excluded: it
+ * populates a synthetic user for browsing the authenticated UI in a sandboxed
+ * preview, and must never stand in as the OAuth resource owner on the mounted
+ * surface. An armed bypass may be externally reachable (a tunnel), and priming
+ * its identity would let an external client complete `/oauth/authorize` as the
+ * synthetic user and mint a real token — an authenticated MCP session produced
+ * with no login. When the bypass is armed we prime `null`, so the mount falls
+ * back to the cookie-based identity seam (`resolveIdentityBinding`), which a
+ * bypass session (it sets no Neon Auth cookie) cannot satisfy (TRI-45).
  */
 export function createMcpIdentityHandle(getMount: MountAccessor): Handle {
   return async ({ event, resolve }) => {
     if (getMount()) {
-      const identity = event.locals.user ? identityFromUser(event.locals.user) : null;
+      const identity =
+        !isDevAuthBypassEnabled() && event.locals.user ? identityFromUser(event.locals.user) : null;
       primeSvelteKitMcpIdentity(asMountEvent(event), identity);
     }
     return resolve(event);

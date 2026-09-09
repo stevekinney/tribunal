@@ -239,6 +239,19 @@ describe('devAuthBypassHandle', () => {
     expect(event.locals).toEqual({});
   });
 
+  it('is inert in a non-dev runtime even with the flag armed (TRI-45 AC4)', async () => {
+    // A leaked DEV_AUTH_BYPASS=1 in production must never seed a session. The
+    // module-load startup guard makes this fatal at boot; the handle itself is
+    // also a pass-through, so no synthetic user reaches locals.
+    mocks.env.DEV_AUTH_BYPASS = '1';
+    mocks.environment.dev = false;
+    const event = { locals: {} };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(event.locals).toEqual({});
+  });
+
   it('logs in the GitHub bypass user and stores app-authorized tokens', async () => {
     mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
     mocks.env.DEV_AUTH_GITHUB_TOKEN = 'github-token';
