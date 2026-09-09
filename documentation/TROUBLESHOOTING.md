@@ -10,7 +10,7 @@ Tribunal is a single SvelteKit application (`applications/web`) backed by shared
 ### "Database connection failed"
 
 - Confirm `DATABASE_URL` is set and reachable.
-- If your Postgres provider requires TLS, include `?sslmode=require` in the connection string.
+- If your Postgres provider requires TLS, include `?sslmode=verify-full` in the connection string. Production refuses to start with a non-local database on any weaker mode (`require` encrypts without verifying the certificate; `verify-ca` skips hostname verification).
 - Run `bun run scripts/doctor.ts` to verify environment variables and database connectivity.
 
 ## Build Issues

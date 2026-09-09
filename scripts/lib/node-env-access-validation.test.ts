@@ -57,6 +57,23 @@ describe('findNodeEnvDotAccess', () => {
     expect(findNodeEnvDotAccess(source, 'e.ts')).toHaveLength(1);
   });
 
+  it('flags real code after a regex literal whose delimiters look like a comment', () => {
+    // The regex ends in `\/\//`; a comment-only scanner treats the trailing `//`
+    // as a line comment and blanks the real read.
+    const source = 'const matcher = /https?:\\/\\//; const mode = process.env.NODE_ENV;';
+    expect(findNodeEnvDotAccess(source, 'r.ts')).toHaveLength(1);
+  });
+
+  it('handles a regex character class containing a slash', () => {
+    const source = 'const r = /[/]/; const mode = process.env.NODE_ENV;';
+    expect(findNodeEnvDotAccess(source, 'cc.ts')).toHaveLength(1);
+  });
+
+  it('does not mistake division for a regex literal', () => {
+    const source = 'const ratio = width / height; const mode = process.env.NODE_ENV;';
+    expect(findNodeEnvDotAccess(source, 'div.ts')).toHaveLength(1);
+  });
+
   it('handles an escaped quote inside a string without misreading the // that follows', () => {
     // The escaped quote does not close the string, so `//c` stays inside it and
     // the only real read is env.NODE_ENV (not process.env) — nothing to flag.

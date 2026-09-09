@@ -24,10 +24,46 @@ const NODE_ENV_DOT_ACCESS = /process\.env\.NODE_ENV\b/;
  * comment. Comments become spaces (newlines kept) so reported line numbers stay
  * accurate; string contents pass through unchanged.
  */
+/**
+ * A `/` begins a regex literal (rather than division) when the previous
+ * significant token sits in expression position — after an operator, an opening
+ * bracket, or a separator, or at the start of input. This is the standard
+ * lexer heuristic; it is not a full parser but it distinguishes the cases that
+ * matter here (a divisor follows a value or `)`/`]`, a regex follows the rest).
+ */
+const REGEX_PRECEDING_PUNCTUATION = new Set([
+  '(',
+  ',',
+  '=',
+  ':',
+  '[',
+  '!',
+  '&',
+  '|',
+  '?',
+  '{',
+  '}',
+  ';',
+  '+',
+  '-',
+  '*',
+  '%',
+  '<',
+  '>',
+  '~',
+  '^',
+  '\n',
+]);
+
 function blankComments(source: string): string {
-  type State = 'code' | 'line' | 'block' | 'single' | 'double' | 'template';
+  type State = 'code' | 'line' | 'block' | 'single' | 'double' | 'template' | 'regex';
   let state: State = 'code';
   let result = '';
+  // Last non-whitespace character emitted in code state, for the regex/division
+  // decision; and whether the regex scanner is inside a `[...]` character class,
+  // where `/` is literal and does not close the literal.
+  let lastSignificant: string | undefined;
+  let inCharacterClass = false;
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
     const next = source[index + 1];
@@ -40,11 +76,33 @@ function blankComments(source: string): string {
         state = 'block';
         result += '  ';
         index += 1;
+      } else if (character === '/' && REGEX_PRECEDING_PUNCTUATION.has(lastSignificant ?? '\n')) {
+        state = 'regex';
+        inCharacterClass = false;
+        result += character;
       } else if (character === "'" || character === '"' || character === '`') {
         state = character === "'" ? 'single' : character === '"' ? 'double' : 'template';
         result += character;
       } else {
         result += character;
+        if (!/\s/.test(character)) lastSignificant = character;
+      }
+    } else if (state === 'regex') {
+      // Pass regex characters through so an embedded `//` or `/*` is not treated
+      // as a comment; an escape consumes the next character; `[`/`]` toggle a
+      // character class where `/` is literal; an unescaped `/` outside a class
+      // ends the literal.
+      result += character;
+      if (character === '\\') {
+        result += next ?? '';
+        index += 1;
+      } else if (character === '[') {
+        inCharacterClass = true;
+      } else if (character === ']') {
+        inCharacterClass = false;
+      } else if (character === '/' && !inCharacterClass) {
+        state = 'code';
+        lastSignificant = '/';
       }
     } else if (state === 'line') {
       if (character === '\n') {
