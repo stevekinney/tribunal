@@ -11,6 +11,13 @@ describe('findNodeEnvDotAccess', () => {
     expect(violations[0]).toContain('applications/web/src/example.ts:2');
   });
 
+  it('flags dot access split by an interstitial comment or whitespace', () => {
+    expect(
+      findNodeEnvDotAccess('const m = process.env /* runtime */ .NODE_ENV;', 'i.ts'),
+    ).toHaveLength(1);
+    expect(findNodeEnvDotAccess('const m = process . env . NODE_ENV;', 'w.ts')).toHaveLength(1);
+  });
+
   it('does not flag bracket access or SvelteKit env reads', () => {
     const source = [
       "const a = process.env['NODE_ENV'];",

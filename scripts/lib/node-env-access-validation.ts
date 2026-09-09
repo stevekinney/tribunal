@@ -10,7 +10,12 @@
  * `applications/web/src`. Bracket access (`process.env['NODE_ENV']`) is not
  * constant-folded and is intentionally not flagged.
  */
-const NODE_ENV_DOT_ACCESS = /process\.env\.NODE_ENV\b/;
+// Whitespace-tolerant between the member-access tokens so an interstitial
+// comment (blanked to spaces by `blankComments`, e.g. `process.env /* x */
+// .NODE_ENV`) or spaced dot access is still matched — both remain foldable dot
+// access. Bracket access (`process.env['NODE_ENV']`) has no `.NODE_ENV` and is
+// intentionally not matched.
+const NODE_ENV_DOT_ACCESS = /process\s*\.\s*env\s*\.\s*NODE_ENV\b/;
 
 /**
  * Blanks out comments while preserving string literals and newlines, in a
