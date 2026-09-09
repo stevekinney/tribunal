@@ -22,6 +22,7 @@ import {
   createMcpMountHandle,
 } from '$lib/server/mcp/mount-hooks';
 import { isMcpEnabled } from '$lib/server/oauth/configuration';
+import { parseWebEnvironment } from '$lib/server/environment';
 
 /**
  * The process's single MCP + OAuth mount, constructed once at module scope when
@@ -68,6 +69,14 @@ const mcpMountHandle = createMcpMountHandle(getMcpMount);
  */
 export const init: ServerInit = () => {
   setLogger(mcpLogger);
+  // Validate the environment before anything else so a misconfiguration fails
+  // loudly at startup (SKIP_ENV_VALIDATION set, a bad NODE_ENV, or in production
+  // NODE_TLS_REJECT_UNAUTHORIZED=0 / a DATABASE_URL without sslmode=verify-full)
+  // rather than surfacing later as an obscure runtime error (TRI-44). Skipped
+  // during build/prerender, when no runtime environment is expected.
+  if (!building) {
+    parseWebEnvironment(env);
+  }
   if (!building && !dev && env.E2E_TEST_MODE !== '1') {
     assertNeonAuthConfigured();
   }
