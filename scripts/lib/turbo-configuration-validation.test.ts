@@ -3,12 +3,16 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveBuildOutputDirectories,
   outputsCoverDirectory,
+  resolveTaskEnvironment,
   resolveTaskOutputs,
   validateBuildOutputs,
   validateGlobalDependencies,
   validateGlobalEnvironmentVariables,
+  environmentDeclarationMatches,
   validateRootFilesAreGated,
   validateTurboConfiguration,
+  validateWebEnvironmentHashing,
+  validateWebEnvironmentIsDeclared,
   validateWriteTasksAreUncached,
   type TurboConfiguration,
   type WorkspacePackage,
@@ -523,5 +527,254 @@ describe('validateTurboConfiguration', () => {
     expect(errors.some((error) => error.includes('globalEnv'))).toBe(true);
     expect(errors.some((error) => error.includes('cacheable'))).toBe(true);
     expect(errors.some((error) => error.includes('no `//#` root task'))).toBe(true);
+  });
+
+  it('runs the web-environment rules only when the declaration is supplied', () => {
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['CI', 'DATABASE_URL'],
+      globalDependencies: ['.prettierrc', '.prettierignore', '.oxlintrc.json'],
+      tasks: {
+        build: { outputs: ['dist/**'] },
+        format: { cache: false },
+        '//#format:check:root': {
+          inputs: [
+            '.github/**/*.yml',
+            '.github/**/*.md',
+            'documentation/**/*.md',
+            '*.md',
+            '*.json',
+          ],
+        },
+      },
+    };
+    const workspacePackages = [
+      makePackage({ scripts: { build: 'tsc' }, typescriptOutputDirectory: 'dist' }),
+    ];
+
+    // MCP_ENABLED is read by the schema but declared nowhere here.
+    expect(validateTurboConfiguration(configuration, workspacePackages)).toEqual([]);
+    const withWebEnvironment = validateTurboConfiguration(configuration, workspacePackages, {
+      keys: ['NODE_ENV', 'MCP_ENABLED'],
+      buildInlinedKeys: ['NODE_ENV'],
+    });
+    expect(withWebEnvironment).toHaveLength(1);
+    expect(withWebEnvironment[0]).toContain('MCP_ENABLED');
+  });
+});
+
+describe('environmentDeclarationMatches', () => {
+  it('matches an exact declaration', () => {
+    expect(environmentDeclarationMatches('MCP_ENABLED', ['MCP_ENABLED'])).toBe(true);
+    expect(environmentDeclarationMatches('MCP_ENABLED', ['CI'])).toBe(false);
+  });
+
+  it('matches a trailing wildcard as a prefix', () => {
+    expect(environmentDeclarationMatches('MCP_ENABLED', ['MCP_*'])).toBe(true);
+    expect(environmentDeclarationMatches('NODE_ENV', ['MCP_*'])).toBe(false);
+  });
+
+  it('lets a negation exclude a variable an inclusion would match', () => {
+    expect(environmentDeclarationMatches('MCP_ENABLED', ['MCP_*', '!MCP_ENABLED'])).toBe(false);
+    expect(environmentDeclarationMatches('MCP_SERVER_NAME', ['MCP_*', '!MCP_ENABLED'])).toBe(true);
+  });
+});
+
+describe('validateWebEnvironmentIsDeclared', () => {
+  const keys = ['NODE_ENV', 'MCP_ENABLED', 'MCP_SERVER_NAME'];
+
+  it('accepts a key covered by a global wildcard declaration', () => {
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['MCP_*'],
+    };
+
+    expect(validateWebEnvironmentIsDeclared(configuration, keys)).toEqual([]);
+  });
+
+  it('passes when every key is declared in a global env list', () => {
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['MCP_ENABLED', 'MCP_SERVER_NAME'],
+    };
+
+    expect(validateWebEnvironmentIsDeclared(configuration, keys)).toEqual([]);
+  });
+
+  it('flags a key declared only in a task env, not globally (blind under strict mode)', () => {
+    // A per-task declaration leaves every other web task without the variable
+    // under strict envMode — the false negative Codex flagged.
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['MCP_ENABLED'],
+      tasks: { test: { env: ['MCP_SERVER_NAME'], passThroughEnv: ['VITEST_*'] } },
+    };
+
+    const errors = validateWebEnvironmentIsDeclared(configuration, keys);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_SERVER_NAME');
+    expect(errors[0]).toContain('per-task');
+  });
+
+  it('flags a key declared in no global env list, naming strict envMode', () => {
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['MCP_ENABLED'],
+    };
+
+    const errors = validateWebEnvironmentIsDeclared(configuration, keys);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_SERVER_NAME');
+    expect(errors[0]).toContain('strict');
+  });
+
+  it('treats a configuration with no env lists at all as declaring nothing', () => {
+    const errors = validateWebEnvironmentIsDeclared({}, ['MCP_ENABLED']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+  });
+});
+
+describe('validateWebEnvironmentHashing', () => {
+  const keys = ['NODE_ENV', 'MCP_ENABLED'];
+
+  it('allows a build-inlined key in globalEnv', () => {
+    const configuration: TurboConfiguration = { globalEnv: ['NODE_ENV'] };
+    expect(validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV'])).toEqual([]);
+  });
+
+  it('flags a runtime key placed in globalEnv', () => {
+    const configuration: TurboConfiguration = { globalEnv: ['NODE_ENV', 'MCP_ENABLED'] };
+    const errors = validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV']);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+    expect(errors[0]).toContain('cache key');
+  });
+
+  it('flags a runtime key hashed into a task env, not only globalEnv', () => {
+    // The Medium finding: a task-level `env` hashes the value for that task.
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      tasks: { test: { env: ['MCP_ENABLED'] } },
+    };
+    const errors = validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV']);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+  });
+
+  it('flags a runtime key hashed by a wildcard declaration', () => {
+    const configuration: TurboConfiguration = { globalEnv: ['NODE_ENV', 'MCP_*'] };
+    const errors = validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV']);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+  });
+
+  it('keeps negation scoped per task: an exclusion in one task does not cancel hashing in another', () => {
+    // `build` hashes MCP_ENABLED via MCP_*; a `!MCP_ENABLED` in `test` must not
+    // hide that build still partitions its cache on the value.
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      tasks: {
+        build: { env: ['MCP_*'] },
+        test: { env: ['!MCP_ENABLED'] },
+      },
+    };
+    const errors = validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV']);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+  });
+
+  it('passes when the runtime key is passed through and the build key is hashed', () => {
+    const configuration: TurboConfiguration = {
+      globalEnv: ['NODE_ENV'],
+      globalPassThroughEnv: ['MCP_ENABLED'],
+    };
+    expect(validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV'])).toEqual([]);
+  });
+
+  it('flags a build-inlined key that is not hashed anywhere (drifted to passthrough)', () => {
+    // NODE_ENV moved out of globalEnv into passthrough: a stale build cache would
+    // be reused across NODE_ENV values.
+    const configuration: TurboConfiguration = { globalPassThroughEnv: ['NODE_ENV', 'MCP_ENABLED'] };
+    const errors = validateWebEnvironmentHashing(configuration, keys, ['NODE_ENV']);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('NODE_ENV');
+    expect(errors[0]).toContain('build');
+  });
+
+  it('flags a build-inlined key hashed only in a task env, which a package override can drop', () => {
+    // NODE_ENV in root build.env but not globalEnv: applications/web overrides
+    // build without env, so its build hashes NODE_ENV nowhere.
+    const configuration: TurboConfiguration = { tasks: { build: { env: ['NODE_ENV'] } } };
+    const workspacePackages = [
+      makePackage({
+        directory: 'applications/web',
+        turboConfiguration: { tasks: { build: { outputs: ['build/**'] } } },
+      }),
+    ];
+    const errors = validateWebEnvironmentHashing(
+      configuration,
+      keys,
+      ['NODE_ENV'],
+      workspacePackages,
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('NODE_ENV');
+    expect(errors[0]).toContain('globalEnv');
+  });
+
+  it('flags a runtime key hashed only in a package-level task override', () => {
+    // The root does not hash MCP_ENABLED, but a package `build` override does —
+    // the package-level blind spot Cursor flagged.
+    const configuration: TurboConfiguration = { globalEnv: ['NODE_ENV'] };
+    const workspacePackages = [
+      makePackage({
+        directory: 'applications/web',
+        turboConfiguration: { tasks: { build: { env: ['MCP_ENABLED'] } } },
+      }),
+    ];
+    const errors = validateWebEnvironmentHashing(
+      configuration,
+      keys,
+      ['NODE_ENV'],
+      workspacePackages,
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('MCP_ENABLED');
+  });
+});
+
+describe('resolveTaskEnvironment', () => {
+  const root: TurboConfiguration = { tasks: { build: { env: ['ROOT_ONLY'] } } };
+
+  it('returns the root task env when the package does not define the task', () => {
+    expect(resolveTaskEnvironment(root, makePackage(), 'build')).toEqual(['ROOT_ONLY']);
+  });
+
+  it("returns the package override's env, replacing the root, when the package defines the task", () => {
+    const workspacePackage = makePackage({
+      turboConfiguration: { tasks: { build: { env: ['PACKAGE_ONLY'] } } },
+    });
+    expect(resolveTaskEnvironment(root, workspacePackage, 'build')).toEqual(['PACKAGE_ONLY']);
+  });
+
+  it('treats a package override with no env as removing the root env for that package', () => {
+    const workspacePackage = makePackage({
+      turboConfiguration: { tasks: { build: { outputs: ['dist/**'] } } },
+    });
+    expect(resolveTaskEnvironment(root, workspacePackage, 'build')).toEqual([]);
+  });
+
+  it('returns an empty list for a task neither the root nor the package defines', () => {
+    expect(resolveTaskEnvironment({}, makePackage(), 'nonexistent')).toEqual([]);
   });
 });

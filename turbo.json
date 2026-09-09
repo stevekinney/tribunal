@@ -1,8 +1,34 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalDependencies": [".prettierrc", ".prettierignore", ".oxlintrc.json"],
+  // Only `NODE_ENV` is hashed: it is the one variable that changes what gets
+  // built (Vite substitutes it). Every other variable the web app reads is
+  // `$env/dynamic/private` (verified: `grep -rn "$env/static/private"
+  // applications/web/src` is empty), so it is read at runtime and passed
+  // through rather than hashed — hashing a per-environment value would give each
+  // value its own disjoint cache. See `.claude/rules/turborepo.md`.
   "globalEnv": ["NODE_ENV"],
-  "globalPassThroughEnv": ["CI", "DATABASE_URL", "NODE_OPTIONS"],
+  // The web application's runtime environment surface (owned by
+  // `applications/web/src/lib/server/environment.ts`'s Zod schema, plus
+  // `MCP_SERVER_NAME`), forwarded to tasks. `envMode` defaults to `strict` in
+  // Turborepo 2.x, so an undeclared variable does not reach any turbo-spawned
+  // process at all; `scripts/validate-turbo-configuration.ts` asserts every
+  // `webEnvironmentKey` is declared here (or in `globalEnv`) so a newly added
+  // one cannot silently disappear from every task. Credential- and URL-shaped
+  // names belong here rather than in `globalEnv` (TRI-55).
+  "globalPassThroughEnv": [
+    "BASE_URL",
+    "CI",
+    "DATABASE_URL",
+    "E2E_TEST_MODE",
+    "MCP_BASE_URL",
+    "MCP_CONFORMANCE_MODE",
+    "MCP_ENABLED",
+    "MCP_SERVER_NAME",
+    "NEON_AUTH_BASE_URL",
+    "NODE_OPTIONS",
+    "NODE_TLS_REJECT_UNAUTHORIZED"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

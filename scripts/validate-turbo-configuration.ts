@@ -18,6 +18,20 @@ import {
   type TurboConfiguration,
   type WorkspacePackage,
 } from './lib/turbo-configuration-validation';
+// Derive the web app's environment surface from the same schema the server
+// validates against (as `scripts/doctor.ts` does), so a newly added variable is
+// caught by the declaration guard without a second hand-kept list. The module
+// imports only `zod`, never SvelteKit `$env`, so it is importable here.
+import { webEnvironmentKeys } from '../applications/web/src/lib/server/environment.ts';
+
+// Variables the web build inlines into its output and so may legitimately sit in
+// `globalEnv` (hashed). Only `NODE_ENV` qualifies: Vite substitutes it, and it
+// changes what gets built. Every other web variable is read at runtime via
+// `$env/dynamic/private` — verified empty by `grep -rn "$env/static/private"
+// applications/web/src` — so it must be passed through, not hashed. If a
+// `$env/static/private` read is ever introduced, add that variable here and move
+// it to `globalEnv` in the same change.
+const BUILD_INLINED_ENVIRONMENT_KEYS = ['NODE_ENV'];
 
 const repositoryRoot = resolveRepositoryRoot();
 
@@ -129,7 +143,10 @@ function main(): void {
   }
 
   const workspacePackages = collectWorkspacePackages(rootManifest?.workspaces ?? []);
-  const errors = validateTurboConfiguration(rootConfiguration, workspacePackages);
+  const errors = validateTurboConfiguration(rootConfiguration, workspacePackages, {
+    keys: webEnvironmentKeys as string[],
+    buildInlinedKeys: BUILD_INLINED_ENVIRONMENT_KEYS,
+  });
 
   if (errors.length > 0) {
     console.error('Turborepo configuration validation failed:');
