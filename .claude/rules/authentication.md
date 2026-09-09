@@ -17,6 +17,8 @@ Anything in `hooks.server.ts`'s `sequence()` that needs an authenticated user mu
 
 The distinction is load-bearing. The current sequence ends `authHandle, devAuthBypassHandle`, and `devAuthBypassHandle` is what populates the synthetic user when `DEV_AUTH_BYPASS=1`. A short-circuiting handler placed between them sees no authenticated user in exactly the preview environment the bypass exists to serve. Restate this rule if another identity handle is ever added.
 
+One deliberate exception: the MCP + OAuth mount's identity handle (`createMcpIdentityHandle`) consumes the locals `authHandle` populates but **excludes** the dev-bypass synthetic user (`TRI-45`). The bypass is a convenience for browsing the authenticated UI; it must never own an OAuth grant on the mounted surface, because an armed bypass on an externally reachable dev server would otherwise mint real tokens. So the mounted OAuth surface is unreachable via the bypass even though the mount sits after `devAuthBypassHandle`.
+
 A handler placed before the identity handles can answer a request without invoking the downstream `resolve`, so they never run and `event.locals.user` is never populated. The handler is then serving an unauthenticated request while looking like it is serving an authenticated one, and the usual repair — validating a token inside the handler — introduces a second identity path that diverges from the first.
 
 Handlers must consume the locals `authHandle` populates rather than validating a token themselves. Assert the ordering in a test: it is one line in `sequence()`, a later edit can invert it, and there is no other symptom.

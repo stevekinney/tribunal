@@ -3,6 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
 import { db } from '$lib/server/database';
 import { deleteOAuthConnection, upsertOAuthConnection } from './authentication';
+import { DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX } from './dev-auth-bypass-flag';
 import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 import { githubInstallation, oauthConnection, user as userTable } from '@tribunal/database/schema';
@@ -150,7 +151,7 @@ function userFromGitHubUser(gitHubUser: GitHubUserResponse): {
 
   return {
     username,
-    neonAuthUserId: `dev-github:${gitHubUser.id}`,
+    neonAuthUserId: `${DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX}${gitHubUser.id}`,
     name: gitHubUser.name,
     avatarUrl: gitHubUser.avatar_url,
     email: gitHubUser.email ?? null,
@@ -221,7 +222,9 @@ async function updateUserFromGitHub(
   const [updated] = await db
     .update(userTable)
     .set({
-      ...(options.updateNeonAuthUserId ? { neonAuthUserId: `dev-github:${gitHubUser.id}` } : {}),
+      ...(options.updateNeonAuthUserId
+        ? { neonAuthUserId: `${DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX}${gitHubUser.id}` }
+        : {}),
       name: gitHubUser.name,
       avatarUrl: gitHubUser.avatar_url,
     })
@@ -254,7 +257,7 @@ async function resolveApplicationUser(
   gitHubUser: GitHubUserResponse,
 ): Promise<AuthenticatedApplicationUser> {
   const providerUserId = String(gitHubUser.id);
-  const neonAuthUserId = `dev-github:${providerUserId}`;
+  const neonAuthUserId = `${DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX}${providerUserId}`;
 
   const connectionUser = await findUserByGitHubConnection(providerUserId);
   if (connectionUser) return updateUserFromGitHub(connectionUser, gitHubUser);
@@ -290,7 +293,7 @@ export async function resolveDevGitHubBypassSession(): Promise<DevGitHubBypassSe
   return {
     user,
     neonSession: {
-      neonAuthUserId: `dev-github:${gitHubUser.id}`,
+      neonAuthUserId: `${DEV_GITHUB_BYPASS_NEON_AUTH_ID_PREFIX}${gitHubUser.id}`,
       expiresAt: new Date('2999-01-01T00:00:00.000Z'),
     },
   };

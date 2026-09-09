@@ -76,12 +76,12 @@ vi.mock('./authentication', () => ({
   upsertOAuthConnection: mocks.upsertOAuthConnection,
 }));
 
+import { isDevAuthBypassEnabled } from './dev-auth-bypass-flag';
 import {
   assertDevAuthBypassNotInProduction,
   devAuthBypassMode,
   bypassUsername,
   devAuthBypassHandle,
-  isDevAuthBypassEnabled,
   resetDevAuthBypassCacheForTests,
 } from './dev-bypass';
 
@@ -108,6 +108,7 @@ describe('assertDevAuthBypassNotInProduction', () => {
 describe('isDevAuthBypassEnabled', () => {
   beforeEach(() => {
     mocks.env.DEV_AUTH_BYPASS = undefined;
+    mocks.env.E2E_TEST_MODE = undefined;
     mocks.environment.dev = true;
   });
 
@@ -123,6 +124,12 @@ describe('isDevAuthBypassEnabled', () => {
   it('is disabled outside a dev runtime even with the flag', () => {
     mocks.env.DEV_AUTH_BYPASS = '1';
     mocks.environment.dev = false;
+    expect(isDevAuthBypassEnabled()).toBe(false);
+  });
+
+  it('is disabled under E2E mode even with the flag, so it cannot collide with the E2E user (TRI-45)', () => {
+    mocks.env.DEV_AUTH_BYPASS = '1';
+    mocks.env.E2E_TEST_MODE = '1';
     expect(isDevAuthBypassEnabled()).toBe(false);
   });
 });
@@ -232,6 +239,19 @@ describe('devAuthBypassHandle', () => {
 
   it('is a pass-through when the bypass is not armed', async () => {
     mocks.env.DEV_AUTH_BYPASS = undefined;
+    const event = { locals: {} };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(event.locals).toEqual({});
+  });
+
+  it('is inert in a non-dev runtime even with the flag armed (TRI-45 AC4)', async () => {
+    // A leaked DEV_AUTH_BYPASS=1 in production must never seed a session. The
+    // module-load startup guard makes this fatal at boot; the handle itself is
+    // also a pass-through, so no synthetic user reaches locals.
+    mocks.env.DEV_AUTH_BYPASS = '1';
+    mocks.environment.dev = false;
     const event = { locals: {} };
 
     await devAuthBypassHandle({ event, resolve } as never);

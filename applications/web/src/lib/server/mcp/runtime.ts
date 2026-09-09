@@ -12,9 +12,9 @@ import { hashWithSha256 } from '$lib/server/encryption';
 import { mcpLogger } from '$lib/server/mcp-logger';
 import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 import { resolveUserProfile } from '$lib/server/oauth/identity';
+import { conformanceSurfaceEnabled } from '$lib/server/mcp/conformance-surface';
 import {
   MCP_PROTOCOL_VERSION,
-  isMcpConformanceMode,
   mcpAllowedOrigins,
   mcpConcurrencySlotStore,
   mcpRateLimitConfiguration,
@@ -83,7 +83,7 @@ export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRunti
       userHandlerSweepIntervalMilliseconds: mcpRuntimeLimits.userHandlerSweepIntervalMilliseconds,
       userHandlerIdleMilliseconds: mcpRuntimeLimits.userHandlerIdleMilliseconds,
       enableUiExtension: mcpUiExtension.enabled,
-      enableConformanceMode: isMcpConformanceMode(),
+      enableConformanceMode: conformanceSurfaceEnabled(),
     },
     seams: handlerSeams,
   });

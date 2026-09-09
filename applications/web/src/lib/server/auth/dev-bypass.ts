@@ -27,10 +27,14 @@ import {
   resetDevGitHubBypassCacheForTests,
   resolveDevGitHubBypassSession,
 } from './dev-github-bypass';
+import {
+  DEV_AUTH_BYPASS_FLAG,
+  DEV_BYPASS_NEON_AUTH_ID_PREFIX,
+  isDevAuthBypassEnabled,
+} from './dev-auth-bypass-flag';
 import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 
-const BYPASS_FLAG = '1';
 const DEFAULT_BYPASS_USERNAME = 'dev';
 const GITHUB_BYPASS_MODE = 'github';
 const LOCAL_BYPASS_MODE = 'local';
@@ -50,14 +54,6 @@ const userColumnsWithNeonAuthUserId = {
 } as const;
 
 type DevAuthBypassMode = typeof LOCAL_BYPASS_MODE | typeof GITHUB_BYPASS_MODE;
-
-/**
- * Whether the dev auth bypass is armed. False in any production runtime because
- * `dev` is false there, regardless of the flag.
- */
-export function isDevAuthBypassEnabled(): boolean {
-  return dev && env.DEV_AUTH_BYPASS === BYPASS_FLAG;
-}
 
 export function devAuthBypassMode(): DevAuthBypassMode {
   const configured = env.DEV_AUTH_BYPASS_MODE?.trim().toLowerCase();
@@ -80,7 +76,7 @@ export function assertDevAuthBypassNotInProduction(environment: {
   dev: boolean;
   DEV_AUTH_BYPASS?: string;
 }): void {
-  if (!environment.dev && environment.DEV_AUTH_BYPASS === BYPASS_FLAG) {
+  if (!environment.dev && environment.DEV_AUTH_BYPASS === DEV_AUTH_BYPASS_FLAG) {
     throw new Error(
       'Refusing to start: DEV_AUTH_BYPASS=1 is set outside a development runtime. ' +
         'The dev auth bypass auto-logs-in a local user and must never be reachable in production. ' +
@@ -136,7 +132,7 @@ export function resetDevAuthBypassCacheForTests(): void {
  * their account instead of a synthetic one.
  */
 async function resolveBypassUser(username: string): Promise<AuthenticatedApplicationUser> {
-  const expectedNeonAuthUserId = `dev-bypass:${username}`;
+  const expectedNeonAuthUserId = `${DEV_BYPASS_NEON_AUTH_ID_PREFIX}${username}`;
 
   await db
     .insert(userTable)
@@ -176,7 +172,9 @@ async function resolveBypassUser(username: string): Promise<AuthenticatedApplica
  * swaps never collide. Placed after `authHandle` in the sequence so it wins.
  */
 export const devAuthBypassHandle: Handle = async ({ event, resolve }) => {
-  if (!isDevAuthBypassEnabled() || env.E2E_TEST_MODE === '1') {
+  // `isDevAuthBypassEnabled()` already returns false under E2E mode, so the
+  // handle is inert there without a separate check.
+  if (!isDevAuthBypassEnabled()) {
     return resolve(event);
   }
 
@@ -189,7 +187,7 @@ export const devAuthBypassHandle: Handle = async ({ event, resolve }) => {
 
   const user = await resolveBypassUser(bypassUsername());
   const neonSession: NeonSession = {
-    neonAuthUserId: `dev-bypass:${user.username}`,
+    neonAuthUserId: `${DEV_BYPASS_NEON_AUTH_ID_PREFIX}${user.username}`,
     // Far-future so nothing treats the synthetic session as expired.
     expiresAt: new Date('2999-01-01T00:00:00.000Z'),
   };
