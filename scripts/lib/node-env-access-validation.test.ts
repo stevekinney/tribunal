@@ -18,6 +18,16 @@ describe('findNodeEnvDotAccess', () => {
     expect(findNodeEnvDotAccess('const m = process . env . NODE_ENV;', 'w.ts')).toHaveLength(1);
   });
 
+  it('flags a member chain split across lines', () => {
+    const source = 'const mode = process\n  .env\n  .NODE_ENV;';
+    expect(findNodeEnvDotAccess(source, 'multiline.ts')).toHaveLength(1);
+  });
+
+  it('does not flag the spelling inside a string literal', () => {
+    const source = 'const message = "do not use process.env.NODE_ENV directly";';
+    expect(findNodeEnvDotAccess(source, 'str.ts')).toEqual([]);
+  });
+
   it('does not flag bracket access or SvelteKit env reads', () => {
     const source = [
       "const a = process.env['NODE_ENV'];",

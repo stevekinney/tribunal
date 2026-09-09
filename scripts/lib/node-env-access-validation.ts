@@ -10,25 +10,14 @@
  * `applications/web/src`. Bracket access (`process.env['NODE_ENV']`) is not
  * constant-folded and is intentionally not flagged.
  */
-// Whitespace-tolerant between the member-access tokens so an interstitial
-// comment (blanked to spaces by `blankComments`, e.g. `process.env /* x */
-// .NODE_ENV`) or spaced dot access is still matched — both remain foldable dot
-// access. Bracket access (`process.env['NODE_ENV']`) has no `.NODE_ENV` and is
-// intentionally not matched.
-const NODE_ENV_DOT_ACCESS = /process\s*\.\s*env\s*\.\s*NODE_ENV\b/;
+// Whitespace-tolerant between the member-access tokens, so an interstitial
+// comment (blanked to spaces, e.g. `process.env /* x */ .NODE_ENV`) or dot
+// access split by whitespace or newlines is still matched — all remain foldable
+// dot access. `\s` spans newlines, and the scan runs over the whole source (not
+// line by line) so a member chain broken across lines is caught. Bracket access
+// (`process.env['NODE_ENV']`) has no `.NODE_ENV` and is intentionally not matched.
+const NODE_ENV_DOT_ACCESS = /process\s*\.\s*env\s*\.\s*NODE_ENV\b/g;
 
-/**
- * Blanks out comments while preserving string literals and newlines, in a
- * single pass that tracks string and comment state together.
- *
- * A regex or line-split approach cannot tell a real comment from a comment
- * marker inside a string (`'http://…'`, `'/*'`) or a quote inside a comment, so
- * either direction leaks: blanking too much hides a real `process.env.NODE_ENV`
- * after a string that happens to contain `//` or `/*` (a false negative in this
- * mandatory guard), and blanking too little trips on the pattern named in a
- * comment. Comments become spaces (newlines kept) so reported line numbers stay
- * accurate; string contents pass through unchanged.
- */
 /**
  * A `/` begins a regex literal (rather than division) when the previous
  * significant token sits in expression position — after an operator, an opening
@@ -60,7 +49,19 @@ const REGEX_PRECEDING_PUNCTUATION = new Set([
   '\n',
 ]);
 
-function blankComments(source: string): string {
+/**
+ * Blanks out comments and string-literal contents in a single pass that tracks
+ * string, comment, and regex state together, preserving newlines so line
+ * numbers stay accurate.
+ *
+ * A regex or line-split approach cannot tell a real comment from a comment
+ * marker inside a string (`'http://…'`, `'/*'`), a quote inside a comment, or a
+ * `//` that closes a regex literal, so it leaks in one direction or the other.
+ * Comments become spaces; string contents become spaces too (so the spelling
+ * `process.env.NODE_ENV` inside a message is not a false positive) while the
+ * quote delimiters and regex literals pass through as code.
+ */
+function blankCommentsAndStrings(source: string): string {
   type State = 'code' | 'line' | 'block' | 'single' | 'double' | 'template' | 'regex';
   let state: State = 'code';
   let result = '';
@@ -125,18 +126,22 @@ function blankComments(source: string): string {
         result += character === '\n' ? '\n' : ' ';
       }
     } else {
-      // Inside a string literal: pass characters through; an escape consumes the
-      // next character; the matching quote returns to code.
-      result += character;
+      // Inside a string literal: blank the contents (so the spelling
+      // `process.env.NODE_ENV` in a message is not a false positive) while
+      // keeping newlines and the quote delimiters; an escape consumes and blanks
+      // the next character; the matching quote returns to code.
       if (character === '\\') {
-        result += next ?? '';
+        result += '  ';
         index += 1;
       } else if (
         (state === 'single' && character === "'") ||
         (state === 'double' && character === '"') ||
         (state === 'template' && character === '`')
       ) {
+        result += character;
         state = 'code';
+      } else {
+        result += character === '\n' ? '\n' : ' ';
       }
     }
   }
@@ -144,15 +149,17 @@ function blankComments(source: string): string {
 }
 
 export function findNodeEnvDotAccess(source: string, filePath: string): string[] {
+  const scanned = blankCommentsAndStrings(source);
+  const pattern = new RegExp(NODE_ENV_DOT_ACCESS.source, 'g');
   const violations: string[] = [];
-  blankComments(source)
-    .split('\n')
-    .forEach((line, index) => {
-      if (NODE_ENV_DOT_ACCESS.test(line)) {
-        violations.push(
-          `${filePath}:${index + 1}: process.env.NODE_ENV dot-access is banned — a bundler can fold it to a literal and make runtime checks vacuous. Read NODE_ENV via the validated environment schema, or process.env['NODE_ENV'] bracket form.`,
-        );
-      }
-    });
+  let match: RegExpExecArray | null;
+  // Scan the whole source (not line by line) so a member chain split across
+  // lines is caught; derive the line from the match offset.
+  while ((match = pattern.exec(scanned)) !== null) {
+    const line = scanned.slice(0, match.index).split('\n').length;
+    violations.push(
+      `${filePath}:${line}: process.env.NODE_ENV dot-access is banned — a bundler can fold it to a literal and make runtime checks vacuous. Read NODE_ENV via the validated environment schema, or process.env['NODE_ENV'] bracket form.`,
+    );
+  }
   return violations;
 }
