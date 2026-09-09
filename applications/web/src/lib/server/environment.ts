@@ -28,20 +28,41 @@ import { z } from 'zod';
 const booleanFlag = z.enum(['true', 'false']).transform((value) => value === 'true');
 
 /**
- * Neon requires full certificate + hostname verification in production.
- *
- * Requires exactly one `sslmode` equal to `verify-full`. A duplicated parameter
- * (`?sslmode=verify-full&sslmode=disable`) must not pass: `URLSearchParams.get`
- * returns the first value, but the pg connection-string parser keeps the last,
- * so trusting the first would let the driver silently connect with `ssl: false`.
+ * Hosts for which full TLS verification is not required even in production:
+ * loopback, the Docker host gateway, and private/link-local suffixes. These are
+ * container smoke tests and local prod-mode runs where the database is not
+ * reached over an untrusted network, so `sslmode=verify-full` (which needs a CA
+ * the throwaway database does not have) must not fail the boot.
  */
-function databaseUrlHasVerifyFullSslMode(databaseUrl: string): boolean {
-  try {
-    const sslModes = new URL(databaseUrl).searchParams.getAll('sslmode');
-    return sslModes.length === 1 && sslModes[0] === 'verify-full';
-  } catch {
-    return false;
-  }
+function isLocalDatabaseHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === 'host.docker.internal' ||
+    hostname.endsWith('.internal') ||
+    hostname.endsWith('.local')
+  );
+}
+
+/**
+ * Whether a production DATABASE_URL violates the TLS requirement.
+ *
+ * A remote managed database (the real production case) must declare exactly one
+ * `sslmode=verify-full`. `require` encrypts without verifying the certificate;
+ * `verify-ca` skips hostname verification. Duplicated parameters must not slip
+ * through: `URLSearchParams.get` returns the first value, but the pg
+ * connection-string parser keeps the last, so `?sslmode=verify-full&sslmode=disable`
+ * would otherwise pass here while the driver connects with `ssl: false`. A URL
+ * that is not parseable is left to the `z.string().url()` field check; a local
+ * host is exempt (see {@link isLocalDatabaseHost}).
+ */
+function productionDatabaseUrlViolatesTls(databaseUrl: string): boolean {
+  if (!URL.canParse(databaseUrl)) return false;
+  const url = new URL(databaseUrl);
+  if (isLocalDatabaseHost(url.hostname)) return false;
+  const sslModes = url.searchParams.getAll('sslmode');
+  return !(sslModes.length === 1 && sslModes[0] === 'verify-full');
 }
 
 const webEnvironmentObject = z.object({
@@ -80,14 +101,15 @@ export const webEnvironmentSchema = webEnvironmentObject.superRefine((environmen
     });
   }
 
-  // sslmode=require encrypts without verifying the certificate; verify-ca
-  // skips hostname verification. Production requires verify-full.
-  if (!databaseUrlHasVerifyFullSslMode(environment.DATABASE_URL)) {
+  // A remote managed database in production must use sslmode=verify-full; a
+  // local host (loopback, host.docker.internal, .internal/.local) is exempt
+  // because the connection does not cross an untrusted network.
+  if (productionDatabaseUrlViolatesTls(environment.DATABASE_URL)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['DATABASE_URL'],
       message:
-        'Refusing to start in production without DATABASE_URL sslmode=verify-full (require encrypts without verifying the certificate; verify-ca skips hostname verification).',
+        'Refusing to start in production without DATABASE_URL sslmode=verify-full for a non-local host (require encrypts without verifying the certificate; verify-ca skips hostname verification).',
     });
   }
 });

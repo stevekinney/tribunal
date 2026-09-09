@@ -91,6 +91,24 @@ describe('parseWebEnvironment — production requires sslmode=verify-full (AC7)'
     expect(() => parseWebEnvironment(DEV_ENV)).not.toThrow();
   });
 
+  it('exempts a local database host in production (loopback, docker host, .internal)', () => {
+    // The production image boots against a throwaway local database in container
+    // smoke tests; verify-full there needs a CA the local database lacks, and
+    // the connection never crosses an untrusted network.
+    for (const host of ['localhost', '127.0.0.1', 'host.docker.internal', 'db.svc.internal']) {
+      expect(() =>
+        parseWebEnvironment({
+          ...PROD_ENV,
+          DATABASE_URL: `postgres://tribunal:tribunal@${host}:5433/tribunal`,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects a DATABASE_URL that is not a parseable URL in production', () => {
+    expect(() => parseWebEnvironment({ ...PROD_ENV, DATABASE_URL: 'not a url' })).toThrow();
+  });
+
   it('rejects a duplicated sslmode where a later value weakens it', () => {
     // URLSearchParams.get returns the first value, but the pg parser keeps the
     // last; a lax check would pass this while the driver connects with ssl:false.
