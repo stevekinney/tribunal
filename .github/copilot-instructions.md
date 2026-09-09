@@ -8,10 +8,10 @@ Tribunal is a SvelteKit web app plus shared packages. The only integration is Gi
 
 ## Architecture at a Glance
 
-- **Monorepo** (Turborepo): `applications/web/` (SvelteKit) and `packages/*` (shared libraries). There is no separate workers application.
+- **Monorepo** (Turborepo): `applications/{web, engine, proxy}` plus `packages/*` (shared libraries), `runner`, and `scripts`. `web` is the SvelteKit surface, `engine` runs Weft workflows and Tensorlake sandboxes, `proxy` handles sandbox egress.
 - **Stack**: Svelte 5, SvelteKit, Drizzle ORM, PostgreSQL (Neon), Bun, Redis (cache), Octokit.
 - **Path aliases**: `$lib/*` and `$testing` are SvelteKit aliases (web only); `@tribunal/*` resolves cross-workspace packages.
-- **Packages**: `@tribunal/{github, database, markdown, components, typescript, test}`. The github package also exports cache utilities (`@tribunal/github/cache`) and the error taxonomy (`@tribunal/github/error-taxonomy`).
+- **Packages**: `@tribunal/agents`, `@tribunal/cost`, `@tribunal/database`, `@tribunal/github`, `@tribunal/review-core`, `@tribunal/sandbox`, `@tribunal/test`, `@tribunal/typescript` — one per directory under `packages/`. The github package also exports cache utilities (`@tribunal/github/cache`) and the error taxonomy (`@tribunal/github/error-taxonomy`).
 - **`@tribunal/github`** must stay framework-free: no Svelte, SvelteKit, `$app/*`, or `$env/*` imports. It may depend on `@tribunal/database` and Drizzle.
 
 ## Review Checklist
