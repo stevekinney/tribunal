@@ -20,9 +20,11 @@ This is already decided by the locked project decision ("Identity: Neon Auth wit
 
 So: **the mount must come after every identity-populating handle in the `sequence()`, not merely after `authHandle`, and the mounted handlers must consume the locals those handles populate rather than validating a token themselves.**
 
-"After `authHandle`" is not sufficient, and the reason is concrete. The current sequence is `correlationHandle, e2eHandle, respondWithJsonForApiEndpoints, authHandle, devAuthBypassHandle` — and `devAuthBypassHandle` is what populates the synthetic user when `DEV_AUTH_BYPASS=1`. A mount inserted directly after `authHandle` would short-circuit before the bypass runs, leaving `/oauth/authorize` unauthenticated in exactly the preview environment the bypass exists to serve. The rule is therefore positional relative to the _last_ identity handle, and it must be restated if another is ever added.
+"After `authHandle`" is the operative requirement: the mount must follow it so a real Neon Auth session populates `event.locals.user` before the mounted `/oauth/authorize` reads it. The current sequence is `correlationHandle, e2eHandle, respondWithJsonForApiEndpoints, authHandle, devAuthBypassHandle`, and the mount is placed after the whole group.
 
-Three things need a test: the mount follows every identity-populating handle, a mounted consent request sees `event.locals.user`, and the same holds under `DEV_AUTH_BYPASS=1`. The ordering is a single line in `hooks.server.ts` that a later edit can silently invert with no other symptom.
+The dev auth bypass is a deliberate exception (`TRI-45`). `devAuthBypassHandle` populates a synthetic user under `DEV_AUTH_BYPASS=1` for browsing the authenticated UI, but `createMcpIdentityHandle` does **not** prime that synthetic identity into the mount — a bypass user must never own an OAuth grant, because an armed bypass on an externally reachable dev server (a tunnel) would otherwise complete consent and mint a real token. So under `DEV_AUTH_BYPASS=1` the mounted `/oauth/authorize` is intentionally unauthenticated and redirects to sign-in; only a real session reaches consent.
+
+Two things need a test: the mount follows every identity-populating handle so a mounted consent request from a real session sees `event.locals.user`, and under `DEV_AUTH_BYPASS=1` the mounted consent flow redirects to sign-in rather than authenticating the synthetic user. The ordering is a single line in `hooks.server.ts` that a later edit can silently invert with no other symptom.
 
 Calling this a mechanical detail, as an earlier draft did, was wrong: the issue scopes itself to how this GET identifies its user, and hook ordering decides whether it identifies one at all.
 

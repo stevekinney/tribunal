@@ -135,4 +135,19 @@ describe('resolveUserProfile', () => {
       expect(profile).toMatchObject({ id: String(row!.id), email: 'octo@example.com' });
     });
   });
+
+  it('refuses a synthetic dev-bypass user, so a token minted for one cannot resolve (TRI-45)', async () => {
+    await runWithDatabase(testDatabase.db as never, async () => {
+      const [row] = await testDatabase.db
+        .insert(user)
+        .values({
+          username: 'dev',
+          name: 'Dev User',
+          // The namespaced id the bypass seeds; never a valid OAuth subject.
+          neonAuthUserId: 'dev-bypass:dev',
+        })
+        .returning({ id: user.id });
+      await expect(resolveUserProfile(String(row!.id))).resolves.toBeNull();
+    });
+  });
 });
