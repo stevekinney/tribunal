@@ -4,12 +4,15 @@ These instructions guide Copilot code review and the Copilot coding agent. For d
 
 ## What this repository is
 
-Tribunal is a SvelteKit web app plus shared packages. The only integration is GitHub: log in with GitHub OAuth, install the GitHub App in your orgs, then browse your repositories and their open pull requests. The data model is flat: user -> GitHub installation -> installation repository -> repository -> pull request. The app is intentionally minimal — there are no AI, chat, editor, sandbox, project, workspace, or workflow-orchestration features.
+Tribunal is an automated code-review service. A user signs in through Neon Auth with GitHub as the provider and installs the GitHub App in their organizations; Tribunal then watches the repositories that installation covers and reviews their pull requests. Reviews run as Weft workflows in the engine, which drives the Claude Agent SDK inside Tensorlake sandboxes and reaches the network through the proxy.
+
+GitHub is the source of the code under review, not the only integration: identity is Neon Auth, persistence is Neon Postgres, caching is Redis, sandboxes are Tensorlake, and the reviewing agent is the Claude Agent SDK. Repository access flows through the chain user -> GitHub installation -> installation repository -> repository -> pull request; review execution (agents, agent runs, cost events) hangs off that rather than replacing it.
 
 ## Architecture at a Glance
 
 - **Monorepo** (Turborepo): `applications/{web, engine, proxy}` plus `packages/*` (shared libraries), `runner`, and `scripts`. `web` is the SvelteKit surface, `engine` runs Weft workflows and Tensorlake sandboxes, `proxy` handles sandbox egress.
-- **Stack**: Svelte 5, SvelteKit, Drizzle ORM, PostgreSQL (Neon), Bun, Redis (cache), Octokit.
+- **Stack**: Svelte 5, SvelteKit, Drizzle ORM, PostgreSQL (Neon), Bun, Redis (cache), Octokit, Weft (`@lostgradient/weft`) for workflows, Tensorlake for sandboxes, and the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) for the reviewing agent.
+- **Design system**: `@lostgradient/cinder`, with `@lostgradient/editor` and `@lostgradient/markdown` for the Markdown editing surface. Reach for a Cinder component before building a bespoke one.
 - **Path aliases**: `$lib/*` and `$testing` are SvelteKit aliases (web only); `@tribunal/*` resolves cross-workspace packages.
 - **Packages**: `@tribunal/agents`, `@tribunal/cost`, `@tribunal/database`, `@tribunal/github`, `@tribunal/review-core`, `@tribunal/sandbox`, `@tribunal/test`, `@tribunal/typescript` — one per directory under `packages/`. The github package also exports cache utilities (`@tribunal/github/cache`) and the error taxonomy (`@tribunal/github/error-taxonomy`).
 - **`@tribunal/github`** must stay framework-free: no Svelte, SvelteKit, `$app/*`, or `$env/*` imports. It may depend on `@tribunal/database` and Drizzle.

@@ -4,15 +4,19 @@ applyTo: 'packages/github/**,**/server/github/**,**/webhooks/**'
 
 # GitHub Integration Review Heuristics
 
-GitHub is Tribunal's only integration. `@tribunal/github` holds the GitHub
-logic (read caching, token/installation access, webhook parsing and storage),
-and the SvelteKit web app consumes it from
+GitHub is where the code under review lives, but it is not Tribunal's only
+integration — see `AGENTS.md` for the full set. `@tribunal/github` holds the
+GitHub logic (read caching, token/installation access, webhook parsing and
+storage), and the SvelteKit web app consumes it from
 `applications/web/src/lib/server/github/**` and the webhook route at
 `applications/web/src/routes/api/webhooks/github/+server.ts`.
 
-There is no workflow runtime. Webhook handlers persist events and invalidate
-caches; orchestration dispatch has been removed, so a few paths log
-`would dispatch ...` where a workflow signal used to fire.
+There **is** a workflow runtime: Weft (`@lostgradient/weft`). Webhook handlers
+persist events and invalidate caches, and they dispatch into Weft workflows —
+`applications/web/src/lib/server/weft/workflows/**` for pull request
+orchestration and installation sync, `packages/github/src/sync/workflow.ts`
+for repository sync, and `applications/engine/src/workflows/**` for the review
+workflow itself. Do not treat a dispatch as dead code.
 
 ## API read caching
 
