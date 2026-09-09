@@ -1,4 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Read the runtime env from a controlled empty object so the flag-default
+// assertions below cannot depend on the ambient environment. The web unit
+// suite runs directly (not through Turborepo), so `$env/dynamic/private`
+// otherwise exposes the process env, and a shell or CI with MCP_ENABLED=true
+// would flip `isMcpEnabled()` and fail this test.
+vi.mock('$env/dynamic/private', () => ({ env: {} }));
+
 import {
   isMcpConformanceMode,
   isMcpEnabled,
