@@ -76,12 +76,12 @@ vi.mock('./authentication', () => ({
   upsertOAuthConnection: mocks.upsertOAuthConnection,
 }));
 
+import { isDevAuthBypassEnabled } from './dev-auth-bypass-flag';
 import {
   assertDevAuthBypassNotInProduction,
   devAuthBypassMode,
   bypassUsername,
   devAuthBypassHandle,
-  isDevAuthBypassEnabled,
   resetDevAuthBypassCacheForTests,
 } from './dev-bypass';
 

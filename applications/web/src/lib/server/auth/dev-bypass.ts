@@ -35,10 +35,6 @@ import {
 import { validateHandleFormat } from './handle-generator';
 import type { AuthenticatedApplicationUser, NeonSession } from './neon-session';
 
-// Re-exported so existing importers keep resolving it here; the flag predicate
-// itself lives in the lighter `dev-auth-bypass-flag` module.
-export { isDevAuthBypassEnabled };
-
 const DEFAULT_BYPASS_USERNAME = 'dev';
 const GITHUB_BYPASS_MODE = 'github';
 const LOCAL_BYPASS_MODE = 'local';

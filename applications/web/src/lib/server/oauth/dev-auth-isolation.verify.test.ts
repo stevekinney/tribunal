@@ -105,17 +105,17 @@ describe('dev auth bypass isolation on the mounted surface (TRI-45 AC2)', () => 
     expect(html).toContain('name="transaction_id"');
   });
 
-  it('redirects to sign-in instead of serving consent when the bypass is armed', async () => {
+  it('returns a terminal 403 instead of serving consent when the bypass is armed', async () => {
     vi.mocked(isDevAuthBypassEnabled).mockReturnValue(true);
     const response = await getAuthorize();
     // With the synthetic identity withheld from the mount, the request is
-    // unauthenticated: the authorize seam redirects to Tribunal's own sign-in
-    // (302 → /login?returnTo=…) rather than minting a consent transaction for
-    // the bypass user. Asserting the concrete redirect (not merely the absence
-    // of a consent field) means an unrelated 404/500 cannot pass this test.
-    expect(response.status).toBe(302);
-    const location = response.headers.get('location') ?? '';
-    expect(location.startsWith('/login?returnTo=')).toBe(true);
-    expect(location).toContain(encodeURIComponent('/oauth/authorize'));
+    // unauthenticated. The seam returns a terminal 403 (not a /login redirect,
+    // which would loop because the bypass user is authenticated on /login) — so
+    // no consent transaction is minted for the bypass user. Asserting the
+    // concrete terminal response, not merely the absence of a consent field,
+    // means an unrelated 404/500 cannot pass this test.
+    expect(response.status).toBe(403);
+    expect(response.headers.get('location')).toBeNull();
+    await expect(response.text()).resolves.toMatch(/cannot authorize/i);
   });
 });
