@@ -103,6 +103,14 @@ describe('parseWebEnvironment — production requires sslmode=verify-full (AC7)'
         }),
       ).not.toThrow();
     }
+    // IPv6 loopback: URL.hostname keeps the brackets (`[::1]`), so the exemption
+    // must recognize the bracketed form.
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        DATABASE_URL: 'postgres://tribunal:tribunal@[::1]:5433/tribunal',
+      }),
+    ).not.toThrow();
   });
 
   it('rejects a DATABASE_URL that is not a parseable URL in production', () => {

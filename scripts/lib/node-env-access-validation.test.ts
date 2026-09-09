@@ -37,6 +37,27 @@ describe('findNodeEnvDotAccess', () => {
     expect(findNodeEnvDotAccess(source, 'real.ts')).toHaveLength(1);
   });
 
+  it('flags real code that follows a string literal containing //', () => {
+    // A naive split on `//` would drop the real read after the URL string.
+    expect(
+      findNodeEnvDotAccess("const u = 'http://localhost'; const m = process.env.NODE_ENV;", 'a.ts'),
+    ).toHaveLength(1);
+    expect(
+      findNodeEnvDotAccess('const u = "ws://x"; const m = process.env.NODE_ENV;', 'b.ts'),
+    ).toHaveLength(1);
+    expect(
+      findNodeEnvDotAccess('const u = `http://x`; const m = process.env.NODE_ENV;', 'c.ts'),
+    ).toHaveLength(1);
+  });
+
+  it('handles an escaped quote inside a string without misreading the // that follows', () => {
+    // The escaped quote does not close the string, so `//c` stays inside it and
+    // the only real read is env.NODE_ENV (not process.env) — nothing to flag.
+    expect(findNodeEnvDotAccess("const s = 'a\\'b//c'; const ok = env.NODE_ENV;", 'd.ts')).toEqual(
+      [],
+    );
+  });
+
   it('returns no violations for source without NODE_ENV', () => {
     expect(findNodeEnvDotAccess('export const x = 1;\n', 'clean.ts')).toEqual([]);
   });
