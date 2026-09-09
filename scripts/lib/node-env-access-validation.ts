@@ -14,12 +14,13 @@ const NODE_ENV_DOT_ACCESS = /process\.env\.NODE_ENV\b/;
 
 export function findNodeEnvDotAccess(source: string, filePath: string): string[] {
   const violations: string[] = [];
-  source.split('\n').forEach((line, index) => {
-    const trimmed = line.trimStart();
-    // Skip whole-line comments (`//` and block-comment continuation `*`) so a
-    // comment explaining the ban does not trip it; drop any trailing `//`
-    // comment before matching the code portion.
-    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+  // Blank out block comments (inline and multi-line) while preserving newlines,
+  // so a comment naming the pattern does not trip the guard and reported line
+  // numbers stay accurate; then drop any trailing line comment before matching.
+  const withoutBlockComments = source.replace(/\/\*[\s\S]*?\*\//g, (match) =>
+    match.replace(/[^\n]/g, ' '),
+  );
+  withoutBlockComments.split('\n').forEach((line, index) => {
     const code = line.split('//')[0]!;
     if (NODE_ENV_DOT_ACCESS.test(code)) {
       violations.push(

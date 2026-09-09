@@ -8,18 +8,14 @@ import { findNodeEnvDotAccess } from './lib/node-env-access-validation';
  * for why the dot form is banned and the bracket form is not.
  */
 const repositoryRoot = join(import.meta.dirname, '..');
-const webSourceGlob = 'applications/web/src/**/*';
+const SCANNED_EXTENSIONS = ['.ts', '.tsx', '.js', '.svelte'];
 
+// Enumerate every tracked file under the web source directory and filter by
+// extension in code rather than by a `**/*.ext` pathspec: git's `**/` requires
+// at least one intermediate directory, so a glob would silently omit root-level
+// files such as `hooks.server.ts` — the most likely home for environment logic.
 const trackedSourcesResult = Bun.spawnSync({
-  cmd: [
-    'git',
-    'ls-files',
-    '--',
-    `${webSourceGlob}.ts`,
-    `${webSourceGlob}.tsx`,
-    `${webSourceGlob}.js`,
-    `${webSourceGlob}.svelte`,
-  ],
+  cmd: ['git', 'ls-files', '--', 'applications/web/src'],
   cwd: repositoryRoot,
   stdout: 'pipe',
   stderr: 'inherit',
@@ -35,7 +31,8 @@ const filePaths = trackedSourcesResult.stdout
   .toString()
   .trim()
   .split('\n')
-  .filter((filePath) => filePath.length > 0);
+  .filter((filePath) => filePath.length > 0)
+  .filter((filePath) => SCANNED_EXTENSIONS.some((extension) => filePath.endsWith(extension)));
 
 const violations = (
   await Promise.all(

@@ -28,6 +28,17 @@ import { z } from 'zod';
 const booleanFlag = z.enum(['true', 'false']).transform((value) => value === 'true');
 
 /**
+ * An optional URL that tolerates a blank value. `.env.example` ships these keys
+ * present-but-empty (`BASE_URL=`), and copying it verbatim is the documented
+ * setup; `z.string().url().optional()` accepts `undefined` but rejects `''`, so
+ * a blank must be normalized to unset or an otherwise-valid local boot fails.
+ */
+const optionalUrl = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().url().optional(),
+);
+
+/**
  * Hosts for which full TLS verification is not required even in production:
  * loopback, the Docker host gateway, and private/link-local suffixes. These are
  * container smoke tests and local prod-mode runs where the database is not
@@ -73,13 +84,13 @@ const webEnvironmentObject = z.object({
   // Required at boot in production (asserted separately today via
   // assertNeonAuthConfigured); kept optional here so dev/test without it
   // still parse.
-  NEON_AUTH_BASE_URL: z.string().url().optional(),
+  NEON_AUTH_BASE_URL: optionalUrl,
   MCP_ENABLED: booleanFlag.default(false),
   MCP_CONFORMANCE_MODE: booleanFlag.default(false),
-  MCP_BASE_URL: z.string().url().optional(),
+  MCP_BASE_URL: optionalUrl,
   // Optional, documented base URL (TRI-44 AC9). Nothing reads a bare BASE_URL
   // today; it is added to the schema and .env.example rather than made fatal.
-  BASE_URL: z.string().url().optional(),
+  BASE_URL: optionalUrl,
   // Passed through so the production refinement can reject the value that
   // disables certificate verification process-wide.
   NODE_TLS_REJECT_UNAUTHORIZED: z.string().optional(),

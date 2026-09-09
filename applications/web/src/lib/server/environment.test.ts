@@ -132,6 +132,15 @@ describe('web environment schema — derived required keys (AC10)', () => {
     }
   });
 
+  it('treats a blank optional URL as unset, so a copied .env.example still boots', () => {
+    // .env.example ships BASE_URL= (and blank Neon URLs); a copied template must
+    // not fail init because '' is neither undefined nor a valid URL.
+    expect(() =>
+      parseWebEnvironment({ ...DEV_ENV, BASE_URL: '', NEON_AUTH_BASE_URL: '', MCP_BASE_URL: '' }),
+    ).not.toThrow();
+    expect(parseWebEnvironment({ ...DEV_ENV, BASE_URL: '' }).BASE_URL).toBeUndefined();
+  });
+
   it('BASE_URL is an optional, known field (AC9)', () => {
     expect(webEnvironmentKeys).toContain('BASE_URL');
     expect(

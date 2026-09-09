@@ -20,13 +20,21 @@ describe('findNodeEnvDotAccess', () => {
     expect(findNodeEnvDotAccess(source, 'ok.ts')).toEqual([]);
   });
 
-  it('does not flag the pattern inside comments', () => {
+  it('does not flag the pattern inside line, inline, or multi-line block comments', () => {
     const source = [
       '// never use process.env.NODE_ENV here',
-      ' * process.env.NODE_ENV is banned',
+      'const a = 1; /* process.env.NODE_ENV */',
+      '/*',
+      ' process.env.NODE_ENV is banned',
+      '*/',
       'const ok = env.NODE_ENV; // not process.env.NODE_ENV',
     ].join('\n');
     expect(findNodeEnvDotAccess(source, 'comments.ts')).toEqual([]);
+  });
+
+  it('still flags real code on a line that also has a trailing comment', () => {
+    const source = 'const x = process.env.NODE_ENV; // oops';
+    expect(findNodeEnvDotAccess(source, 'real.ts')).toHaveLength(1);
   });
 
   it('returns no violations for source without NODE_ENV', () => {
