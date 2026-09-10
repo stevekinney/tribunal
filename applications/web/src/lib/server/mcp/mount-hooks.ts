@@ -34,9 +34,16 @@ export function applyMcpSecurityHeaders(response: Response, pathname: string): R
     headers.set('strict-transport-security', 'max-age=63072000; includeSubDomains');
   }
   // Transaction-carrying OAuth paths must not leak the transaction id or CSRF
-  // token through the Referer header.
+  // token to the external client through the Referer header. `same-origin` drops
+  // the referrer on any cross-origin navigation (the client's redirect_uri never
+  // sees the authorize URL) while keeping it for the same-origin approve/deny
+  // POST. `no-referrer` cannot be used here: per Fetch's "append a request Origin
+  // header", a non-GET request under `no-referrer` has its Origin set to `null`,
+  // so the browser posts consent with `Origin: null` and SvelteKit's built-in
+  // CSRF check (which runs before the handle hook and compares Origin to the
+  // server origin) rejects it as a cross-site submission.
   if (pathname.startsWith('/oauth/')) {
-    headers.set('referrer-policy', 'no-referrer');
+    headers.set('referrer-policy', 'same-origin');
   }
   if ((headers.get('content-type') ?? '').includes('text/html')) {
     headers.set('cache-control', 'no-store, private');
@@ -76,12 +83,7 @@ function asMountEvent(event: RequestEvent): SvelteKitLikeRequestEvent {
 type MountAccessor = () => Promise<TribunalMcpMount> | null;
 
 /**
- * Primes the request's OAuth identity from `event.locals.user`. This MUST run
- * after the real identity-populating handle (`authHandle`) so the mount never
- * sees an authenticated request as anonymous. It reads the locals the auth
- * handle populates rather than validating a token itself (a second identity
- * path would diverge from the first). The mount throws if it is reached without
- * this priming, so a sequence that places the mount handle first fails loudly.
+ * Derives the OAuth identity the mount should see from `event.locals.user`.
  *
  * The dev auth bypass (`devAuthBypassHandle`) is deliberately excluded: it
  * populates a synthetic user for browsing the authenticated UI in a sandboxed
@@ -89,39 +91,47 @@ type MountAccessor = () => Promise<TribunalMcpMount> | null;
  * surface. An armed bypass may be externally reachable (a tunnel), and priming
  * its identity would let an external client complete `/oauth/authorize` as the
  * synthetic user and mint a real token — an authenticated MCP session produced
- * with no login. When the bypass is armed we prime `null`, so the mount falls
+ * with no login. When the bypass is armed we return `null`, so the mount falls
  * back to the cookie-based identity seam (`resolveIdentityBinding`), which a
  * bypass session (it sets no Neon Auth cookie) cannot satisfy (TRI-45).
  */
-export function createMcpIdentityHandle(getMount: MountAccessor): Handle {
-  return async ({ event, resolve }) => {
-    if (getMount()) {
-      const identity =
-        !isDevAuthBypassEnabled() && event.locals.user ? identityFromUser(event.locals.user) : null;
-      primeSvelteKitMcpIdentity(asMountEvent(event), identity);
-    }
-    return resolve(event);
-  };
+function mcpIdentityFor(event: RequestEvent) {
+  return !isDevAuthBypassEnabled() && event.locals.user
+    ? identityFromUser(event.locals.user)
+    : null;
 }
 
 /**
- * Routes MCP and OAuth paths through the mount. When enabled, the mount is
- * given every request (it inspects the path itself, serving the paths it owns
- * and calling `resolve` to continue the chain for the rest); security headers
- * are applied only to responses for mount-owned paths. When disabled, this
- * continues the chain directly: Tribunal has no route at `/mcp` or `/oauth/*`,
- * so SvelteKit's own 404 is returned — byte-indistinguishable from any other
- * unknown path, which is the point (an unauthenticated prober must not learn
- * the surface exists).
+ * The single SvelteKit handle that primes identity and routes MCP + OAuth paths
+ * through the mount, in one step.
+ *
+ * Priming and serving must share one `event` object. SvelteKit's `sequence()`
+ * gives every handler a distinct, tracing-wrapped event (`merge_tracing` spreads
+ * a fresh object per handler), so a separate earlier identity handle would prime
+ * the library's WeakMap on a different event than the mount later reads, and the
+ * mount would reject every request as unprimed. Because `locals` is a shared
+ * reference across those cloned events, reading `event.locals.user` here still
+ * sees what `authHandle` populated — so this handle is placed after every
+ * identity-populating handle (`authHandle`, `devAuthBypassHandle`).
+ *
+ * When the surface is disabled this continues the chain directly: Tribunal has
+ * no route at `/mcp` or `/oauth/*`, so SvelteKit's own 404 is returned —
+ * byte-indistinguishable from any other unknown path, which is the point (an
+ * unauthenticated prober must not learn the surface exists). Security headers
+ * are applied only to responses for mount-owned paths.
  */
-export function createMcpMountHandle(getMount: MountAccessor): Handle {
+export function createMcpHandle(getMount: MountAccessor): Handle {
   return async ({ event, resolve }) => {
     const mountPromise = getMount();
     if (!mountPromise) return resolve(event);
+
     const { mount } = await mountPromise;
+    const mountEvent = asMountEvent(event);
+    primeSvelteKitMcpIdentity(mountEvent, mcpIdentityFor(event));
+
     const response = await mount.handle({
-      event: asMountEvent(event),
-      resolve: (mountEvent) => resolve(mountEvent as unknown as RequestEvent),
+      event: mountEvent,
+      resolve: (resolvedEvent) => resolve(resolvedEvent as unknown as RequestEvent),
     });
     return isMcpSurfacePath(event.url.pathname)
       ? applyMcpSecurityHeaders(response, event.url.pathname)

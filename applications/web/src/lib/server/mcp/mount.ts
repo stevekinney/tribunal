@@ -1,7 +1,8 @@
 import { env } from '$env/dynamic/private';
 import { createSvelteKitMcpMount, type SvelteKitMcpMount } from '@lostgradient/mcp/sveltekit';
 import type { OAuthStores } from '@lostgradient/mcp/oauth/stores';
-import { createOAuthStorageSeam } from '@tribunal/database/queries';
+import { createOAuthStorageSeam, createOAuthStores } from '@tribunal/database/queries';
+import { db } from '$lib/server/database';
 import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 import { createTribunalMcpRuntime } from '$lib/server/mcp/runtime';
 import { tribunalOAuthDiscoveryConfiguration } from '$lib/server/oauth/configuration';
@@ -51,6 +52,19 @@ export async function assembleTribunalMcpMount(stores: OAuthStores): Promise<Sve
 }
 
 export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
+  // Under E2E, back the OAuth stores with the request-scoped database proxy
+  // (`$lib/server/database`'s `db`) instead of a dedicated Postgres pool: the
+  // E2E handle routes that proxy to each Playwright worker's PGlite via
+  // `runWithDatabase`, so the browser suite can drive the real mount and OAuth
+  // flow without a Postgres instance. Production keeps its own pool below. This
+  // branch is gated on E2E_TEST_MODE, which `assertE2EModeNotInProduction` makes
+  // fatal in production, so it can never bind a request-scoped db in a real
+  // deployment.
+  if (env.E2E_TEST_MODE === '1') {
+    const mount = await assembleTribunalMcpMount(createOAuthStores(db));
+    return { mount, dispose: () => mount.dispose() };
+  }
+
   const connectionString = env.DATABASE_URL;
   if (!connectionString) {
     throw new Error('DATABASE_URL is required to mount the MCP and OAuth surface.');

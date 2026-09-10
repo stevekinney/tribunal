@@ -8,11 +8,23 @@ vi.mock('$lib/server/auth/dev-auth-bypass-flag', () => ({
 
 import { primeSvelteKitMcpIdentity } from '@lostgradient/mcp/sveltekit';
 import { isDevAuthBypassEnabled } from '$lib/server/auth/dev-auth-bypass-flag';
-import {
-  cacheControlOn404Handle,
-  createMcpIdentityHandle,
-  createMcpMountHandle,
-} from './mount-hooks';
+import { cacheControlOn404Handle, createMcpHandle } from './mount-hooks';
+
+/** A mock mount whose handle continues the chain, so priming can be asserted. */
+function passthroughMount() {
+  return Promise.resolve({
+    mount: {
+      handle: ({
+        event,
+        resolve,
+      }: {
+        event: RequestEvent;
+        resolve: (event: RequestEvent) => Promise<Response>;
+      }) => resolve(event),
+    },
+    dispose: async () => {},
+  } as never);
+}
 
 function fakeEvent(pathname = '/mcp'): RequestEvent {
   const url = new URL(`http://localhost${pathname}`);
@@ -57,35 +69,25 @@ describe('cacheControlOn404Handle', () => {
   });
 });
 
-describe('MCP handles when the surface is disabled', () => {
-  it('the mount handle falls through to resolve (ordinary 404)', async () => {
-    const handle = createMcpMountHandle(() => null);
+describe('createMcpHandle when the surface is disabled', () => {
+  it('falls through to resolve without priming (ordinary 404)', async () => {
+    const handle = createMcpHandle(() => null);
     const resolve = vi.fn(respondWith(404));
     const response = await handle({ event: fakeEvent('/oauth/authorize'), resolve } as never);
     expect(resolve).toHaveBeenCalledOnce();
     expect(response.status).toBe(404);
-  });
-
-  it('the identity handle does not prime and continues the chain', async () => {
-    const handle = createMcpIdentityHandle(() => null);
-    const resolve = vi.fn(respondWith(200));
-    await handle({ event: fakeEvent(), resolve } as never);
-    expect(resolve).toHaveBeenCalledOnce();
     expect(primeSvelteKitMcpIdentity).not.toHaveBeenCalled();
   });
 });
 
-describe('MCP identity priming and the dev auth bypass (TRI-45 AC2)', () => {
-  // A truthy mount so the identity handle takes the priming branch.
-  const activeMount = () => Promise.resolve({} as never);
-
+describe('createMcpHandle identity priming and the dev auth bypass (TRI-45 AC2)', () => {
   beforeEach(() => {
     vi.mocked(primeSvelteKitMcpIdentity).mockClear();
     vi.mocked(isDevAuthBypassEnabled).mockReturnValue(false);
   });
 
   it('primes the real user identity when the dev auth bypass is not armed', async () => {
-    const handle = createMcpIdentityHandle(activeMount);
+    const handle = createMcpHandle(passthroughMount);
     const event = withUser(fakeEvent(), 7, 'real-user');
     await handle({ event, resolve: respondWith(200) } as never);
     expect(primeSvelteKitMcpIdentity).toHaveBeenCalledWith(
@@ -96,11 +98,42 @@ describe('MCP identity priming and the dev auth bypass (TRI-45 AC2)', () => {
 
   it('primes null when the bypass is armed, so the synthetic user cannot own an OAuth grant', async () => {
     vi.mocked(isDevAuthBypassEnabled).mockReturnValue(true);
-    const handle = createMcpIdentityHandle(activeMount);
+    const handle = createMcpHandle(passthroughMount);
     // Even though a (synthetic) user is on locals, the armed bypass must not
     // reach the mount as an identity.
     const event = withUser(fakeEvent(), 999, 'dev');
     await handle({ event, resolve: respondWith(200) } as never);
     expect(primeSvelteKitMcpIdentity).toHaveBeenCalledWith(event, null);
+  });
+
+  it('primes and serves on the SAME event object (guards the merge_tracing bug)', async () => {
+    // Regression for the bug that combining the handles fixed: the library keys
+    // priming on the event object, and SvelteKit's sequence() hands each handler
+    // a distinct (merge_tracing-cloned) event. A separate identity handle primed
+    // a different event than the mount later read, so the mount rejected every
+    // request as unprimed. One handle priming and serving on one event is the fix
+    // — assert the primed event is exactly the event handed to mount.handle.
+    let servedEvent: unknown;
+    const recordingMount = () =>
+      Promise.resolve({
+        mount: {
+          handle: ({
+            event,
+            resolve,
+          }: {
+            event: RequestEvent;
+            resolve: (event: RequestEvent) => Promise<Response>;
+          }) => {
+            servedEvent = event;
+            return resolve(event);
+          },
+        },
+        dispose: async () => {},
+      } as never);
+    const handle = createMcpHandle(recordingMount);
+    const event = withUser(fakeEvent(), 7, 'real-user');
+    await handle({ event, resolve: respondWith(200) } as never);
+    const lastCall = vi.mocked(primeSvelteKitMcpIdentity).mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe(servedEvent);
   });
 });

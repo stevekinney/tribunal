@@ -29,12 +29,16 @@ describe('applyMcpSecurityHeaders', () => {
     expect(response.headers.get('referrer-policy')).toBeNull();
   });
 
-  it('adds no-referrer on OAuth transaction paths and no-store on HTML', () => {
+  it('adds same-origin referrer policy on OAuth transaction paths and no-store on HTML', () => {
     const response = applyMcpSecurityHeaders(
       new Response('<html></html>', { headers: { 'content-type': 'text/html; charset=utf-8' } }),
       '/oauth/authorize',
     );
-    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    // `same-origin`, not `no-referrer`: the latter makes the browser send
+    // `Origin: null` on the same-origin approve/deny POST (Fetch spec), which
+    // SvelteKit's CSRF check rejects. `same-origin` still drops the referrer for
+    // the cross-origin redirect to the client, so the transaction id never leaks.
+    expect(response.headers.get('referrer-policy')).toBe('same-origin');
     expect(response.headers.get('cache-control')).toBe('no-store, private');
     expect(response.headers.get('vary')).toBe('Cookie');
   });
