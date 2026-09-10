@@ -540,19 +540,20 @@ describe('MCP transport — idle streams survive under adapter-node/Node (behavi
   // where Bun's default would have closed it. Fly's edge idle behaviour with
   // auto_stop_machines is the real-world closer of idle streams and is out of scope.
   it('does not close an idle SSE response stream past 10s (Node imposes no idle timeout)', async () => {
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
     const server = http.createServer((_request, response) => {
       response.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-store',
       });
       response.write(': connected\n\n');
-      heartbeat = setInterval(() => response.write(': keep-alive\n\n'), 5_000);
-      heartbeat.unref?.();
+      // Deliberately silent thereafter: the socket must be GENUINELY idle for the
+      // whole hold. A keep-alive frame would reset any inactivity timer and mask a
+      // regression that set server.timeout below the threshold.
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
     const controller = new AbortController();
+    let tearingDown = false;
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`, { signal: controller.signal });
       expect(response.status).toBe(200);
@@ -560,19 +561,22 @@ describe('MCP transport — idle streams survive under adapter-node/Node (behavi
       const reader = response.body!.getReader();
       await reader.read(); // the connected frame arrives promptly
 
-      // Drain in the background, flagging if the server ever closes the stream.
+      // Drain in the background. Until teardown begins, BOTH a clean end and a
+      // premature read error mean the server closed the idle stream — a killed SSE
+      // response commonly rejects the pending read rather than ending it, so the
+      // catch must count as closure, not be swallowed.
       let closed = false;
       void (async () => {
         try {
           for (;;) {
             const { done } = await reader.read();
             if (done) {
-              closed = true;
+              if (!tearingDown) closed = true;
               break;
             }
           }
         } catch {
-          /* aborted by the test */
+          if (!tearingDown) closed = true;
         }
       })();
 
@@ -580,10 +584,11 @@ describe('MCP transport — idle streams survive under adapter-node/Node (behavi
       // still be open.
       await new Promise((resolve) => setTimeout(resolve, 11_000));
       expect(closed).toBe(false);
+      tearingDown = true;
       await reader.cancel().catch(() => {});
     } finally {
+      tearingDown = true;
       controller.abort();
-      if (heartbeat) clearInterval(heartbeat);
       server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
