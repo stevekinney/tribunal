@@ -3,7 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { setupMcpMountFixture, type McpMountFixture } from '$testing/mcp/mount-fixture';
 import { runWithDatabase } from '$lib/server/database';
 import { user } from '@tribunal/database/schema';
-import { mcpBaseUrl, mcpResourceUrl } from '$lib/server/oauth/configuration';
+import { mcpBaseUrl, mcpResourceUrl, mcpRuntimeLimits } from '$lib/server/oauth/configuration';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 import { REVIEW_RUNS_RESOURCE_URI } from '$lib/server/mcp/resource-updates';
 
@@ -353,5 +353,49 @@ describe('MCP transport — legacy subscribe acknowledged, never pushed (behavio
     } finally {
       await client.close();
     }
+  });
+});
+
+describe('MCP transport — the authentication order survives the hook chain (behaviour 4)', () => {
+  // Each test sends a request that would fail a *later* check and asserts an
+  // earlier boundary short-circuits, proving SvelteKit's handle chain inserted
+  // nothing ahead of the engine's order (no hook answers OPTIONS, reads the body,
+  // or reorders auth). The order inside the library is TRI-99's; this is the mount.
+
+  it('answers OPTIONS with 204 before any authentication runs (step 3 before step 4+)', async () => {
+    // No Authorization header at all: if a later auth step ran first this would be
+    // 401, and if a SvelteKit hook answered OPTIONS it would not be the engine's 204.
+    const response = await runWithDatabase(fixture.database.db as never, () =>
+      fixture.handle(new Request(`${BASE}/mcp`, { method: 'OPTIONS', headers: { origin: BASE } })),
+    );
+    expect(response.status).toBe(204);
+  });
+
+  it('rejects a disallowed Origin before looking up the token (step 2 before step 7)', async () => {
+    // A valid bearer token, but a cross-site Origin: the Origin gate must refuse it
+    // before the token is ever looked up.
+    const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      origin: 'https://attacker.example',
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects a non-Bearer authorization scheme (step 5)', async () => {
+    // No Origin (accepted, AC5) so the scheme check is the operative boundary; a
+    // Basic credential is refused on scheme, never looked up.
+    const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: null,
+      headers: { authorization: 'Basic dXNlcjpwYXNz' },
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects an over-length bearer token before any token lookup (step 6 before step 7)', async () => {
+    // One character over the configured maximum: refused on length, never hashed
+    // or looked up. Asserted against the imported limit, not a literal (the issue's
+    // 512 is Protokit's number; Tribunal configures 4096).
+    const overLong = 'a'.repeat(mcpRuntimeLimits.maximumBearerTokenLength + 1);
+    const response = await mcpRequest(initializeMessage(LEGACY_ERA), { token: overLong });
+    expect(response.status).toBe(401);
   });
 });
