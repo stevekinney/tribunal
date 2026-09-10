@@ -1,77 +1,87 @@
+import { render } from 'svelte/server';
 import { authorizeFormParameterNames, type RenderConsent } from '@lostgradient/mcp/oauth';
+// Cinder's stylesheet imported as a string (Vite `?inline`) so it can be inlined
+// into this standalone page. The consent screen is rendered by the mount seam,
+// outside the SvelteKit layout that normally links Cinder's CSS, so the styles
+// have to travel with the page — and inlining keeps it zero-request and
+// script-free (TRI-40 AC4).
+import cinderStyles from '@lostgradient/cinder/styles?inline';
+import ConsentPrompt from './consent-prompt.svelte';
+import ConsentError from './consent-error.svelte';
 
 /**
- * Renders the OAuth consent screen as a self-contained HTML `Response`.
+ * Renders the OAuth consent screen as a self-contained, zero-JavaScript HTML
+ * `Response` (TRI-40). The mount owns `/oauth/authorize` and calls this seam
+ * directly rather than routing to SvelteKit, so the screen is server-rendered
+ * from Svelte + Cinder components via `svelte/server` and returned inline — no
+ * hand-rolled markup, and Protokit's `lib/html-response.ts` is not ported (AC2).
  *
- * The mount intercepts `/oauth/*` itself, so this seam returns the page
- * directly rather than through a SvelteKit route. The prompt posts the
- * transaction id and CSRF token back to `/oauth/authorize/approve` (or `/oauth/authorize/deny`)
- * using the library's own field names, so the values never travel in a URL.
- * Every interpolated value (client name, requester, scope copy) is
- * HTML-escaped — the client name in particular is attacker-controlled via
- * dynamic registration.
- *
- * This is deliberately minimal, accessible markup; TRI-40 replaces it with the
- * Cinder-styled screen. The scope descriptions come from Tribunal's scope
- * vocabulary, shown verbatim as the consent copy.
+ * Approve and deny post the transaction id and one-time CSRF token back as
+ * hidden fields (never in a URL). The client display name is already validated
+ * by the library's `isValidClientName` before it reaches the presentation
+ * (dynamic registration refines it, and the authorize handler substitutes a
+ * generic name when it fails), so an attacker-controlled name never renders
+ * here (AC7, verified in `client-name-validation.test.ts`).
  */
 
 const [TRANSACTION_ID_FIELD, CSRF_TOKEN_FIELD] = authorizeFormParameterNames;
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+// Deny scripts outright and keep the page unframeable. The inlined `<style>`
+// requires `style-src 'unsafe-inline'`; forms post to the mount's own origin.
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "img-src 'self' data:",
+  "form-action 'self'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+function htmlDocument(rendered: { head: string; body: string }): string {
+  return (
+    '<!doctype html>' +
+    '<html lang="en">' +
+    '<head>' +
+    '<meta charset="utf-8" />' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />' +
+    `<style>${cinderStyles}</style>` +
+    rendered.head +
+    '</head>' +
+    `<body>${rendered.body}</body>` +
+    '</html>'
+  );
 }
 
-function htmlResponse(body: string, status: number): Response {
-  return new Response(`<!doctype html>\n${body}`, {
+function htmlResponse(rendered: { head: string; body: string }, status: number): Response {
+  return new Response(htmlDocument(rendered), {
     status,
-    headers: { 'content-type': 'text/html; charset=utf-8' },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'x-frame-options': 'DENY',
+      'content-security-policy': CONTENT_SECURITY_POLICY,
+    },
   });
-}
-
-function hiddenField(name: string, value: string): string {
-  return `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`;
-}
-
-function page(title: string, main: string): string {
-  return `<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${escapeHtml(title)}</title></head><body><main>${main}</main></body></html>`;
 }
 
 export const renderConsent: RenderConsent = (presentation) => {
   if (presentation.mode === 'error') {
-    return htmlResponse(
-      page(
-        'Authorization error',
-        `<h1>Authorization error</h1><p>${escapeHtml(presentation.error)}</p>`,
-      ),
-      400,
-    );
+    return htmlResponse(render(ConsentError, { props: { error: presentation.error } }), 400);
   }
 
-  const { transactionId, csrfToken, client, requester, scopes } = presentation;
-  const hidden = `${hiddenField(TRANSACTION_ID_FIELD, transactionId)}${hiddenField(CSRF_TOKEN_FIELD, csrfToken)}`;
+  const { transactionId, csrfToken, redirectUri, client, requester, scopes } = presentation;
 
-  const scopeItems = scopes
-    .map(
-      (entry) =>
-        `<li><strong>${escapeHtml(entry.scope)}</strong><span>${escapeHtml(entry.description)}</span></li>`,
-    )
-    .join('');
+  const rendered = render(ConsentPrompt, {
+    props: {
+      transactionIdField: TRANSACTION_ID_FIELD,
+      csrfTokenField: CSRF_TOKEN_FIELD,
+      transactionId,
+      csrfToken,
+      clientName: client.name,
+      requesterLabel: requester.email || requester.name,
+      redirectUri,
+      scopes,
+    },
+  });
 
-  const body = page(
-    'Authorize access',
-    `<h1>Authorize access</h1>
-<p><strong>${escapeHtml(client.name)}</strong> is requesting access to your Tribunal account (${escapeHtml(requester.email || requester.name)}).</p>
-<p>It will be able to:</p>
-<ul>${scopeItems}</ul>
-<form method="post" action="/oauth/authorize/approve">${hidden}<button type="submit">Approve</button></form>
-<form method="post" action="/oauth/authorize/deny">${hidden}<button type="submit">Deny</button></form>`,
-  );
-
-  return htmlResponse(body, 200);
+  return htmlResponse(rendered, 200);
 };
