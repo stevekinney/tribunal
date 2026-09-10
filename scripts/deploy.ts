@@ -1184,6 +1184,24 @@ function collectMachineCostFailures(
         `${app} min_machines_running does not match the expected ${expectedMinMachinesRunning}`,
       );
     }
+
+    // A correct min_machines_running config is not itself a warm Machine:
+    // this app's config can require one while its sole Machine sits stopped
+    // or crashed, which defeats the availability guarantee TRI-125 exists
+    // to provide without ever showing up as a service-configuration mismatch
+    // above. Require at least one Machine actually `started` whenever a
+    // warm Machine is expected.
+    if (expectedMinMachinesRunning > 0) {
+      const machineState = getMachineState(state, app);
+      if (machineState === 'unknown') {
+        failures.push(`could not read Machine state for ${app}`);
+      } else if (
+        machineState !== null &&
+        !machineState.machines.some((machine) => machine.state === 'started')
+      ) {
+        failures.push(`${app} has no Machine in a started state; expected a warm Machine`);
+      }
+    }
   }
 
   const webEngineUrl = environmentValueForApp(state, 'tribunal-web', 'TRIBUNAL_ENGINE_URL');
