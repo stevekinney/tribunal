@@ -331,3 +331,27 @@ describe('MCP transport — one handler per user survives the mount (behaviour 6
     }
   });
 });
+
+describe('MCP transport — legacy subscribe acknowledged, never pushed (behaviour 2)', () => {
+  it('acknowledges resources/subscribe on the legacy era and sends no follow-up notification', async () => {
+    const client = await connectClient('legacy', reviewsToken);
+    const received: { method: string }[] = [];
+    client.fallbackNotificationHandler = async (notification) => {
+      received.push(notification as { method: string });
+    };
+    try {
+      // The legacy era acknowledges the subscription per spec (an empty result)...
+      const ack = await client.subscribeResource({ uri: REVIEW_RUNS_RESOURCE_URI });
+      expect(ack).toEqual({});
+      // ...but it is stateless: there is no long-lived session to push to, so a
+      // resource change reaches nobody on this connection.
+      fixture.publishUserResourceUpdate(String(applicationUser.id), REVIEW_RUNS_RESOURCE_URI);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(
+        received.some((notification) => notification.method === 'notifications/resources/updated'),
+      ).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+});
