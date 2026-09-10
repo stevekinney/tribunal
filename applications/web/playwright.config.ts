@@ -36,6 +36,13 @@ export default defineConfig({
       E2E_TEST_SECRET: e2eSecret,
       VITE_PORT: String(port),
       VITE_PREVIEW_PORT: String(port),
+      // Enable the MCP + OAuth mount so the consent-screen E2E can drive the real
+      // authorize flow (TRI-40). Under E2E the mount's OAuth stores use the
+      // request-scoped PGlite via the db proxy (see createTribunalMcpMount).
+      // MCP_BASE_URL matches the preview origin so the issuer/resource line up
+      // with the authorize `resource` parameter.
+      MCP_ENABLED: 'true',
+      MCP_BASE_URL: `http://127.0.0.1:${port}`,
     },
   },
   projects: [

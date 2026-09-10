@@ -1,16 +1,21 @@
-import type { Handle, RequestEvent } from '@sveltejs/kit';
+import type { RequestEvent } from '@sveltejs/kit';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setupMcpMountFixture, type McpMountFixture } from '$testing/mcp/mount-fixture';
-import { createMcpIdentityHandle, createMcpMountHandle } from './mount-hooks';
+import { createMcpHandle } from './mount-hooks';
 import type { TribunalMcpMount } from './mount';
 
 /**
- * Composes Tribunal's own handles both correctly and misordered and watches the
- * misorder throw (AC3b). The composition is manual rather than via SvelteKit's
- * `sequence()`, which requires the request-store AsyncLocalStorage that only
- * exists during a real request; chaining each handle's `resolve` to the next
- * reproduces the identical ordering semantics. One fixture per file (Vitest
- * module isolation).
+ * Exercises Tribunal's real MCP handle against the real (PGlite-backed) mount,
+ * confirming that a single handle primes identity and serves the mounted surface
+ * in one step, and falls through for paths the mount does not own.
+ *
+ * This replaces an earlier two-handle "ordering" suite (AC3b). That design split
+ * priming and serving across two handles and asserted the misordered composition
+ * threw. It could not survive a real `sequence()`: SvelteKit's `merge_tracing`
+ * gives each handler a distinct event object, so priming one and serving another
+ * left the mount unprimed on every request. Combining them into one handle (which
+ * primes and serves on the same event) is the fix; there is no ordering left to
+ * get wrong. One fixture per file (Vitest module isolation).
  */
 
 let fixture: McpMountFixture;
@@ -34,47 +39,30 @@ function requestEvent(request: Request): RequestEvent {
 
 const notFound = () => Promise.resolve(new Response('Not Found', { status: 404 }));
 
-/** Chains two handles so `first`'s resolve runs `second`, then a final 404. */
-function chain(first: Handle, second: Handle, request: Request): Promise<Response> {
-  const event = requestEvent(request);
+/** Runs the handle for a request, returning the response the chain produces. */
+function run(handle: ReturnType<typeof createMcpHandle>, request: Request): Promise<Response> {
   return Promise.resolve(
-    first({
-      event,
-      resolve: ((nextEvent: RequestEvent) =>
-        second({ event: nextEvent, resolve: notFound as never })) as never,
-    } as never),
+    handle({ event: requestEvent(request), resolve: notFound as never } as never),
   );
 }
 
 const discoveryRequest = () =>
   new Request('http://localhost:5173/.well-known/oauth-authorization-server');
 
-describe('MCP mount hook ordering', () => {
+describe('MCP mount handle', () => {
   const getMount = (): Promise<TribunalMcpMount> =>
     Promise.resolve({ mount: fixture.mount, dispose: fixture.dispose });
-  const identityHandle = createMcpIdentityHandle(getMount);
-  const mountHandle = createMcpMountHandle(getMount);
+  const mcpHandle = createMcpHandle(getMount);
 
-  it('throws when the mount handle runs before identity is primed', async () => {
-    // Misordered: the mount handle runs first, before the identity handle.
-    await expect(chain(mountHandle, identityHandle, discoveryRequest())).rejects.toThrow(
-      'prime identity',
-    );
-  });
-
-  it('serves once identity is primed earlier in the chain', async () => {
-    const response = await chain(identityHandle, mountHandle, discoveryRequest());
+  it('primes identity and serves a mount-owned path in one handle', async () => {
+    const response = await run(mcpHandle, discoveryRequest());
     expect(response.status).toBe(200);
   });
 
   it('falls through to resolve for a non-MCP path', async () => {
-    // A path the mount does not own reaches resolve, which the mount handle
-    // wraps to continue Tribunal's chain.
-    const response = await chain(
-      identityHandle,
-      mountHandle,
-      new Request('http://localhost:5173/'),
-    );
+    // A path the mount does not own reaches resolve, which the handle wraps to
+    // continue Tribunal's chain (here, an ordinary 404).
+    const response = await run(mcpHandle, new Request('http://localhost:5173/'));
     expect(response.status).toBe(404);
   });
 });

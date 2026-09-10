@@ -31,7 +31,7 @@
 
 <main class="consent">
   <Card>
-    <Stack direction="vertical" gap="var(--space-4)">
+    <Stack direction="column" gap="var(--space-4)">
       <h1>Authorize access</h1>
       <p>
         <strong>{clientName}</strong> is requesting access to your Tribunal account ({requesterLabel}).
@@ -45,7 +45,7 @@
           </li>
         {/each}
       </ul>
-      <Stack direction="horizontal" gap="var(--space-3)" wrap>
+      <Stack direction="row" gap="var(--space-3)" wrap>
         <form method="post" action="/oauth/authorize/approve">
           <input type="hidden" name={transactionIdField} value={transactionId} />
           <input type="hidden" name={csrfTokenField} value={csrfToken} />

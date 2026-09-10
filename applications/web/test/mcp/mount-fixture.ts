@@ -7,7 +7,7 @@ import {
   type SvelteKitMcpMount,
 } from '@lostgradient/mcp/sveltekit';
 import { assembleTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
-import { createMcpIdentityHandle, createMcpMountHandle } from '$lib/server/mcp/mount-hooks';
+import { createMcpHandle } from '$lib/server/mcp/mount-hooks';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 
 /**
@@ -47,15 +47,14 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   const stores = createOAuthStores(database.db);
   const mount = await assembleTribunalMcpMount(stores);
 
-  // Route requests through the MCP-specific handles hooks.server.ts composes —
-  // the identity-priming handle and the mount handle (with its security-header
-  // decorator) — so tests see real priming, routing, and headers rather than a
-  // partial stand-in. It does not run the outer chain (correlation, auth, dev
-  // bypass); the `user` option stands in for what those handles would populate.
+  // Route requests through the MCP handle hooks.server.ts composes — priming,
+  // routing, and the security-header decorator in one — so tests see real
+  // behavior rather than a partial stand-in. It does not run the outer chain
+  // (correlation, auth, dev bypass); the `user` option stands in for what those
+  // handles would populate.
   const mountRecord: TribunalMcpMount = { mount, dispose: () => mount.dispose() };
   const getMount = (): Promise<TribunalMcpMount> => Promise.resolve(mountRecord);
-  const identityHandle = createMcpIdentityHandle(getMount);
-  const mountHandle = createMcpMountHandle(getMount);
+  const mcpHandle = createMcpHandle(getMount);
 
   const buildEvent = (
     request: Request,
@@ -76,9 +75,7 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
       // The one unavoidable cast: buildEvent returns the library's structural
       // subset of a SvelteKit RequestEvent (see asMountEvent in mount-hooks).
       const event = buildEvent(request, options) as unknown as RequestEvent;
-      const resolveThroughMount = (mountEvent: RequestEvent) =>
-        mountHandle({ event: mountEvent, resolve: notFoundResolve });
-      return Promise.resolve(identityHandle({ event, resolve: resolveThroughMount }));
+      return Promise.resolve(mcpHandle({ event, resolve: notFoundResolve }));
     },
     dispose: async () => {
       await mount.dispose();

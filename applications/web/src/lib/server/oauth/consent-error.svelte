@@ -7,7 +7,7 @@
 
 <main class="consent">
   <Card tone="danger">
-    <Stack direction="vertical" gap="var(--space-3)">
+    <Stack direction="column" gap="var(--space-3)">
       <h1>Authorization error</h1>
       <p>{error}</p>
     </Stack>

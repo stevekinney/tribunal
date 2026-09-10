@@ -27,12 +27,22 @@ import ConsentError from './consent-error.svelte';
 const [TRANSACTION_ID_FIELD, CSRF_TOKEN_FIELD] = authorizeFormParameterNames;
 
 // Deny scripts outright and keep the page unframeable. The inlined `<style>`
-// requires `style-src 'unsafe-inline'`; forms post to the mount's own origin.
+// requires `style-src 'unsafe-inline'`.
+//
+// `form-action` is deliberately omitted. Chromium (unlike Firefox) enforces
+// `form-action` against the *redirect target* of a form submission, not just the
+// initial POST URL. The consent forms POST to the mount's own origin, but the
+// mount answers with a 302 to the OAuth client's `redirect_uri` — which for every
+// real client is a different origin (a native MCP client's own loopback port, a
+// hosted client's HTTPS host). A `form-action 'self'` would let the POST through
+// and then silently block that redirect in Chrome, breaking consent for all
+// clients. The client set is registered dynamically, so it cannot be enumerated
+// into an allowlist. CSRF on approve/deny is enforced by the mount's
+// transaction-bound `csrf_token` (a hidden field), not by this directive.
 const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "style-src 'unsafe-inline'",
   "img-src 'self' data:",
-  "form-action 'self'",
   "base-uri 'none'",
   "frame-ancestors 'none'",
 ].join('; ');

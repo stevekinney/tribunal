@@ -16,11 +16,7 @@ import { assertNeonAuthConfigured } from '$lib/server/auth/neon-auth-configured'
 import { setLogger } from '@lostgradient/mcp';
 import { mcpLogger } from '$lib/server/mcp-logger';
 import { createTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
-import {
-  cacheControlOn404Handle,
-  createMcpIdentityHandle,
-  createMcpMountHandle,
-} from '$lib/server/mcp/mount-hooks';
+import { cacheControlOn404Handle, createMcpHandle } from '$lib/server/mcp/mount-hooks';
 import { isMcpEnabled } from '$lib/server/oauth/configuration';
 import { parseWebEnvironment } from '$lib/server/environment';
 
@@ -54,8 +50,7 @@ if (mcpMount) {
   process.once('SIGINT', disposeMcpMount);
 }
 
-const mcpIdentityHandle = createMcpIdentityHandle(getMcpMount);
-const mcpMountHandle = createMcpMountHandle(getMcpMount);
+const mcpHandle = createMcpHandle(getMcpMount);
 
 /**
  * Runs once before the server responds to its first request.
@@ -186,6 +181,5 @@ export const handle = sequence(
   respondWithJsonForApiEndpoints,
   authHandle,
   devAuthBypassHandle,
-  mcpIdentityHandle,
-  mcpMountHandle,
+  mcpHandle,
 );
