@@ -4,8 +4,12 @@ import { authorizeFormParameterNames, type RenderConsent } from '@lostgradient/m
 // into this standalone page. The consent screen is rendered by the mount seam,
 // outside the SvelteKit layout that normally links Cinder's CSS, so the styles
 // have to travel with the page — and inlining keeps it zero-request and
-// script-free (TRI-40 AC4).
-import cinderStyles from '@lostgradient/cinder/styles?inline';
+// script-free (TRI-40 AC4). Uses the all-in `styles/all` bundle, not the base
+// `styles` entry: the base bundle carries only tokens + foundation, so the
+// per-component rules (`.cinder-card`, `.cinder-button`, `.cinder-stack`) that
+// give this page its layout and chrome are absent from it. `styles/all` folds in
+// `components.css` and the utilities layer.
+import cinderStyles from '@lostgradient/cinder/styles/all?inline';
 import ConsentPrompt from './consent-prompt.svelte';
 import ConsentError from './consent-error.svelte';
 

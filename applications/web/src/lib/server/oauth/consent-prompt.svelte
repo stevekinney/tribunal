@@ -29,9 +29,15 @@
   } = $props();
 </script>
 
+<svelte:head>
+  <title>Authorize access</title>
+</svelte:head>
+
 <main class="consent">
   <Card>
-    <Stack direction="column" gap="var(--space-4)">
+    <!-- The page inlines only Cinder's stylesheet, not Tribunal's app tokens, so
+         every custom property used here carries a literal fallback. -->
+    <Stack direction="column" gap="var(--space-4, 1rem)">
       <h1>Authorize access</h1>
       <p>
         <strong>{clientName}</strong> is requesting access to your Tribunal account ({requesterLabel}).
@@ -45,7 +51,7 @@
           </li>
         {/each}
       </ul>
-      <Stack direction="row" gap="var(--space-3)" wrap>
+      <Stack direction="row" gap="var(--space-3, 0.75rem)" wrap>
         <form method="post" action="/oauth/authorize/approve">
           <input type="hidden" name={transactionIdField} value={transactionId} />
           <input type="hidden" name={csrfTokenField} value={csrfToken} />
@@ -66,6 +72,17 @@
     max-width: 32rem;
     margin: var(--space-8, 2rem) auto;
     padding: var(--space-4, 1rem);
+    /* A native client's loopback redirect URI or a long client name must not
+       force horizontal scroll on a narrow viewport. */
+    overflow-wrap: anywhere;
+  }
+
+  /* Cinder's buttons top out below the 44px touch-target minimum; this page's
+     entire interaction is these two buttons, and it is reachable from a mobile
+     MCP client, so enforce the minimum locally (a sanctioned :global override of
+     a component class). */
+  .consent :global(.cinder-button) {
+    min-height: var(--touch-target-min, 44px);
   }
 
   .consent__scopes {
