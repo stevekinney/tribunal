@@ -51,7 +51,11 @@ const discoveryRequest = () =>
 
 describe('MCP mount handle', () => {
   const getMount = (): Promise<TribunalMcpMount> =>
-    Promise.resolve({ mount: fixture.mount, dispose: fixture.dispose });
+    Promise.resolve({
+      mount: fixture.mount,
+      publishUserResourceUpdate: fixture.publishUserResourceUpdate,
+      dispose: fixture.dispose,
+    });
   const mcpHandle = createMcpHandle(getMount);
 
   it('primes identity and serves a mount-owned path in one handle', async () => {

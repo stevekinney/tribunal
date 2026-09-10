@@ -17,6 +17,10 @@ import { setLogger } from '@lostgradient/mcp';
 import { mcpLogger } from '$lib/server/mcp-logger';
 import { createTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
 import { cacheControlOn404Handle, createMcpHandle } from '$lib/server/mcp/mount-hooks';
+import {
+  clearResourceUpdatePublisher,
+  registerResourceUpdatePublisher,
+} from '$lib/server/mcp/resource-updates';
 import { isMcpEnabled } from '$lib/server/oauth/configuration';
 import { parseWebEnvironment } from '$lib/server/environment';
 
@@ -32,6 +36,19 @@ const mcpMount: Promise<TribunalMcpMount> | null =
 const getMcpMount = (): Promise<TribunalMcpMount> | null => mcpMount;
 
 if (mcpMount) {
+  // Register the mount's resource-update publisher so the review layer's
+  // producer (notifyReviewRunsChanged) can reach a live subscriber (TRI-126).
+  // Best-effort: a construction failure is logged (below) and leaves the
+  // notifier a no-op.
+  void mcpMount
+    .then((active) => registerResourceUpdatePublisher(active.publishUserResourceUpdate))
+    .catch((error) => {
+      // A mount that never constructs leaves the notifier unregistered (a
+      // no-op), which is safe — but the failure must be observable rather than
+      // swallowed, so the web process does not silently serve no MCP surface.
+      console.error('[hooks.server] MCP resource-update publisher registration failed', error);
+    });
+
   // Wire dispose into process termination so the mount's cleanup timer,
   // handler cache, and connection pool are released on shutdown. Nothing
   // disposes it merely because the module was imported. This satisfies AC3
@@ -40,6 +57,9 @@ if (mcpMount) {
   // mount, and coordinating with adapter-node's own signal handling — is
   // TRI-51's scope. adapter-node still owns process termination.
   const disposeMcpMount = (): void => {
+    // Clear the publisher first so a notification that races shutdown cannot
+    // reach the mount being torn down; then dispose the mount itself.
+    clearResourceUpdatePublisher();
     void mcpMount
       .then((active) => active.dispose())
       .catch((error) => {

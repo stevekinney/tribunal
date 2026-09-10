@@ -1,1 +1,1 @@
-export { createDatabase, runWithDatabase, type Database } from './connection';
+export { createDatabase, runWithDatabase, shouldUseNeonHttp, type Database } from './connection';

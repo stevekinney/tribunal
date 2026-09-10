@@ -23,6 +23,7 @@ import {
   effortSchema,
 } from '@tribunal/review-core/schemas';
 import { MAX_DAILY_COST_CAP_USD } from '@tribunal/review-core/review-cost-limits';
+import { notifyReviewRunsChanged } from '$lib/server/mcp/resource-updates';
 import { db } from '$lib/server/database';
 import {
   cancelReviewWorkflowsEngine,
@@ -1055,6 +1056,12 @@ export async function stopRun(userId: number, runId: string) {
   `);
 
   await signalEngineStop(runId);
+
+  // The run's status changed to cancelled, which is what the review-runs MCP
+  // resource surfaces, so notify the caller's live subscription (TRI-126). No-op
+  // when MCP is disabled or the caller has no subscription. stopAgent below does
+  // not touch tribunalRun status, so it does not notify.
+  notifyReviewRunsChanged(userId);
 
   return { ok: true };
 }

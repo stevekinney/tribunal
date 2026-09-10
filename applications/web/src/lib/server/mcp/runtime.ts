@@ -68,7 +68,18 @@ export function logAuthenticationEvent(
   mcpLogger.info({ outcome, requestId }, 'mcp authentication event');
 }
 
-export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRuntime {
+/**
+ * Tribunal's runtime is the library's `SvelteKitMcpRuntime` plus the handler's
+ * `publishUserResourceUpdate`, which the library type does not surface. The mount
+ * only consumes the four `SvelteKitMcpRuntime` methods; the extra one lets the
+ * host publish resource updates to a subscriber (TRI-126) — `mount.ts` threads it
+ * out to the review layer's producer.
+ */
+export type TribunalMcpRuntime = SvelteKitMcpRuntime & {
+  publishUserResourceUpdate(userId: string, uri: string): void;
+};
+
+export function createTribunalMcpRuntime(stores: OAuthStores): TribunalMcpRuntime {
   const handlerSeams: McpHandlerSeams = {
     reportDegradation: logHandlerDegradation,
     recordEvent: logHandlerEvent,
@@ -131,5 +142,6 @@ export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRunti
     shutdown: () => handler.shutdown(),
     publishGrantRevocation: (subjectId) => handler.publishGrantRevocation(subjectId),
     handle: (context) => servingLayer.handle(context),
+    publishUserResourceUpdate: (userId, uri) => handler.publishUserResourceUpdate(userId, uri),
   };
 }

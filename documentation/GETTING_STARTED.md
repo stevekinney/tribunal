@@ -36,13 +36,13 @@ cp .env.example .env
 
 Alternatively, fill in the required environment variables in `.env`:
 
-| Variable               | Description                                    | Notes                                                                                  |
-| ---------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `NODE_ENV`             | Runtime environment                            | `development`, `test`, or `production` (no default)                                    |
-| `DATABASE_URL`         | PostgreSQL connection string                   | Neon or local Postgres; production requires `sslmode=verify-full` for a non-local host |
-| `ENCRYPTION_KEY`       | 32-byte (64 hex char) key for token encryption | Generate with `openssl rand -hex 32`                                                   |
-| `PUBLIC_NEON_AUTH_URL` | Browser-facing Neon Auth URL                   | Managed Neon Auth service URL                                                          |
-| `NEON_AUTH_BASE_URL`   | Server-facing Neon Auth base URL               | Used for JWT issuer, audience, JWKS                                                    |
+| Variable               | Description                                    | Notes                                                                                                                                                        |
+| ---------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`             | Runtime environment                            | `development`, `test`, or `production` (no default)                                                                                                          |
+| `DATABASE_URL`         | PostgreSQL connection string                   | Neon or local Postgres; production requires `sslmode=verify-full` for a non-local, non-Neon host (a Neon host connects over HTTPS, where `sslmode` is inert) |
+| `ENCRYPTION_KEY`       | 32-byte (64 hex char) key for token encryption | Generate with `openssl rand -hex 32`                                                                                                                         |
+| `PUBLIC_NEON_AUTH_URL` | Browser-facing Neon Auth URL                   | Managed Neon Auth service URL                                                                                                                                |
+| `NEON_AUTH_BASE_URL`   | Server-facing Neon Auth base URL               | Used for JWT issuer, audience, JWKS                                                                                                                          |
 
 Configure Neon Auth outside this repository:
 

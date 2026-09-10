@@ -10,7 +10,7 @@ Tribunal is a single SvelteKit application (`applications/web`) backed by shared
 ### "Database connection failed"
 
 - Confirm `DATABASE_URL` is set and reachable.
-- If your Postgres provider requires TLS, include `?sslmode=verify-full` in the connection string. Production refuses to start with a non-local database on any weaker mode (`require` encrypts without verifying the certificate; `verify-ca` skips hostname verification).
+- If your Postgres provider requires TLS and is reached over `node-postgres` (a non-Neon host), include `?sslmode=verify-full` in the connection string. Production refuses to start with a non-local, non-Neon database on any weaker mode (`require` encrypts without verifying the certificate; `verify-ca` skips hostname verification). A Neon host (`*.neon.tech`, `*.neon.build`) is exempt — it connects over `neon-http`'s HTTPS transport, where `sslmode` is inert and certificate verification happens at the HTTPS layer.
 - Run `bun run scripts/doctor.ts` to verify environment variables and database connectivity.
 
 ## Build Issues
