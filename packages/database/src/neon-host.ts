@@ -12,8 +12,15 @@
  * re-exports `createDatabase` from `connection.ts`, which imports
  * `./schema`) would drag that whole graph in; importing this module directly
  * (`@tribunal/database/neon-host`) does not.
+ *
+ * A total function: an unparseable connection string returns `false` rather
+ * than throwing, since this is exported as a general-purpose boolean
+ * predicate and a caller should not need to guard it with `URL.canParse`
+ * first (`connection.ts`'s own `connect()` never did, and now that this is a
+ * public, reusable export, other callers should not have to either).
  */
 export function shouldUseNeonHttp(connectionString: string): boolean {
+  if (!URL.canParse(connectionString)) return false;
   const parsed = new URL(connectionString);
   return parsed.hostname.endsWith('.neon.tech') || parsed.hostname.endsWith('.neon.build');
 }

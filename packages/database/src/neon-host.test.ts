@@ -30,6 +30,13 @@ describe('shouldUseNeonHttp', () => {
     expect(shouldUseNeonHttp('postgresql://user:pass@neon.build.example.com/main')).toBe(false);
   });
 
+  it('returns false rather than throwing for an unparseable connection string', () => {
+    // Exported as a general-purpose predicate; a caller should not need to
+    // guard it with URL.canParse first.
+    expect(shouldUseNeonHttp('not a url')).toBe(false);
+    expect(shouldUseNeonHttp('')).toBe(false);
+  });
+
   it('rejects non-Neon hosts, including local hosts', () => {
     expect(shouldUseNeonHttp('postgres://tribunal:tribunal@localhost:5432/tribunal')).toBe(false);
     expect(
