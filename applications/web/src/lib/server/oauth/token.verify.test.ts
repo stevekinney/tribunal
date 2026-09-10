@@ -695,6 +695,13 @@ describe('token endpoint — refresh cannot widen scope (behaviour 3, TRI-38 sco
     const refreshed = (await response.json()) as TokenGrant;
     // Omission means "unchanged" — not "re-apply the full supported set".
     expect(scopeSet(refreshed)).toEqual(new Set(['repositories:read', 'reviews:read']));
+
+    // The rotated refresh token must still be bound to only the original two
+    // scopes, not the full default set: refreshing it up to a scope outside the
+    // original grant must fail, or omission would silently widen on the next hop.
+    const regain = await refreshWith(refreshed.refresh_token!, `${TWO_SCOPES} pull_requests:read`);
+    expect(regain.status).toBe(400);
+    expect(((await regain.json()) as { error?: string }).error).toBe('invalid_scope');
   });
 
   it('narrows the refresh token itself, so a later refresh cannot regain the dropped scope', async () => {
