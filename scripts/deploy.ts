@@ -1160,9 +1160,20 @@ function allowsPendingEngineMachine(
  * tribunal-web, TRI-125), require at least one of its existing Machines to
  * actually be `started`. A correct min_machines_running config is not
  * itself a warm Machine -- Fly can still leave the sole Machine stopped or
- * crashed between deploys. Skips an app with zero Machines entirely: that
- * is the expected state before its very first deploy, not a warm-Machine
- * violation.
+ * crashed between deploys.
+ *
+ * Skips an app with zero Machines entirely: that is the expected state
+ * before its very first deploy, not a warm-Machine violation. This cannot
+ * be narrowed further with signals currently available to this script --
+ * "zero Machines" is indistinguishable from "an operator manually
+ * destroyed the sole Machine outside of any deploy," which this check will
+ * therefore miss. That residual gap is accepted rather than closed: it
+ * requires a deliberate, unusual out-of-band action (bluegreen destroys
+ * only the *new*, unhealthy Machine on a failed deploy, never the old one,
+ * so this cannot happen through ordinary deploy failures), and it would
+ * likely surface through the public health-check gate independently. A
+ * `flyctl releases list` count could distinguish "never deployed" from
+ * "deployed before, Machine now gone" if this gap is ever worth closing.
  */
 function collectWarmMachineFailures(state: FlyState, failures: string[]): void {
   for (const app of Object.keys(EXPECTED_MIN_MACHINES_RUNNING) as Array<
