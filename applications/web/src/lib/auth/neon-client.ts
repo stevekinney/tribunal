@@ -207,10 +207,11 @@ export function getNeonAuthClient() {
  *
  * Scheduled (interval) refreshes ARE skipped while the tab is hidden
  * (`document.visibilityState === 'hidden'`), and a refresh fires once when
- * the tab becomes visible again. `deployment/fly/web.toml` sets
- * `auto_stop_machines = "stop"` / `min_machines_running = 0`; a tab that's
- * been switched away from or minimized would otherwise poll forever,
- * waking the web machine and Neon Postgres every five minutes and defeating
+ * the tab becomes visible again. `deployment/fly/web.toml` keeps one web
+ * Machine warm at all times (`min_machines_running = 1`, TRI-125), but Neon
+ * Postgres still suspends independently on its own idle timeout; a tab
+ * that's been switched away from or minimized would otherwise poll
+ * forever, waking Neon Postgres every five minutes and defeating its
  * scale-to-zero for no visible benefit to anyone. The leading call above is
  * unconditional -- it exists to cover a page that mounts deep into the
  * JWT's window, which can happen even if the tab starts out hidden.

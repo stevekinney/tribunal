@@ -7,8 +7,11 @@ that describe an in-process Weft engine are historical context unless they are
 explicitly scoped to web-only producer behavior.
 
 Tribunal deploys as three Fly application services plus managed Postgres and
-Redis. Public web/proxy Machines stop when idle; the private engine wakes
-through Flycast and exits after idle review work drains:
+Redis. `tribunal-proxy` stops its Machine when idle; `tribunal-web` keeps one
+Machine warm at all times (`min_machines_running = 1`, TRI-125) so a failed
+deploy has a previous version to fall back on instead of an instant outage;
+the private engine wakes through Flycast and exits after idle review work
+drains:
 
 - `tribunal-web`: public SvelteKit server for UI, API routes, and GitHub webhooks.
 - `tribunal-engine`: internal singleton review engine. This service owns

@@ -6,15 +6,20 @@ applyTo: '.github/workflows/**,.github/actions/**'
 
 These heuristics reflect Tribunal's actual workflows. CI runs lint, type-check,
 unit tests, browser/Storybook tests with Playwright, and database migration
-checks. All workflows currently request only `contents: read`; there are no
-AI-review or PR-commenting jobs.
+checks. Every workflow's top-level `permissions:` is `contents: read`; the one
+narrowly scoped exception is `deploy-production.yml`'s `notify-on-failure` job,
+which requests job-level `issues: write` (replacing, not adding to, the
+workflow default) to open an incident issue on a failed production deploy
+(TRI-125). There are no AI-review or PR-commenting jobs.
 
 ## Permissions
 
 - Grant only the permissions a workflow actually needs. Default to `contents: read`.
 - Do not add `pull-requests: write`, `id-token: write`, or other elevated scopes
   unless a job genuinely posts comments, authenticates via OIDC, or otherwise
-  requires them. No current workflow does.
+  requires them. `deploy-production.yml`'s `notify-on-failure` job is the one
+  current exception (job-level `issues: write`, justified above); no other
+  workflow or job needs elevated scope.
 
 ## Concurrency control
 

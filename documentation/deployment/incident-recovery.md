@@ -21,6 +21,8 @@ Compare the `GH_SHA` label against the commit the failed workflow run attempted 
 
 Re-running the failed `Deploy Production` workflow run does not work once `main` has advanced: the `Verify deploy commit is current main` step deliberately refuses to deploy a commit that is no longer `origin/main`'s tip. That guard exists because deploying a stale commit is its own hazard (see `.claude/rules/deployment-configuration.md`); it also means "just re-run it" stops being an option as soon as anything else merges.
 
+**This procedure below only restores the container image.** It does not touch `deployment/fly/web.toml` (the config committed on `main` at deploy time keeps applying to the redeployed image) and it does not touch Fly secrets (the app's _current_ secrets apply, not whatever was set historically). If the failure was caused by an image regression—bad application code, like the TRI-124 incident—this is the right tool. If it was caused by a bad `web.toml` change (an invalid port, a broken health-check path) or a bad secret, redeploying an old image reproduces or fails to fix that broken runtime state; instead revert or forward-fix the config/secret directly (`git revert` the offending commit and let the next `Deploy Production` run apply it, or `flyctl secrets set` the corrected value), independent of which image is running.
+
 Restore service by redeploying the last known-good image directly through Fly, bypassing GitHub Actions (and therefore the currency guard) entirely. This targets Fly's own release history, so it does not depend on git state at all:
 
 ```sh
@@ -39,7 +41,11 @@ Move to the next-older row if that prints anything other than `success`. Once yo
 flyctl releases --image --app tribunal-web --json
 ```
 
-From the `flyctl releases` output, find the most recent release with `"Status": "complete"` whose `CreatedAt` is at or before the confirmed run's `updatedAt` (a release with any other status, or one created after that run finished, is not a safe target), and copy its `ImageRef` (for example `registry.fly.io/tribunal-web:deployment-01ABCDEFGHJKMNPQRSTVWXYZ`), then:
+From the `flyctl releases` output, find the most recent release with `"Status": "complete"` whose `CreatedAt` is at or before the confirmed run's `updatedAt` (a release with any other status, or one created after that run finished, is not a safe target), and copy its `ImageRef` (for example `registry.fly.io/tribunal-web:deployment-01ABCDEFGHJKMNPQRSTVWXYZ`).
+
+`.github/workflows/deploy-production.yml` runs `bun run db:migrate` before every service deploy, so if the failed run got past that step, the database is already at the _new_ schema—redeploying an older binary against it is only safe if that older binary is still compatible with the new schema. Check `packages/database/MIGRATIONS.md` and the migrations that landed since the image you're about to restore: an additive, backward-compatible migration (the documented multi-phase pattern for anything else) is fine; a migration that removed or renamed a column the old binary still reads is not. If the old binary is not schema-compatible, redeploying it does not fix the outage—forward-fix and deploy current `main` instead (see `documentation/DATABASE.md`'s migration-problem guidance), or restore the database from a pre-migration state only as a last resort with explicit authorization, since that is a destructive, data-losing operation.
+
+Once compatibility is confirmed:
 
 ```sh
 flyctl deploy --image <image-ref> --config deployment/fly/web.toml --app tribunal-web
