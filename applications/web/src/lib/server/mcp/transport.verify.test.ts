@@ -381,15 +381,31 @@ describe('MCP transport — the authentication order survives the hook chain (be
     expect(response.status).toBe(204);
   });
 
-  it('rejects a disallowed Origin before looking up the token (step 2 before step 7)', async () => {
-    // A cross-site Origin AND an invalid token: if the Origin gate runs first this
-    // is 403; a regressed order that looked the token up first would surface the
-    // token failure as 401. Asserting 403 is what distinguishes the two.
+  it('rejects a DNS-rebinding request before Origin or token processing (step 1)', async () => {
+    // The mounted surface is loopback (mcpBaseUrl defaults to localhost), so a
+    // request carrying a non-localhost Origin is the DNS-rebinding signature. With
+    // an invalid token too: rebinding (step 1) refuses it 403 with its own message,
+    // ahead of the Origin allowlist (step 2, a different 403) and the token lookup
+    // (401). The message is what distinguishes step 1 from step 2.
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
       token: 'not-a-real-token',
       origin: 'https://attacker.example',
     });
     expect(response.status).toBe(403);
+    expect(await response.text()).toContain('rebinding');
+  });
+
+  it('rejects a disallowed Origin before looking up the token (step 2 before step 7)', async () => {
+    // A localhost Origin on the wrong port passes rebinding (step 1, both host and
+    // origin are localhost) but fails the Origin allowlist (step 2). With an invalid
+    // token: Origin-first is 403; a regressed lookup-first would surface 401. The
+    // message confirms it is the Origin rejection, not rebinding.
+    const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: 'not-a-real-token',
+      origin: 'http://localhost:1',
+    });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain('Origin is not allowed');
   });
 
   it('rejects a non-Bearer scheme before looking up the credential (step 5 before step 7)', async () => {
@@ -445,11 +461,21 @@ describe('MCP transport — the authentication order survives the hook chain (be
       });
       expect(failed.status).toBe(401);
     }
-    const lockedOut = await mcpRequest(initializeMessage(LEGACY_ERA), {
-      token: accessToken,
-      clientAddress: lockoutAddress,
-    });
-    expect(lockedOut.status).toBe(429);
+    // Spy the token lookup: once locked out, a valid token must be refused 429
+    // WITHOUT the store being queried. A regression that looked the token up before
+    // (or instead of) the lockout check would call findByHash and still 429, which
+    // a status-only assertion could not catch.
+    const findByHash = vi.spyOn(fixture.stores.tokens, 'findByHash');
+    try {
+      const lockedOut = await mcpRequest(initializeMessage(LEGACY_ERA), {
+        token: accessToken,
+        clientAddress: lockoutAddress,
+      });
+      expect(lockedOut.status).toBe(429);
+      expect(findByHash).not.toHaveBeenCalled();
+    } finally {
+      findByHash.mockRestore();
+    }
   });
 
   it('rejects a token minted for a different resource, indistinguishably from an unknown token (step 8, OBS-001)', async () => {
