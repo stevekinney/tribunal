@@ -7,8 +7,11 @@ that describe an in-process Weft engine are historical context unless they are
 explicitly scoped to web-only producer behavior.
 
 Tribunal deploys as three Fly application services plus managed Postgres and
-Redis. Public web/proxy Machines stop when idle; the private engine wakes
-through Flycast and exits after idle review work drains:
+Redis. `tribunal-proxy` stops its Machine when idle; `tribunal-web` keeps one
+Machine warm at all times (`min_machines_running = 1`, TRI-125) so a failed
+deploy has a previous version to fall back on instead of an instant outage;
+the private engine wakes through Flycast and exits after idle review work
+drains:
 
 - `tribunal-web`: public SvelteKit server for UI, API routes, and GitHub webhooks.
 - `tribunal-engine`: internal singleton review engine. This service owns
@@ -41,11 +44,11 @@ dotenv files.
 
 ## Service Contract
 
-| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                |
-| ----------------- | ------ | ---- | ----------- | ------------------ | --------------------------- |
-| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | one Machine, stop on idle   |
-| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | one Machine, self-exit idle |
-| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | one Machine, stop on idle   |
+| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                                                               |
+| ----------------- | ------ | ---- | ----------- | ------------------ | -------------------------------------------------------------------------- |
+| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | one Machine, always warm (`min_machines_running = 1`, `bluegreen` deploys) |
+| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | one Machine, self-exit idle                                                |
+| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | one Machine, stop on idle                                                  |
 
 Do not wire services through `localhost` in production. Fly app-to-app traffic
 that must wake stopped private Machines uses Flycast:
@@ -290,8 +293,8 @@ The workflow performs these steps:
    `flyctl scale count 1 --yes --app <app>` after each deploy.
 7. Verify the Neon production endpoint reports `suspend_timeout_seconds=300`.
 8. Run every health gate below plus explicit checks that each app has exactly
-   one non-destroyed Machine, web/proxy stop on idle, and the engine has private
-   Flycast ingress only.
+   one non-destroyed Machine, web keeps a Machine warm (`min_machines_running = 1`) while proxy
+   stops on idle, and the engine has private Flycast ingress only.
 
 The pre-deploy live-state check permits `TRIBUNAL_SANDBOX_IMAGE` to be missing
 because the workflow refreshes that secret in the same run, and permits zero
@@ -418,22 +421,40 @@ Re-run every health gate after enabling live reviews.
 
 ## Rollback
 
-Rollback in reverse dependency order when a deploy breaks health:
+`flyctl releases rollback` is not a valid subcommand on the Machines platform
+this project uses (`flyctl releases rollback --help` silently falls back to
+`flyctl releases --help` and exits `0` rather than erroring on an unknown
+subcommand—verified against the installed `flyctl`). Roll back in reverse
+dependency order by redeploying each app's last known-good image directly.
+
+Before running any of these commands: run them from a clean, up-to-date
+`main` checkout (`--config` reads that file from your local checkout, not a
+pinned commit), and if migrations have run since the image you're
+restoring, confirm that older binary is still schema-compatible—see
+[`documentation/deployment/incident-recovery.md`](./incident-recovery.md#recovery-when-the-failed-commit-is-behind-main)
+for the full reasoning and commands for both of these; it applies here too,
+not only to a failed `Deploy Production` run.
 
 ```sh
-flyctl releases list -a tribunal-web
-flyctl releases rollback <version> -a tribunal-web
+flyctl releases --image -a tribunal-web --json
+flyctl deploy --image <image-ref> --config deployment/fly/web.toml -a tribunal-web
 
-flyctl releases list -a tribunal-engine
-flyctl releases rollback <version> -a tribunal-engine
+flyctl releases --image -a tribunal-engine --json
+flyctl deploy --image <image-ref> --config deployment/fly/engine.toml -a tribunal-engine
 flyctl scale count 1 --yes -a tribunal-engine
 
-flyctl releases list -a tribunal-proxy
-flyctl releases rollback <version> -a tribunal-proxy
+flyctl releases --image -a tribunal-proxy --json
+flyctl deploy --image <image-ref> --config deployment/fly/proxy.toml -a tribunal-proxy
 ```
 
 After any rollback, re-run the health gates and verify the engine still has
 exactly one Machine.
+
+If a `Deploy Production` GitHub Actions run itself failed (rather than a
+manually-triggered rollback), use
+[`documentation/deployment/incident-recovery.md`](./incident-recovery.md)
+instead: it covers the case where the failed commit is no longer `main`'s
+tip, where the built-in currency guard blocks a simple workflow re-run.
 
 ## Local Verification
 

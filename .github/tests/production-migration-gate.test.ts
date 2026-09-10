@@ -222,3 +222,99 @@ describe('deploy-production.yml: production migration gate', () => {
     expect(steps[validateIndex]?.run ?? '').toMatch(/exit 1/);
   });
 });
+
+/**
+ * TRI-125: `notify-on-failure` is exempted from the untrusted-privileged-job
+ * check in `workflow-policy.ts` (`UNTRUSTED_TRIGGER_EXEMPTIONS`) rather than
+ * authorization-gated, on the argument that `needs: deploy` transitively
+ * inherits `deploy`'s own proven push-to-main-or-authenticated-dispatch
+ * gate (asserted above). These tests hold that argument to its actual
+ * shape, so a future edit that widens the condition or drops the `needs:`
+ * link invalidates the exemption's reasoning loudly, in CI, rather than
+ * silently.
+ */
+describe('deploy-production.yml: notify-on-failure exemption stays honest', () => {
+  const { workflow } = loadWorkflow('deploy-production.yml');
+  const notify = workflow.jobs['notify-on-failure'];
+
+  test('the notify-on-failure job exists', () => {
+    expect(notify).toBeDefined();
+  });
+
+  test('notify-on-failure needs exactly the deploy job, nothing else', () => {
+    const needs = Array.isArray(notify.needs) ? notify.needs : [notify.needs];
+    expect(needs).toEqual(['deploy']);
+  });
+
+  /**
+   * The exemption's safety argument depends on this condition being
+   * NOTHING but a check of `deploy`'s own result -- no actor check, no
+   * alternate truth path, no reference to any job outside its `needs:`.
+   * Asserting the exact string (rather than `toMatch` substrings) closes
+   * the same disjunctive-escape-hatch hole B8/C7 close for the `deploy`
+   * job's own condition above: a substring check would still pass if
+   * `|| github.actor == 'someone'` were prepended.
+   */
+  test('notify-on-failure fires only for a deploy result of failure or cancelled, excluding an intentionally stale-rejected deploy, always-evaluated', () => {
+    expect((notify.if ?? '').trim()).toBe(
+      "always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') && needs.deploy.outputs.stale_deploy != 'true'",
+    );
+  });
+
+  /**
+   * The `stale_deploy` exclusion above is only meaningful if `deploy`
+   * actually exposes that output, and if the step that sets it writes it
+   * BEFORE the `exit 1` that makes the step (and the job) fail -- a step
+   * that fails before reaching its own output-write leaves the output
+   * unset, which `!= 'true'` treats as "not stale", defeating the
+   * exclusion for the exact case it exists to cover.
+   */
+  test('deploy exposes stale_deploy from the current-main verification step, written before it can fail', () => {
+    const deployJob = workflow.jobs.deploy;
+    expect(deployJob.outputs).toEqual({
+      stale_deploy: '${{ steps.verify_current_main.outputs.stale }}',
+    });
+
+    const steps = deployJob.steps ?? [];
+    const verifyStep = steps.find((step) => step.name === 'Verify deploy commit is current main');
+    expect(verifyStep?.id).toBe('verify_current_main');
+
+    const runLines = (verifyStep?.run ?? '').split('\n');
+    const outputWriteIndex = runLines.findIndex((line) => line.includes('stale=true'));
+    const exitIndex = runLines.findIndex((line) => line.trim() === 'exit 1');
+    expect(outputWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThanOrEqual(0);
+    expect(outputWriteIndex).toBeLessThan(exitIndex);
+  });
+
+  test('notify-on-failure requests no permission beyond issues: write', () => {
+    expect(notify.permissions).toEqual({ issues: 'write' });
+  });
+
+  /**
+   * The only content this job writes anywhere (a GitHub issue title/body)
+   * must come from a commit SHA and a numeric run ID, never from event
+   * text an untrusted actor could have authored (an issue, PR, comment, or
+   * discussion title/body -- the exact fragments `UNTRUSTED_EXPRESSION_
+   * FRAGMENTS` in workflow-policy.ts already tracks as attacker-controlled
+   * elsewhere in this suite).
+   */
+  test('notify-on-failure interpolates only a commit SHA and a run URL, never attacker-controlled event text', () => {
+    const steps = notify.steps ?? [];
+    const envText = steps.map((step) => JSON.stringify(step.env ?? {})).join('\n');
+    expect(envText).toMatch(/DEPLOY_SHA/);
+    expect(envText).toMatch(/RUN_URL/);
+    for (const fragment of [
+      'event.issue.title',
+      'event.issue.body',
+      'event.pull_request.title',
+      'event.pull_request.body',
+      'event.comment.body',
+      'event.review.body',
+      'event.discussion.title',
+      'event.discussion.body',
+    ]) {
+      expect(envText).not.toContain(fragment);
+    }
+  });
+});
