@@ -409,6 +409,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
           title="Production deploy failed: ${DEPLOY_SHA}"
@@ -432,6 +433,6 @@ jobs:
             "- Workflow run: ${RUN_URL}" \
             "- See \`documentation/deployment/incident-recovery.md\` for the recovery runbook." \
             "" \
-            "This issue was opened automatically because the \`deploy\` job in \`Deploy Production\` concluded \`failure\`.")"
+            "This issue was opened automatically because the \`deploy\` job in \`Deploy Production\` concluded \`${DEPLOY_RESULT}\` (a \`cancelled\` result includes the 45-minute job timeout).")"
 
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label bug --body "$body"
