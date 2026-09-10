@@ -40,8 +40,11 @@ async function registerClient(body: Record<string, unknown>): Promise<Record<str
     }),
   );
   const parsed = (await response.json()) as Record<string, unknown>;
-  if (response.status !== 201 && response.status !== 200) {
-    throw new Error(`registration failed (${response.status}): ${JSON.stringify(parsed)}`);
+  // RFC 7591 §3.2.1: a successful registration returns 201 Created. Requiring it
+  // (not merely a 2xx) makes the registration behaviours below fail if the
+  // handler regresses to 200 while keeping its body.
+  if (response.status !== 201) {
+    throw new Error(`registration expected 201, got ${response.status}: ${JSON.stringify(parsed)}`);
   }
   return parsed;
 }
@@ -116,7 +119,14 @@ async function mintCode(
     }),
     { user: applicationUser },
   );
-  const location = new URL(approved.headers.get('location')!);
+  // Fail with the actual response rather than an opaque `new URL(null)` throw if
+  // approve ever stops issuing a redirect.
+  if (approved.status !== 302) {
+    throw new Error(`approve expected 302, got ${approved.status}: ${await approved.text()}`);
+  }
+  const locationHeader = approved.headers.get('location');
+  if (!locationHeader) throw new Error('approve returned no location header');
+  const location = new URL(locationHeader);
   const code = location.searchParams.get('code');
   if (!code) throw new Error(`approve did not issue a code: ${location.href}`);
   return code;
@@ -127,7 +137,13 @@ type TokenGrant = {
   refresh_token?: string;
   token_type: string;
   expires_in?: number;
+  scope?: string;
 };
+
+/** The granted scopes as a set, for subset/equality checks that ignore ordering. */
+function scopeSet(grant: TokenGrant): Set<string> {
+  return new Set((grant.scope ?? '').split(' ').filter(Boolean));
+}
 
 /** Exchanges an authorization code for a token grant on the public PKCE client. */
 async function exchangeCode(
@@ -248,7 +264,7 @@ describe('token + revoke + registration handlers respond through the mount (beha
     expect(body.refresh_token).toBeTruthy();
   });
 
-  it('answers the revoke endpoint (RFC 7009 always-200) for an issued token', async () => {
+  it('revokes a refresh token — the endpoint answers 200 and the token then fails to grant', async () => {
     const code = await mintCode(publicClientId);
     const { body } = await exchangeCode(code);
     const response = await fixture.handle(
@@ -260,6 +276,17 @@ describe('token + revoke + registration handlers respond through the mount (beha
     );
     // RFC 7009: the revoke endpoint returns 200 whether or not the token existed.
     expect(response.status).toBe(200);
+
+    // The 200 alone cannot distinguish a real revocation from a no-op, so assert
+    // the observable effect: the revoked refresh token no longer grants.
+    const afterRevoke = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: body.refresh_token!,
+      client_id: publicClientId,
+      resource: RESOURCE,
+    });
+    expect(afterRevoke.status).toBe(400);
+    expect(((await afterRevoke.json()) as { error?: string }).error).toBe('invalid_grant');
   });
 });
 
@@ -279,11 +306,8 @@ describe('token endpoint — PKCE S256 is enforced at exchange (behaviour 2)', (
     // Discriminating for S256 *enforcement* rather than mere challenge-length
     // validation: a valid-length challenge presented with code_challenge_method=
     // plain must still be refused, so no code is issued.
-    const response = await fixture.handle(
-      new Request(authorizeUrl(publicClientId, { code_challenge_method: 'plain' })),
-      {
-        user: applicationUser,
-      },
+    const response = await getAuthorize(
+      authorizeUrl(publicClientId, { code_challenge_method: 'plain' }),
     );
     // Either a direct 400 or an error redirect — both refuse to issue a code.
     if (response.status === 302) {
@@ -429,6 +453,12 @@ describe('token endpoint — refresh replay revokes the whole family (behaviour 
     const code = await mintCode(publicClientId);
     const { body: first } = await exchangeCode(code);
 
+    // An independent grant for the same user/client. It must survive the replay
+    // below — otherwise a replay that revoked every token for the user or client
+    // (logging them out of unrelated sessions) would pass this test too.
+    const { body: bystander } = await exchangeCode(await mintCode(publicClientId));
+    expect((await callMcp(bystander.access_token)).status).not.toBe(401);
+
     // Rotate the refresh token. This library revokes the prior access token on
     // rotation, so the rotated access token — not the original — is the one still
     // valid, and is the controlled subject the replay must then revoke.
@@ -462,5 +492,63 @@ describe('token endpoint — refresh replay revokes the whole family (behaviour 
     // unusable at /mcp — the family's access tokens are revoked, not only its
     // refresh tokens.
     expect((await callMcp(rotatedBody.access_token)).status).toBe(401);
+
+    // The independent grant is untouched: revocation is scoped to the compromised
+    // family, not the whole user/client.
+    expect((await callMcp(bystander.access_token)).status).not.toBe(401);
+  });
+});
+
+/**
+ * Refresh grants must not widen scope (mcp-scopes.md's explicit TRI-38
+ * requirement, per RFC 6749 §6): an explicit scope on refresh must be a subset
+ * of what the token already carries, omission keeps the existing grant, and
+ * narrowing is allowed. Without this a client granted a narrow token could
+ * refresh into more scope with no user present to consent.
+ */
+describe('token endpoint — refresh cannot widen scope (behaviour 3, TRI-38 scope rule)', () => {
+  const TWO_SCOPES = 'repositories:read reviews:read';
+
+  async function grantTwoScopes(): Promise<TokenGrant> {
+    const code = await mintCode(publicClientId, { scope: TWO_SCOPES });
+    const { body } = await exchangeCode(code);
+    return body;
+  }
+
+  function refreshWith(refreshToken: string, scope?: string): Promise<Response> {
+    return tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: publicClientId,
+      resource: RESOURCE,
+      ...(scope === undefined ? {} : { scope }),
+    });
+  }
+
+  it('rejects a refresh that asks for a scope outside the original grant with invalid_scope', async () => {
+    const grant = await grantTwoScopes();
+    const response = await refreshWith(
+      grant.refresh_token!,
+      'repositories:read reviews:read pull_requests:read',
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error?: string }).error).toBe('invalid_scope');
+  });
+
+  it('keeps the existing granted scope when the refresh omits scope', async () => {
+    const grant = await grantTwoScopes();
+    const response = await refreshWith(grant.refresh_token!);
+    expect(response.status).toBe(200);
+    const refreshed = (await response.json()) as TokenGrant;
+    // Omission means "unchanged" — not "re-apply the full supported set".
+    expect(scopeSet(refreshed)).toEqual(new Set(['repositories:read', 'reviews:read']));
+  });
+
+  it('allows a refresh to narrow to a subset of the original grant', async () => {
+    const grant = await grantTwoScopes();
+    const response = await refreshWith(grant.refresh_token!, 'repositories:read');
+    expect(response.status).toBe(200);
+    const refreshed = (await response.json()) as TokenGrant;
+    expect(scopeSet(refreshed)).toEqual(new Set(['repositories:read']));
   });
 });
