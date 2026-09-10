@@ -135,6 +135,9 @@ export function createTribunalMcpRuntime(stores: OAuthStores): TribunalMcpRuntim
     rateLimiter,
     concurrencyLimiter,
     handler,
+    // Apply the server-only-closeable tag to the final listen response (0.2.3+):
+    // the serving layer owns the response after its CORS + concurrency re-wraps.
+    markServerOnlyCloseableStream,
   });
 
   return {

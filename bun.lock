@@ -78,7 +78,7 @@
         "@lostgradient/cinder": "0.25.0",
         "@lostgradient/editor": "0.13.0",
         "@lostgradient/markdown": "0.4.0",
-        "@lostgradient/mcp": "0.2.2",
+        "@lostgradient/mcp": "0.2.3",
         "@lostgradient/weft": "0.20.0",
         "@milkdown/ctx": "^7.22.1",
         "@milkdown/kit": "^7.22.1",
@@ -2399,6 +2399,8 @@
     "@rollup/pluginutils/estree-walker": ["estree-walker@2.0.2", "", {}, "sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w=="],
 
     "@rollup/pluginutils/picomatch": ["picomatch@4.0.3", "", {}, "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q=="],
+
+    "@tribunal/web/@lostgradient/mcp": ["@lostgradient/mcp@0.2.3", "", { "dependencies": { "@modelcontextprotocol/client": "^2.0.0", "@modelcontextprotocol/core": "^2.0.0", "@modelcontextprotocol/ext-apps": "^1.7.5", "@modelcontextprotocol/node": "^2.0.0", "@modelcontextprotocol/server": "^2.0.0", "drizzle-orm": "^0.45.2", "pino": "^10.3.1", "zod": "^4.4.3" } }, "sha512-AVhnsYrt9vq93bi0FfgAUr6stSCrDbxo4tWQgUQmkEEc/zIwV2f3BLyJHVX7WTOwaO6ux8cDYDN2oAZ+v7LTNQ=="],
 
     "@triplit/db/nanoid": ["nanoid@5.1.11", "", { "bin": { "nanoid": "bin/nanoid.js" } }, "sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg=="],
 

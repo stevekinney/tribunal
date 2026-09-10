@@ -8,6 +8,7 @@ import { user } from '@tribunal/database/schema';
 import { mcpBaseUrl, mcpResourceUrl, mcpRuntimeLimits } from '$lib/server/oauth/configuration';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 import { REVIEW_RUNS_RESOURCE_URI } from '$lib/server/mcp/resource-updates';
+import { isServerOnlyCloseableStream } from '$lib/server/mcp/stream-lifecycle';
 import { hashWithSha256 } from '$lib/server/encryption';
 
 /**
@@ -611,4 +612,30 @@ describe('MCP transport — idle streams survive under adapter-node/Node (behavi
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 30_000);
+});
+
+describe('MCP transport — listen streams are server-only-closeable through the mount (behaviour 8)', () => {
+  it('tags the subscriptions/listen response so the graceful-shutdown drain will not force-close it', async () => {
+    // A raw legacy listen POST returns a long-lived SSE stream. With
+    // @lostgradient/mcp 0.2.3 (TRI-128) the serving layer applies the
+    // server-only-closeable tag to the FINAL response — the object the mount
+    // returns — so it survives the engine's CORS + concurrency re-wraps and a
+    // drain (TRI-51) can recognize it here.
+    const response = await mcpRequest(
+      {
+        jsonrpc: '2.0',
+        id: 8,
+        method: 'subscriptions/listen',
+        params: { notifications: { resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI] } },
+      },
+      { token: reviewsToken },
+    );
+    try {
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      expect(isServerOnlyCloseableStream(response)).toBe(true);
+    } finally {
+      await response.body?.cancel().catch(() => {});
+    }
+  });
 });
