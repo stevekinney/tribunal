@@ -13,6 +13,7 @@ import { mcpLogger } from '$lib/server/mcp-logger';
 import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 import { resolveUserProfile } from '$lib/server/oauth/identity';
 import { conformanceSurfaceEnabled } from '$lib/server/mcp/conformance-surface';
+import { markServerOnlyCloseableStream } from '$lib/server/mcp/stream-lifecycle';
 import {
   MCP_PROTOCOL_VERSION,
   mcpAllowedOrigins,
@@ -72,6 +73,9 @@ export function createTribunalMcpRuntime(stores: OAuthStores): SvelteKitMcpRunti
     reportDegradation: logHandlerDegradation,
     recordEvent: logHandlerEvent,
     onError: logHandlerError,
+    // Tag long-lived listen streams so a graceful-shutdown drain excludes them
+    // (TRI-43); the drain that consults the tag is TRI-51's.
+    markServerOnlyCloseableStream,
   };
 
   const handler = createMcpServingHandler({
