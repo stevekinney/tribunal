@@ -392,21 +392,37 @@ describe('MCP transport — the authentication order survives the hook chain (be
     expect(response.status).toBe(403);
   });
 
-  it('rejects a non-Bearer authorization scheme (step 5)', async () => {
-    // No Origin (accepted, AC5) so the scheme check is the operative boundary; a
-    // Basic credential is refused on scheme, never looked up.
+  it('rejects a non-Bearer scheme before looking up the credential (step 5 before step 7)', async () => {
+    // The credential IS a valid bearer token, but presented under the Basic
+    // scheme. Scheme-first rejects it 401; a regression that ignored the scheme
+    // and looked the credential up would succeed (200). Asserting 401 distinguishes
+    // the two.
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
       token: null,
-      headers: { authorization: 'Basic dXNlcjpwYXNz' },
+      headers: { authorization: `Basic ${accessToken}` },
     });
     expect(response.status).toBe(401);
   });
 
   it('rejects an over-length bearer token before any token lookup (step 6 before step 7)', async () => {
-    // One character over the configured maximum: refused on length, never hashed
-    // or looked up. Asserted against the imported limit, not a literal (the issue's
-    // 512 is Protokit's number; Tribunal configures 4096).
+    // Seed a genuinely valid grant whose token is one character over the maximum,
+    // for THIS resource, so a regression that hashed and looked it up before the
+    // length check would return 200. The length gate must refuse it 401 first.
+    // Asserted against the imported limit, not a literal (the issue's 512 is
+    // Protokit's number; Tribunal configures 4096).
     const overLong = 'a'.repeat(mcpRuntimeLimits.maximumBearerTokenLength + 1);
+    await fixture.stores.tokens.issueAuthorizationGrant({
+      accessToken: {
+        accessTokenHash: hashWithSha256(overLong),
+        clientId: registeredClientId,
+        userId: String(applicationUser.id),
+        scope: 'reviews:read',
+        resource: RESOURCE,
+        expiresAt: new Date(Date.now() + 3_600_000),
+        revokedAt: null,
+        createdAt: new Date(),
+      },
+    });
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), { token: overLong });
     expect(response.status).toBe(401);
   });
@@ -471,10 +487,13 @@ describe('MCP transport — the authentication order survives the hook chain (be
     expect(audienceMismatch.headers.get('content-type')).toBe(
       unknownToken.headers.get('content-type'),
     );
-    // Compare the full header set so any future divergence (cache, rate-limit, a
-    // new error header) that would let a client tell the two apart fails here.
-    const headerNames = (response: Response) => [...response.headers.keys()].sort();
-    expect(headerNames(audienceMismatch)).toEqual(headerNames(unknownToken));
+    // Compare the full normalized header set — names AND values — so any future
+    // divergence (a differing Cache-Control, rate-limit, or new auth header) that
+    // would let a client tell the two apart fails here. Only Date is excluded, as
+    // the two responses are produced a moment apart.
+    const headerEntries = (response: Response) =>
+      [...response.headers.entries()].filter(([name]) => name !== 'date').sort();
+    expect(headerEntries(audienceMismatch)).toEqual(headerEntries(unknownToken));
     expect(await audienceMismatch.text()).toBe(await unknownToken.text());
   });
 });
