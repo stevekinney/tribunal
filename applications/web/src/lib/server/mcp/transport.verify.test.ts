@@ -193,11 +193,13 @@ describe('MCP transport — both protocol eras through the mount (behaviour 1)',
     const client = await connectClient('modern');
     try {
       expect(client.getProtocolEra()).toBe('modern');
-      // Tribunal's registry is deliberately tools-only (registry.ts: resources
-      // []), so the modern era advertises tools and no resources capability —
-      // there is no resources.subscribe to offer. (TRI-43 disposition.)
+      // TRI-126 added the tribunal://review-runs resource, so the modern era now
+      // advertises the resources capability with subscribe support (AC1). The
+      // through-mount grant/refusal of resources/read is proven in
+      // review-run-resource.mount.test.ts; here we assert the era negotiation
+      // surfaces the capability at all.
       expect(client.getServerCapabilities()?.tools).toBeDefined();
-      expect(client.getServerCapabilities()?.resources).toBeUndefined();
+      expect(client.getServerCapabilities()?.resources?.subscribe).toBe(true);
     } finally {
       await client.close();
     }
