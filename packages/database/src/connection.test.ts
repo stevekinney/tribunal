@@ -69,6 +69,24 @@ describe('createDatabase', () => {
     expect(drizzleNeonHttp).not.toHaveBeenCalled();
   });
 
+  it('does not leak an embedded credential in the malformed-connection-string error', async () => {
+    // The error message must not interpolate the connection string: it may
+    // carry embedded credentials, and this error can surface in
+    // scripts/doctor.ts diagnostic output or an uncaught startup error.
+    const { createDatabase } = await import('./connection');
+
+    let thrown: unknown;
+    try {
+      createDatabase('postgres://user:secret@');
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).not.toContain('secret');
+    expect((thrown as Error).message).toBe('Invalid database connection string');
+  });
+
   describe('deferred connection string', () => {
     it('defers connecting until a property is first accessed', async () => {
       const { createDatabase } = await import('./connection');

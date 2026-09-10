@@ -20,7 +20,11 @@ function connect(connectionString: string): Database {
   // node-postgres, which can interpret a malformed value using default
   // connection parameters and target an unintended host/database.
   if (!URL.canParse(connectionString)) {
-    throw new Error(`Invalid database connection string: ${connectionString}`);
+    // Deliberately does not interpolate the connection string: it may carry
+    // embedded credentials (postgres://user:password@host/db), and this
+    // error can surface in scripts/doctor.ts diagnostic output or an
+    // uncaught startup error in scripts that don't validate first.
+    throw new Error('Invalid database connection string');
   }
 
   if (shouldUseNeonHttp(connectionString)) {

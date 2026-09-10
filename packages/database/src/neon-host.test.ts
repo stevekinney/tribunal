@@ -37,6 +37,18 @@ describe('shouldUseNeonHttp', () => {
     expect(shouldUseNeonHttp('')).toBe(false);
   });
 
+  it('rejects a Neon-hostname URL with a non-Postgres scheme', () => {
+    // A matching hostname is not enough: z.string().url() accepts
+    // https://db.example.neon.tech/main as a generically valid URL, but the
+    // Neon HTTP driver requires a postgres:/postgresql: connection string.
+    // Without this check, environment.ts would exempt a value from the
+    // production TLS check that isn't a valid PostgreSQL connection string
+    // at all, deferring the real failure from boot-time environment
+    // validation to first database use.
+    expect(shouldUseNeonHttp('https://db.example.neon.tech/main')).toBe(false);
+    expect(shouldUseNeonHttp('http://db.example.neon.build/main')).toBe(false);
+  });
+
   it('rejects non-Neon hosts, including local hosts', () => {
     expect(shouldUseNeonHttp('postgres://tribunal:tribunal@localhost:5432/tribunal')).toBe(false);
     expect(

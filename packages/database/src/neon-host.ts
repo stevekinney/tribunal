@@ -18,9 +18,18 @@
  * predicate and a caller should not need to guard it with `URL.canParse`
  * first (`connection.ts`'s own `connect()` never did, and now that this is a
  * public, reusable export, other callers should not have to either).
+ *
+ * Requires a `postgres:`/`postgresql:` scheme, not just a matching hostname.
+ * Without this, a value like `https://db.example.neon.tech/main` — which
+ * `z.string().url()` accepts as a generically valid URL — would match on
+ * hostname alone. In `environment.ts`, that would exempt a value from the
+ * production TLS check even though it isn't a valid PostgreSQL connection
+ * string at all, deferring the real failure to first database use instead of
+ * environment validation at boot.
  */
 export function shouldUseNeonHttp(connectionString: string): boolean {
   if (!URL.canParse(connectionString)) return false;
   const parsed = new URL(connectionString);
+  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') return false;
   return parsed.hostname.endsWith('.neon.tech') || parsed.hostname.endsWith('.neon.build');
 }
