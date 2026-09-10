@@ -31,14 +31,30 @@ let fixture: McpMountFixture;
 let applicationUser: AuthenticatedApplicationUser;
 let publicClientId: string;
 
-async function registerClient(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fixture.handle(
+// Tribunal rate-limits registration per client address (oauth_register: 5/60,
+// see configuration.ts). Ordinary registrations each use a distinct source IP so
+// they model separate clients and never share one bucket — only the dedicated
+// limiter test below drives repeated registrations from a single address.
+let registrationAddressCounter = 0;
+function nextRegistrationAddress(): string {
+  registrationAddressCounter += 1;
+  return `10.20.${Math.floor(registrationAddressCounter / 256) % 256}.${registrationAddressCounter % 256}`;
+}
+
+/** Sends a raw registration from a given source address; returns the Response. */
+function rawRegister(body: Record<string, unknown>, clientAddress: string): Promise<Response> {
+  return fixture.handle(
     new Request(`${BASE}/oauth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
+    { clientAddress },
   );
+}
+
+async function registerClient(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await rawRegister(body, nextRegistrationAddress());
   const parsed = (await response.json()) as Record<string, unknown>;
   // RFC 7591 §3.2.1: a successful registration returns 201 Created. Requiring it
   // (not merely a 2xx) makes the registration behaviours below fail if the
@@ -165,6 +181,45 @@ async function exchangeCode(
   };
 }
 
+/** Registers a confidential (client_secret_post) client and returns its credentials. */
+async function registerConfidentialClient(
+  name: string,
+): Promise<{ clientId: string; clientSecret: string }> {
+  const registered = await registerClient({
+    client_name: name,
+    redirect_uris: [REDIRECT_URI],
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'client_secret_post',
+    application_type: 'web',
+  });
+  const clientId = registered.client_id as string;
+  const clientSecret = registered.client_secret as string;
+  expect(clientSecret).toBeTruthy();
+  return { clientId, clientSecret };
+}
+
+/** Full authorize → approve → token exchange for a confidential client. */
+async function exchangeConfidentialCode(
+  clientId: string,
+  clientSecret: string,
+): Promise<{ status: number; body: TokenGrant & { error?: string } }> {
+  const code = await mintCode(clientId);
+  const response = await tokenRequest({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: REDIRECT_URI,
+    client_id: clientId,
+    client_secret: clientSecret,
+    code_verifier: CODE_VERIFIER,
+    resource: RESOURCE,
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as TokenGrant & { error?: string },
+  };
+}
+
 beforeAll(async () => {
   fixture = await setupMcpMountFixture();
   const [row] = await fixture.database.db
@@ -196,22 +251,24 @@ afterAll(async () => {
 });
 
 describe('token endpoint — client authentication choke point (behaviour 4)', () => {
+  it('authenticates a confidential client with a valid secret (positive control)', async () => {
+    // Without this, an authenticator that rejected every confidential client with
+    // invalid_client would still pass the negative tests below while a real
+    // outage went unnoticed. A fresh confidential client exchanges successfully.
+    const { clientId, clientSecret } = await registerConfidentialClient(
+      'Working Confidential Client',
+    );
+    const { status, body } = await exchangeConfidentialCode(clientId, clientSecret);
+    expect(status).toBe(200);
+    expect(body.access_token).toBeTruthy();
+  });
+
   it('rejects a confidential client whose secret has expired with invalid_client', async () => {
     // Regression proof for @lostgradient/mcp 0.2.2: on 0.2.1 the Postgres stores
     // read clientSecretExpiresAt back as a string, so the expiry check's
     // `.getTime()` crashed (500) on every confidential-client token request.
     // 0.2.2 coerces it to Date and returns a clean invalid_client.
-    const confidential = await registerClient({
-      client_name: 'Expired Secret Client',
-      redirect_uris: [REDIRECT_URI],
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-      token_endpoint_auth_method: 'client_secret_post',
-      application_type: 'web',
-    });
-    const clientId = confidential.client_id as string;
-    const clientSecret = confidential.client_secret as string;
-    expect(clientSecret).toBeTruthy();
+    const { clientId, clientSecret } = await registerConfidentialClient('Expired Secret Client');
 
     // Backdate the secret expiry through the same stores the mount reads.
     await fixture.stores.clients.update(clientId, {
@@ -288,6 +345,57 @@ describe('token + revoke + registration handlers respond through the mount (beha
     expect(afterRevoke.status).toBe(400);
     expect(((await afterRevoke.json()) as { error?: string }).error).toBe('invalid_grant');
   });
+
+  it('authenticates the confidential client at the revoke endpoint before honoring it', async () => {
+    // The revoke endpoint must authenticate a confidential client: a revoke
+    // request missing the secret must not invalidate the token, or a leaked but
+    // otherwise unusable token could be used to revoke the client's credentials.
+    const { clientId, clientSecret } = await registerConfidentialClient('Revoke Auth Client');
+    const { body } = await exchangeConfidentialCode(clientId, clientSecret);
+
+    // Unauthenticated revoke (no client_secret) must be refused and leave the
+    // token usable.
+    const unauth = await fixture.handle(
+      new Request(`${BASE}/oauth/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form({ token: body.refresh_token!, client_id: clientId }),
+      }),
+    );
+    expect(unauth.status).toBe(401);
+    const stillValid = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: body.refresh_token!,
+      client_id: clientId,
+      client_secret: clientSecret,
+      resource: RESOURCE,
+    });
+    expect(stillValid.status).toBe(200);
+    const rotated = (await stillValid.json()) as TokenGrant;
+
+    // Authenticated revoke (with the secret) succeeds and invalidates the token.
+    const authed = await fixture.handle(
+      new Request(`${BASE}/oauth/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form({
+          token: rotated.refresh_token!,
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      }),
+    );
+    expect(authed.status).toBe(200);
+    const afterAuthedRevoke = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: rotated.refresh_token!,
+      client_id: clientId,
+      client_secret: clientSecret,
+      resource: RESOURCE,
+    });
+    expect(afterAuthedRevoke.status).toBe(400);
+    expect(((await afterAuthedRevoke.json()) as { error?: string }).error).toBe('invalid_grant');
+  });
 });
 
 describe('token endpoint — PKCE S256 is enforced at exchange (behaviour 2)', () => {
@@ -321,11 +429,9 @@ describe('token endpoint — PKCE S256 is enforced at exchange (behaviour 2)', (
 });
 
 describe('dynamic client registration — RFC 7591 (behaviour 6)', () => {
-  it('registers a client with no rate limiter injected and echoes the RFC 7591 metadata', async () => {
-    // The fixture wires no registration rate limiter (that seam is optional and
-    // Tribunal does not supply one yet — TRI-56), so a bare registration must
-    // succeed. A confidential registration returns a generated client_secret and
-    // the RFC 7591 issued-at / auth-method metadata.
+  it('registers a confidential client and echoes the RFC 7591 metadata', async () => {
+    // A confidential registration returns a generated client_secret and the
+    // RFC 7591 issued-at / auth-method / secret-expiry metadata.
     const registered = await registerClient({
       client_name: 'RFC 7591 Client',
       redirect_uris: [REDIRECT_URI],
@@ -338,27 +444,49 @@ describe('dynamic client registration — RFC 7591 (behaviour 6)', () => {
     expect(registered.client_secret).toBeTruthy();
     expect(registered.token_endpoint_auth_method).toBe('client_secret_post');
     expect(typeof registered.client_id_issued_at).toBe('number');
+    // RFC 7591 §3.2.1: when a client_secret is issued, client_secret_expires_at
+    // must be present so the client knows the secret's lifetime (0 = no expiry).
+    expect(typeof registered.client_secret_expires_at).toBe('number');
     expect(registered.redirect_uris).toEqual([REDIRECT_URI]);
   });
 
   it('rejects a registration whose redirect_uri is not a valid absolute URI', async () => {
-    const response = await fixture.handle(
-      new Request(`${BASE}/oauth/register`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          client_name: 'Bad Redirect Client',
-          redirect_uris: ['not-a-uri'],
-          grant_types: ['authorization_code'],
-          response_types: ['code'],
-          token_endpoint_auth_method: 'none',
-        }),
-      }),
+    const response = await rawRegister(
+      {
+        client_name: 'Bad Redirect Client',
+        redirect_uris: ['not-a-uri'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      },
+      nextRegistrationAddress(),
     );
     expect(response.status).toBe(400);
     // The library reports a malformed redirect_uri at registration under
     // RFC 7591's invalid_client_metadata rather than invalid_redirect_uri.
     expect(((await response.json()) as { error?: string }).error).toBe('invalid_client_metadata');
+  });
+
+  it('consults the registration rate limiter Tribunal configures (oauth_register 5/60)', async () => {
+    // Tribunal DOES supply a registration rate limiter (configuration.ts:
+    // oauth_register 5 requests / 60s), so AC3's "if a limiter is supplied, prove
+    // it is consulted" applies. Driven from a single source address, the sixth
+    // registration inside the window is rate limited (429). Other tests each use
+    // a distinct address, so this is the only bucket that reaches the cap.
+    const address = '10.99.0.1';
+    const body = {
+      client_name: 'Rate Limit Probe',
+      redirect_uris: [REDIRECT_URI],
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    };
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const ok = await rawRegister(body, address);
+      expect(ok.status).toBe(201);
+    }
+    const limited = await rawRegister(body, address);
+    expect(limited.status).toBe(429);
   });
 });
 
@@ -446,6 +574,20 @@ describe('token endpoint — RFC 8707 resource binding (behaviour 3)', () => {
     // library’s own suite’s concern — Tribunal exposes a single resource.
     expect(response.status).not.toBe(401);
   });
+
+  it('validates the resource on a refresh grant too, not only at the code grant', async () => {
+    // RFC 8707 is enforced at *both* token grants. A refresh that requests a
+    // resource other than Tribunal's is invalid_target.
+    const { body } = await exchangeCode(await mintCode(publicClientId));
+    const response = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: body.refresh_token!,
+      client_id: publicClientId,
+      resource: new URL('/not-the-mcp-resource', mcpBaseUrl).href,
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error?: string }).error).toBe('invalid_target');
+  });
 });
 
 describe('token endpoint — refresh replay revokes the whole family (behaviour 5)', () => {
@@ -492,6 +634,17 @@ describe('token endpoint — refresh replay revokes the whole family (behaviour 
     // unusable at /mcp — the family's access tokens are revoked, not only its
     // refresh tokens.
     expect((await callMcp(rotatedBody.access_token)).status).toBe(401);
+
+    // The family's current refresh token is revoked too, not just its access
+    // tokens — otherwise the rotated refresh token could keep minting new ones.
+    const afterReplayRefresh = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: rotatedBody.refresh_token!,
+      client_id: publicClientId,
+      resource: RESOURCE,
+    });
+    expect(afterReplayRefresh.status).toBe(400);
+    expect(((await afterReplayRefresh.json()) as { error?: string }).error).toBe('invalid_grant');
 
     // The independent grant is untouched: revocation is scoped to the compromised
     // family, not the whole user/client.
@@ -544,11 +697,18 @@ describe('token endpoint — refresh cannot widen scope (behaviour 3, TRI-38 sco
     expect(scopeSet(refreshed)).toEqual(new Set(['repositories:read', 'reviews:read']));
   });
 
-  it('allows a refresh to narrow to a subset of the original grant', async () => {
+  it('narrows the refresh token itself, so a later refresh cannot regain the dropped scope', async () => {
     const grant = await grantTwoScopes();
     const response = await refreshWith(grant.refresh_token!, 'repositories:read');
     expect(response.status).toBe(200);
     const refreshed = (await response.json()) as TokenGrant;
     expect(scopeSet(refreshed)).toEqual(new Set(['repositories:read']));
+
+    // The narrowing must bind the rotated refresh token, not just the immediate
+    // access token: refreshing it back up to the original two scopes must fail,
+    // otherwise the dropped scope could be silently regained without consent.
+    const regain = await refreshWith(refreshed.refresh_token!, TWO_SCOPES);
+    expect(regain.status).toBe(400);
+    expect(((await regain.json()) as { error?: string }).error).toBe('invalid_scope');
   });
 });
