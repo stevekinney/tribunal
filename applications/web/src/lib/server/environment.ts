@@ -84,13 +84,11 @@ function isLocalDatabaseHost(hostname: string): boolean {
  *
  * A Neon host (per {@link shouldUseNeonHttp}) is exempt from this whole check:
  * `connection.ts` routes it through `drizzle-orm/neon-http`, which connects
- * over plain HTTPS, not a raw Postgres TLS socket — `sslmode` is inert there,
- * it is never read by that driver. Certificate verification happens at the
+ * over HTTPS, not a raw Postgres TLS socket — `sslmode` is inert there, it is
+ * never read by that driver. Certificate verification happens at the
  * HTTPS/fetch layer, using the runtime's built-in root CA store, the same way
- * any other HTTPS API call is verified. Asserting `sslmode=verify-full` against
- * that driver was always a false requirement, and enforcing it crash-looped
- * production for ~4 hours on 2026-09-09/10 (TRI-124) when a real Neon
- * production `DATABASE_URL` lacked it.
+ * any other HTTPS API call is verified. Asserting `sslmode=verify-full`
+ * against that driver was always a false requirement (TRI-124).
  */
 function productionDatabaseUrlViolatesTls(databaseUrl: string): boolean {
   if (!URL.canParse(databaseUrl)) return false;
@@ -143,15 +141,13 @@ export const webEnvironmentSchema = webEnvironmentObject.superRefine((environmen
     });
   }
 
-  // This constrains only the node-postgres raw-TLS path: a remote managed
-  // database reached over node-postgres in production must use
-  // sslmode=verify-full. A local host (loopback, host.docker.internal,
-  // .internal/.local) is exempt because the connection does not cross an
-  // untrusted network. A Neon host is exempt too (TRI-124): it connects over
-  // neon-http's HTTPS transport, where sslmode is inert and certificate
-  // verification happens at the HTTPS/fetch layer via the runtime's built-in
-  // root store — see productionDatabaseUrlViolatesTls for the outage this
-  // check caused when that distinction wasn't made.
+  // This constrains only the node-postgres raw-TLS path (non-Neon, non-local
+  // hosts): a remote managed database reached over node-postgres in
+  // production must use sslmode=verify-full. A Neon host is exempt — it
+  // connects over neon-http's HTTPS transport, where sslmode is inert and
+  // certificate verification happens at the HTTPS/fetch layer via the
+  // runtime's built-in root store. See {@link productionDatabaseUrlViolatesTls}
+  // for the full reasoning and the outage (TRI-124) this distinction fixes.
   if (productionDatabaseUrlViolatesTls(environment.DATABASE_URL)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
