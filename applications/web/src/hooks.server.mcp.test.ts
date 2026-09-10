@@ -116,6 +116,28 @@ describe('hooks.server MCP wiring (enabled)', () => {
     consoleError.mockRestore();
   });
 
+  it('clears the resource-update publisher on dispose so a torn-down mount is never invoked (TRI-126)', async () => {
+    // Register a fresh spy so this is independent of the module-load
+    // registration and of any earlier dispose in this file.
+    const {
+      registerResourceUpdatePublisher,
+      clearResourceUpdatePublisher,
+      notifyReviewRunsChanged,
+    } = await import('$lib/server/mcp/resource-updates');
+    const publish = vi.fn();
+    registerResourceUpdatePublisher(publish);
+    notifyReviewRunsChanged(42);
+    expect(publish).toHaveBeenCalledWith('42', 'tribunal://review-runs');
+
+    // Dispose (via a termination signal) must clear the publisher so a
+    // notification racing shutdown reaches nobody rather than a disposed mount.
+    signalHandlers.get('SIGINT')!();
+    publish.mockClear();
+    notifyReviewRunsChanged(42);
+    expect(publish).not.toHaveBeenCalled();
+    clearResourceUpdatePublisher();
+  });
+
   it('logs and stays a no-op when the mount never constructs (TRI-126)', async () => {
     // A failed mount must not crash the web process, but it must be observable:
     // the notifier stays unregistered and the failure is logged rather than

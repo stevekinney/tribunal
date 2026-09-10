@@ -17,7 +17,10 @@ import { setLogger } from '@lostgradient/mcp';
 import { mcpLogger } from '$lib/server/mcp-logger';
 import { createTribunalMcpMount, type TribunalMcpMount } from '$lib/server/mcp/mount';
 import { cacheControlOn404Handle, createMcpHandle } from '$lib/server/mcp/mount-hooks';
-import { registerResourceUpdatePublisher } from '$lib/server/mcp/resource-updates';
+import {
+  clearResourceUpdatePublisher,
+  registerResourceUpdatePublisher,
+} from '$lib/server/mcp/resource-updates';
 import { isMcpEnabled } from '$lib/server/oauth/configuration';
 import { parseWebEnvironment } from '$lib/server/environment';
 
@@ -54,6 +57,9 @@ if (mcpMount) {
   // mount, and coordinating with adapter-node's own signal handling — is
   // TRI-51's scope. adapter-node still owns process termination.
   const disposeMcpMount = (): void => {
+    // Clear the publisher first so a notification that races shutdown cannot
+    // reach the mount being torn down; then dispose the mount itself.
+    clearResourceUpdatePublisher();
     void mcpMount
       .then((active) => active.dispose())
       .catch((error) => {

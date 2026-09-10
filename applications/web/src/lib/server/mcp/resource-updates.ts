@@ -36,5 +36,13 @@ export function clearResourceUpdatePublisher(): void {
  * or the user has no subscription.
  */
 export function notifyReviewRunsChanged(userId: number): void {
-  publisher?.(String(userId), REVIEW_RUNS_RESOURCE_URI);
+  // Contained by design: this fires inline from primary review mutations (e.g.
+  // operator.stopRun), so a publisher fault must never surface as a failure of
+  // the mutation that triggered it. Log and swallow — a missed resource-update
+  // notification is not worth failing a cancellation over.
+  try {
+    publisher?.(String(userId), REVIEW_RUNS_RESOURCE_URI);
+  } catch (error) {
+    console.error('[mcp] resource-update notification failed', error);
+  }
 }
