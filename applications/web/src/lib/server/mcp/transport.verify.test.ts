@@ -381,15 +381,26 @@ describe('MCP transport — the authentication order survives the hook chain (be
   });
 
   it('rejects a DNS-rebinding request before Origin or token processing (step 1)', async () => {
-    // The mounted surface is loopback (mcpBaseUrl defaults to localhost), so a
-    // request carrying a non-localhost Origin is the DNS-rebinding signature. With
-    // an invalid token too: rebinding (step 1) refuses it 403 with its own message,
-    // ahead of the Origin allowlist (step 2, a different 403) and the token lookup
-    // (401). The message is what distinguishes step 1 from step 2.
-    const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
-      token: 'not-a-real-token',
-      origin: 'https://attacker.example',
-    });
+    // Target an explicit loopback host so the check fires regardless of how
+    // MCP_BASE_URL is configured — a non-loopback base would otherwise route this
+    // to the Origin allowlist (step 2) instead of the rebinding guard (step 1). A
+    // non-localhost Origin is the rebinding signature; with an invalid token too,
+    // step 1 refuses it 403 with its own message, ahead of Origin (step 2, a
+    // different 403) and the token lookup (401). The message distinguishes step 1.
+    const response = await runWithDatabase(fixture.database.db as never, () =>
+      fixture.handle(
+        new Request('http://127.0.0.1/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer not-a-real-token',
+            origin: 'https://attacker.example',
+          },
+          body: JSON.stringify(initializeMessage(LEGACY_ERA)),
+        }),
+      ),
+    );
     expect(response.status).toBe(403);
     expect(await response.text()).toContain('rebinding');
   });
