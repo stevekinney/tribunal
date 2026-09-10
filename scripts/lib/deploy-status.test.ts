@@ -188,6 +188,25 @@ describe('collectLiveStateFailures', () => {
       collectLiveStateFailures(createFlyState(1, { webMachineState: 'stopped' }), strictOptions),
     ).toContain('tribunal-web has no Machine in a started state; expected a warm Machine');
   });
+
+  /**
+   * TRI-125 follow-up: deploy-production.yml's pre-deploy check passes
+   * --allow-pending-cost-optimization on every routine deploy, not only
+   * first-ever provisioning, which skips collectMachineCostFailures
+   * entirely. The warm-Machine check must not live only inside that
+   * function, or it would never run before a normal deploy -- exactly when
+   * a Machine that died for an unrelated reason, combined with the new
+   * release also failing to boot, reproduces the original outage with zero
+   * warm fallback and nothing catching it beforehand.
+   */
+  it('still requires a started web Machine even when cost-optimization checks are allowed to be pending', () => {
+    expect(
+      collectLiveStateFailures(createFlyState(1, { webMachineState: 'stopped' }), {
+        ...strictOptions,
+        allowPendingCostOptimization: true,
+      }),
+    ).toContain('tribunal-web has no Machine in a started state; expected a warm Machine');
+  });
 });
 
 describe('printStatus', () => {

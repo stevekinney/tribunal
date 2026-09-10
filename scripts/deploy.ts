@@ -1106,6 +1106,20 @@ export function collectLiveStateFailures(state: FlyState, options: LiveStateOpti
     collectMachineCostFailures(state, options, failures);
   }
 
+  // Deliberately NOT gated on allowPendingCostOptimization: that flag exists
+  // for first-ever provisioning, before an app's scaling config (auto-stop,
+  // min_machines_running) has been applied at all, and this repository's own
+  // deploy-production.yml passes it on every pre-deploy check, routine
+  // deploys included. If the equivalent check above were the only place a
+  // stopped warm web Machine got caught, it would never run before a normal
+  // deploy -- exactly when it matters, since a Machine that died for an
+  // unrelated reason before this deploy started, combined with the new
+  // release also failing to boot, reproduces TRI-125's original outage with
+  // zero warm fallback and nothing catching it beforehand. Skips apps that
+  // have never been provisioned at all (no Machines yet), since that is the
+  // expected state before this app's very first deploy.
+  collectWarmMachineFailures(state, failures);
+
   if (state.existingApps.has('tribunal-engine')) {
     if (state.engineHasPublicIp === 'unknown') {
       failures.push('could not read engine IPs');
@@ -1139,6 +1153,34 @@ function allowsPendingEngineMachine(
   options: LiveStateOptions,
 ): boolean {
   return options.allowPendingEngineMachine && app === 'tribunal-engine' && count === 0;
+}
+
+/**
+ * Whenever an app is expected to keep a warm Machine (currently just
+ * tribunal-web, TRI-125), require at least one of its existing Machines to
+ * actually be `started`. A correct min_machines_running config is not
+ * itself a warm Machine -- Fly can still leave the sole Machine stopped or
+ * crashed between deploys. Skips an app with zero Machines entirely: that
+ * is the expected state before its very first deploy, not a warm-Machine
+ * violation.
+ */
+function collectWarmMachineFailures(state: FlyState, failures: string[]): void {
+  for (const app of Object.keys(EXPECTED_MIN_MACHINES_RUNNING) as Array<
+    keyof typeof EXPECTED_MIN_MACHINES_RUNNING
+  >) {
+    if (EXPECTED_MIN_MACHINES_RUNNING[app] === 0) continue;
+    if (!state.existingApps.has(app)) continue;
+
+    const machineState = getMachineState(state, app);
+    if (machineState === 'unknown') {
+      failures.push(`could not read Machine state for ${app}`);
+      continue;
+    }
+    if (machineState === null || machineState.machines.length === 0) continue;
+    if (!machineState.machines.some((machine) => machine.state === 'started')) {
+      failures.push(`${app} has no Machine in a started state; expected a warm Machine`);
+    }
+  }
 }
 
 function collectMachineCostFailures(
@@ -1183,24 +1225,6 @@ function collectMachineCostFailures(
       failures.push(
         `${app} min_machines_running does not match the expected ${expectedMinMachinesRunning}`,
       );
-    }
-
-    // A correct min_machines_running config is not itself a warm Machine:
-    // this app's config can require one while its sole Machine sits stopped
-    // or crashed, which defeats the availability guarantee TRI-125 exists
-    // to provide without ever showing up as a service-configuration mismatch
-    // above. Require at least one Machine actually `started` whenever a
-    // warm Machine is expected.
-    if (expectedMinMachinesRunning > 0) {
-      const machineState = getMachineState(state, app);
-      if (machineState === 'unknown') {
-        failures.push(`could not read Machine state for ${app}`);
-      } else if (
-        machineState !== null &&
-        !machineState.machines.some((machine) => machine.state === 'started')
-      ) {
-        failures.push(`${app} has no Machine in a started state; expected a warm Machine`);
-      }
     }
   }
 

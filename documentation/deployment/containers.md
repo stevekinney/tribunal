@@ -293,8 +293,8 @@ The workflow performs these steps:
    `flyctl scale count 1 --yes --app <app>` after each deploy.
 7. Verify the Neon production endpoint reports `suspend_timeout_seconds=300`.
 8. Run every health gate below plus explicit checks that each app has exactly
-   one non-destroyed Machine, web/proxy stop on idle, and the engine has private
-   Flycast ingress only.
+   one non-destroyed Machine, web keeps a Machine warm (`min_machines_running = 1`) while proxy
+   stops on idle, and the engine has private Flycast ingress only.
 
 The pre-deploy live-state check permits `TRIBUNAL_SANDBOX_IMAGE` to be missing
 because the workflow refreshes that secret in the same run, and permits zero
@@ -425,7 +425,15 @@ Re-run every health gate after enabling live reviews.
 this project uses (`flyctl releases rollback --help` silently falls back to
 `flyctl releases --help` and exits `0` rather than erroring on an unknown
 subcommand—verified against the installed `flyctl`). Roll back in reverse
-dependency order by redeploying each app's last known-good image directly:
+dependency order by redeploying each app's last known-good image directly.
+
+Before running any of these commands: run them from a clean, up-to-date
+`main` checkout (`--config` reads that file from your local checkout, not a
+pinned commit), and if migrations have run since the image you're
+restoring, confirm that older binary is still schema-compatible—see
+[`documentation/deployment/incident-recovery.md`](./incident-recovery.md#recovery-when-the-failed-commit-is-behind-main)
+for the full reasoning and commands for both of these; it applies here too,
+not only to a failed `Deploy Production` run.
 
 ```sh
 flyctl releases --image -a tribunal-web --json
