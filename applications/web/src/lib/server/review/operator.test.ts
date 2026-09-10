@@ -49,6 +49,10 @@ import {
   userOwnsRepository,
   validateEffort,
 } from './operator';
+import {
+  clearResourceUpdatePublisher,
+  registerResourceUpdatePublisher,
+} from '$lib/server/mcp/resource-updates';
 
 const mocks = vi.hoisted(() => ({
   env: {
@@ -1934,7 +1938,16 @@ describe('review operator server helpers', () => {
       status: 403,
     });
 
-    await withTestDatabase(() => stopRun(owner.id, 'run_1'));
+    // Cancelling the run changes its status in the review-runs MCP resource, so
+    // it must notify the caller's subscription (TRI-126).
+    const resourceUpdate = vi.fn();
+    registerResourceUpdatePublisher(resourceUpdate);
+    try {
+      await withTestDatabase(() => stopRun(owner.id, 'run_1'));
+      expect(resourceUpdate).toHaveBeenCalledWith(String(owner.id), 'tribunal://review-runs');
+    } finally {
+      clearResourceUpdatePublisher();
+    }
     const stoppedRun = await selectReviewRun('run_1');
     expect(stoppedRun?.status).toBe('cancelled');
     const [stoppedAgentRun] = await testDb.db

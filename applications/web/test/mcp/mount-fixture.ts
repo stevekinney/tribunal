@@ -30,6 +30,8 @@ export type McpMountFixture = {
   database: TestDatabase;
   /** The OAuth stores the mount uses, for seeding clients/tokens in tests. */
   stores: OAuthStores;
+  /** Publishes a resource update to a user's live subscription (TRI-126), as the review layer's producer does. */
+  publishUserResourceUpdate(userId: string, uri: string): void;
   /** Builds a mount event from a request without priming identity. */
   buildEvent(request: Request, options?: MountRequestOptions): SvelteKitLikeRequestEvent;
   /** Primes identity from the options and routes the request through the mount. */
@@ -45,14 +47,18 @@ function notFoundResolve(): Promise<Response> {
 export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   const database = await createTestDatabase();
   const stores = createOAuthStores(database.db);
-  const mount = await assembleTribunalMcpMount(stores);
+  const { mount, publishUserResourceUpdate } = await assembleTribunalMcpMount(stores);
 
   // Route requests through the MCP handle hooks.server.ts composes — priming,
   // routing, and the security-header decorator in one — so tests see real
   // behavior rather than a partial stand-in. It does not run the outer chain
   // (correlation, auth, dev bypass); the `user` option stands in for what those
   // handles would populate.
-  const mountRecord: TribunalMcpMount = { mount, dispose: () => mount.dispose() };
+  const mountRecord: TribunalMcpMount = {
+    mount,
+    publishUserResourceUpdate,
+    dispose: () => mount.dispose(),
+  };
   const getMount = (): Promise<TribunalMcpMount> => Promise.resolve(mountRecord);
   const mcpHandle = createMcpHandle(getMount);
 
@@ -70,6 +76,7 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
     mount,
     database,
     stores,
+    publishUserResourceUpdate,
     buildEvent,
     handle: (request, options = {}) => {
       // The one unavoidable cast: buildEvent returns the library's structural
