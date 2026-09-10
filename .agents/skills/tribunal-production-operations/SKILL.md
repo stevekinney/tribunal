@@ -31,9 +31,11 @@ enablement.
 
 - Tribunal has three Fly apps: `tribunal-web`, `tribunal-engine`, and
   `tribunal-proxy`.
-- `tribunal-web` and `tribunal-proxy` stop on idle:
-  `auto_stop_machines="stop"`, `auto_start_machines=true`, and
-  `min_machines_running=0`.
+- `tribunal-proxy` stops on idle: `auto_stop_machines="stop"`,
+  `auto_start_machines=true`, and `min_machines_running=0`. `tribunal-web`
+  uses the same `auto_stop_machines`/`auto_start_machines` but keeps
+  `min_machines_running=1` (TRI-125) so a failed deploy always has a
+  previous-version Machine to fall back to instead of an instant outage.
 - `tribunal-engine` is private, has no public IP, and must run exactly one
   Machine.
 - `tribunal-engine` is woken through Flycast. `tribunal-web` must use
@@ -189,9 +191,16 @@ flyctl ips list --app tribunal-engine
 The engine health response must include `singleton_lock: true`. Also verify the
 deployed engine still has `REVIEWS_ENABLED=false` during safe-mode validation.
 For idle-cost validation, stop validation traffic, wait at least 15 minutes, and
-verify the three Fly Machines are stopped or eligible to stop and Neon endpoint
-`ep-round-dew-ap98dps9` reports `suspend_timeout_seconds=300` and eventually
-`current_state=idle`.
+verify `tribunal-proxy` and `tribunal-engine` are stopped or eligible to stop.
+`tribunal-web` stays started (`min_machines_running=1`, TRI-125) and will not
+stop — that is expected, not drift. Note also that Neon endpoint
+`ep-round-dew-ap98dps9`'s own `suspend_timeout_seconds=300` no longer produces
+`current_state=idle` in practice: `tribunal-web`'s health check queries the
+database every 30s (Fly caps check intervals at 60s, under Neon's 300s
+timeout), so Neon now stays continuously active regardless of validation
+traffic. Confirm the configured `suspend_timeout_seconds=300` value, but do
+not expect `current_state=idle` to ever appear while `tribunal-web` is
+warm.
 
 ## Triage Workflow
 

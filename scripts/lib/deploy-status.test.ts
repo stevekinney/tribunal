@@ -67,6 +67,8 @@ function createReadyMachine(
   environment: Record<string, string>,
   internalPort: number,
   autostop: 'stop' | 'off' | false,
+  minMachinesRunning = 0,
+  machineState: string = 'stopped',
 ): FlyState['appMachines'] extends Map<string, infer MachineState>
   ? Exclude<MachineState, null | 'unknown'>
   : never {
@@ -75,14 +77,14 @@ function createReadyMachine(
     machines: [
       {
         id,
-        state: 'stopped',
+        state: machineState,
         environment,
         services: [
           {
             autostart: true,
             autostop,
             internalPort,
-            minMachinesRunning: 0,
+            minMachinesRunning,
           },
         ],
       },
@@ -96,6 +98,7 @@ function createFlyState(
     engineEnvironment?: Record<string, string>;
     enginePrivateFlycastIp?: FlyState['enginePrivateFlycastIp'];
     webEnvironment?: Record<string, string>;
+    webMachineState?: string;
   } = {},
 ): FlyState {
   const engineMachineState =
@@ -131,6 +134,8 @@ function createFlyState(
           overrides.webEnvironment ?? { TRIBUNAL_ENGINE_URL: 'http://tribunal-engine.flycast' },
           3000,
           'stop',
+          1,
+          overrides.webMachineState ?? 'started',
         ),
       ],
     ]) as FlyState['appMachines'],
@@ -170,6 +175,37 @@ describe('collectLiveStateFailures', () => {
     ).toContain(
       'tribunal-engine TRIBUNAL_ENGINE_BIND_HOST is not set; expected 0.0.0.0 for Flycast',
     );
+  });
+
+  /**
+   * TRI-125: a correctly configured min_machines_running is not itself a
+   * warm Machine. A stopped or crashed sole web Machine still satisfies
+   * every service-configuration check above, so this must be checked
+   * separately against the Machine's actual reported state.
+   */
+  it('requires the web Machine to actually be in a started state', () => {
+    expect(
+      collectLiveStateFailures(createFlyState(1, { webMachineState: 'stopped' }), strictOptions),
+    ).toContain('tribunal-web has no Machine in a started state; expected a warm Machine');
+  });
+
+  /**
+   * TRI-125 follow-up: deploy-production.yml's pre-deploy check passes
+   * --allow-pending-cost-optimization on every routine deploy, not only
+   * first-ever provisioning, which skips collectMachineCostFailures
+   * entirely. The warm-Machine check must not live only inside that
+   * function, or it would never run before a normal deploy -- exactly when
+   * a Machine that died for an unrelated reason, combined with the new
+   * release also failing to boot, reproduces the original outage with zero
+   * warm fallback and nothing catching it beforehand.
+   */
+  it('still requires a started web Machine even when cost-optimization checks are allowed to be pending', () => {
+    expect(
+      collectLiveStateFailures(createFlyState(1, { webMachineState: 'stopped' }), {
+        ...strictOptions,
+        allowPendingCostOptimization: true,
+      }),
+    ).toContain('tribunal-web has no Machine in a started state; expected a warm Machine');
   });
 });
 

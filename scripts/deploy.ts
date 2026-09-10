@@ -421,9 +421,25 @@ function serviceAutoStarts(service: MachineServiceConfiguration): boolean {
   return service.autostart === true;
 }
 
-function serviceKeepsZeroMachinesWarm(service: MachineServiceConfiguration): boolean {
-  return service.minMachinesRunning === 0;
+function serviceKeepsExpectedMachinesWarm(
+  service: MachineServiceConfiguration,
+  expectedMinMachinesRunning: number,
+): boolean {
+  return service.minMachinesRunning === expectedMinMachinesRunning;
 }
+
+/**
+ * `tribunal-web` deliberately keeps one warm Machine (TRI-125): a rolling or
+ * bluegreen deploy with zero warm Machines has no previous version to fall
+ * back to when a new boot fails, which is exactly what turned a bad
+ * `DATABASE_URL` check into a four-hour outage rather than a failed deploy.
+ * `tribunal-proxy` has no such requirement and still scales to zero when
+ * idle.
+ */
+const EXPECTED_MIN_MACHINES_RUNNING: Record<'tribunal-web' | 'tribunal-proxy', number> = {
+  'tribunal-web': 1,
+  'tribunal-proxy': 0,
+};
 
 async function gatherFlyState(): Promise<FlyState> {
   const auth = await checkAuth();
@@ -1090,6 +1106,20 @@ export function collectLiveStateFailures(state: FlyState, options: LiveStateOpti
     collectMachineCostFailures(state, options, failures);
   }
 
+  // Deliberately NOT gated on allowPendingCostOptimization: that flag exists
+  // for first-ever provisioning, before an app's scaling config (auto-stop,
+  // min_machines_running) has been applied at all, and this repository's own
+  // deploy-production.yml passes it on every pre-deploy check, routine
+  // deploys included. If the equivalent check above were the only place a
+  // stopped warm web Machine got caught, it would never run before a normal
+  // deploy -- exactly when it matters, since a Machine that died for an
+  // unrelated reason before this deploy started, combined with the new
+  // release also failing to boot, reproduces TRI-125's original outage with
+  // zero warm fallback and nothing catching it beforehand. Skips apps that
+  // have never been provisioned at all (no Machines yet), since that is the
+  // expected state before this app's very first deploy.
+  collectWarmMachineFailures(state, failures);
+
   if (state.existingApps.has('tribunal-engine')) {
     if (state.engineHasPublicIp === 'unknown') {
       failures.push('could not read engine IPs');
@@ -1125,6 +1155,45 @@ function allowsPendingEngineMachine(
   return options.allowPendingEngineMachine && app === 'tribunal-engine' && count === 0;
 }
 
+/**
+ * Whenever an app is expected to keep a warm Machine (currently just
+ * tribunal-web, TRI-125), require at least one of its existing Machines to
+ * actually be `started`. A correct min_machines_running config is not
+ * itself a warm Machine -- Fly can still leave the sole Machine stopped or
+ * crashed between deploys.
+ *
+ * Skips an app with zero Machines entirely: that is the expected state
+ * before its very first deploy, not a warm-Machine violation. This cannot
+ * be narrowed further with signals currently available to this script --
+ * "zero Machines" is indistinguishable from "an operator manually
+ * destroyed the sole Machine outside of any deploy," which this check will
+ * therefore miss. That residual gap is accepted rather than closed: it
+ * requires a deliberate, unusual out-of-band action (bluegreen destroys
+ * only the *new*, unhealthy Machine on a failed deploy, never the old one,
+ * so this cannot happen through ordinary deploy failures), and it would
+ * likely surface through the public health-check gate independently. A
+ * `flyctl releases list` count could distinguish "never deployed" from
+ * "deployed before, Machine now gone" if this gap is ever worth closing.
+ */
+function collectWarmMachineFailures(state: FlyState, failures: string[]): void {
+  for (const app of Object.keys(EXPECTED_MIN_MACHINES_RUNNING) as Array<
+    keyof typeof EXPECTED_MIN_MACHINES_RUNNING
+  >) {
+    if (EXPECTED_MIN_MACHINES_RUNNING[app] === 0) continue;
+    if (!state.existingApps.has(app)) continue;
+
+    const machineState = getMachineState(state, app);
+    if (machineState === 'unknown') {
+      failures.push(`could not read Machine state for ${app}`);
+      continue;
+    }
+    if (machineState === null || machineState.machines.length === 0) continue;
+    if (!machineState.machines.some((machine) => machine.state === 'started')) {
+      failures.push(`${app} has no Machine in a started state; expected a warm Machine`);
+    }
+  }
+}
+
 function collectMachineCostFailures(
   state: FlyState,
   options: LiveStateOptions,
@@ -1158,8 +1227,15 @@ function collectMachineCostFailures(
     if (!services.every(serviceAutoStarts)) {
       failures.push(`${app} does not auto-start Machines`);
     }
-    if (!services.every(serviceKeepsZeroMachinesWarm)) {
-      failures.push(`${app} keeps warm Machines running`);
+    const expectedMinMachinesRunning = EXPECTED_MIN_MACHINES_RUNNING[app];
+    if (
+      !services.every((service) =>
+        serviceKeepsExpectedMachinesWarm(service, expectedMinMachinesRunning),
+      )
+    ) {
+      failures.push(
+        `${app} min_machines_running does not match the expected ${expectedMinMachinesRunning}`,
+      );
     }
   }
 
@@ -1200,7 +1276,7 @@ function collectMachineCostFailures(
           (service) =>
             service.internalPort === 3001 &&
             serviceAutoStarts(service) &&
-            serviceKeepsZeroMachinesWarm(service) &&
+            serviceKeepsExpectedMachinesWarm(service, 0) &&
             serviceAutoStopDisabled(service),
         )
       ) {

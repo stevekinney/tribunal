@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
+    outputs:
+      stale_deploy: ${{ steps.verify_current_main.outputs.stale }}
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_ORG: ${{ vars.FLY_ORG }}
@@ -45,6 +47,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify deploy commit is current main
+        id: verify_current_main
         if: github.event_name == 'workflow_run'
         shell: bash
         run: |
@@ -53,6 +56,12 @@ jobs:
           current_main="$(git rev-parse origin/main)"
           if [ "$DEPLOY_SHA" != "$current_main" ]; then
             echo "::error::Refusing to deploy ${DEPLOY_SHA}; origin/main is ${current_main}"
+            # Written before exit so the job-level `stale_deploy` output below
+            # is still set even though this step (and therefore the job)
+            # fails: this rejection is an intentional, expected outcome (an
+            # older queued run superseded by a newer main push), not a real
+            # deploy failure, and notify-on-failure must not page for it.
+            echo "stale=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -375,3 +384,69 @@ jobs:
         run: |
           echo "::error::Production deployed successfully at ${DEPLOY_SHA}, but the reviewer image could not be published to Tensorlake and is stale. Re-run this workflow once Tensorlake is healthy."
           exit 1
+
+  notify-on-failure:
+    name: Notify on Deploy Failure
+    needs: deploy
+    # Keyed on the deploy job's conclusion, not any individual step, so this
+    # fires whether the job dies early (e.g. "Deploy web", upstream of the
+    # health-check step) or late (TRI-125). `always()` is required because a
+    # failed `needs` job otherwise skips downstream jobs by default.
+    # 'failure' AND 'cancelled' both page: 'cancelled' covers the
+    # 45-minute job timeout, which can leave production half-deployed (for
+    # example migrations applied and proxy/engine current while web never
+    # finished) -- exactly the kind of silent partial state TRI-125 exists
+    # to surface, not just an explicit step failure. A 'skipped' deploy job
+    # means the `if:` gate above didn't match at all (e.g. CI itself failed
+    # on main), which is a different, already-visible signal and not paged
+    # here. `needs.deploy.outputs.stale_deploy == 'true'` excludes the one
+    # other expected-failure case: "Verify deploy commit is current main"
+    # deliberately rejects an older queued run once `main` has advanced past
+    # it, which is normal when two pushes land close together, not an
+    # incident -- paging for it would open a false-alarm issue on every
+    # superseded commit.
+    #
+    # This job is exempted from the untrusted-privileged-job check in
+    # `.github/scripts/workflow-policy.ts` (`UNTRUSTED_TRIGGER_EXEMPTIONS`)
+    # rather than authorization-gated in the actor-trust shape that check
+    # recognizes -- see that file for why, and
+    # `.github/tests/production-migration-gate.test.ts` for the structural
+    # test that keeps this exemption honest.
+    if: always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') && needs.deploy.outputs.stale_deploy != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open incident issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        run: |
+          set -euo pipefail
+          title="Production deploy failed: ${DEPLOY_SHA}"
+
+          # Avoid opening a duplicate issue if this same commit's deploy is
+          # retried and fails again before the first incident is closed.
+          # The dedupe lookup is a nice-to-have; it must not be able to
+          # suppress the alert itself, so a search failure (transient API
+          # error, rate limit) falls through to "no existing issue found"
+          # rather than aborting the step under `set -e`.
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty' || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Deploy failed again for the same commit: ${RUN_URL}"
+            echo "Commented on existing incident issue #${existing}"
+            exit 0
+          fi
+
+          body="$(printf '%s\n' \
+            "Production deploy failed for commit \`${DEPLOY_SHA}\`." \
+            "" \
+            "- Workflow run: ${RUN_URL}" \
+            "- See \`documentation/deployment/incident-recovery.md\` for the recovery runbook." \
+            "" \
+            "This issue was opened automatically because the \`deploy\` job in \`Deploy Production\` concluded \`${DEPLOY_RESULT}\` (a \`cancelled\` result includes the 45-minute job timeout).")"
+
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label bug --body "$body"

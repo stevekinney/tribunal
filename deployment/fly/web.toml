@@ -10,16 +10,51 @@ primary_region = "dfw"
   TRIBUNAL_ENGINE_URL = "http://tribunal-engine.flycast"
 
 [deploy]
-  strategy = "rolling"
+  # bluegreen, not rolling: with a single web Machine, "rolling" takes the
+  # only Machine down before the replacement passes its health check (Fly's
+  # own guidance is that rolling needs at least two Machines to avoid
+  # downtime). bluegreen boots the new Machine alongside the old one and only
+  # cuts traffic over once it passes checks, destroying the new Machine
+  # instead of the old one on failure -- this is what keeps the previous
+  # version serving through a bad boot (TRI-125).
+  strategy = "bluegreen"
 
 [http_service]
   internal_port = 3000
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # >=1 so a failed boot has a previous-version Machine to fall back to
+  # instead of an instant total outage (TRI-125). Trades scale-to-zero
+  # savings for availability: one shared-cpu-1x/1GB Machine costs about
+  # $6/month to keep warm continuously versus $0 when fully idle-stopped.
+  # This also has a second-order cost beyond the Machine itself: the
+  # http_service check below queries Neon Postgres every 30s once this
+  # Machine never stops, which keeps Neon's own compute continuously
+  # active and prevents its independent 300s idle-suspend from ever
+  # completing (Fly clamps check intervals to 60s max, well under Neon's
+  # 300s timeout, so no check-interval choice avoids this -- see that
+  # check's own comment for why). Before this change, a fully-stopped web
+  # Machine ran no health check at all, so Neon could still suspend on its
+  # own between bursts of user traffic; that is no longer true.
+  min_machines_running = 1
   processes = ["app"]
 
+  # Considered splitting this into a fast dependency-free liveness check
+  # plus an infrequent deep one, specifically to let Neon Postgres's 300s
+  # idle-suspend timeout actually elapse between database pings. Verified
+  # with `flyctl config validate` that this doesn't work: Fly clamps any
+  # http_service check interval to a 60s ceiling regardless of what's
+  # configured, and 60s < 300s, so ANY check hitting /health (which queries
+  # the database) keeps Neon continuously active no matter the interval.
+  # Dropping the database check from this one to let Neon suspend was
+  # rejected too: this check also gates bluegreen promotion, so a Machine
+  # that boots but cannot reach the database would be cut over to and start
+  # serving live traffic before anything else could catch it -- reopening
+  # the exact failure TRI-124 exists to close. Keeping the full dependency
+  # check here, unconditionally active now that this Machine never fully
+  # stops, is the accepted cost: see the min_machines_running comment above
+  # for the full tradeoff statement.
   [[http_service.checks]]
     grace_period = "15s"
     interval = "30s"
