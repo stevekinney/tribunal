@@ -77,6 +77,20 @@ describe('renderConsent (TRI-40)', () => {
     expect(html).not.toMatch(/<link[^>]*rel="stylesheet"/i);
   });
 
+  it("inlines the page's own layout CSS, which render() drops from component <style> blocks", async () => {
+    // svelte/server's render() does not surface a component's scoped <style>, and
+    // this mount-owned response bypasses SvelteKit's CSS-linking pipeline, so the
+    // layout rules must travel in consent.ts's inlined <style> or they vanish in
+    // production. These come from a literal string (not Vite `?inline`), so unlike
+    // the Cinder bundle they are asserted here directly.
+    const html = await renderHtml(prompt);
+    expect(html).toContain('.consent__scopes');
+    // The 44px touch-target override for the approve/deny buttons.
+    expect(html).toContain('min-height:var(--touch-target-min,44px)');
+    // Long redirect URIs / client names must wrap rather than force scroll.
+    expect(html).toContain('overflow-wrap:anywhere');
+  });
+
   it('escapes an attacker-shaped client name rather than injecting markup', async () => {
     const html = await renderHtml({
       ...prompt,

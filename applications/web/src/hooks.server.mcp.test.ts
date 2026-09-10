@@ -3,8 +3,8 @@ import type { Handle, RequestEvent } from '@sveltejs/kit';
 
 /**
  * Covers hooks.server.ts's enabled branch: constructing the single mount at
- * module scope, wiring the identity + mount handles, and disposing on SIGTERM.
- * The disabled branch is covered by hooks.server.test.ts.
+ * module scope, wiring the combined MCP handle after the identity handles, and
+ * disposing on SIGTERM. The disabled branch is covered by hooks.server.test.ts.
  */
 
 const mockEnv: Record<string, string | undefined> = {
@@ -46,7 +46,8 @@ vi.spyOn(process, 'once').mockImplementation((event, handler) => {
   return process;
 });
 
-await import('./hooks.server');
+const { authHandle } = await import('./hooks.server');
+const { devAuthBypassHandle } = await import('$lib/server/auth/dev-bypass');
 
 function fakeEvent(): RequestEvent {
   const url = new URL('http://localhost/');
@@ -65,17 +66,31 @@ afterAll(() => {
 });
 
 describe('hooks.server MCP wiring (enabled)', () => {
-  it('constructs the mount once and routes through the identity and mount handles', async () => {
+  it('constructs the mount once and routes the final handle through the mount', async () => {
     expect(createTribunalMcpMount).toHaveBeenCalledOnce();
 
-    const mcpMountHandle = capturedHandles[capturedHandles.length - 1]!;
-    const mcpIdentityHandle = capturedHandles[capturedHandles.length - 2]!;
-
-    await mcpIdentityHandle({ event: fakeEvent(), resolve } as never);
-    const response = await mcpMountHandle({ event: fakeEvent(), resolve } as never);
+    const mcpHandle = capturedHandles[capturedHandles.length - 1]!;
+    const response = await mcpHandle({ event: fakeEvent(), resolve } as never);
 
     expect(mountHandle).toHaveBeenCalled();
     expect(response.status).toBe(200);
+  });
+
+  it('sequences the MCP handle after every identity-populating handle (auth boundary)', () => {
+    // authentication.md defines this ordering as a security boundary: the MCP
+    // handle derives the OAuth identity from event.locals.user, which authHandle
+    // populates and devAuthBypassHandle can override, so it must run after both.
+    // Assert by index against the real handle references — a reorder that moved
+    // the MCP handle before either identity handle would fail here, which the
+    // previous "last two handles" assertion could not catch.
+    const authIndex = capturedHandles.indexOf(authHandle);
+    const bypassIndex = capturedHandles.indexOf(devAuthBypassHandle);
+    const mcpIndex = capturedHandles.length - 1;
+
+    expect(authIndex).toBeGreaterThanOrEqual(0);
+    expect(bypassIndex).toBeGreaterThanOrEqual(0);
+    expect(mcpIndex).toBeGreaterThan(authIndex);
+    expect(mcpIndex).toBeGreaterThan(bypassIndex);
   });
 
   it('disposes the mount on SIGTERM', async () => {

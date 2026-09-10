@@ -67,35 +67,6 @@
   </Card>
 </main>
 
-<style>
-  .consent {
-    max-width: 32rem;
-    margin: var(--space-8, 2rem) auto;
-    padding: var(--space-4, 1rem);
-    /* A native client's loopback redirect URI or a long client name must not
-       force horizontal scroll on a narrow viewport. */
-    overflow-wrap: anywhere;
-  }
-
-  /* Cinder's buttons top out below the 44px touch-target minimum; this page's
-     entire interaction is these two buttons, and it is reachable from a mobile
-     MCP client, so enforce the minimum locally (a sanctioned :global override of
-     a component class). */
-  .consent :global(.cinder-button) {
-    min-height: var(--touch-target-min, 44px);
-  }
-
-  .consent__scopes {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3, 0.75rem);
-    margin: 0;
-    padding-left: var(--space-4, 1rem);
-  }
-
-  .consent__scopes li {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1, 0.25rem);
-  }
-</style>
+<!-- Layout styles for this page live in consent.ts's inlined <style> (see
+     CONSENT_LAYOUT_CSS): svelte/server's render() drops component <style> blocks,
+     and this response bypasses SvelteKit's CSS-linking pipeline. -->

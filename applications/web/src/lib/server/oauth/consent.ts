@@ -21,11 +21,13 @@ import ConsentError from './consent-error.svelte';
  * hand-rolled markup, and Protokit's `lib/html-response.ts` is not ported (AC2).
  *
  * Approve and deny post the transaction id and one-time CSRF token back as
- * hidden fields (never in a URL). The client display name is already validated
- * by the library's `isValidClientName` before it reaches the presentation
- * (dynamic registration refines it, and the authorize handler substitutes a
- * generic name when it fails), so an attacker-controlled name never renders
- * here (AC7, verified in `client-name-validation.test.ts`).
+ * hidden fields (never in a URL). Untrusted client-supplied strings (the display
+ * name above all) are defended in depth: the library's `isValidClientName`
+ * rejects malformed names at registration (AC7, verified in
+ * `client-name-validation.test.ts`), and every value still renders through
+ * ordinary Svelte text interpolation, which HTML-escapes it — so even a name
+ * that slipped past validation is escaped on output, never injected as markup
+ * (verified in `consent.test.ts`). Neither layer is trusted alone.
  */
 
 const [TRANSACTION_ID_FIELD, CSRF_TOKEN_FIELD] = authorizeFormParameterNames;
@@ -51,6 +53,25 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join('; ');
 
+// The consent page's own layout CSS, inlined as a literal string rather than
+// left in the components' scoped `<style>` blocks. `svelte/server`'s `render()`
+// does not emit component styles into its `head`/`body` output — the bundler
+// extracts them to a CSS asset that SvelteKit's page pipeline would link. This
+// response is built by the mount seam and bypasses that pipeline, so a scoped
+// `<style>` would be dropped entirely in production. Keeping the rules here
+// guarantees they travel with the page (and, unlike a Vite `?inline` import,
+// they are present under vitest too, so `consent.test.ts` can assert them). The
+// `--space-*`/`--touch-target-min` custom properties are Tribunal app tokens not
+// inlined on this standalone page, hence the literal fallbacks; Cinder defines
+// no numbered spacing tokens to reuse. Class names match the plain (unscoped)
+// `class` attributes the components emit now that they carry no `<style>`.
+const CONSENT_LAYOUT_CSS = [
+  '.consent{max-width:32rem;margin:var(--space-8,2rem) auto;padding:var(--space-4,1rem);overflow-wrap:anywhere}',
+  '.consent .cinder-button{min-height:var(--touch-target-min,44px)}',
+  '.consent__scopes{display:flex;flex-direction:column;gap:var(--space-3,0.75rem);margin:0;padding-left:var(--space-4,1rem)}',
+  '.consent__scopes li{display:flex;flex-direction:column;gap:var(--space-1,0.25rem)}',
+].join('');
+
 function htmlDocument(rendered: { head: string; body: string }): string {
   return (
     '<!doctype html>' +
@@ -58,7 +79,7 @@ function htmlDocument(rendered: { head: string; body: string }): string {
     '<head>' +
     '<meta charset="utf-8" />' +
     '<meta name="viewport" content="width=device-width, initial-scale=1" />' +
-    `<style>${cinderStyles}</style>` +
+    `<style>${cinderStyles}${CONSENT_LAYOUT_CSS}</style>` +
     rendered.head +
     '</head>' +
     `<body>${rendered.body}</body>` +

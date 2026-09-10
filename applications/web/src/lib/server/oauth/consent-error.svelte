@@ -23,10 +23,5 @@
   </Card>
 </main>
 
-<style>
-  .consent {
-    max-width: 32rem;
-    margin: var(--space-8, 2rem) auto;
-    padding: var(--space-4, 1rem);
-  }
-</style>
+<!-- Layout styles live in consent.ts's inlined <style> (CONSENT_LAYOUT_CSS);
+     component <style> blocks are dropped by render() on this mount-owned page. -->
