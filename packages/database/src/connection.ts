@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { drizzle as drizzleNeonHttp } from 'drizzle-orm/neon-http';
 import { drizzle as drizzleNodePostgres } from 'drizzle-orm/node-postgres';
+import { shouldUseNeonHttp } from './neon-host';
 import * as schema from './schema';
+
+export { shouldUseNeonHttp } from './neon-host';
 
 function connectNeonHttp(connectionString: string) {
   return drizzleNeonHttp(connectionString, { schema });
@@ -10,16 +13,25 @@ function connectNeonHttp(connectionString: string) {
 export type Database = ReturnType<typeof connectNeonHttp>;
 
 function connect(connectionString: string): Database {
+  // shouldUseNeonHttp is a total function (TRI-124: it returns false rather
+  // than throwing for an unparseable string, since it is also exported as a
+  // general-purpose predicate). This factory must still fail fast on a
+  // malformed connection string rather than silently falling through to
+  // node-postgres, which can interpret a malformed value using default
+  // connection parameters and target an unintended host/database.
+  if (!URL.canParse(connectionString)) {
+    // Deliberately does not interpolate the connection string: it may carry
+    // embedded credentials (postgres://user:password@host/db), and this
+    // error can surface in scripts/doctor.ts diagnostic output or an
+    // uncaught startup error in scripts that don't validate first.
+    throw new Error('Invalid database connection string');
+  }
+
   if (shouldUseNeonHttp(connectionString)) {
     return connectNeonHttp(connectionString);
   }
 
   return drizzleNodePostgres(connectionString, { schema }) as unknown as Database;
-}
-
-function shouldUseNeonHttp(connectionString: string): boolean {
-  const parsed = new URL(connectionString);
-  return parsed.hostname.endsWith('.neon.tech') || parsed.hostname.endsWith('.neon.build');
 }
 
 const databaseOverride = new AsyncLocalStorage<Database>();

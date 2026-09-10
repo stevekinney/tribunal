@@ -22,13 +22,24 @@ describe('validateEnvironmentValues', () => {
     expect(result.message).toContain('NODE_ENV');
   });
 
-  it('reports a production DATABASE_URL weaker than sslmode=verify-full', () => {
+  it('reports a production DATABASE_URL weaker than sslmode=verify-full for a non-Neon host', () => {
+    // A Neon host is exempt from this check (TRI-124: sslmode is inert over
+    // neon-http's HTTPS transport), so this must use a non-Neon host to still
+    // exercise the node-postgres TLS enforcement path.
+    const result = validateEnvironmentValues({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://user:pass@db.example.com/tribunal?sslmode=require',
+    });
+    expect(result.level).toBe('error');
+    expect(result.message).toMatch(/verify-full/);
+  });
+
+  it('does not report a Neon-host production DATABASE_URL without sslmode=verify-full', () => {
     const result = validateEnvironmentValues({
       NODE_ENV: 'production',
       DATABASE_URL: 'postgresql://user:pass@db.example.neon.tech/tribunal?sslmode=require',
     });
-    expect(result.level).toBe('error');
-    expect(result.message).toMatch(/verify-full/);
+    expect(result.level).toBe('success');
   });
 
   it('reports the SKIP_ENV_VALIDATION ban as a validation error (non-Zod throw)', () => {

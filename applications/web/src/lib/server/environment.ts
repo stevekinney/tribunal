@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { shouldUseNeonHttp } from '@tribunal/database/neon-host';
 
 /**
  * Environment validation for the web application (TRI-44).
@@ -15,6 +16,16 @@ import { z } from 'zod';
  * under Bun — both of which cannot resolve those virtual imports. This mirrors
  * the same constraint documented on `e2e-guard.ts`. The boot call site
  * (`hooks.server.ts`) is what reads the ambient environment and passes it in.
+ *
+ * This module imports `shouldUseNeonHttp` from `@tribunal/database/neon-host`
+ * rather than the package's main entry point (`@tribunal/database`). The main
+ * entry point re-exports `createDatabase` from `connection.ts`, which imports
+ * `./schema` — and `./schema` pulls in `@lostgradient/mcp/oauth/postgres`,
+ * which does not resolve from every context this module runs in (confirmed:
+ * importing `@tribunal/database` directly here broke the Vitest `server`
+ * project with "Cannot find package '@lostgradient/mcp/oauth/postgres'").
+ * `@tribunal/database/neon-host` is its own module with zero other imports —
+ * no drizzle-orm, no schema — so it carries none of that risk.
  */
 
 /**
@@ -60,19 +71,30 @@ function isLocalDatabaseHost(hostname: string): boolean {
 /**
  * Whether a production DATABASE_URL violates the TLS requirement.
  *
- * A remote managed database (the real production case) must declare exactly one
- * `sslmode=verify-full`. `require` encrypts without verifying the certificate;
- * `verify-ca` skips hostname verification. Duplicated parameters must not slip
- * through: `URLSearchParams.get` returns the first value, but the pg
- * connection-string parser keeps the last, so `?sslmode=verify-full&sslmode=disable`
- * would otherwise pass here while the driver connects with `ssl: false`. A URL
- * that is not parseable is left to the `z.string().url()` field check; a local
+ * This check constrains only the `node-postgres` raw-TLS path (used for
+ * non-Neon hosts; see `packages/database/src/connection.ts`). There, a remote
+ * managed database must declare exactly one `sslmode=verify-full`. `require`
+ * encrypts without verifying the certificate; `verify-ca` skips hostname
+ * verification. Duplicated parameters must not slip through:
+ * `URLSearchParams.get` returns the first value, but the pg connection-string
+ * parser keeps the last, so `?sslmode=verify-full&sslmode=disable` would
+ * otherwise pass here while the driver connects with `ssl: false`. A URL that
+ * is not parseable is left to the `z.string().url()` field check; a local
  * host is exempt (see {@link isLocalDatabaseHost}).
+ *
+ * A Neon host (per {@link shouldUseNeonHttp}) is exempt from this whole check:
+ * `connection.ts` routes it through `drizzle-orm/neon-http`, which connects
+ * over HTTPS, not a raw Postgres TLS socket — `sslmode` is inert there, it is
+ * never read by that driver. Certificate verification happens at the
+ * HTTPS/fetch layer, using the runtime's built-in root CA store, the same way
+ * any other HTTPS API call is verified. Asserting `sslmode=verify-full`
+ * against that driver was always a false requirement (TRI-124).
  */
 function productionDatabaseUrlViolatesTls(databaseUrl: string): boolean {
   if (!URL.canParse(databaseUrl)) return false;
   const url = new URL(databaseUrl);
   if (isLocalDatabaseHost(url.hostname)) return false;
+  if (shouldUseNeonHttp(databaseUrl)) return false;
   const sslModes = url.searchParams.getAll('sslmode');
   return !(sslModes.length === 1 && sslModes[0] === 'verify-full');
 }
@@ -119,15 +141,19 @@ export const webEnvironmentSchema = webEnvironmentObject.superRefine((environmen
     });
   }
 
-  // A remote managed database in production must use sslmode=verify-full; a
-  // local host (loopback, host.docker.internal, .internal/.local) is exempt
-  // because the connection does not cross an untrusted network.
+  // This constrains only the node-postgres raw-TLS path (non-Neon, non-local
+  // hosts): a remote managed database reached over node-postgres in
+  // production must use sslmode=verify-full. A Neon host is exempt — it
+  // connects over neon-http's HTTPS transport, where sslmode is inert and
+  // certificate verification happens at the HTTPS/fetch layer via the
+  // runtime's built-in root store. See {@link productionDatabaseUrlViolatesTls}
+  // for the full reasoning and the outage (TRI-124) this distinction fixes.
   if (productionDatabaseUrlViolatesTls(environment.DATABASE_URL)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['DATABASE_URL'],
       message:
-        'Refusing to start in production without DATABASE_URL sslmode=verify-full for a non-local host (require encrypts without verifying the certificate; verify-ca skips hostname verification).',
+        'Refusing to start in production without DATABASE_URL sslmode=verify-full for a non-local, non-Neon host (require encrypts without verifying the certificate; verify-ca skips hostname verification).',
     });
   }
 });
