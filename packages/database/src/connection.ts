@@ -13,6 +13,16 @@ function connectNeonHttp(connectionString: string) {
 export type Database = ReturnType<typeof connectNeonHttp>;
 
 function connect(connectionString: string): Database {
+  // shouldUseNeonHttp is a total function (TRI-124: it returns false rather
+  // than throwing for an unparseable string, since it is also exported as a
+  // general-purpose predicate). This factory must still fail fast on a
+  // malformed connection string rather than silently falling through to
+  // node-postgres, which can interpret a malformed value using default
+  // connection parameters and target an unintended host/database.
+  if (!URL.canParse(connectionString)) {
+    throw new Error(`Invalid database connection string: ${connectionString}`);
+  }
+
   if (shouldUseNeonHttp(connectionString)) {
     return connectNeonHttp(connectionString);
   }

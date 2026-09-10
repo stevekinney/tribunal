@@ -55,6 +55,20 @@ describe('createDatabase', () => {
     expect(drizzleNeonHttp).not.toHaveBeenCalled();
   });
 
+  it('throws on a malformed connection string instead of falling through to node-postgres', async () => {
+    // shouldUseNeonHttp (TRI-124) is a total function and returns false
+    // rather than throwing for an unparseable string, since it is also
+    // exported as a general-purpose predicate elsewhere. connect() must not
+    // rely on that throw for its own fail-fast validation: a malformed value
+    // handed to node-postgres can be interpreted with default connection
+    // parameters instead of failing before any query.
+    const { createDatabase } = await import('./connection');
+
+    expect(() => createDatabase('not a url')).toThrow(/Invalid database connection string/);
+    expect(drizzleNodePostgres).not.toHaveBeenCalled();
+    expect(drizzleNeonHttp).not.toHaveBeenCalled();
+  });
+
   describe('deferred connection string', () => {
     it('defers connecting until a property is first accessed', async () => {
       const { createDatabase } = await import('./connection');
