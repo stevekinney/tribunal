@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { setupMcpMountFixture, type McpMountFixture } from '$testing/mcp/mount-fixture';
 import { runWithDatabase } from '$lib/server/database';
 import { user } from '@tribunal/database/schema';
 import { mcpBaseUrl, mcpResourceUrl } from '$lib/server/oauth/configuration';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
+import { REVIEW_RUNS_RESOURCE_URI } from '$lib/server/mcp/resource-updates';
 
 /**
  * Verifies the MCP HTTP transport at `/mcp` through Tribunal's mounted surface
@@ -30,14 +31,21 @@ const LEGACY_ERA = '2025-11-25';
 
 let fixture: McpMountFixture;
 let applicationUser: AuthenticatedApplicationUser;
+let secondUser: AuthenticatedApplicationUser;
 let accessToken: string;
+let reviewsToken: string;
+let secondReviewsToken: string;
 
 function form(fields: Record<string, string>): string {
   return new URLSearchParams(fields).toString();
 }
 
-/** Mints an access token through the real authorize → approve → token flow. */
-async function mintAccessToken(): Promise<string> {
+/**
+ * Registers one public OAuth client and returns its id. Registration is rate
+ * limited (oauth_register, 5/60 per IP) and every request here is 127.0.0.1, so
+ * the suite registers once in beforeAll and reuses the id across every mint.
+ */
+async function registerClient(): Promise<string> {
   const registration = await fixture.handle(
     new Request(`${BASE}/oauth/register`, {
       method: 'POST',
@@ -52,8 +60,18 @@ async function mintAccessToken(): Promise<string> {
       }),
     }),
   );
-  const clientId = ((await registration.json()) as { client_id: string }).client_id;
+  return ((await registration.json()) as { client_id: string }).client_id;
+}
 
+/**
+ * Mints an access token for `forUser` with `scope` through the real authorize →
+ * approve → token flow, reusing an already-registered `clientId`.
+ */
+async function mintAccessToken(
+  scope: string,
+  forUser: AuthenticatedApplicationUser,
+  clientId: string,
+): Promise<string> {
   const authorizeUrl = `${BASE}/oauth/authorize?${new URLSearchParams({
     client_id: clientId,
     redirect_uri: REDIRECT_URI,
@@ -61,11 +79,11 @@ async function mintAccessToken(): Promise<string> {
     code_challenge: CODE_CHALLENGE,
     code_challenge_method: 'S256',
     resource: RESOURCE,
-    scope: 'repositories:read',
+    scope,
     state: 'xyz',
   }).toString()}`;
   const consent = await runWithDatabase(fixture.database.db as never, () =>
-    fixture.handle(new Request(authorizeUrl), { user: applicationUser }),
+    fixture.handle(new Request(authorizeUrl), { user: forUser }),
   );
   const html = await consent.text();
   const field = (name: string): string => {
@@ -82,7 +100,7 @@ async function mintAccessToken(): Promise<string> {
       },
       body: form({ transaction_id: field('transaction_id'), csrf_token: field('csrf_token') }),
     }),
-    { user: applicationUser },
+    { user: forUser },
   );
   const code = new URL(approved.headers.get('location')!).searchParams.get('code')!;
   const tokenResponse = await fixture.handle(
@@ -167,21 +185,34 @@ async function connectClient(
   return client;
 }
 
+function toApplicationUser(row: typeof user.$inferSelect): AuthenticatedApplicationUser {
+  return {
+    id: row.id,
+    username: row.username,
+    name: row.name,
+    avatarUrl: row.avatarUrl,
+    email: row.email,
+    isPlatformAdministrator: row.isPlatformAdministrator,
+  };
+}
+
 beforeAll(async () => {
   fixture = await setupMcpMountFixture();
-  const [row] = await fixture.database.db
+  const [rowA] = await fixture.database.db
     .insert(user)
     .values({ username: 'transport-user', email: 'tr@example.com', name: 'Transport User' })
     .returning();
-  applicationUser = {
-    id: row!.id,
-    username: row!.username,
-    name: row!.name,
-    avatarUrl: row!.avatarUrl,
-    email: row!.email,
-    isPlatformAdministrator: row!.isPlatformAdministrator,
-  };
-  accessToken = await mintAccessToken();
+  const [rowB] = await fixture.database.db
+    .insert(user)
+    .values({ username: 'transport-user-b', email: 'trb@example.com', name: 'Transport User B' })
+    .returning();
+  applicationUser = toApplicationUser(rowA!);
+  secondUser = toApplicationUser(rowB!);
+
+  const clientId = await registerClient();
+  accessToken = await mintAccessToken('repositories:read', applicationUser, clientId);
+  reviewsToken = await mintAccessToken('reviews:read', applicationUser, clientId);
+  secondReviewsToken = await mintAccessToken('reviews:read', secondUser, clientId);
 });
 
 afterAll(async () => {
@@ -223,5 +254,80 @@ describe('MCP transport — Origin handling (behaviour 5)', () => {
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), { origin: null });
     expect(response.status).not.toBe(403);
     expect(response.status).toBe(200);
+  });
+});
+
+describe('MCP transport — modern resource-update delivery (behaviour 3)', () => {
+  it('delivers a real notifications/resources/updated to a modern subscriber', async () => {
+    const client = await connectClient('modern', reviewsToken);
+    const received: { method: string; params?: { uri?: string } }[] = [];
+    client.fallbackNotificationHandler = async (notification) => {
+      received.push(notification as { method: string; params?: { uri?: string } });
+    };
+    try {
+      // listen() opens the modern subscriptions/listen stream (the _meta envelope
+      // is formed by the SDK; a raw modern POST is a deliberate 400 without it).
+      const subscription = await client.listen({
+        resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI],
+      } as never);
+      try {
+        // The listen established this user's handler; publish AFTER it is open.
+        fixture.publishUserResourceUpdate(String(applicationUser.id), REVIEW_RUNS_RESOURCE_URI);
+        await vi.waitFor(
+          () => {
+            const update = received.find(
+              (notification) => notification.method === 'notifications/resources/updated',
+            );
+            expect(update?.params?.uri).toBe(REVIEW_RUNS_RESOURCE_URI);
+          },
+          { timeout: 4000 },
+        );
+      } finally {
+        await subscription.close();
+      }
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe('MCP transport — one handler per user survives the mount (behaviour 6)', () => {
+  it('never delivers a resource update across users (one handler per user)', async () => {
+    const clientA = await connectClient('modern', reviewsToken);
+    const clientB = await connectClient('modern', secondReviewsToken);
+    const receivedA: { method: string }[] = [];
+    const receivedB: { method: string }[] = [];
+    clientA.fallbackNotificationHandler = async (n) => {
+      receivedA.push(n as { method: string });
+    };
+    clientB.fallbackNotificationHandler = async (n) => {
+      receivedB.push(n as { method: string });
+    };
+    let subA: Awaited<ReturnType<typeof clientA.listen>> | undefined;
+    let subB: Awaited<ReturnType<typeof clientB.listen>> | undefined;
+    try {
+      subA = await clientA.listen({ resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI] } as never);
+      subB = await clientB.listen({ resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI] } as never);
+
+      // Publish for A only. A shared handler would leak this to B — a confirmed
+      // cross-user disclosure, so B must receive nothing.
+      fixture.publishUserResourceUpdate(String(applicationUser.id), REVIEW_RUNS_RESOURCE_URI);
+
+      await vi.waitFor(
+        () =>
+          expect(receivedA.some((n) => n.method === 'notifications/resources/updated')).toBe(true),
+        { timeout: 4000 },
+      );
+      // Give any errant cross-user delivery a bounded window to arrive, then assert
+      // B saw no resource update. Single instance + synchronous publish make this
+      // deterministic.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(receivedB.some((n) => n.method === 'notifications/resources/updated')).toBe(false);
+    } finally {
+      if (subA) await subA.close();
+      if (subB) await subB.close();
+      await clientA.close();
+      await clientB.close();
+    }
   });
 });
