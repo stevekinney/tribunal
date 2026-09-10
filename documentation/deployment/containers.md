@@ -41,11 +41,11 @@ dotenv files.
 
 ## Service Contract
 
-| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                |
-| ----------------- | ------ | ---- | ----------- | ------------------ | --------------------------- |
-| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | one Machine, stop on idle   |
-| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | one Machine, self-exit idle |
-| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | one Machine, stop on idle   |
+| Fly app           | Public | Port | Health path | Machine size       | Scaling rule                                                               |
+| ----------------- | ------ | ---- | ----------- | ------------------ | -------------------------------------------------------------------------- |
+| `tribunal-web`    | yes    | 3000 | `/health`   | shared CPU, 1 GB   | one Machine, always warm (`min_machines_running = 1`, `bluegreen` deploys) |
+| `tribunal-engine` | no     | 3001 | `/health`   | shared CPU, 1 GB   | one Machine, self-exit idle                                                |
+| `tribunal-proxy`  | yes    | 3002 | `/health`   | shared CPU, 512 MB | one Machine, stop on idle                                                  |
 
 Do not wire services through `localhost` in production. Fly app-to-app traffic
 that must wake stopped private Machines uses Flycast:
@@ -418,22 +418,32 @@ Re-run every health gate after enabling live reviews.
 
 ## Rollback
 
-Rollback in reverse dependency order when a deploy breaks health:
+`flyctl releases rollback` is not a valid subcommand on the Machines platform
+this project uses (`flyctl releases rollback --help` silently falls back to
+`flyctl releases --help` and exits `0` rather than erroring on an unknown
+subcommand—verified against the installed `flyctl`). Roll back in reverse
+dependency order by redeploying each app's last known-good image directly:
 
 ```sh
-flyctl releases list -a tribunal-web
-flyctl releases rollback <version> -a tribunal-web
+flyctl releases --image -a tribunal-web --json
+flyctl deploy --image <image-ref> --config deployment/fly/web.toml -a tribunal-web
 
-flyctl releases list -a tribunal-engine
-flyctl releases rollback <version> -a tribunal-engine
+flyctl releases --image -a tribunal-engine --json
+flyctl deploy --image <image-ref> --config deployment/fly/engine.toml -a tribunal-engine
 flyctl scale count 1 --yes -a tribunal-engine
 
-flyctl releases list -a tribunal-proxy
-flyctl releases rollback <version> -a tribunal-proxy
+flyctl releases --image -a tribunal-proxy --json
+flyctl deploy --image <image-ref> --config deployment/fly/proxy.toml -a tribunal-proxy
 ```
 
 After any rollback, re-run the health gates and verify the engine still has
 exactly one Machine.
+
+If a `Deploy Production` GitHub Actions run itself failed (rather than a
+manually-triggered rollback), use
+[`documentation/deployment/incident-recovery.md`](./incident-recovery.md)
+instead: it covers the case where the failed commit is no longer `main`'s
+tip, where the built-in currency guard blocks a simple workflow re-run.
 
 ## Local Verification
 

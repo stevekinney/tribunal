@@ -462,8 +462,41 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
  * pattern), prefer building a real structural recognizer over widening this
  * list ad hoc.
  */
+/**
+ * TRI-125: `deploy-production.yml`'s `notify-on-failure` job triggers on the
+ * same untrusted `workflow_run` event and holds `issues: write`, so it is
+ * privileged on an untrusted trigger like `deploy` above. It is not gated
+ * by the `needs.<job>.outputs.<x> == 'true'` actor-authorization shape
+ * either -- its `if` is `always() && (needs.deploy.result == 'failure' ||
+ * needs.deploy.result == 'cancelled')`, which is not an actor check at all,
+ * it is a check on whether a specific sibling job in its own `needs:`
+ * actually ran and failed.
+ *
+ * That is provably safe transitively, not independently: `needs.deploy`
+ * means this condition can only ever evaluate true for a run where `deploy`
+ * itself executed, and `deploy`'s own execution is already the exempted,
+ * structurally-tested gate immediately above (push-to-main or an explicit
+ * main-branch `workflow_dispatch`, both of which require write access to
+ * this repository). An attacker who cannot make `deploy` run at all cannot
+ * make `notify-on-failure` run either. And even a legitimate failed run
+ * grants no meaningful privilege here: the only write this job performs is
+ * `gh issue create`/`gh issue comment` with a title and body built entirely
+ * from `github.event.workflow_run.head_sha`/`github.sha` (a commit SHA) and
+ * `github.run_id` (a run number) -- no attacker-controlled event text
+ * (an issue/PR/comment title or body) is ever interpolated into it.
+ *
+ *   1. This exemption skips the audit's own untrusted-privileged-job check
+ *      for exactly `(deploy-production.yml, notify-on-failure)`.
+ *   2. `production-migration-gate.test.ts` structurally validates that this
+ *      job's `needs:`/`if:` shape holds, alongside the `deploy` job's own
+ *      gate it depends on transitively.
+ *   3. `ciWiringViolations` (below) already asserts `test:production-
+ *      migration-gate` stays wired into `ci.yml`, so removing either test
+ *      still fails CI.
+ */
 const UNTRUSTED_TRIGGER_EXEMPTIONS: ReadonlyArray<{ fileName: string; jobName: string }> = [
   { fileName: 'deploy-production.yml', jobName: 'deploy' },
+  { fileName: 'deploy-production.yml', jobName: 'notify-on-failure' },
 ];
 
 function isExemptFromUntrustedTriggerCheck(fileName: string, jobName: string): boolean {

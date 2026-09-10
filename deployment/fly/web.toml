@@ -10,14 +10,25 @@ primary_region = "dfw"
   TRIBUNAL_ENGINE_URL = "http://tribunal-engine.flycast"
 
 [deploy]
-  strategy = "rolling"
+  # bluegreen, not rolling: with a single web Machine, "rolling" takes the
+  # only Machine down before the replacement passes its health check (Fly's
+  # own guidance is that rolling needs at least two Machines to avoid
+  # downtime). bluegreen boots the new Machine alongside the old one and only
+  # cuts traffic over once it passes checks, destroying the new Machine
+  # instead of the old one on failure -- this is what keeps the previous
+  # version serving through a bad boot (TRI-125).
+  strategy = "bluegreen"
 
 [http_service]
   internal_port = 3000
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # >=1 so a failed boot has a previous-version Machine to fall back to
+  # instead of an instant total outage (TRI-125). Trades scale-to-zero
+  # savings for availability: one shared-cpu-1x/1GB Machine costs about
+  # $6/month to keep warm continuously versus $0 when fully idle-stopped.
+  min_machines_running = 1
   processes = ["app"]
 
   [[http_service.checks]]

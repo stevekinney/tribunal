@@ -344,7 +344,7 @@ Two disable mechanisms exist once `MCP_ENABLED` ships, at different layers:
   `flyctl deploy . --config deployment/fly/web.toml`. Keeps the current
   code running, turns off only the mounted surface. This is the right tool
   when the surface itself, not the rest of `tribunal-web`, is the problem.
-- **Release rollback** (fallback): `flyctl releases rollback <version> -a tribunal-web`
+- **Release rollback** (fallback): `flyctl deploy --image <image-ref> --config deployment/fly/web.toml -a tribunal-web`
   per the existing procedure in `documentation/deployment/containers.md`'s
   Rollback section, re-run health gates afterward. This is the right tool
   when the flag mechanism itself is suspect—for example, if the gate is
