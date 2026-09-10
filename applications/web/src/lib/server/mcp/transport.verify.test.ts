@@ -370,6 +370,13 @@ describe('MCP transport — the authentication order survives the hook chain (be
   // earlier boundary short-circuits, proving SvelteKit's handle chain inserted
   // nothing ahead of the engine's order (no hook answers OPTIONS, reads the body,
   // or reorders auth). The order inside the library is TRI-99's; this is the mount.
+  //
+  // Scope: these are the boundaries of authenticateMcpUser's eight-step order —
+  // rebinding, Origin, OPTIONS, lockout, scheme, length, token lookup, audience.
+  // The adjacent serving-layer gates are owned and verified elsewhere, not
+  // re-proven here: the per-user rate limit and concurrency cap by TRI-56, and the
+  // request-body bound by TRI-48 (TRI-43's own correction records that there is no
+  // body-size check in this authenticate order).
 
   it('answers OPTIONS with 204 before any authentication runs (step 3 before step 4+)', async () => {
     // No Authorization header at all: if a later auth step ran first this would be
