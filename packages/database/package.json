@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./neon-host": "./src/neon-host.ts",
     "./schema": "./src/schema/index.ts",
     "./schema/types": "./src/schema/types.ts",
     "./operators": "./src/operators.ts",

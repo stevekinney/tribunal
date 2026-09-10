@@ -72,19 +72,58 @@ describe('parseWebEnvironment — production requires sslmode=verify-full (AC7)'
     expect(parseWebEnvironment(PROD_ENV).NODE_ENV).toBe('production');
   });
 
-  it('rejects sslmode=require and sslmode=verify-ca in production', () => {
+  it('rejects sslmode=require and sslmode=verify-ca in production for a non-Neon host', () => {
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        DATABASE_URL: 'postgresql://user:pass@db.example.com/tribunal?sslmode=require',
+      }),
+    ).toThrow(/verify-full/);
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        DATABASE_URL: 'postgresql://user:pass@db.example.com/tribunal?sslmode=verify-ca',
+      }),
+    ).toThrow(/verify-full/);
+  });
+
+  it('accepts sslmode=verify-full in production for a non-Neon host', () => {
+    // Positive control for the two rejections above: proves they reject on
+    // sslmode, not merely on hostname.
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        DATABASE_URL: 'postgresql://user:pass@db.example.com/tribunal?sslmode=verify-full',
+      }),
+    ).not.toThrow();
+  });
+
+  it('exempts a Neon host in production even without sslmode=verify-full (outage regression)', () => {
+    // TRI-124: production crash-looped for ~4 hours on 2026-09-09/10 because
+    // this check rejected a production DATABASE_URL for lacking
+    // sslmode=verify-full even though the host routes to Neon's neon-http
+    // driver over HTTPS, where sslmode is inert. This is the exact case that
+    // caused the outage: a Neon host, in production, without verify-full.
     expect(() =>
       parseWebEnvironment({
         ...PROD_ENV,
         DATABASE_URL: 'postgresql://user:pass@db.example.neon.tech/tribunal?sslmode=require',
       }),
-    ).toThrow(/verify-full/);
+    ).not.toThrow();
+    // No sslmode parameter at all.
     expect(() =>
       parseWebEnvironment({
         ...PROD_ENV,
-        DATABASE_URL: 'postgresql://user:pass@db.example.neon.tech/tribunal?sslmode=verify-ca',
+        DATABASE_URL: 'postgresql://user:pass@db.example.neon.tech/tribunal',
       }),
-    ).toThrow(/verify-full/);
+    ).not.toThrow();
+    // .neon.build is also exempt, per the same shouldUseNeonHttp predicate.
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        DATABASE_URL: 'postgresql://user:pass@db.example.neon.build/tribunal?sslmode=require',
+      }),
+    ).not.toThrow();
   });
 
   it('does not require verify-full outside production', () => {
@@ -117,14 +156,16 @@ describe('parseWebEnvironment — production requires sslmode=verify-full (AC7)'
     expect(() => parseWebEnvironment({ ...PROD_ENV, DATABASE_URL: 'not a url' })).toThrow();
   });
 
-  it('rejects a duplicated sslmode where a later value weakens it', () => {
+  it('rejects a duplicated sslmode where a later value weakens it, for a non-Neon host', () => {
     // URLSearchParams.get returns the first value, but the pg parser keeps the
     // last; a lax check would pass this while the driver connects with ssl:false.
+    // Hosted on a non-Neon host: a Neon host is now exempt from this check
+    // entirely, so this must still exercise the node-postgres enforcement path.
     expect(() =>
       parseWebEnvironment({
         ...PROD_ENV,
         DATABASE_URL:
-          'postgresql://user:pass@db.example.neon.tech/tribunal?sslmode=verify-full&sslmode=disable',
+          'postgresql://user:pass@db.example.com/tribunal?sslmode=verify-full&sslmode=disable',
       }),
     ).toThrow(/verify-full/);
   });
