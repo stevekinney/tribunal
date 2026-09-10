@@ -421,9 +421,25 @@ function serviceAutoStarts(service: MachineServiceConfiguration): boolean {
   return service.autostart === true;
 }
 
-function serviceKeepsZeroMachinesWarm(service: MachineServiceConfiguration): boolean {
-  return service.minMachinesRunning === 0;
+function serviceKeepsExpectedMachinesWarm(
+  service: MachineServiceConfiguration,
+  expectedMinMachinesRunning: number,
+): boolean {
+  return service.minMachinesRunning === expectedMinMachinesRunning;
 }
+
+/**
+ * `tribunal-web` deliberately keeps one warm Machine (TRI-125): a rolling or
+ * bluegreen deploy with zero warm Machines has no previous version to fall
+ * back to when a new boot fails, which is exactly what turned a bad
+ * `DATABASE_URL` check into a four-hour outage rather than a failed deploy.
+ * `tribunal-proxy` has no such requirement and still scales to zero when
+ * idle.
+ */
+const EXPECTED_MIN_MACHINES_RUNNING: Record<'tribunal-web' | 'tribunal-proxy', number> = {
+  'tribunal-web': 1,
+  'tribunal-proxy': 0,
+};
 
 async function gatherFlyState(): Promise<FlyState> {
   const auth = await checkAuth();
@@ -1158,8 +1174,15 @@ function collectMachineCostFailures(
     if (!services.every(serviceAutoStarts)) {
       failures.push(`${app} does not auto-start Machines`);
     }
-    if (!services.every(serviceKeepsZeroMachinesWarm)) {
-      failures.push(`${app} keeps warm Machines running`);
+    const expectedMinMachinesRunning = EXPECTED_MIN_MACHINES_RUNNING[app];
+    if (
+      !services.every((service) =>
+        serviceKeepsExpectedMachinesWarm(service, expectedMinMachinesRunning),
+      )
+    ) {
+      failures.push(
+        `${app} min_machines_running does not match the expected ${expectedMinMachinesRunning}`,
+      );
     }
   }
 
@@ -1200,7 +1223,7 @@ function collectMachineCostFailures(
           (service) =>
             service.internalPort === 3001 &&
             serviceAutoStarts(service) &&
-            serviceKeepsZeroMachinesWarm(service) &&
+            serviceKeepsExpectedMachinesWarm(service, 0) &&
             serviceAutoStopDisabled(service),
         )
       ) {

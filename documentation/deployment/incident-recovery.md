@@ -24,11 +24,22 @@ Re-running the failed `Deploy Production` workflow run does not work once `main`
 Restore service by redeploying the last known-good image directly through Fly, bypassing GitHub Actions (and therefore the currency guard) entirely. This targets Fly's own release history, so it does not depend on git state at all:
 
 ```sh
-gh run list --repo stevekinney/tribunal --workflow deploy-production.yml --status success --limit 1 --json headSha,createdAt
+gh run list --repo stevekinney/tribunal --workflow deploy-production.yml --status success --limit 5 --json databaseId,headSha,updatedAt
+```
+
+A workflow run can conclude `success` with the `deploy` job itself skipped (for example a `workflow_dispatch` run against a non-`main` ref, or a `workflow_run` trigger whose upstream CI failed), so `--status success` alone does not prove a deploy happened. Starting from the most recent row, confirm the `deploy` job actually ran and succeeded before trusting a run:
+
+```sh
+gh run view <databaseId> --repo stevekinney/tribunal --json jobs --jq '.jobs[] | select(.name == "Deploy Production") | .conclusion'
+```
+
+Move to the next-older row if that prints anything other than `success`. Once you have a confirmed run, note its `updatedAt` (the run's completion time, not `createdAt`—Fly creates the release near completion, so filtering by `createdAt` can exclude the very release that run produced) and `headSha` (the commit you are trying to get back to):
+
+```sh
 flyctl releases --image --app tribunal-web --json
 ```
 
-The `gh run list` output gives you the last commit that actually completed a successful `Deploy Production` run—that is the commit you are trying to get back to. From the `flyctl releases` output, find the most recent release with `"Status": "complete"` whose `CreatedAt` is at or before that run's time (a release with any other status, or one created after the last known-good run, is not a safe target), and copy its `ImageRef` (for example `registry.fly.io/tribunal-web:deployment-01ABCDEFGHJKMNPQRSTVWXYZ`), then:
+From the `flyctl releases` output, find the most recent release with `"Status": "complete"` whose `CreatedAt` is at or before the confirmed run's `updatedAt` (a release with any other status, or one created after that run finished, is not a safe target), and copy its `ImageRef` (for example `registry.fly.io/tribunal-web:deployment-01ABCDEFGHJKMNPQRSTVWXYZ`), then:
 
 ```sh
 flyctl deploy --image <image-ref> --config deployment/fly/web.toml --app tribunal-web

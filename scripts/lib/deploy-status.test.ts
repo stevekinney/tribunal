@@ -67,6 +67,7 @@ function createReadyMachine(
   environment: Record<string, string>,
   internalPort: number,
   autostop: 'stop' | 'off' | false,
+  minMachinesRunning = 0,
 ): FlyState['appMachines'] extends Map<string, infer MachineState>
   ? Exclude<MachineState, null | 'unknown'>
   : never {
@@ -82,7 +83,7 @@ function createReadyMachine(
             autostart: true,
             autostop,
             internalPort,
-            minMachinesRunning: 0,
+            minMachinesRunning,
           },
         ],
       },
@@ -131,6 +132,7 @@ function createFlyState(
           overrides.webEnvironment ?? { TRIBUNAL_ENGINE_URL: 'http://tribunal-engine.flycast' },
           3000,
           'stop',
+          1,
         ),
       ],
     ]) as FlyState['appMachines'],

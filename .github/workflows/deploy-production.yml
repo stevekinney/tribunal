@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
+    outputs:
+      stale_deploy: ${{ steps.verify_current_main.outputs.stale }}
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_ORG: ${{ vars.FLY_ORG }}
@@ -45,6 +47,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify deploy commit is current main
+        id: verify_current_main
         if: github.event_name == 'workflow_run'
         shell: bash
         run: |
@@ -53,6 +56,12 @@ jobs:
           current_main="$(git rev-parse origin/main)"
           if [ "$DEPLOY_SHA" != "$current_main" ]; then
             echo "::error::Refusing to deploy ${DEPLOY_SHA}; origin/main is ${current_main}"
+            # Written before exit so the job-level `stale_deploy` output below
+            # is still set even though this step (and therefore the job)
+            # fails: this rejection is an intentional, expected outcome (an
+            # older queued run superseded by a newer main push), not a real
+            # deploy failure, and notify-on-failure must not page for it.
+            echo "stale=true" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -390,7 +399,12 @@ jobs:
     # to surface, not just an explicit step failure. A 'skipped' deploy job
     # means the `if:` gate above didn't match at all (e.g. CI itself failed
     # on main), which is a different, already-visible signal and not paged
-    # here.
+    # here. `needs.deploy.outputs.stale_deploy == 'true'` excludes the one
+    # other expected-failure case: "Verify deploy commit is current main"
+    # deliberately rejects an older queued run once `main` has advanced past
+    # it, which is normal when two pushes land close together, not an
+    # incident -- paging for it would open a false-alarm issue on every
+    # superseded commit.
     #
     # This job is exempted from the untrusted-privileged-job check in
     # `.github/scripts/workflow-policy.ts` (`UNTRUSTED_TRIGGER_EXEMPTIONS`)
@@ -398,7 +412,7 @@ jobs:
     # recognizes -- see that file for why, and
     # `.github/tests/production-migration-gate.test.ts` for the structural
     # test that keeps this exemption honest.
-    if: always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled')
+    if: always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') && needs.deploy.outputs.stale_deploy != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

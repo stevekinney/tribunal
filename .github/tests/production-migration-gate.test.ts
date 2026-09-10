@@ -255,10 +255,36 @@ describe('deploy-production.yml: notify-on-failure exemption stays honest', () =
    * job's own condition above: a substring check would still pass if
    * `|| github.actor == 'someone'` were prepended.
    */
-  test('notify-on-failure fires only for a deploy result of failure or cancelled, always-evaluated', () => {
+  test('notify-on-failure fires only for a deploy result of failure or cancelled, excluding an intentionally stale-rejected deploy, always-evaluated', () => {
     expect((notify.if ?? '').trim()).toBe(
-      "always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled')",
+      "always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') && needs.deploy.outputs.stale_deploy != 'true'",
     );
+  });
+
+  /**
+   * The `stale_deploy` exclusion above is only meaningful if `deploy`
+   * actually exposes that output, and if the step that sets it writes it
+   * BEFORE the `exit 1` that makes the step (and the job) fail -- a step
+   * that fails before reaching its own output-write leaves the output
+   * unset, which `!= 'true'` treats as "not stale", defeating the
+   * exclusion for the exact case it exists to cover.
+   */
+  test('deploy exposes stale_deploy from the current-main verification step, written before it can fail', () => {
+    const deployJob = workflow.jobs.deploy;
+    expect(deployJob.outputs).toEqual({
+      stale_deploy: '${{ steps.verify_current_main.outputs.stale }}',
+    });
+
+    const steps = deployJob.steps ?? [];
+    const verifyStep = steps.find((step) => step.name === 'Verify deploy commit is current main');
+    expect(verifyStep?.id).toBe('verify_current_main');
+
+    const runLines = (verifyStep?.run ?? '').split('\n');
+    const outputWriteIndex = runLines.findIndex((line) => line.includes('stale=true'));
+    const exitIndex = runLines.findIndex((line) => line.trim() === 'exit 1');
+    expect(outputWriteIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThanOrEqual(0);
+    expect(outputWriteIndex).toBeLessThan(exitIndex);
   });
 
   test('notify-on-failure requests no permission beyond issues: write', () => {

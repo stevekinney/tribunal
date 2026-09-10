@@ -50,6 +50,7 @@ const UNTRUSTED_EVENTS = new Set([
 ]);
 
 export interface WorkflowStep {
+  id?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -71,6 +72,7 @@ export interface WorkflowJob {
   secrets?: unknown;
   env?: Record<string, unknown>;
   uses?: string;
+  outputs?: Record<string, string>;
   steps?: WorkflowStep[];
   // Left loose (rather than a fully-typed `container.env`/`container.credentials`
   // shape) so `jobUsesSecrets` below can stringify whatever expression-bearing
@@ -468,9 +470,11 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
  * privileged on an untrusted trigger like `deploy` above. It is not gated
  * by the `needs.<job>.outputs.<x> == 'true'` actor-authorization shape
  * either -- its `if` is `always() && (needs.deploy.result == 'failure' ||
- * needs.deploy.result == 'cancelled')`, which is not an actor check at all,
- * it is a check on whether a specific sibling job in its own `needs:`
- * actually ran and failed.
+ * needs.deploy.result == 'cancelled') && needs.deploy.outputs.stale_deploy
+ * != 'true'`, which is not an actor check at all, it is a check on whether a
+ * specific sibling job in its own `needs:` actually ran and failed (and did
+ * not fail solely because `main` advanced past the commit it was deploying,
+ * an expected outcome the currency guard produces on purpose).
  *
  * That is provably safe transitively, not independently: `needs.deploy`
  * means this condition can only ever evaluate true for a run where `deploy`
