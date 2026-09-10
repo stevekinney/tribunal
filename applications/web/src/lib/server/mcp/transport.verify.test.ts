@@ -19,10 +19,11 @@ import { hashWithSha256 } from '$lib/server/encryption';
  * between the client and the handler. The mounted-surface fixture is imported
  * from the mount issue (TRI-41), not reimplemented.
  *
- * Streaming rule: a `subscriptions/listen` response never ends (a 15s keep-alive
- * interval keeps it open), so those tests read one chunk and abort — they never
- * `await response.text()`. Ordinary request/response messages (initialize,
- * subscribe, a single tool call) do close, so their bodies are read in full.
+ * Streaming rule: a `subscriptions/listen` response never ends. The modern
+ * delivery and isolation tests open it through the SDK client's `listen()` and
+ * tear it down with `subscription.close()` / `client.close()` rather than reading
+ * the body directly; the idle-timeout test drains the raw stream on a background
+ * reader and cancels it. No test `await`s a listen response body to completion.
  */
 
 const BASE = mcpBaseUrl.origin;
@@ -65,7 +66,10 @@ async function registerClient(): Promise<string> {
       }),
     }),
   );
-  return ((await registration.json()) as { client_id: string }).client_id;
+  expect(registration.status).toBe(201);
+  const clientId = ((await registration.json()) as { client_id?: string }).client_id;
+  expect(clientId).toBeTruthy();
+  return clientId!;
 }
 
 /**
@@ -126,7 +130,6 @@ async function mintAccessToken(
 }
 
 type McpRequestOptions = {
-  era?: string;
   token?: string | null;
   origin?: string | null;
   headers?: Record<string, string>;
@@ -379,9 +382,11 @@ describe('MCP transport — the authentication order survives the hook chain (be
   });
 
   it('rejects a disallowed Origin before looking up the token (step 2 before step 7)', async () => {
-    // A valid bearer token, but a cross-site Origin: the Origin gate must refuse it
-    // before the token is ever looked up.
+    // A cross-site Origin AND an invalid token: if the Origin gate runs first this
+    // is 403; a regressed order that looked the token up first would surface the
+    // token failure as 401. Asserting 403 is what distinguishes the two.
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: 'not-a-real-token',
       origin: 'https://attacker.example',
     });
     expect(response.status).toBe(403);
@@ -463,6 +468,13 @@ describe('MCP transport — the authentication order survives the hook chain (be
     expect(audienceMismatch.headers.get('www-authenticate')).toBe(
       unknownToken.headers.get('www-authenticate'),
     );
+    expect(audienceMismatch.headers.get('content-type')).toBe(
+      unknownToken.headers.get('content-type'),
+    );
+    // Compare the full header set so any future divergence (cache, rate-limit, a
+    // new error header) that would let a client tell the two apart fails here.
+    const headerNames = (response: Response) => [...response.headers.keys()].sort();
+    expect(headerNames(audienceMismatch)).toEqual(headerNames(unknownToken));
     expect(await audienceMismatch.text()).toBe(await unknownToken.text());
   });
 });
