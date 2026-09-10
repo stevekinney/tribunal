@@ -6,6 +6,7 @@ import { user } from '@tribunal/database/schema';
 import { mcpBaseUrl, mcpResourceUrl, mcpRuntimeLimits } from '$lib/server/oauth/configuration';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 import { REVIEW_RUNS_RESOURCE_URI } from '$lib/server/mcp/resource-updates';
+import { hashWithSha256 } from '$lib/server/encryption';
 
 /**
  * Verifies the MCP HTTP transport at `/mcp` through Tribunal's mounted surface
@@ -35,6 +36,7 @@ let secondUser: AuthenticatedApplicationUser;
 let accessToken: string;
 let reviewsToken: string;
 let secondReviewsToken: string;
+let registeredClientId: string;
 
 function form(fields: Record<string, string>): string {
   return new URLSearchParams(fields).toString();
@@ -125,6 +127,7 @@ type McpRequestOptions = {
   token?: string | null;
   origin?: string | null;
   headers?: Record<string, string>;
+  clientAddress?: string;
 };
 
 /** POSTs a JSON-RPC message to /mcp, authenticated unless token is overridden. */
@@ -140,6 +143,7 @@ function mcpRequest(message: unknown, options: McpRequestOptions = {}): Promise<
   return runWithDatabase(fixture.database.db as never, () =>
     fixture.handle(
       new Request(`${BASE}/mcp`, { method: 'POST', headers, body: JSON.stringify(message) }),
+      options.clientAddress ? { clientAddress: options.clientAddress } : undefined,
     ),
   );
 }
@@ -209,10 +213,10 @@ beforeAll(async () => {
   applicationUser = toApplicationUser(rowA!);
   secondUser = toApplicationUser(rowB!);
 
-  const clientId = await registerClient();
-  accessToken = await mintAccessToken('repositories:read', applicationUser, clientId);
-  reviewsToken = await mintAccessToken('reviews:read', applicationUser, clientId);
-  secondReviewsToken = await mintAccessToken('reviews:read', secondUser, clientId);
+  registeredClientId = await registerClient();
+  accessToken = await mintAccessToken('repositories:read', applicationUser, registeredClientId);
+  reviewsToken = await mintAccessToken('reviews:read', applicationUser, registeredClientId);
+  secondReviewsToken = await mintAccessToken('reviews:read', secondUser, registeredClientId);
 });
 
 afterAll(async () => {
@@ -397,5 +401,65 @@ describe('MCP transport — the authentication order survives the hook chain (be
     const overLong = 'a'.repeat(mcpRuntimeLimits.maximumBearerTokenLength + 1);
     const response = await mcpRequest(initializeMessage(LEGACY_ERA), { token: overLong });
     expect(response.status).toBe(401);
+  });
+
+  it('locks out an IP after repeated failures, before even a valid token is looked up (step 4 before step 7)', async () => {
+    // A distinct client address so this cannot poison 127.0.0.1 for the rest of the
+    // file (the lockout is keyed by network identity). Exhaust the failed-auth
+    // budget with malformed-but-well-formed bearer tokens, then present a VALID
+    // token from the same IP: the lockout (step 4) must refuse it with 429 before
+    // the token is ever looked up (step 7).
+    const lockoutAddress = '203.0.113.7';
+    for (
+      let attempt = 0;
+      attempt < mcpRuntimeLimits.maximumFailedAuthenticationAttempts;
+      attempt += 1
+    ) {
+      const failed = await mcpRequest(initializeMessage(LEGACY_ERA), {
+        token: 'not-a-real-token',
+        clientAddress: lockoutAddress,
+      });
+      expect(failed.status).toBe(401);
+    }
+    const lockedOut = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: accessToken,
+      clientAddress: lockoutAddress,
+    });
+    expect(lockedOut.status).toBe(429);
+  });
+
+  it('rejects a token minted for a different resource, indistinguishably from an unknown token (step 8, OBS-001)', async () => {
+    // Seed a token that is unrevoked, unexpired, correctly hashed, and owned by a
+    // real user — but bound to a different resource. It passes scheme, length, and
+    // the lookup, and is refused only at the audience check (step 8). Its rejection
+    // must be byte-identical to an unknown token's (OBS-001 / RFC 6750): the
+    // endpoint must not become an oracle for whether a given token exists.
+    const wrongResourceToken = 'tri43-audience-mismatch-token-000000000000';
+    await fixture.stores.tokens.issueAuthorizationGrant({
+      accessToken: {
+        accessTokenHash: hashWithSha256(wrongResourceToken),
+        clientId: registeredClientId,
+        userId: String(applicationUser.id),
+        scope: 'reviews:read',
+        resource: 'https://not-tribunal.example/mcp',
+        expiresAt: new Date(Date.now() + 3_600_000),
+        revokedAt: null,
+        createdAt: new Date(),
+      },
+    });
+
+    const audienceMismatch = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: wrongResourceToken,
+    });
+    const unknownToken = await mcpRequest(initializeMessage(LEGACY_ERA), {
+      token: 'tri43-never-issued-token-11111111111111111',
+    });
+
+    expect(audienceMismatch.status).toBe(unknownToken.status);
+    expect(audienceMismatch.status).toBe(401);
+    expect(audienceMismatch.headers.get('www-authenticate')).toBe(
+      unknownToken.headers.get('www-authenticate'),
+    );
+    expect(await audienceMismatch.text()).toBe(await unknownToken.text());
   });
 });
