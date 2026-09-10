@@ -42,6 +42,7 @@
     "test:mcp:consent": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/consent.test.ts src/lib/server/oauth/client-name-validation.test.ts",
     "test:mcp:metadata": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/registry.test.ts src/lib/server/mcp/golden-prompts.test.ts src/lib/server/mcp/scope-vocabulary.test.ts",
     "test:mcp:oauth-authorize": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/authorize.verify.test.ts",
+    "test:mcp:oauth-token": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/token.verify.test.ts",
     "test:mcp:oauth-scope": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/scope.verify.test.ts",
     "test:mcp:oauth-discovery": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/discovery.verify.test.ts",
     "test:mcp:dev-auth": "bun run --cwd applications/web test:unit:server -- src/lib/server/auth/dev-bypass.test.ts src/lib/server/mcp/mount-hooks.test.ts src/lib/server/mcp/conformance-surface.test.ts src/lib/server/oauth/dev-auth-isolation.verify.test.ts",
