@@ -7,6 +7,7 @@ import { getPullRequestTool, listPullRequestsTool } from './tools/pull-request-t
 import { getReviewRunTool, listReviewRunsTool } from './tools/review-run-tools';
 import { getReviewFindingTool, listReviewFindingsTool } from './tools/finding-tools';
 import { getCostSummaryTool, listCostEventsTool } from './tools/cost-tools';
+import { reviewRunsResource } from './resources/review-run-resource';
 
 /**
  * Every operation Tribunal serves, keyed by its wire name.
@@ -46,14 +47,13 @@ export type TribunalMcpOperationName = keyof typeof tribunalMcpOperations;
  * scope the authorization layer cannot issue for a primitive the server does
  * serve.
  *
- * `resources` and `prompts` are empty, and that is this issue's decision
- * rather than an omission. `documentation/mcp-scopes.md` left "resources
- * versus tools-only" open and assigned it here. Tools alone cover every
- * capability family in the vocabulary; resources would additionally commit
- * Tribunal to the `resources/subscribe` and `subscriptions/listen` surface,
- * whose authorization has to be enforced at the HTTP boundary by the consumer
- * rather than by the engine, and no client requirement asks for it. Adding one
- * later is additive.
+ * `resources` now carries one subscribable resource, `review-runs` (TRI-126,
+ * reversing the earlier tools-only decision that this slot documented). The
+ * decision to commit to the `resources/subscribe` and `subscriptions/listen`
+ * surface was the owner's; its authorization is enforced at the HTTP boundary
+ * by the library (`areResourceSubscriptionsAuthorized`) against the resource's
+ * `requiredScope` (`reviews:read`). `prompts` stays empty — no requirement asks
+ * for it, and adding one later is additive.
  *
  * `conformanceOnlyTools` holds the one synthetic fixture behind
  * `conformance:read`. It is a separate slot rather than a flag on a tool
@@ -67,7 +67,7 @@ export const tribunalMcpRegistry = tribunalScopeVocabulary.defineRegistry({
   instructions: tribunalMcpInstructions,
   serverInfo: { name: tribunalMcpServerName, version: tribunalMcpServerVersion },
   tools: Object.values(tribunalMcpOperations),
-  resources: [],
+  resources: [reviewRunsResource],
   prompts: [],
   conformanceOnlyTools: [conformanceFixtureTool],
 });

@@ -15,8 +15,14 @@ import { createTribunalOAuthSeams } from '$lib/server/oauth/seams';
  */
 export const MCP_IDENTITY_HANDLE_NAME = 'mcpIdentityHandle';
 
-export type TribunalMcpMount = {
+/** The mount plus the host-side resource-update publisher the runtime exposes. */
+export type AssembledMcpMount = {
   mount: SvelteKitMcpMount;
+  /** Publishes `notifications/resources/updated` to a user's live subscription (TRI-126). */
+  publishUserResourceUpdate: (userId: string, uri: string) => void;
+};
+
+export type TribunalMcpMount = AssembledMcpMount & {
   /** Disposes the mount and the storage connection pool it owns. */
   dispose: () => Promise<void>;
 };
@@ -37,10 +43,10 @@ export type TribunalMcpMount = {
  * fixture (which injects PGlite-backed stores), so both exercise the same
  * runtime, seams, and mount configuration.
  */
-export async function assembleTribunalMcpMount(stores: OAuthStores): Promise<SvelteKitMcpMount> {
+export async function assembleTribunalMcpMount(stores: OAuthStores): Promise<AssembledMcpMount> {
   const runtime = createTribunalMcpRuntime(stores);
   const oauthSeams = createTribunalOAuthSeams(stores);
-  return createSvelteKitMcpMount({
+  const mount = await createSvelteKitMcpMount({
     oauthSeams,
     discoveryConfiguration: tribunalOAuthDiscoveryConfiguration,
     registry: tribunalMcpRegistry,
@@ -49,6 +55,7 @@ export async function assembleTribunalMcpMount(stores: OAuthStores): Promise<Sve
     getRequestId: (event) => (event.locals.requestId as string | undefined) ?? crypto.randomUUID(),
     mcp: runtime,
   });
+  return { mount, publishUserResourceUpdate: runtime.publishUserResourceUpdate };
 }
 
 export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
@@ -61,8 +68,8 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
   // fatal in production, so it can never bind a request-scoped db in a real
   // deployment.
   if (env.E2E_TEST_MODE === '1') {
-    const mount = await assembleTribunalMcpMount(createOAuthStores(db));
-    return { mount, dispose: () => mount.dispose() };
+    const assembled = await assembleTribunalMcpMount(createOAuthStores(db));
+    return { ...assembled, dispose: () => assembled.mount.dispose() };
   }
 
   const connectionString = env.DATABASE_URL;
@@ -72,11 +79,11 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
 
   const storage = createOAuthStorageSeam(connectionString);
   try {
-    const mount = await assembleTribunalMcpMount(storage.stores);
+    const assembled = await assembleTribunalMcpMount(storage.stores);
     return {
-      mount,
+      ...assembled,
       dispose: async () => {
-        await mount.dispose();
+        await assembled.mount.dispose();
         await storage.dispose();
       },
     };

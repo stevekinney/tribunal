@@ -39,10 +39,14 @@ describe("Tribunal's MCP registry", () => {
     expect(tribunalMcpRegistry.instructions).toBe(tribunalMcpInstructions);
   });
 
-  it('serves no resources and no prompts in this release', () => {
-    expect.assertions(2);
+  it('serves the review-runs resource and no prompts (TRI-126)', () => {
+    expect.assertions(3);
 
-    expect(tribunalMcpRegistry.resources).toEqual([]);
+    // The tools-only decision was reversed to add one subscribable resource.
+    expect(tribunalMcpRegistry.resources.map((resource) => resource.uri)).toEqual([
+      'tribunal://review-runs',
+    ]);
+    expect(tribunalMcpRegistry.resources[0]?.requiredScope).toBe('reviews:read');
     expect(tribunalMcpRegistry.prompts).toEqual([]);
   });
 

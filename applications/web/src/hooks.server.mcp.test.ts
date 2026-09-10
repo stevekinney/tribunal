@@ -30,8 +30,13 @@ vi.mock('$lib/server/github/webhooks/subscription-drift', () => ({
 
 const mountDispose = vi.fn(() => Promise.resolve());
 const mountHandle = vi.fn(() => Promise.resolve(new Response('ok', { status: 200 })));
+const mountPublish = vi.fn();
 const createTribunalMcpMount = vi.fn(() =>
-  Promise.resolve({ mount: { handle: mountHandle, dispose: mountDispose }, dispose: mountDispose }),
+  Promise.resolve({
+    mount: { handle: mountHandle, dispose: mountDispose },
+    publishUserResourceUpdate: mountPublish,
+    dispose: mountDispose,
+  }),
 );
 vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/server/mcp/mount')>();
@@ -105,6 +110,23 @@ describe('hooks.server MCP wiring (enabled)', () => {
     await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
         '[hooks.server] MCP mount dispose failed',
+        expect.any(Error),
+      ),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('logs and stays a no-op when the mount never constructs (TRI-126)', async () => {
+    // A failed mount must not crash the web process, but it must be observable:
+    // the notifier stays unregistered and the failure is logged rather than
+    // silently swallowed. Re-import with a rejecting factory in isolation.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createTribunalMcpMount.mockRejectedValueOnce(new Error('mount boom'));
+    vi.resetModules();
+    await import('./hooks.server');
+    await vi.waitFor(() =>
+      expect(consoleError).toHaveBeenCalledWith(
+        '[hooks.server] MCP resource-update publisher registration failed',
         expect.any(Error),
       ),
     );
