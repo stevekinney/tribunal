@@ -122,6 +122,19 @@ async function computeWithConfig(input: string, config: Config): Promise<Result>
 
 **Real-world example:** Mermaid diagram rendering with theme switching. The `mermaid.initialize(theme)` call updates a shared mermaid instance. If theme changes from 'default' to 'dark' while a 'default' render is in progress, the render completes with the dark-themed instance, but would be cached under the 'default' key without a post-render validation check.
 
+## Coalescing single-flight caches over an uncancellable load
+
+A TTL cache that coalesces concurrent callers onto one in-flight load (e.g. `lib/server/operations/coalesced-cache.ts`, backing `/health/ready`) needs the full set below when the load can stall, or it fails in a different way each review round:
+
+- **Bound the in-flight load once, not per caller.** A per-caller deadline that clears the entry starts a fresh (uncancellable) load per poll — unbounded amplification during an outage. Never clearing pins the endpoint forever onto a wedged load with no recovery. Instead, abandon an in-flight load unsettled within one deadline window: awaiting callers reject, the entry clears, the next window re-probes. Concurrent callers within a window still coalesce onto one load.
+- **Generation-guard the cache write.** Tag each load with a monotonic id captured at start; write its result only while it is still the current load. An abandoned load that resolves late must not overwrite a newer result (which would serve a stale snapshot for the full TTL).
+- **Clone on every read, including the in-flight branch.** Cache-hit and cache-miss cloning is not enough — return a per-caller `.then(clone)` off the shared in-flight promise, or two overlapping callers share one mutable object.
+- **Give the shared promise its own no-op `.catch`.** Callers attach handlers as separate `.then` branches a tick later; without a defensive `.catch(() => {})` the shared promise's rejection can surface as unhandled.
+
+## Pre-auth rate limiter over a stalling store needs a circuit breaker
+
+A `Promise.race` deadline stops *awaiting* a stalled store call but does not stop *issuing* new ones. When the limiter runs before authentication, an unauthenticated flood during a partial store outage leaves one uncancellable queued command per request. While a timed-out command remains unresolved, hold a breaker open (new requests fail open without issuing a command) and close it when that command settles, bounding pending commands to one.
+
 ## Invalidate list caches on entity updates
 
 When an entity mutation changes fields displayed in list views, invalidate both the entity cache AND the list cache. Otherwise, lists show stale data until full page reload.

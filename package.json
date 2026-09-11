@@ -53,7 +53,7 @@
     "test:mcp:transport": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/transport.verify.test.ts",
     "test:mcp:request-bounds": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/request-bounds.verify.test.ts",
     "test:mcp:redis": "bun run --cwd packages/github test -- src/cache.test.ts",
-    "test:mcp:operational": "bun run --cwd applications/web test:unit:server -- src/lib/server/operations/coalesced-cache.test.ts src/lib/server/operations/operations-auth.test.ts src/lib/server/operations/operations-rate-limit.test.ts src/routes/health/ready/server.test.ts src/routes/metrics/server.test.ts src/hooks.server.test.ts",
+    "test:mcp:operational": "bun run --cwd applications/web test:unit:server -- src/lib/server/operations/coalesced-cache.test.ts src/lib/server/operations/operations-auth.test.ts src/lib/server/operations/operations-rate-limit.test.ts src/routes/health/ready/server.test.ts src/routes/metrics/server.test.ts src/hooks.server.test.ts test/mcp/e2e-handle-operational.test.ts",
     "test:mcp:rate-limits": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/rate-limit-stores.test.ts src/lib/server/mcp/rate-limit.verify.test.ts src/lib/server/mcp/rate-limit-concurrency.verify.test.ts src/routes/health/health-rate-limit.test.ts && bun run --cwd scripts test -- limiter-reimplementation-validation && bun run validate:limiter-reimplementation",
     "audit:mcp-logs": "bun run scripts/audit-mcp-logs.ts",
     "verify": "bun run scripts/verify.ts",
