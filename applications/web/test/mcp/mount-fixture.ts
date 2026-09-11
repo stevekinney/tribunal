@@ -57,7 +57,9 @@ export async function setupMcpMountFixture(): Promise<McpMountFixture> {
   const mountRecord: TribunalMcpMount = {
     mount,
     publishUserResourceUpdate,
-    dispose: () => mount.dispose(),
+    stopCleanupSweep: () => {},
+    shutdownTransport: () => mount.dispose(),
+    disposePool: async () => {},
   };
   const getMount = (): Promise<TribunalMcpMount> => Promise.resolve(mountRecord);
   const mcpHandle = createMcpHandle(getMount);

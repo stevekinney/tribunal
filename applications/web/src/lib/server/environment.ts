@@ -130,6 +130,13 @@ const webEnvironmentObject = z.object({
   // owned here only so the key is derivable for the doctor and .env.example,
   // the same way BASE_URL is.
   BODY_SIZE_LIMIT: z.string().optional(),
+  // adapter-node's graceful-shutdown drain window (seconds), set in
+  // deployment/fly/web.toml and kept below Fly's kill_timeout so in-flight
+  // requests drain and the `sveltekit:shutdown` disposal runs before SIGKILL
+  // (TRI-51). adapter-node reads it from process.env directly, so nothing in
+  // this schema consumes the value; it is owned here only so the key is
+  // derivable for the doctor and .env.example, the same way BODY_SIZE_LIMIT is.
+  SHUTDOWN_TIMEOUT: z.string().optional(),
   // Redis connection string. `optionalUrl`, not `z.string().url().optional()`, so
   // that `REDIS_URL=` (a blank value — the common way to disable an optional URL
   // in a dotenv file) normalizes to undefined rather than failing `.url()` at
@@ -145,6 +152,14 @@ const webEnvironmentObject = z.object({
   // detail or metrics without a credential. Compared in constant time
   // (`constantTimeStringEqual`). A string secret, never a URL.
   MCP_OPERATIONS_TOKEN: z.string().optional(),
+  // Cadence, in seconds, of the in-process OAuth cleanup sweep that purges
+  // expired authorization transactions, codes, and tokens (TRI-51). Kept as a
+  // string here (env values are strings) and parsed by the mount via
+  // `resolveSweepIntervalMs`, which clamps it to a safe `setInterval` range and
+  // falls back to an hourly default when unset or invalid — so nothing here is
+  // fatal. Owned by the schema so the key is derivable for the doctor and
+  // `.env.example`, like `BODY_SIZE_LIMIT`.
+  OAUTH_CLEANUP_INTERVAL_SECONDS: z.string().optional(),
 });
 
 /** The full schema: the object plus the production fail-closed refinements. */

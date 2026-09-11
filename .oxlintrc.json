@@ -202,6 +202,7 @@
         "runner/verify-image-checks.test.mjs",
         "applications/web/scripts/lib/__tests__/repository-root.test.ts",
         "applications/web/src/lib/server/auth/dev-github-bypass.ts",
+        "applications/web/src/lib/server/mcp/adapter-node-shutdown.verify.test.ts",
         "scripts/lib/install-git-hooks.ts",
         "scripts/lib/install-git-hooks.test.ts",
         "scripts/lib/repository-root.test.ts"

@@ -4,7 +4,8 @@ import type { Handle, RequestEvent } from '@sveltejs/kit';
 /**
  * Covers hooks.server.ts's enabled branch: constructing the single mount at
  * module scope, wiring the combined MCP handle after the identity handles, and
- * disposing on SIGTERM. The disabled branch is covered by hooks.server.test.ts.
+ * disposing on the post-drain `sveltekit:shutdown` event (TRI-51). The disabled
+ * branch is covered by hooks.server.test.ts.
  */
 
 const mockEnv: Record<string, string | undefined> = {
@@ -29,13 +30,18 @@ vi.mock('$lib/server/github/webhooks/subscription-drift', () => ({
 }));
 
 const mountDispose = vi.fn(() => Promise.resolve());
+const mountStopCleanupSweep = vi.fn();
+const mountShutdownTransport = vi.fn(() => Promise.resolve());
+const mountDisposePool = vi.fn(() => Promise.resolve());
 const mountHandle = vi.fn(() => Promise.resolve(new Response('ok', { status: 200 })));
 const mountPublish = vi.fn();
 const createTribunalMcpMount = vi.fn(() =>
   Promise.resolve({
     mount: { handle: mountHandle, dispose: mountDispose },
     publishUserResourceUpdate: mountPublish,
-    dispose: mountDispose,
+    stopCleanupSweep: mountStopCleanupSweep,
+    shutdownTransport: mountShutdownTransport,
+    disposePool: mountDisposePool,
   }),
 );
 vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
@@ -43,15 +49,16 @@ vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
   return { ...actual, createTribunalMcpMount };
 });
 
-// Capture the process termination handlers rather than emitting real signals,
-// which would disturb other test files sharing this worker's process.
+// Capture the process lifecycle handlers rather than emitting real signals or
+// the `sveltekit:shutdown` event, either of which would disturb other test
+// files sharing this worker's process.
 const signalHandlers = new Map<string, () => void>();
 vi.spyOn(process, 'once').mockImplementation((event, handler) => {
   signalHandlers.set(String(event), handler as () => void);
   return process;
 });
 
-const { authHandle } = await import('./hooks.server');
+const { authHandle, GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS } = await import('./hooks.server');
 const { devAuthBypassHandle } = await import('$lib/server/auth/dev-bypass');
 
 function fakeEvent(): RequestEvent {
@@ -98,27 +105,90 @@ describe('hooks.server MCP wiring (enabled)', () => {
     expect(mcpIndex).toBeGreaterThan(bypassIndex);
   });
 
-  it('disposes the mount on SIGTERM', async () => {
-    signalHandlers.get('SIGTERM')!();
-    await vi.waitFor(() => expect(mountDispose).toHaveBeenCalled());
+  it('closes the MCP transport only after the grace window on SIGTERM (pre-drain)', async () => {
+    // Phase 1 runs off the raw signal, before adapter-node's drain completes, so
+    // a never-ending subscriptions/listen stream is closed through the library's
+    // path rather than force-closed at SHUTDOWN_TIMEOUT (AC3 / Thread 3). The
+    // grace window first lets adapter-node drain ordinary in-flight MCP calls,
+    // which closing the transport would otherwise abort.
+    vi.useFakeTimers();
+    mountShutdownTransport.mockClear();
+    mountStopCleanupSweep.mockClear();
+    try {
+      signalHandlers.get('SIGTERM')!();
+      // The sweep stops immediately (before the grace window) so no tick can
+      // outlive the pool if the drain completes fast; the transport waits.
+      await Promise.resolve(); // let the resolved mcpMount .then microtask run
+      expect(mountStopCleanupSweep).toHaveBeenCalled();
+      expect(mountShutdownTransport).not.toHaveBeenCalled(); // grace protects in-flight calls
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+      expect(mountShutdownTransport).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('logs rather than throwing when disposal fails on SIGINT', async () => {
+  it('disposes the OAuth pool on sveltekit:shutdown (post-drain, after in-flight requests finish)', async () => {
+    // Phase 2 runs only after adapter-node drains, so an in-flight /token or
+    // /authorize request keeps its pool connection to completion.
+    signalHandlers.get('sveltekit:shutdown')!();
+    await vi.waitFor(() => expect(mountDisposePool).toHaveBeenCalled());
+  });
+
+  it('logs rather than throwing when transport shutdown fails', async () => {
+    vi.useFakeTimers();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    mountDispose.mockRejectedValueOnce(new Error('dispose boom'));
-    signalHandlers.get('SIGINT')!();
+    mountShutdownTransport.mockRejectedValueOnce(new Error('transport boom'));
+    try {
+      signalHandlers.get('SIGINT')!();
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+      expect(consoleError).toHaveBeenCalledWith(
+        '[hooks.server] MCP transport shutdown failed',
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs rather than throwing when the cleanup-sweep stop fails', async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountStopCleanupSweep.mockImplementationOnce(() => {
+      throw new Error('sweep stop boom');
+    });
+    try {
+      signalHandlers.get('SIGTERM')!();
+      // Flush the resolved-mcpMount .then/.catch microtasks without firing the
+      // pending 2s transport timer.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        '[hooks.server] MCP cleanup-sweep stop failed',
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs rather than throwing when pool disposal fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountDisposePool.mockRejectedValueOnce(new Error('pool boom'));
+    signalHandlers.get('sveltekit:shutdown')!();
     await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
-        '[hooks.server] MCP mount dispose failed',
+        '[hooks.server] MCP pool dispose failed',
         expect.any(Error),
       ),
     );
     consoleError.mockRestore();
   });
 
-  it('clears the resource-update publisher on dispose so a torn-down mount is never invoked (TRI-126)', async () => {
+  it('clears the resource-update publisher on transport shutdown so a torn-down mount is never invoked (TRI-126)', async () => {
     // Register a fresh spy so this is independent of the module-load
-    // registration and of any earlier dispose in this file.
+    // registration and of any earlier shutdown in this file.
     const {
       registerResourceUpdatePublisher,
       clearResourceUpdatePublisher,
@@ -129,9 +199,16 @@ describe('hooks.server MCP wiring (enabled)', () => {
     notifyReviewRunsChanged(42);
     expect(publish).toHaveBeenCalledWith('42', 'tribunal://review-runs');
 
-    // Dispose (via a termination signal) must clear the publisher so a
-    // notification racing shutdown reaches nobody rather than a disposed mount.
-    signalHandlers.get('SIGINT')!();
+    // Transport shutdown (phase 1, on the signal, after the grace window) must
+    // clear the publisher so a notification racing shutdown reaches nobody
+    // rather than a transport being torn down.
+    vi.useFakeTimers();
+    try {
+      signalHandlers.get('SIGTERM')!();
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+    } finally {
+      vi.useRealTimers();
+    }
     publish.mockClear();
     notifyReviewRunsChanged(42);
     expect(publish).not.toHaveBeenCalled();

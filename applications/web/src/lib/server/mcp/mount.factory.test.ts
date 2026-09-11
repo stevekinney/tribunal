@@ -37,15 +37,23 @@ describe('createTribunalMcpMount', () => {
     await expect(createTribunalMcpMount()).rejects.toThrow('DATABASE_URL is required');
   });
 
-  it('constructs the mount and disposes storage alongside it', async () => {
+  it('constructs the mount and disposes the storage pool on the post-drain phase', async () => {
     mockEnv.DATABASE_URL = CONNECTION_STRING;
     createOAuthStorageSeam.mockReturnValue({ stores, dispose: storageDispose });
 
-    const { mount, dispose } = await createTribunalMcpMount();
+    const { mount, stopCleanupSweep, shutdownTransport, disposePool } =
+      await createTribunalMcpMount();
     expect(mount).toBeDefined();
     expect(createOAuthStorageSeam).toHaveBeenCalledWith(CONNECTION_STRING);
 
-    await dispose();
+    // On the signal: stop the sweep, then (after the grace) close the transport.
+    // Neither touches the pool.
+    stopCleanupSweep();
+    await shutdownTransport();
+    expect(storageDispose).not.toHaveBeenCalled();
+
+    // Phase 2 (post-drain) closes the pool.
+    await disposePool();
     expect(storageDispose).toHaveBeenCalledOnce();
   });
 

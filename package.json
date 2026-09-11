@@ -55,6 +55,7 @@
     "test:mcp:redis": "bun run --cwd packages/github test -- src/cache.test.ts",
     "test:mcp:operational": "bun run --cwd applications/web test:unit:server -- src/lib/server/operations/coalesced-cache.test.ts src/lib/server/operations/operations-auth.test.ts src/lib/server/operations/operations-rate-limit.test.ts src/routes/health/ready/server.test.ts src/routes/metrics/server.test.ts src/hooks.server.test.ts test/mcp/e2e-handle-operational.test.ts",
     "test:mcp:rate-limits": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/rate-limit-stores.test.ts src/lib/server/mcp/rate-limit.verify.test.ts src/lib/server/mcp/rate-limit-concurrency.verify.test.ts src/routes/health/health-rate-limit.test.ts && bun run --cwd scripts test -- limiter-reimplementation-validation && bun run validate:limiter-reimplementation",
+    "test:mcp:cleanup": "bun run --cwd applications/web test:unit:server -- src/lib/server/oauth/cleanup-scheduler.test.ts src/lib/server/mcp/mount.factory.test.ts src/lib/server/mcp/shutdown-config.verify.test.ts src/lib/server/mcp/adapter-node-shutdown.verify.test.ts src/hooks.server.mcp.test.ts && bun run --cwd packages/database test -- src/queries/__tests__/oauth-cleanup-scale.test.ts",
     "audit:mcp-logs": "bun run scripts/audit-mcp-logs.ts",
     "verify": "bun run scripts/verify.ts",
     "deploy:status": "bun run scripts/deploy.ts",

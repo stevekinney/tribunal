@@ -31,6 +31,31 @@ import { parseWebEnvironment } from '$lib/server/environment';
  * default via `MCP_ENABLED` (TRI-26 rollout flag); when null, the MCP handles
  * are inert and MCP/OAuth paths fall through to SvelteKit's ordinary 404.
  */
+/**
+ * How long, after the shutdown signal, to let adapter-node's concurrent HTTP
+ * drain finish ordinary in-flight MCP requests before closing the transport
+ * (TRI-51). Closing the transport aborts any request still in the handler's
+ * `inflight` set — an ordinary tool call mid-exchange — so this window lets those
+ * calls complete first. Tribunal's tools can take several seconds (a GitHub-
+ * backed tool call waits on the API), so the window sits just below
+ * `SHUTDOWN_TIMEOUT` (15s, deployment/fly/web.toml) to give ordinary calls almost
+ * the whole drain window, keeping a small margin so the never-draining
+ * `subscriptions/listen` streams — which only this transport close ends — still
+ * close gracefully before adapter-node's force-close rather than being severed.
+ *
+ * The timer is `unref`'d (see the call site), so this large value costs nothing
+ * in the common case: an `unref`'d timer only keeps firing while something else
+ * (an open listen stream, or a long call) keeps the event loop alive, which is
+ * exactly when the transport still needs closing. When ordinary requests drain
+ * and no stream is open, the loop exits as soon as the work is done and this
+ * timer never fires. Only a call still running within the last ~2s before
+ * `SHUTDOWN_TIMEOUT` is cut short — and it would reach adapter-node's force-close
+ * then anyway. Eliminating even that residual would need a listen-stream-specific
+ * close, which the library does not expose today (only whole-transport
+ * `cache.closeAll`); see `stream-lifecycle.ts`.
+ */
+export const GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS = 13_000;
+
 const mcpMount: Promise<TribunalMcpMount> | null =
   !building && isMcpEnabled() ? createTribunalMcpMount() : null;
 
@@ -50,25 +75,69 @@ if (mcpMount) {
       console.error('[hooks.server] MCP resource-update publisher registration failed', error);
     });
 
-  // Wire dispose into process termination so the mount's cleanup timer,
-  // handler cache, and connection pool are released on shutdown. Nothing
-  // disposes it merely because the module was imported. This satisfies AC3
-  // (dispose is reached on SIGTERM); the full graceful-shutdown ordering —
-  // draining in-flight requests before disposal so none reach a disposed
-  // mount, and coordinating with adapter-node's own signal handling — is
-  // TRI-51's scope. adapter-node still owns process termination.
-  const disposeMcpMount = (): void => {
-    // Clear the publisher first so a notification that races shutdown cannot
-    // reach the mount being torn down; then dispose the mount itself.
-    clearResourceUpdatePublisher();
+  // Shutdown is two-phase, because a long-lived `subscriptions/listen` SSE stream
+  // and an ordinary in-flight `/token` request want opposite ordering relative to
+  // adapter-node's HTTP drain (TRI-51 AC3).
+  //
+  // Phase 1, on the signal (pre-drain): stop the sweep and close the MCP
+  // transport. adapter-node's `httpServer.close()` waits for every open
+  // connection, so a never-ending listen stream would otherwise hold the drain
+  // open until `SHUTDOWN_TIMEOUT` force-closes it — losing the in-flight
+  // notifications the `stream-lifecycle.ts` contract protects. Closing the
+  // transport here ends those streams through the library's sanctioned path
+  // (`cache.closeAll`) so the drain completes promptly and gracefully. We run it
+  // off the raw signal, not `sveltekit:shutdown`, precisely because it must
+  // happen *before* the drain. adapter-node also listens on these signals; its
+  // `close()` is async and simply waits, so ordering between the two handlers is
+  // immaterial.
+  const shutdownMcpTransport = (): void => {
+    // Stop the sweep immediately, not inside the deferred close: if the HTTP
+    // drain (and therefore `disposePool`) completes inside the grace window — no
+    // long-lived streams to hold it open — a still-pending sweep tick would
+    // otherwise fire `purgeExpired` after the pool is ended. `mcpMount` is
+    // already resolved, so this microtask runs before any macrotask sweep timer.
     void mcpMount
-      .then((active) => active.dispose())
+      .then((active) => active.stopCleanupSweep())
       .catch((error) => {
-        console.error('[hooks.server] MCP mount dispose failed', error);
+        console.error('[hooks.server] MCP cleanup-sweep stop failed', error);
+      });
+    // Wait a grace window before closing the transport: closing it aborts any
+    // ordinary MCP request still in the handler's `inflight` set, so let
+    // adapter-node's concurrent drain finish them first (see the constant's
+    // comment). `unref` so this window never keeps the process alive on its own —
+    // it fires only while an open listen stream or long call keeps the loop
+    // alive, which is exactly when the transport still needs closing.
+    const graceTimer = setTimeout(() => {
+      // Clear the publisher just before the transport goes so a notification
+      // cannot race the teardown. (Listen streams stay served through the grace
+      // window; this close is what ends them.)
+      clearResourceUpdatePublisher();
+      void mcpMount
+        .then((active) => active.shutdownTransport())
+        .catch((error) => {
+          console.error('[hooks.server] MCP transport shutdown failed', error);
+        });
+    }, GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+    graceTimer.unref?.();
+  };
+  process.once('SIGTERM', shutdownMcpTransport);
+  process.once('SIGINT', shutdownMcpTransport);
+
+  // Phase 2, on `sveltekit:shutdown` (post-drain): close the OAuth connection
+  // pool. adapter-node emits this only after in-flight requests have drained (or
+  // been force-closed at `SHUTDOWN_TIMEOUT`), so an ordinary `/token` or
+  // `/authorize` request — the only traffic that uses this pool — keeps its
+  // connection through to completion rather than losing it mid-query. In dev and
+  // under tests the event never fires; neither needs pool cleanup, since the
+  // process is torn down wholesale.
+  const disposeMcpPool = (): void => {
+    void mcpMount
+      .then((active) => active.disposePool())
+      .catch((error) => {
+        console.error('[hooks.server] MCP pool dispose failed', error);
       });
   };
-  process.once('SIGTERM', disposeMcpMount);
-  process.once('SIGINT', disposeMcpMount);
+  process.once('sveltekit:shutdown', disposeMcpPool);
 }
 
 const mcpHandle = createMcpHandle(getMcpMount);
