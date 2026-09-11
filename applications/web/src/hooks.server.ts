@@ -50,8 +50,9 @@ import { parseWebEnvironment } from '$lib/server/environment';
  * and no stream is open, the loop exits as soon as the work is done and this
  * timer never fires. Only a call still running within the last ~2s before
  * `SHUTDOWN_TIMEOUT` is cut short — and it would reach adapter-node's force-close
- * then anyway. Eliminating even that residual needs a listen-stream-specific
- * close the library does not expose (tracked upstream); see `stream-lifecycle.ts`.
+ * then anyway. Eliminating even that residual would need a listen-stream-specific
+ * close, which the library does not expose today (only whole-transport
+ * `cache.closeAll`); see `stream-lifecycle.ts`.
  */
 export const GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS = 13_000;
 
