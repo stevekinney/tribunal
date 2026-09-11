@@ -110,6 +110,37 @@ describe('resolveIdentityBinding', () => {
       resolveIdentityBinding(requestWithCookie('tribunal-neon-auth-token=good; other=1')),
     ).resolves.toEqual({ subjectId: '42', consentBinding: 'user:42' });
   });
+
+  // TRI-122: the approve/deny consent POST tolerates a JWT that lapsed during
+  // the in-flight authorization transaction; the initiating GET does not.
+  describe('JWT expiry grace is scoped to the consent POST (TRI-122)', () => {
+    const requestWithMethod = (method: string) =>
+      new Request('http://localhost/oauth/authorize', {
+        method,
+        headers: { cookie: 'tribunal-neon-auth-token=good' },
+      });
+
+    beforeEach(() => {
+      validateNeonSessionFromToken.mockResolvedValue({
+        user: applicationUser,
+        neonSession: { neonAuthUserId: 'neon-sub', expiresAt: new Date() },
+      });
+    });
+
+    it('grants exactly the transaction TTL (600s) of exp leeway on a POST', async () => {
+      await resolveIdentityBinding(requestWithMethod('POST'));
+      expect(validateNeonSessionFromToken).toHaveBeenCalledWith('good', {
+        clockToleranceSeconds: 600,
+      });
+    });
+
+    it('grants no leeway on the initiating GET', async () => {
+      await resolveIdentityBinding(requestWithMethod('GET'));
+      expect(validateNeonSessionFromToken).toHaveBeenCalledWith('good', {
+        clockToleranceSeconds: undefined,
+      });
+    });
+  });
 });
 
 describe('resolveUserProfile', () => {
