@@ -135,8 +135,8 @@
           },
           {
             "name": "redis",
-            "importNames": ["RedisClientType"],
-            "message": "Only packages/github/src/cache.ts may name node-redis's RedisClientType (TRI-49's single Redis adapter). Elsewhere, consume the narrow RateLimitRedisClient alias it exports; a fresh RedisClientType signals a second Redis client or a limiter-store reimplementation (TRI-56 AC1). Backed repository-wide by validate:limiter-reimplementation."
+            "importNames": ["RedisClientType", "createClient"],
+            "message": "Only packages/github/src/cache.ts may import node-redis's createClient or name its RedisClientType (TRI-49's single Redis adapter). Elsewhere, consume the narrow RateLimitRedisClient alias it exports; importing createClient opens a second raw Redis connection (and a RedisClientType reference names one), either of which signals a limiter-store reimplementation (TRI-56 AC1). Backed repository-wide by validate:limiter-reimplementation."
           }
         ]
       }
