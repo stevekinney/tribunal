@@ -9,6 +9,7 @@ import { user } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
 import { isDevBypassNeonAuthUserId } from '$lib/server/auth/dev-auth-bypass-flag';
 import {
+  neonAuthConsentGraceSeconds,
   neonAuthTokenCookieName,
   validateNeonSessionFromToken,
   type AuthenticatedApplicationUser,
@@ -47,11 +48,10 @@ const CONSENT_BINDING_PREFIX = 'user:';
  * on an approve/deny POST — and only there (TRI-122).
  *
  * The Neon Auth JWT lives ~15 minutes and is refreshed by client JS the consent
- * page deliberately does not ship (TRI-40 AC4). The authorization transaction
- * lives 10 minutes (`authorizationLifetimeMilliseconds` in `@lostgradient/mcp`),
- * so a JWT that was valid when `GET /oauth/authorize` rendered can lapse while
- * the consent page sits open; the approve/deny POST then resolves no identity
- * and the pending grant is lost to a `/login` bounce.
+ * page deliberately does not ship (TRI-40 AC4). The OAuth authorization
+ * transaction lives 10 minutes, so a JWT that was valid when `GET /oauth/authorize`
+ * rendered can lapse while the consent page sits open; the approve/deny POST then
+ * resolves no identity and the pending grant is lost to a `/login` bounce.
  *
  * Granting exactly the transaction's own lifetime as `exp` leeway closes that
  * window without opening a new one: the library's `consume` independently
@@ -59,12 +59,16 @@ const CONSENT_BINDING_PREFIX = 'user:';
  * the transaction TTL can only ever meet an already-expired transaction. The
  * transaction-bound one-time CSRF token (a hidden field matched on consume)
  * proves the POST came from the same browser that authenticated at render time.
- * Signature, issuer, and audience are still verified in full — only `exp` gains
- * leeway, only on the POST, and only for a transaction the user already began.
- * The initiating `GET /oauth/authorize` gets no leeway: a session that lapsed
- * before consent even started should sign in again.
+ * Signature, issuer, audience, and `nbf` are still verified in full — only `exp`
+ * gains leeway, only on the POST, and only for a transaction the user already
+ * began. The initiating `GET /oauth/authorize` gets no leeway: a session that
+ * lapsed before consent even started should sign in again.
+ *
+ * The value is shared with the session cookie's retention window
+ * (`neonAuthConsentGraceSeconds`) so the browser still holds and sends the token
+ * for exactly as long as this fallback will accept it.
  */
-const CONSENT_JWT_EXPIRY_GRACE_SECONDS = 10 * 60;
+const CONSENT_JWT_EXPIRY_GRACE_SECONDS = neonAuthConsentGraceSeconds;
 
 /** Maps an authenticated Tribunal user to the engine's `OAuthIdentity`. */
 export function identityFromUser(applicationUser: AuthenticatedApplicationUser): OAuthIdentity {

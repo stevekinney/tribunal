@@ -24,6 +24,23 @@ export { TransientAuthInfrastructureError } from './neon-auth-failure';
 
 export const neonAuthTokenCookieName = 'tribunal-neon-auth-token';
 
+/**
+ * Seconds the session cookie is retained past the JWT's own `exp`, and the exp
+ * leeway the OAuth consent POST grants when resolving identity — one value,
+ * because the two must move together (TRI-122).
+ *
+ * The consent POST tolerates a JWT that lapsed during the 10-minute OAuth
+ * authorization transaction, but a browser only sends the cookie if it still
+ * holds it, and the cookie's `expires` otherwise mirrors the JWT's `exp` exactly
+ * — so without this retention the browser drops the token at expiry and the
+ * fallback never sees it. Retaining the cookie for this additional window (equal
+ * to the transaction TTL) is what lets the grace actually validate the token.
+ * `authHandle` still rejects and clears an expired JWT on any non-consent
+ * request, so the extra retention is only ever usable within the bounded consent
+ * grace on an approve/deny POST — see `resolveIdentityBinding`.
+ */
+export const neonAuthConsentGraceSeconds = 10 * 60;
+
 export type AuthenticatedApplicationUser = {
   id: number;
   username: string;
@@ -172,6 +189,18 @@ export async function verifyNeonAuthToken(
     error(401, 'Invalid Neon Auth token');
   }
 
+  // jose's clockTolerance relaxes BOTH `nbf` and `exp`. The consent grace is
+  // for expiration only — a token that was valid and then lapsed — never for
+  // accepting a token before its not-before. When tolerance was applied, re-check
+  // `nbf` strictly so the leeway cannot admit a not-yet-valid token (TRI-122).
+  if (
+    options.clockToleranceSeconds !== undefined &&
+    typeof payload.nbf === 'number' &&
+    payload.nbf * 1000 > Date.now()
+  ) {
+    error(401, 'Neon Auth token is not yet valid');
+  }
+
   const neonAuthUserId = getStringClaim(payload, 'sub');
   if (!neonAuthUserId) {
     error(401, 'Invalid Neon Auth token subject');
@@ -201,7 +230,12 @@ export function setNeonAuthTokenCookie(
     sameSite: 'lax',
     secure: !dev && env.E2E_TEST_MODE !== '1',
     path: '/',
-    expires: expiresAt,
+    // Retain the cookie past the JWT's own expiry by the consent grace so the
+    // browser still sends the (now-expired) token during an in-flight OAuth
+    // consent transaction; the consent POST is the only path that accepts it,
+    // and only within this same window (TRI-122). authHandle still rejects and
+    // clears an expired JWT on any non-consent request.
+    expires: new Date(expiresAt.getTime() + neonAuthConsentGraceSeconds * 1000),
   });
 }
 

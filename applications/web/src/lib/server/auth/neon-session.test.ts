@@ -18,6 +18,7 @@ import {
   createNeonSessionFromToken,
   deleteNeonAuthTokenCookie,
   findUserByEmail,
+  neonAuthConsentGraceSeconds,
   neonAuthTokenCookieName,
   resetNeonAuthJwksCacheForTests,
   setNeonAuthTokenCookie,
@@ -173,6 +174,26 @@ describe('verifyNeonAuthToken', () => {
         expiresAt: Math.floor(Date.now() / 1000) - 60,
         signingKey: otherKeys.privateKey,
       });
+
+      await expect(
+        verifyNeonAuthToken(token, { ...tokenVerificationOptions(), clockToleranceSeconds: 600 }),
+      ).rejects.toMatchObject({ status: 401 });
+      expect.assertions(1);
+    });
+
+    it('keeps nbf strict: rejects a not-yet-valid token even within the tolerance', async () => {
+      // The grace is for expiration only. jose's clockTolerance would otherwise
+      // accept an nbf up to the tolerance in the future too; the strict re-check
+      // must still reject it (TRI-122 P2).
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const token = await new SignJWT({ email: 'test@example.com' })
+        .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+        .setSubject('neon-user-1')
+        .setIssuer(neonAuthBaseUrl)
+        .setAudience(neonAuthBaseUrl)
+        .setNotBefore(nowSeconds + 300)
+        .setExpirationTime(nowSeconds + 3600)
+        .sign(privateKey);
 
       await expect(
         verifyNeonAuthToken(token, { ...tokenVerificationOptions(), clockToleranceSeconds: 600 }),
@@ -339,7 +360,22 @@ describe('cookie helpers', () => {
     expect(setSpy).toHaveBeenCalledWith(
       neonAuthTokenCookieName,
       'a-token',
-      expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/', expires: expiresAt }),
+      expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/' }),
+    );
+  });
+
+  it('retains the cookie past the JWT expiry by the consent grace (TRI-122)', () => {
+    // Without this, a real browser drops the token at the JWT's exp and never
+    // sends it on the approve/deny POST, so the consent grace can never see it.
+    const cookies = { set: () => {}, delete: () => {} };
+    const setSpy = vi.spyOn(cookies, 'set');
+    const expiresAt = new Date(Date.now() + 60_000);
+
+    setNeonAuthTokenCookie({ cookies } as never, 'a-token', expiresAt);
+
+    const [, , options] = setSpy.mock.calls[0] as unknown as [string, string, { expires: Date }];
+    expect(options.expires.getTime()).toBe(
+      expiresAt.getTime() + neonAuthConsentGraceSeconds * 1000,
     );
   });
 

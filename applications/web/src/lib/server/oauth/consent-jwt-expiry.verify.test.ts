@@ -31,6 +31,11 @@ import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session
  *   sets no Neon Auth cookie (TRI-45). The JWKS-backed token verification is the
  *   one thing that cannot run without a network JWKS endpoint, so it is stubbed
  *   here; its real behaviour lives in the neon-session suite above.
+ *
+ * The manually-set `Cookie` header below is faithful to a real browser rather
+ * than a mask: `setNeonAuthTokenCookie` retains the cookie past the JWT's exp by
+ * exactly this grace window (`neonAuthConsentGraceSeconds`), so the browser still
+ * holds and sends the lapsed token on the POST — asserted in `neon-session.test.ts`.
  */
 
 const validateNeonSessionFromToken = vi.hoisted(() => vi.fn());
