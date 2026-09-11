@@ -8,6 +8,17 @@ primary_region = "dfw"
   NODE_ENV = "production"
   PORT = "3000"
   TRIBUNAL_ENGINE_URL = "http://tribunal-engine.flycast"
+  # adapter-node's global request-body backstop. Set to 2 MiB, deliberately
+  # ABOVE the largest per-route limit (/mcp's 1 MiB, mcpRuntimeLimits
+  # .maximumRequestBodyBytes) rather than at or below it, so the route-specific
+  # limit is always what rejects a request in normal operation and the backstop
+  # only catches a route added later and never bounded individually. This mirrors
+  # Protokit's deliberate x2 (server.ts S-05, defence in depth). adapter-node's
+  # inherited default is 512K -- half the /mcp limit -- which would fail closed,
+  # rejecting a legitimate tool-call payload between 512 KiB and 1 MiB before it
+  # ever reached the library. adapter-node parses K/M/G as 1024-based, so "2M" is
+  # 2,097,152 bytes. See TRI-48.
+  BODY_SIZE_LIMIT = "2M"
 
 [deploy]
   # bluegreen, not rolling: with a single web Machine, "rolling" takes the

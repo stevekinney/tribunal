@@ -124,6 +124,12 @@ const webEnvironmentObject = z.object({
   // disables certificate verification process-wide.
   NODE_TLS_REJECT_UNAUTHORIZED: z.string().optional(),
   E2E_TEST_MODE: z.string().optional(),
+  // adapter-node's global request-body backstop, set in deployment/fly/web.toml
+  // above the /mcp per-route limit (TRI-48). adapter-node reads it from
+  // process.env directly, so nothing in this schema consumes the value; it is
+  // owned here only so the key is derivable for the doctor and .env.example,
+  // the same way BASE_URL is.
+  BODY_SIZE_LIMIT: z.string().optional(),
 });
 
 /** The full schema: the object plus the production fail-closed refinements. */
