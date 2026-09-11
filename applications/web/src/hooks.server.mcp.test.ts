@@ -56,7 +56,7 @@ vi.spyOn(process, 'once').mockImplementation((event, handler) => {
   return process;
 });
 
-const { authHandle } = await import('./hooks.server');
+const { authHandle, GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS } = await import('./hooks.server');
 const { devAuthBypassHandle } = await import('$lib/server/auth/dev-bypass');
 
 function fakeEvent(): RequestEvent {
@@ -103,12 +103,22 @@ describe('hooks.server MCP wiring (enabled)', () => {
     expect(mcpIndex).toBeGreaterThan(bypassIndex);
   });
 
-  it('shuts down the MCP transport on SIGTERM (pre-drain) so listen streams close gracefully', async () => {
-    // Phase 1 runs off the raw signal, before adapter-node's drain, so a
-    // never-ending subscriptions/listen stream is closed through the library's
-    // path rather than force-closed at SHUTDOWN_TIMEOUT (AC3 / Thread 3).
-    signalHandlers.get('SIGTERM')!();
-    await vi.waitFor(() => expect(mountShutdownTransport).toHaveBeenCalled());
+  it('closes the MCP transport only after the grace window on SIGTERM (pre-drain)', async () => {
+    // Phase 1 runs off the raw signal, before adapter-node's drain completes, so
+    // a never-ending subscriptions/listen stream is closed through the library's
+    // path rather than force-closed at SHUTDOWN_TIMEOUT (AC3 / Thread 3). The
+    // grace window first lets adapter-node drain ordinary in-flight MCP calls,
+    // which closing the transport would otherwise abort.
+    vi.useFakeTimers();
+    mountShutdownTransport.mockClear();
+    try {
+      signalHandlers.get('SIGTERM')!();
+      expect(mountShutdownTransport).not.toHaveBeenCalled(); // grace protects in-flight calls
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+      expect(mountShutdownTransport).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disposes the OAuth pool on sveltekit:shutdown (post-drain, after in-flight requests finish)', async () => {
@@ -119,16 +129,20 @@ describe('hooks.server MCP wiring (enabled)', () => {
   });
 
   it('logs rather than throwing when transport shutdown fails', async () => {
+    vi.useFakeTimers();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     mountShutdownTransport.mockRejectedValueOnce(new Error('transport boom'));
-    signalHandlers.get('SIGINT')!();
-    await vi.waitFor(() =>
+    try {
+      signalHandlers.get('SIGINT')!();
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
       expect(consoleError).toHaveBeenCalledWith(
         '[hooks.server] MCP transport shutdown failed',
         expect.any(Error),
-      ),
-    );
-    consoleError.mockRestore();
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('logs rather than throwing when pool disposal fails', async () => {
@@ -157,10 +171,16 @@ describe('hooks.server MCP wiring (enabled)', () => {
     notifyReviewRunsChanged(42);
     expect(publish).toHaveBeenCalledWith('42', 'tribunal://review-runs');
 
-    // Transport shutdown (phase 1, on the signal) must clear the publisher so a
-    // notification racing shutdown reaches nobody rather than a transport being
-    // torn down.
-    signalHandlers.get('SIGTERM')!();
+    // Transport shutdown (phase 1, on the signal, after the grace window) must
+    // clear the publisher so a notification racing shutdown reaches nobody
+    // rather than a transport being torn down.
+    vi.useFakeTimers();
+    try {
+      signalHandlers.get('SIGTERM')!();
+      await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+    } finally {
+      vi.useRealTimers();
+    }
     publish.mockClear();
     notifyReviewRunsChanged(42);
     expect(publish).not.toHaveBeenCalled();

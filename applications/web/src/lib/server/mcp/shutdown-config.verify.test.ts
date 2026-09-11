@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS } from '../../../hooks.server';
 
 /**
  * TRI-51 AC3: graceful shutdown must actually reach the web process's resource
@@ -50,5 +51,14 @@ describe('web.toml graceful-shutdown configuration (TRI-51 AC3)', () => {
 
     // Fly caps kill_timeout at 300s; a value above that is silently rejected.
     expect(killTimeoutSeconds).toBeLessThanOrEqual(300);
+  });
+
+  it('keeps the transport-shutdown grace window well under SHUTDOWN_TIMEOUT', () => {
+    // The pre-drain grace (hooks.server.ts) must fire and the transport close
+    // must end the listen streams before adapter-node's force-close, so the
+    // grace has to be strictly less than the drain window it runs inside.
+    const shutdownTimeoutMs = parseDurationSeconds(readValue(toml, 'SHUTDOWN_TIMEOUT')) * 1000;
+    expect(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS).toBeGreaterThan(0);
+    expect(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS).toBeLessThan(shutdownTimeoutMs);
   });
 });
