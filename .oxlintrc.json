@@ -132,6 +132,11 @@
             "name": "child_process",
             "importNames": ["spawnSync", "execFileSync", "execSync"],
             "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
+          },
+          {
+            "name": "redis",
+            "importNames": ["RedisClientType", "createClient"],
+            "message": "Only packages/github/src/cache.ts may import node-redis's createClient or name its RedisClientType (TRI-49's single Redis adapter). Elsewhere, consume the narrow RateLimitRedisClient alias it exports; importing createClient opens a second raw Redis connection (and a RedisClientType reference names one), either of which signals a limiter-store reimplementation (TRI-56 AC1). Backed repository-wide by validate:limiter-reimplementation."
           }
         ]
       }
@@ -209,6 +214,32 @@
               {
                 "name": "bun:test",
                 "message": "Tribunal's test runner is vitest. Import from 'vitest' instead \u2014 bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["packages/github/src/cache.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "bun:test",
+                "message": "Tribunal's test runner is vitest. Import from 'vitest' instead \u2014 bun:test's mock()/spyOn() and per-file process isolation have no equivalent here, so a bun:test suite silently does not run under the configured runner."
+              },
+              {
+                "name": "node:child_process",
+                "importNames": ["spawnSync", "execFileSync", "execSync"],
+                "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
+              },
+              {
+                "name": "child_process",
+                "importNames": ["spawnSync", "execFileSync", "execSync"],
+                "message": "New synchronous subprocess imports require an explicit deadline. Use an existing reviewed call site or extend the bounded-call allowlist only after validate:synchronous-subprocesses passes."
               }
             ]
           }

@@ -217,3 +217,30 @@ describe('parseWebEnvironment — REDIS_URL blank normalization (TRI-49)', () =>
     expect(() => parseWebEnvironment({ ...DEV_ENV, REDIS_URL: 'not-a-url' })).toThrow();
   });
 });
+
+describe('parseWebEnvironment — production requires REDIS_URL when MCP is enabled (TRI-56 AC6)', () => {
+  it('refuses to boot in production with MCP_ENABLED and no REDIS_URL', () => {
+    expect(() => parseWebEnvironment({ ...PROD_ENV, MCP_ENABLED: 'true' })).toThrow(/REDIS_URL/);
+  });
+
+  it('boots in production with MCP_ENABLED when REDIS_URL is set', () => {
+    expect(() =>
+      parseWebEnvironment({
+        ...PROD_ENV,
+        MCP_ENABLED: 'true',
+        REDIS_URL: 'redis://cache.internal:6379',
+      }),
+    ).not.toThrow();
+  });
+
+  it('does not require REDIS_URL in production when the MCP surface is disabled', () => {
+    // The surface ships disabled; a production deploy with it off is unaffected
+    // (the GitHub cache's own Redis use fails open and does not gate boot).
+    expect(() => parseWebEnvironment({ ...PROD_ENV, MCP_ENABLED: 'false' })).not.toThrow();
+    expect(() => parseWebEnvironment(PROD_ENV)).not.toThrow();
+  });
+
+  it('does not require REDIS_URL outside production even with MCP enabled', () => {
+    expect(() => parseWebEnvironment({ ...DEV_ENV, MCP_ENABLED: 'true' })).not.toThrow();
+  });
+});

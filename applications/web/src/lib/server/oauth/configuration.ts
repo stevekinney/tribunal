@@ -1,9 +1,6 @@
 import { DEFAULT_NEGOTIATED_PROTOCOL_VERSION } from '@modelcontextprotocol/server';
 import { env } from '$env/dynamic/private';
-import {
-  createInMemoryConcurrencySlotStore,
-  createInMemorySlidingWindowStore,
-} from '@lostgradient/mcp/rate-limit';
+import { createRateLimitStores } from '$lib/server/mcp/rate-limit-stores';
 import type {
   ConcurrencySlotStore,
   AtomicSlidingWindowStore,
@@ -23,9 +20,9 @@ import { tribunalMcpServerName } from '$lib/server/mcp/server-identity';
  * The values here are read once at module scope, when the mount is constructed.
  * The surface ships disabled (`MCP_ENABLED` defaults to `false`), so production
  * URL/TTL/limit provisioning is TRI-60's; these are sensible dev-first defaults.
- * The rate-limit stores are in-memory per the TRI-41 scope decision — TRI-49/56
- * swap in Redis, and TRI-50 replaces the permissive trusted-proxy config with
- * Fly's edge CIDRs.
+ * The rate-limit stores are Redis-backed when `REDIS_URL` is set and in-memory in
+ * local dev (TRI-56, over the shared client from TRI-49); TRI-50 replaces the
+ * permissive trusted-proxy config with Fly's edge CIDRs.
  */
 
 /** The MCP protocol version advertised in discovery metadata and negotiation. */
@@ -71,6 +68,13 @@ const rateLimitCategory = (
   windowSeconds: number,
 ): { maximumRequests: number; windowSeconds: number } => ({ maximumRequests, windowSeconds });
 
+/**
+ * The rate-limit key namespace. Stable in production (one process, one
+ * namespace); the per-worker composition for test isolation against a shared
+ * Redis is TRI-132's, since in-memory per-process stores cannot contend.
+ */
+export const mcpRateLimitKeyNamespace = 'tribunal-mcp';
+
 export const mcpRateLimitConfiguration: RateLimitConfiguration = {
   categories: {
     oauth_authorize: rateLimitCategory(20, 60),
@@ -83,12 +87,27 @@ export const mcpRateLimitConfiguration: RateLimitConfiguration = {
     failed_authentication: rateLimitCategory(10, 60),
   } satisfies Record<OAuthRateLimitCategory, { maximumRequests: number; windowSeconds: number }>,
   maximumConcurrent: 100,
-  keyNamespace: 'tribunal-mcp',
+  keyNamespace: mcpRateLimitKeyNamespace,
 };
 
-/** Shared in-memory rate-limit stores (one per process). */
-export const mcpSlidingWindowStore: AtomicSlidingWindowStore = createInMemorySlidingWindowStore();
-export const mcpConcurrencySlotStore: ConcurrencySlotStore = createInMemoryConcurrencySlotStore();
+/**
+ * The `/health` probe budget (TRI-56 AC3). `health_probe` is the one host-route
+ * category Tribunal has; it is not one of the library's OAuth categories, so it
+ * is enforced through the library's generic `SlidingWindowRateLimiter` with a
+ * host-owned key rather than `RequestRateLimiter`. Generous per-IP so Fly's 30s
+ * liveness/bluegreen checks are never throttled; the enforcement fails open on a
+ * limiter error so a Redis outage cannot take the health gate down.
+ */
+export const mcpHealthProbeRateLimit = { maximumRequests: 60, windowSeconds: 60 } as const;
+
+/**
+ * Shared rate-limit stores for this process (TRI-56): Redis-backed over the one
+ * client TRI-49 reconciled when `REDIS_URL` is set, in-memory in local dev.
+ * Selection and the production `REDIS_URL` backstop live in `rate-limit-stores`.
+ */
+const mcpRateLimitStores = createRateLimitStores();
+export const mcpSlidingWindowStore: AtomicSlidingWindowStore = mcpRateLimitStores.slidingWindow;
+export const mcpConcurrencySlotStore: ConcurrencySlotStore = mcpRateLimitStores.concurrencySlots;
 
 /**
  * Limits the MCP serving handler and authenticator need, exported so the

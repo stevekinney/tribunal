@@ -171,6 +171,21 @@ export const webEnvironmentSchema = webEnvironmentObject.superRefine((environmen
         'Refusing to start in production without DATABASE_URL sslmode=verify-full for a non-local, non-Neon host (require encrypts without verifying the certificate; verify-ca skips hostname verification).',
     });
   }
+
+  // The MCP rate limiter, concurrency cap, and failed-authentication lockout are
+  // backed by Redis (TRI-56). When the surface is enabled in production it must
+  // not fall back to per-process in-memory stores, which would run unbounded and
+  // unshared with nothing surfaced. Gated on MCP being enabled so a production
+  // deploy with the surface off (its default) is unaffected — the GitHub cache's
+  // own use of Redis fails open and does not gate boot.
+  if (environment.MCP_ENABLED && environment.REDIS_URL === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message:
+        'Refusing to start in production with MCP_ENABLED and no REDIS_URL: the MCP rate limiter, concurrency cap, and failed-authentication lockout require Redis-backed stores.',
+    });
+  }
 });
 
 export type WebEnvironment = z.infer<typeof webEnvironmentSchema>;

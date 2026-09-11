@@ -1,9 +1,14 @@
+import type { RequestEvent } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { setCache } from '$lib/server/redis';
 import { probeDatabase } from './health-database';
 import { createWebHealthResponse } from './health-response';
+import { enforceHealthProbeRateLimit } from './health-rate-limit';
 
-export async function GET(): Promise<Response> {
+export async function GET({ getClientAddress }: RequestEvent): Promise<Response> {
+  const rateLimited = await enforceHealthProbeRateLimit(getClientAddress());
+  if (rateLimited) return rateLimited;
+
   return createWebHealthResponse(
     {
       DATABASE_URL: env.DATABASE_URL,
