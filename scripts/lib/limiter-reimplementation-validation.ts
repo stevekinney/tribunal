@@ -14,6 +14,13 @@
  * string contents. Matching is case-sensitive and word-bounded: these are Redis
  * command mnemonics, always upper-case in Lua, so a lower-case identifier or a
  * longer word that merely contains one is not flagged.
+ *
+ * Scope, intentional: this catches the common copy shape — inlined upper-case Lua
+ * — and pairs with the `RedisClientType` ban (below) that stops a second raw Redis
+ * client from existing at all. It does not attempt to detect a reimplementation
+ * built entirely on node-redis's camelCase API (`zAdd`) or through a differently
+ * typed abstraction; a general "is this a reimplementation" check is unfalsifiable
+ * (TRI-56 AC1 chose these two mechanical proxies for exactly that reason).
  */
 const BANNED_LUA_TOKENS = ['ZREMRANGEBYSCORE', 'ZADD', 'ZCARD', 'ZSCORE', 'PEXPIRE'] as const;
 

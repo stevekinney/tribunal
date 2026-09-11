@@ -36,7 +36,10 @@ const filePaths = trackedSourcesResult.stdout
   .split('\n')
   .filter((filePath) => filePath.length > 0)
   .filter((filePath) => SCANNED_EXTENSIONS.some((extension) => filePath.endsWith(extension)))
-  .filter((filePath) => !/\.(test|spec)\.ts$/.test(filePath));
+  // Exclude test fixtures (a test referencing a token is not a reimplementation).
+  // `tsx?` so `.test.tsx`/`.spec.tsx` are stripped alongside `.ts`; `.svelte.test.ts`
+  // ends in `.test.ts` and is already covered.
+  .filter((filePath) => !/\.(test|spec)\.tsx?$/.test(filePath));
 
 const violations = (
   await Promise.all(
