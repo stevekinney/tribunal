@@ -22,22 +22,26 @@ const operationsLimiter = new SlidingWindowRateLimiter();
  */
 const OPERATIONS_LIMITER_TIMEOUT_MS = 2_000;
 
-/** Distinguishes a deadline timeout from a store error thrown by `consume()`. */
-const LIMITER_TIMEOUT = Symbol('operations-limiter-timeout');
-
 /**
  * The single store command allowed in flight at a time. While one is pending,
  * every other request fails open without issuing its own — so neither a
- * concurrent burst (before any timeout) nor a sustained stall can let
- * unauthenticated pre-auth traffic queue one uncancellable Redis command per
- * request and exhaust the connection queue or memory (TRI-52). Under healthy
- * Redis commands resolve in well under a millisecond, so the guard is almost
- * never contended and sequential requests each consume normally; it engages only
- * when commands are slow — exactly when bounding them matters. A stalled command
- * is abandoned at its deadline (the guard clears) so the limiter re-engages on
- * recovery, bounding a sustained outage to one command per timeout window rather
- * than one per request. The limiter is defense-in-depth — the bearer token is the
- * guard — so occasionally skipping the limit under contention is acceptable.
+ * concurrent burst nor a sustained stall can let unauthenticated pre-auth traffic
+ * queue one uncancellable Redis command per request and exhaust the connection
+ * queue or memory (TRI-52). Under healthy Redis commands resolve in well under a
+ * millisecond, so the guard is almost never contended and sequential requests each
+ * consume normally; it engages only when commands are slow — exactly when bounding
+ * them matters.
+ *
+ * The guard is held until the command actually **settles**, not abandoned at the
+ * request deadline: a request that exceeds the deadline fails open and returns,
+ * but the command stays in flight and keeps the guard closed, so a sustained
+ * outage holds exactly one pending command rather than accumulating one every
+ * window. The command is not cancellable, but it does settle when the socket
+ * eventually errors or Redis recovers, at which point the guard clears and the
+ * limiter re-engages. Failing open meanwhile is acceptable: the limiter is
+ * defense-in-depth and the bearer token is the guard. (This differs from the
+ * readiness cache, which re-probes per window because its job is to report
+ * current readiness; the limiter has no such need to keep probing.)
  */
 let inFlightConsume: Promise<unknown> | null = null;
 
@@ -74,8 +78,9 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
     atomicStore: mcpSlidingWindowStore,
   });
   inFlightConsume = consumePromise;
-  // Clear the guard when the command settles. A no-op catch keeps a late
-  // rejection (e.g. after its deadline abandoned it) from surfacing as unhandled.
+  // Clear the guard only when the command actually settles (resolve or reject),
+  // never at the request deadline. A no-op catch keeps a late rejection from
+  // surfacing as unhandled.
   void consumePromise
     .finally(() => {
       if (inFlightConsume === consumePromise) inFlightConsume = null;
@@ -85,7 +90,10 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(LIMITER_TIMEOUT), OPERATIONS_LIMITER_TIMEOUT_MS);
+      timer = setTimeout(
+        () => reject(new Error('operations rate limiter timed out')),
+        OPERATIONS_LIMITER_TIMEOUT_MS,
+      );
       timer.unref?.();
     });
     const result = await Promise.race([consumePromise, deadline]);
@@ -98,12 +106,10 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
       },
     );
   } catch (error) {
-    if (error === LIMITER_TIMEOUT) {
-      // Abandon the stalled command so the limiter re-engages on recovery rather
-      // than staying pinned open; the late .finally above won't match once a newer
-      // command has claimed the guard, so it cannot clobber it.
-      if (inFlightConsume === consumePromise) inFlightConsume = null;
-    }
+    // Fail open on both a deadline timeout and a store error. On a timeout the
+    // command stays in flight and keeps the guard closed (one pending command,
+    // not one per window); the guard clears via the `.finally` above when it
+    // finally settles.
     console.error('Operations rate limiter error (serving anyway):', error);
     return null;
   } finally {

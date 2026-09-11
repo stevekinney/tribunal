@@ -85,23 +85,33 @@ describe('enforceOperationsRateLimit', () => {
     }
   });
 
-  it('re-engages after a stalled command is abandoned at its deadline (TRI-52)', async () => {
+  it('keeps suppressing commands while one stays stalled, then re-engages once it settles (TRI-52)', async () => {
     vi.useFakeTimers();
     try {
+      let settleStalled: () => void = () => {};
       const storeSpy = vi
         .spyOn(mcpSlidingWindowStore, 'consume')
-        .mockReturnValue(new Promise(() => {})); // stays stalled
+        .mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            settleStalled = () => reject(new Error('socket finally errored'));
+          }),
+        )
+        .mockRejectedValue(new Error('redis down'));
       vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const first = enforceOperationsRateLimit('203.0.113.6');
       await vi.advanceTimersByTimeAsync(2_001);
-      expect(await first).toBeNull(); // timed out → guard abandoned
+      expect(await first).toBeNull(); // timed out, failed open — but the command is still in flight
 
-      // The next window re-engages: one more command, not suppressed forever
-      // (bounding a sustained stall to one command per window, not one per request).
-      const second = enforceOperationsRateLimit('203.0.113.6');
-      await vi.advanceTimersByTimeAsync(2_001); // its own command also stalls out
-      expect(await second).toBeNull();
+      // Still suppressed while that command is pending: no new command issued.
+      expect(await enforceOperationsRateLimit('203.0.113.6')).toBeNull();
+      expect(storeSpy).toHaveBeenCalledTimes(1);
+
+      // Once the stalled command actually settles, the guard clears and the next
+      // request re-engages — exactly one pending command across the whole stall.
+      settleStalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await enforceOperationsRateLimit('203.0.113.6')).toBeNull();
       expect(storeSpy).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
