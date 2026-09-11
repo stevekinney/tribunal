@@ -16,7 +16,19 @@ vi.mock('$lib/server/redis', () => ({
   setCache: mockSetCache,
 }));
 
+import type { RequestEvent } from '@sveltejs/kit';
+import { mcpHealthProbeRateLimit } from '$lib/server/oauth/configuration';
 import { GET } from './+server';
+
+// A mount event with a unique client address per call, so the shared health-probe
+// rate-limit store (module singleton, in-memory in tests) never accumulates a
+// budget across these dependency-focused tests. Rate-limit behavior is tested
+// separately in health-rate-limit.test.ts.
+let clientCounter = 0;
+function healthEvent(): RequestEvent {
+  clientCounter += 1;
+  return { getClientAddress: () => `10.0.0.${clientCounter}` } as unknown as RequestEvent;
+}
 
 describe('GET /health', () => {
   beforeEach(() => {
@@ -28,7 +40,7 @@ describe('GET /health', () => {
   });
 
   it('reports unhealthy dependencies when neither URL is configured', async () => {
-    const response = await GET();
+    const response = await GET(healthEvent());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -44,7 +56,7 @@ describe('GET /health', () => {
   it('probes the database with DATABASE_URL and reports healthy when configured', async () => {
     mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
 
-    const response = await GET();
+    const response = await GET(healthEvent());
 
     expect(mockProbeDatabase).toHaveBeenCalledWith('postgres://localhost/tribunal');
     const body = await response.json();
@@ -56,7 +68,7 @@ describe('GET /health', () => {
   it('writes to the cache with REDIS_URL and reports healthy when the write succeeds', async () => {
     mockEnv.REDIS_URL = 'redis://localhost:6379';
 
-    const response = await GET();
+    const response = await GET(healthEvent());
 
     expect(mockSetCache).toHaveBeenCalledWith('__tribunal_health__', 'ok', 10);
     const body = await response.json();
@@ -69,7 +81,7 @@ describe('GET /health', () => {
     mockEnv.REDIS_URL = 'redis://localhost:6379';
     mockSetCache.mockResolvedValue(false);
 
-    const response = await GET();
+    const response = await GET(healthEvent());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -84,7 +96,7 @@ describe('GET /health', () => {
     mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
     mockProbeDatabase.mockRejectedValue(new Error('connection refused'));
 
-    const response = await GET();
+    const response = await GET(healthEvent());
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -99,10 +111,20 @@ describe('GET /health', () => {
     mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
     mockEnv.REDIS_URL = 'redis://localhost:6379';
 
-    const response = await GET();
+    const response = await GET(healthEvent());
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
+  });
+
+  it('rate-limits repeated probes from one client with a 429 (AC3, through the route)', async () => {
+    mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
+    const fromOneClient = { getClientAddress: () => '10.42.42.42' } as unknown as RequestEvent;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt <= mcpHealthProbeRateLimit.maximumRequests; attempt += 1) {
+      response = await GET(fromOneClient);
+    }
+    expect(response!.status).toBe(429);
   });
 });

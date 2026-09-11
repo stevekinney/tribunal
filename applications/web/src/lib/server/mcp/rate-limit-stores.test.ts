@@ -41,15 +41,17 @@ describe('rateLimitingIsRedisBacked', () => {
 describe('createRateLimitStores', () => {
   it('uses in-memory stores in local dev without REDIS_URL', () => {
     const stores = createRateLimitStores();
-    expect((stores.slidingWindow as { kind: string }).kind).toBe('in-memory-sliding');
-    expect((stores.concurrencySlots as { kind: string }).kind).toBe('in-memory-concurrency');
+    expect((stores.slidingWindow as unknown as { kind: string }).kind).toBe('in-memory-sliding');
+    expect((stores.concurrencySlots as unknown as { kind: string }).kind).toBe(
+      'in-memory-concurrency',
+    );
   });
 
   it('uses Redis-backed stores over the shared client when REDIS_URL is set', () => {
     mockEnv.REDIS_URL = 'redis://localhost:6379';
     const stores = createRateLimitStores();
-    expect((stores.slidingWindow as { kind: string }).kind).toBe('redis-sliding');
-    expect((stores.concurrencySlots as { kind: string }).kind).toBe('redis-concurrency');
+    expect((stores.slidingWindow as unknown as { kind: string }).kind).toBe('redis-sliding');
+    expect((stores.concurrencySlots as unknown as { kind: string }).kind).toBe('redis-concurrency');
   });
 
   it('refuses in-memory stores when the MCP surface is enabled in production', () => {
@@ -61,7 +63,7 @@ describe('createRateLimitStores', () => {
   it('still uses in-memory in production when the MCP surface is disabled', () => {
     mockEnv.NODE_ENV = 'production';
     mockEnv.MCP_ENABLED = 'false';
-    expect((createRateLimitStores().slidingWindow as { kind: string }).kind).toBe(
+    expect((createRateLimitStores().slidingWindow as unknown as { kind: string }).kind).toBe(
       'in-memory-sliding',
     );
   });
@@ -75,7 +77,7 @@ describe('the shared-client proxy', () => {
   function proxyFromRedisStore(): ProxyClient {
     mockEnv.REDIS_URL = 'redis://localhost:6379';
     const stores = createRateLimitStores();
-    return (stores.slidingWindow as { client: ProxyClient }).client;
+    return (stores.slidingWindow as unknown as { client: ProxyClient }).client;
   }
 
   it('forwards eval to the re-acquired shared client per call', async () => {

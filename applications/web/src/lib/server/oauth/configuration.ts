@@ -68,6 +68,13 @@ const rateLimitCategory = (
   windowSeconds: number,
 ): { maximumRequests: number; windowSeconds: number } => ({ maximumRequests, windowSeconds });
 
+/**
+ * The rate-limit key namespace. Stable in production (one process, one
+ * namespace); the per-worker composition for test isolation against a shared
+ * Redis is TRI-132's, since in-memory per-process stores cannot contend.
+ */
+export const mcpRateLimitKeyNamespace = 'tribunal-mcp';
+
 export const mcpRateLimitConfiguration: RateLimitConfiguration = {
   categories: {
     oauth_authorize: rateLimitCategory(20, 60),
@@ -80,8 +87,18 @@ export const mcpRateLimitConfiguration: RateLimitConfiguration = {
     failed_authentication: rateLimitCategory(10, 60),
   } satisfies Record<OAuthRateLimitCategory, { maximumRequests: number; windowSeconds: number }>,
   maximumConcurrent: 100,
-  keyNamespace: 'tribunal-mcp',
+  keyNamespace: mcpRateLimitKeyNamespace,
 };
+
+/**
+ * The `/health` probe budget (TRI-56 AC3). `health_probe` is the one host-route
+ * category Tribunal has; it is not one of the library's OAuth categories, so it
+ * is enforced through the library's generic `SlidingWindowRateLimiter` with a
+ * host-owned key rather than `RequestRateLimiter`. Generous per-IP so Fly's 30s
+ * liveness/bluegreen checks are never throttled; the enforcement fails open on a
+ * limiter error so a Redis outage cannot take the health gate down.
+ */
+export const mcpHealthProbeRateLimit = { maximumRequests: 60, windowSeconds: 60 } as const;
 
 /**
  * Shared rate-limit stores for this process (TRI-56): Redis-backed over the one
