@@ -10,10 +10,10 @@ vi.mock('$env/dynamic/private', () => ({ env: mockEnv }));
 
 const { createTribunalMcpMount } = await import('./mount');
 
-let dispose: (() => Promise<void>) | null = null;
+let shutdownTransport: (() => Promise<void>) | null = null;
 
 afterAll(async () => {
-  await dispose?.();
+  await shutdownTransport?.();
 });
 
 describe('createTribunalMcpMount (E2E mode)', () => {
@@ -23,8 +23,11 @@ describe('createTribunalMcpMount (E2E mode)', () => {
     // to each worker's PGlite. Construction touches no database, so it succeeds
     // here without a live connection.
     const mount = await createTribunalMcpMount();
-    dispose = mount.dispose;
+    shutdownTransport = mount.shutdownTransport;
     expect(mount.mount).toBeDefined();
-    expect(typeof mount.dispose).toBe('function');
+    expect(typeof mount.shutdownTransport).toBe('function');
+    // The E2E branch owns no pool, so pool disposal is a no-op that still
+    // resolves (exercised here so the post-drain phase is covered).
+    await expect(mount.disposePool()).resolves.toBeUndefined();
   });
 });

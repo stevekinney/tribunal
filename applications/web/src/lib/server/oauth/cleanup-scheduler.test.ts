@@ -155,6 +155,59 @@ describe('startOauthCleanupSweep', () => {
     }
   });
 
+  it('never overlaps: a sweep slower than the interval does not start a second run (Threads 0+2)', async () => {
+    vi.useFakeTimers();
+    try {
+      const stores = createStores();
+      let releaseFirstSweep: () => void = () => {};
+      stores.transactions.purgeExpired.mockReturnValueOnce(
+        new Promise<number>((resolve) => {
+          releaseFirstSweep = () => resolve(0);
+        }),
+      );
+      const sweep = startOauthCleanupSweep({ stores: stores as never, intervalMs: 60_000 });
+
+      await vi.advanceTimersByTimeAsync(60_000); // first tick starts; its sweep is still in flight
+      // Even after several more interval widths, no second sweep starts while the
+      // first is pending — the next run is scheduled only after the current settles.
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(1);
+
+      // Once the slow sweep settles, the next run is scheduled and fires.
+      releaseFirstSweep();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(2);
+
+      sweep.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop() during an in-flight sweep prevents the next run (Thread 0)', async () => {
+    vi.useFakeTimers();
+    try {
+      const stores = createStores();
+      let releaseSweep: () => void = () => {};
+      stores.transactions.purgeExpired.mockReturnValueOnce(
+        new Promise<number>((resolve) => {
+          releaseSweep = () => resolve(0);
+        }),
+      );
+      const sweep = startOauthCleanupSweep({ stores: stores as never, intervalMs: 60_000 });
+
+      await vi.advanceTimersByTimeAsync(60_000); // first tick running, sweep pending
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(1);
+
+      sweep.stop(); // stop while the sweep is still in flight
+      releaseSweep(); // let it settle — it must not schedule another run
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('defaults now to the wall clock, passing a Date to each purge', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-01T12:00:00.000Z'));

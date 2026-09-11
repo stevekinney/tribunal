@@ -54,7 +54,8 @@ describe('MCP mount handle', () => {
     Promise.resolve({
       mount: fixture.mount,
       publishUserResourceUpdate: fixture.publishUserResourceUpdate,
-      dispose: fixture.dispose,
+      shutdownTransport: fixture.dispose,
+      disposePool: async () => {},
     });
   const mcpHandle = createMcpHandle(getMount);
 

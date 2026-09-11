@@ -50,27 +50,49 @@ if (mcpMount) {
       console.error('[hooks.server] MCP resource-update publisher registration failed', error);
     });
 
-  // Dispose the mount's cleanup sweep, handler cache, and connection pool on
-  // shutdown — after in-flight requests have drained, so none reaches a
-  // disposed mount (TRI-51 AC3). adapter-node owns process termination: on
-  // SIGINT/SIGTERM it stops accepting connections, waits for in-flight requests
-  // via `httpServer.close()` (forcing any stragglers after `SHUTDOWN_TIMEOUT`),
-  // and only then emits `sveltekit:shutdown`. Binding disposal to that event —
-  // rather than to the raw signals, which would fire concurrently with the
-  // drain and race it — is the ordering the earlier revision deferred here. In
-  // dev and under tests the event never fires; neither needs pool cleanup,
-  // since the process is torn down wholesale.
-  const disposeMcpMount = (): void => {
+  // Shutdown is two-phase, because a long-lived `subscriptions/listen` SSE stream
+  // and an ordinary in-flight `/token` request want opposite ordering relative to
+  // adapter-node's HTTP drain (TRI-51 AC3).
+  //
+  // Phase 1, on the signal (pre-drain): stop the sweep and close the MCP
+  // transport. adapter-node's `httpServer.close()` waits for every open
+  // connection, so a never-ending listen stream would otherwise hold the drain
+  // open until `SHUTDOWN_TIMEOUT` force-closes it — losing the in-flight
+  // notifications the `stream-lifecycle.ts` contract protects. Closing the
+  // transport here ends those streams through the library's sanctioned path
+  // (`cache.closeAll`) so the drain completes promptly and gracefully. We run it
+  // off the raw signal, not `sveltekit:shutdown`, precisely because it must
+  // happen *before* the drain. adapter-node also listens on these signals; its
+  // `close()` is async and simply waits, so ordering between the two handlers is
+  // immaterial.
+  const shutdownMcpTransport = (): void => {
     // Clear the publisher first so a notification that races shutdown cannot
-    // reach the mount being torn down; then dispose the mount itself.
+    // reach the transport being torn down.
     clearResourceUpdatePublisher();
     void mcpMount
-      .then((active) => active.dispose())
+      .then((active) => active.shutdownTransport())
       .catch((error) => {
-        console.error('[hooks.server] MCP mount dispose failed', error);
+        console.error('[hooks.server] MCP transport shutdown failed', error);
       });
   };
-  process.once('sveltekit:shutdown', disposeMcpMount);
+  process.once('SIGTERM', shutdownMcpTransport);
+  process.once('SIGINT', shutdownMcpTransport);
+
+  // Phase 2, on `sveltekit:shutdown` (post-drain): close the OAuth connection
+  // pool. adapter-node emits this only after in-flight requests have drained (or
+  // been force-closed at `SHUTDOWN_TIMEOUT`), so an ordinary `/token` or
+  // `/authorize` request — the only traffic that uses this pool — keeps its
+  // connection through to completion rather than losing it mid-query. In dev and
+  // under tests the event never fires; neither needs pool cleanup, since the
+  // process is torn down wholesale.
+  const disposeMcpPool = (): void => {
+    void mcpMount
+      .then((active) => active.disposePool())
+      .catch((error) => {
+        console.error('[hooks.server] MCP pool dispose failed', error);
+      });
+  };
+  process.once('sveltekit:shutdown', disposeMcpPool);
 }
 
 const mcpHandle = createMcpHandle(getMcpMount);

@@ -29,8 +29,24 @@ export type AssembledMcpMount = {
 };
 
 export type TribunalMcpMount = AssembledMcpMount & {
-  /** Disposes the mount and the storage connection pool it owns. */
-  dispose: () => Promise<void>;
+  /**
+   * Pre-drain (on the shutdown signal): stop the cleanup sweep and gracefully
+   * close the MCP transport. This ends the long-lived `subscriptions/listen`
+   * streams through the library's sanctioned path (`mount.dispose` →
+   * `runtime.shutdown` → `cache.closeAll`), not a forced connection close, so no
+   * in-flight resource notifications are lost (the `stream-lifecycle.ts`
+   * contract) — and it unblocks adapter-node's HTTP drain, which would otherwise
+   * wait on those never-ending streams until `SHUTDOWN_TIMEOUT` force-closes
+   * them (TRI-51 AC3).
+   */
+  shutdownTransport: () => Promise<void>;
+  /**
+   * Post-drain (on `sveltekit:shutdown`): close the OAuth connection pool, after
+   * adapter-node has let ordinary in-flight OAuth requests — the only requests
+   * that use this pool — finish. Closing it on the signal instead would pull the
+   * pool out from under a `/token` or `/authorize` request still draining.
+   */
+  disposePool: () => Promise<void>;
 };
 
 /**
@@ -75,7 +91,13 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
   // deployment.
   if (env.E2E_TEST_MODE === '1') {
     const assembled = await assembleTribunalMcpMount(createOAuthStores(db));
-    return { ...assembled, dispose: () => assembled.mount.dispose() };
+    // E2E backs the stores with the request-scoped db proxy (no dedicated pool to
+    // close) and runs no cleanup sweep, so only the transport needs shutting down.
+    return {
+      ...assembled,
+      shutdownTransport: () => assembled.mount.dispose(),
+      disposePool: async () => {},
+    };
   }
 
   const connectionString = env.DATABASE_URL;
@@ -103,11 +125,11 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
 
     return {
       ...assembled,
-      dispose: async () => {
+      shutdownTransport: async () => {
         cleanupSweep.stop();
         await assembled.mount.dispose();
-        await storage.dispose();
       },
+      disposePool: () => storage.dispose(),
     };
   } catch (error) {
     await storage.dispose();

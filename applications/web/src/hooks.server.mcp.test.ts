@@ -30,13 +30,16 @@ vi.mock('$lib/server/github/webhooks/subscription-drift', () => ({
 }));
 
 const mountDispose = vi.fn(() => Promise.resolve());
+const mountShutdownTransport = vi.fn(() => Promise.resolve());
+const mountDisposePool = vi.fn(() => Promise.resolve());
 const mountHandle = vi.fn(() => Promise.resolve(new Response('ok', { status: 200 })));
 const mountPublish = vi.fn();
 const createTribunalMcpMount = vi.fn(() =>
   Promise.resolve({
     mount: { handle: mountHandle, dispose: mountDispose },
     publishUserResourceUpdate: mountPublish,
-    dispose: mountDispose,
+    shutdownTransport: mountShutdownTransport,
+    disposePool: mountDisposePool,
   }),
 );
 vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
@@ -100,29 +103,50 @@ describe('hooks.server MCP wiring (enabled)', () => {
     expect(mcpIndex).toBeGreaterThan(bypassIndex);
   });
 
-  it('disposes the mount on sveltekit:shutdown (after in-flight requests drain)', async () => {
-    // adapter-node emits this only after draining in-flight requests, so
-    // disposal never races a request still touching the mount (AC3).
-    signalHandlers.get('sveltekit:shutdown')!();
-    await vi.waitFor(() => expect(mountDispose).toHaveBeenCalled());
+  it('shuts down the MCP transport on SIGTERM (pre-drain) so listen streams close gracefully', async () => {
+    // Phase 1 runs off the raw signal, before adapter-node's drain, so a
+    // never-ending subscriptions/listen stream is closed through the library's
+    // path rather than force-closed at SHUTDOWN_TIMEOUT (AC3 / Thread 3).
+    signalHandlers.get('SIGTERM')!();
+    await vi.waitFor(() => expect(mountShutdownTransport).toHaveBeenCalled());
   });
 
-  it('logs rather than throwing when disposal fails', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    mountDispose.mockRejectedValueOnce(new Error('dispose boom'));
+  it('disposes the OAuth pool on sveltekit:shutdown (post-drain, after in-flight requests finish)', async () => {
+    // Phase 2 runs only after adapter-node drains, so an in-flight /token or
+    // /authorize request keeps its pool connection to completion.
     signalHandlers.get('sveltekit:shutdown')!();
+    await vi.waitFor(() => expect(mountDisposePool).toHaveBeenCalled());
+  });
+
+  it('logs rather than throwing when transport shutdown fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountShutdownTransport.mockRejectedValueOnce(new Error('transport boom'));
+    signalHandlers.get('SIGINT')!();
     await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
-        '[hooks.server] MCP mount dispose failed',
+        '[hooks.server] MCP transport shutdown failed',
         expect.any(Error),
       ),
     );
     consoleError.mockRestore();
   });
 
-  it('clears the resource-update publisher on dispose so a torn-down mount is never invoked (TRI-126)', async () => {
+  it('logs rather than throwing when pool disposal fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountDisposePool.mockRejectedValueOnce(new Error('pool boom'));
+    signalHandlers.get('sveltekit:shutdown')!();
+    await vi.waitFor(() =>
+      expect(consoleError).toHaveBeenCalledWith(
+        '[hooks.server] MCP pool dispose failed',
+        expect.any(Error),
+      ),
+    );
+    consoleError.mockRestore();
+  });
+
+  it('clears the resource-update publisher on transport shutdown so a torn-down mount is never invoked (TRI-126)', async () => {
     // Register a fresh spy so this is independent of the module-load
-    // registration and of any earlier dispose in this file.
+    // registration and of any earlier shutdown in this file.
     const {
       registerResourceUpdatePublisher,
       clearResourceUpdatePublisher,
@@ -133,9 +157,10 @@ describe('hooks.server MCP wiring (enabled)', () => {
     notifyReviewRunsChanged(42);
     expect(publish).toHaveBeenCalledWith('42', 'tribunal://review-runs');
 
-    // Dispose (via the shutdown event) must clear the publisher so a
-    // notification racing shutdown reaches nobody rather than a disposed mount.
-    signalHandlers.get('sveltekit:shutdown')!();
+    // Transport shutdown (phase 1, on the signal) must clear the publisher so a
+    // notification racing shutdown reaches nobody rather than a transport being
+    // torn down.
+    signalHandlers.get('SIGTERM')!();
     publish.mockClear();
     notifyReviewRunsChanged(42);
     expect(publish).not.toHaveBeenCalled();

@@ -7,9 +7,19 @@
  *
  * The library invokes `markServerOnlyCloseableStream` (an `McpHandlerSeams`
  * member) on exactly the listen responses and on nothing else, so wiring this in
- * is how Tribunal tags those responses. The drain that *consults* the tag is
- * TRI-51's; this module owns identifying the streams and exposes
- * `isServerOnlyCloseableStream` for that drain to call.
+ * is how Tribunal tags those responses.
+ *
+ * How TRI-51's shutdown honors this: the library exposes no per-stream close —
+ * only whole-transport teardown (`mount.dispose` → `runtime.shutdown` →
+ * `cache.closeAll`). So rather than a drain that force-closes ordinary streams
+ * while sparing tagged ones, `hooks.server.ts` closes the entire transport on the
+ * shutdown signal, *before* adapter-node drains the HTTP server. That routes
+ * every listen stream through `cache.closeAll` — the sanctioned path above — so
+ * none is ever force-closed, and adapter-node's own force-close
+ * (`SHUTDOWN_TIMEOUT` → `closeAllConnections`) is reached only if a stream somehow
+ * fails to close in time. `isServerOnlyCloseableStream` therefore remains
+ * available for a future finer-grained drain (and for the transport test below),
+ * but Tribunal owns no force-close that needs to consult it today.
  *
  * A `WeakSet` keeps the tag off the wire (no client-visible header advertising
  * an internal shutdown detail) and lets each `Response` be garbage-collected

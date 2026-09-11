@@ -54,8 +54,16 @@ export type OauthCleanupSweep = { stop: () => void };
  *
  * In-process on the long-lived web process (AC6): the mount already requires a
  * long-lived process for its per-user handler cache, so the sweep adds no new
- * lifecycle constraint. The timer is `unref`'d so it never keeps the process
- * alive on its own, and `stop()` clears it during graceful shutdown.
+ * lifecycle constraint.
+ *
+ * The next run is scheduled with `setTimeout` only *after* the current run
+ * settles, never with a fixed-rate `setInterval` — so a purge that runs longer
+ * than the interval (a slow `OAUTH_CLEANUP_INTERVAL_SECONDS`, or a database
+ * stall) can never let sweeps overlap and pile unbounded concurrent deletes onto
+ * the OAuth pool. `stop()` both clears the pending timer and latches `stopped`,
+ * so a sweep already in flight when shutdown begins does not schedule another
+ * once it settles. Each timer is `unref`'d so the sweep never keeps the process
+ * alive on its own.
  */
 export function startOauthCleanupSweep(options: {
   stores: Pick<OAuthStores, 'transactions' | 'codes' | 'tokens'>;
@@ -67,6 +75,9 @@ export function startOauthCleanupSweep(options: {
   const onError =
     options.onError ?? ((error: unknown) => console.error('[oauth-cleanup] sweep failed:', error));
 
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   async function runSweep(): Promise<void> {
     const when = now();
     try {
@@ -77,14 +88,30 @@ export function startOauthCleanupSweep(options: {
       ]);
     } catch (error) {
       // A sweep failure (e.g. a transient database error) must not crash the
-      // process or stop the interval; log and let the next tick retry.
+      // process or stop the loop; log and let the next scheduled run retry.
       onError(error);
     }
   }
 
-  const timer = setInterval(() => void runSweep(), options.intervalMs);
-  timer.unref?.();
+  function scheduleNext(): void {
+    if (stopped) return;
+    timer = setTimeout(tick, options.intervalMs);
+    timer.unref?.();
+  }
+
+  async function tick(): Promise<void> {
+    await runSweep();
+    // Re-checked inside scheduleNext after the awaited sweep: a stop() that
+    // landed while the sweep was in flight prevents the next run.
+    scheduleNext();
+  }
+
+  scheduleNext();
+
   return {
-    stop: () => clearInterval(timer),
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
   };
 }
