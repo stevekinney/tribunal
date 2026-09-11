@@ -44,10 +44,17 @@ export function createCache(getRedisUrl: () => string | undefined) {
   async function getRedisClient(): Promise<RedisClient> {
     const url = getRedisUrl();
     if (!url) throw new Error('REDIS_URL is not set');
-    // Reuse the client only while it is open. A client whose bounded reconnect
-    // gave up (below) is closed, and every command on it would throw
-    // ClientClosedError; recreating it on the next call lets a transient outage
-    // recover without a process restart, mirroring Protokit's lazy client.
+    // Reuse the client only while it is open. When the bounded reconnect below
+    // gives up — on the initial connect OR on a runtime disconnect of an
+    // established connection — node-redis sets the socket's `isOpen` to false
+    // (verified in @redis/client 6.2.1 socket.js: `#shouldReconnect` sets
+    // `#isOpen = false` when the strategy returns an Error, on both the
+    // `connect()` path and the `#onSocketError` → `#connect()` reconnect loop).
+    // So a terminally-failed client reports `isOpen === false` and this guard
+    // rebuilds it on the next call — recovery without a process restart. `isReady`
+    // is deliberately NOT the guard: during a transient reconnect the client is
+    // `isOpen && !isReady`, and reusing it lets node-redis's offline queue hold
+    // commands rather than churning a replacement.
     if (client?.isOpen) return client;
 
     const newClient = createClient({

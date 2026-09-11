@@ -130,12 +130,15 @@ const webEnvironmentObject = z.object({
   // owned here only so the key is derivable for the doctor and .env.example,
   // the same way BASE_URL is.
   BODY_SIZE_LIMIT: z.string().optional(),
-  // Redis connection string. Optional so local development without Redis still
-  // works (the GitHub cache fails open and the MCP limiter stays in-memory);
-  // production makes it effectively required — the /health check reports Redis
-  // down without it, and TRI-56 will add a production superRefine here now that
-  // the key is owned by the schema (TRI-49).
-  REDIS_URL: z.string().url().optional(),
+  // Redis connection string. `optionalUrl`, not `z.string().url().optional()`, so
+  // that `REDIS_URL=` (a blank value — the common way to disable an optional URL
+  // in a dotenv file) normalizes to undefined rather than failing `.url()` at
+  // startup and defeating the no-Redis fallback. Optional so local development
+  // without Redis still works (the GitHub cache fails open and the MCP limiter
+  // stays in-memory); production makes it effectively required — the /health
+  // check reports Redis down without it, and TRI-56 will add a production
+  // superRefine here now that the key is owned by the schema (TRI-49).
+  REDIS_URL: optionalUrl,
 });
 
 /** The full schema: the object plus the production fail-closed refinements. */
