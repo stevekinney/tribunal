@@ -349,6 +349,15 @@ Before changing `REVIEWS_ENABLED` to `true`, all of these must be true:
 
 Use `documentation/deployment/containers.md` for the exact health check commands.
 
+The public `/health` above stays the unauthenticated Fly liveness and
+bluegreen-promotion gate (it must keep probing the database — TRI-124). Two
+authenticated operational endpoints sit alongside it, both guarded by the
+`MCP_OPERATIONS_TOKEN` bearer secret (TRI-52): `/health/ready` for TTL-cached,
+coalesced readiness detail, and `/metrics` for per-instance OAuth/MCP counters
+and tool latencies. Set `MCP_OPERATIONS_TOKEN` to a high-entropy value in
+production; without it both return `503`. See the `tribunal-production-operations`
+skill's "Operational Endpoints" section.
+
 ## Do Not Set In Production
 
 - `WEFT_DATABASE_URL` on `tribunal-web`.

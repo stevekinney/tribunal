@@ -139,6 +139,12 @@ const webEnvironmentObject = z.object({
   // check reports Redis down without it, and TRI-56 will add a production
   // superRefine here now that the key is owned by the schema (TRI-49).
   REDIS_URL: optionalUrl,
+  // Bearer token guarding the authenticated operational endpoints `/health/ready`
+  // and `/metrics` (TRI-52). Optional: unset in local development, where both
+  // endpoints fail closed (503 "not configured") rather than exposing readiness
+  // detail or metrics without a credential. Compared in constant time
+  // (`constantTimeStringEqual`). A string secret, never a URL.
+  MCP_OPERATIONS_TOKEN: z.string().optional(),
 });
 
 /** The full schema: the object plus the production fail-closed refinements. */

@@ -202,6 +202,16 @@ traffic. Confirm the configured `suspend_timeout_seconds=300` value, but do
 not expect `current_state=idle` to ever appear while `tribunal-web` is
 warm.
 
+## Operational Endpoints
+
+Three HTTP surfaces, deliberately distinct — do not collapse them (TRI-52):
+
+- **Public `/health`** — the unauthenticated liveness and bluegreen-promotion gate Fly checks (`deployment/fly/web.toml`). It probes Postgres and Redis on every check and must keep doing so: a Machine that boots but cannot reach the database must fail this check rather than be promoted (TRI-124), and the check also keeps Neon's compute warm. Unchanged by TRI-52.
+- **`/health/ready`** — authenticated readiness (bearer `MCP_OPERATIONS_TOKEN`). Same dependency probes as `/health`, but TTL-cached and coalesced so frequent operator/automation polls issue at most one DB/Redis round trip every few seconds, and dependency detail is returned only to the authenticated caller.
+- **`/metrics`** — authenticated per-instance metrics (bearer `MCP_OPERATIONS_TOKEN`): the library's OBS-001 outcome counters for the OAuth/MCP surfaces plus tool latency percentiles. Per the singleton deployment (TRI-83), these are the sole web Machine's metrics; cross-replica aggregation is out of scope.
+
+`MCP_OPERATIONS_TOKEN` is a production secret (unset in local dev, where both authenticated endpoints return 503). Both compare the bearer in constant time, are rate-limited on every request including auth failures (bounding a guess loop), send `Cache-Control: no-store`, and dispatch before session hydration (a forged session cookie triggers no session lookup).
+
 ## Triage Workflow
 
 Start with evidence, not changes:

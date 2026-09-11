@@ -145,6 +145,29 @@ describe('hooks auth handle', () => {
     expect.assertions(3);
   });
 
+  it.each([
+    ['/health/ready', 'http://localhost/health/ready'],
+    ['/metrics', 'http://localhost/metrics'],
+  ])(
+    'dispatches %s before session hydration: a forged cookie triggers no session lookup (TRI-52 AC5)',
+    async (_label, url) => {
+      const event = createMockRequestEvent({ url });
+      // A forged bridge cookie is present; the operational path must not validate it.
+      event.cookies.get = vi.fn((name) =>
+        name === 'tribunal-neon-auth-token' ? 'forged-token' : undefined,
+      );
+
+      const { authHandle } = await import('./hooks.server');
+      const response = await authHandle({ event, resolve: () => new Response('ok') });
+
+      expect(response.status).toBe(200);
+      expect(mockValidateNeonSessionFromToken).not.toHaveBeenCalled();
+      expect(mockDeleteNeonAuthTokenCookie).not.toHaveBeenCalled();
+      expect(event.locals.user).toBeNull();
+      expect.assertions(4);
+    },
+  );
+
   it('leaves the Neon Auth bridge cookie intact when validation fails transiently', async () => {
     mockValidateNeonSessionFromToken.mockRejectedValueOnce(
       new TransientAuthInfrastructureError('Neon Auth JWKS verification unavailable', {
