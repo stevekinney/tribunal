@@ -1,9 +1,6 @@
 import { DEFAULT_NEGOTIATED_PROTOCOL_VERSION } from '@modelcontextprotocol/server';
 import { env } from '$env/dynamic/private';
-import {
-  createInMemoryConcurrencySlotStore,
-  createInMemorySlidingWindowStore,
-} from '@lostgradient/mcp/rate-limit';
+import { createRateLimitStores } from '$lib/server/mcp/rate-limit-stores';
 import type {
   ConcurrencySlotStore,
   AtomicSlidingWindowStore,
@@ -23,9 +20,9 @@ import { tribunalMcpServerName } from '$lib/server/mcp/server-identity';
  * The values here are read once at module scope, when the mount is constructed.
  * The surface ships disabled (`MCP_ENABLED` defaults to `false`), so production
  * URL/TTL/limit provisioning is TRI-60's; these are sensible dev-first defaults.
- * The rate-limit stores are in-memory per the TRI-41 scope decision — TRI-49/56
- * swap in Redis, and TRI-50 replaces the permissive trusted-proxy config with
- * Fly's edge CIDRs.
+ * The rate-limit stores are Redis-backed when `REDIS_URL` is set and in-memory in
+ * local dev (TRI-56, over the shared client from TRI-49); TRI-50 replaces the
+ * permissive trusted-proxy config with Fly's edge CIDRs.
  */
 
 /** The MCP protocol version advertised in discovery metadata and negotiation. */
@@ -86,9 +83,14 @@ export const mcpRateLimitConfiguration: RateLimitConfiguration = {
   keyNamespace: 'tribunal-mcp',
 };
 
-/** Shared in-memory rate-limit stores (one per process). */
-export const mcpSlidingWindowStore: AtomicSlidingWindowStore = createInMemorySlidingWindowStore();
-export const mcpConcurrencySlotStore: ConcurrencySlotStore = createInMemoryConcurrencySlotStore();
+/**
+ * Shared rate-limit stores for this process (TRI-56): Redis-backed over the one
+ * client TRI-49 reconciled when `REDIS_URL` is set, in-memory in local dev.
+ * Selection and the production `REDIS_URL` backstop live in `rate-limit-stores`.
+ */
+const mcpRateLimitStores = createRateLimitStores();
+export const mcpSlidingWindowStore: AtomicSlidingWindowStore = mcpRateLimitStores.slidingWindow;
+export const mcpConcurrencySlotStore: ConcurrencySlotStore = mcpRateLimitStores.concurrencySlots;
 
 /**
  * Limits the MCP serving handler and authenticator need, exported so the
