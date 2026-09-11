@@ -109,23 +109,21 @@ describe('GET /health/ready', () => {
     }
   });
 
-  it('coalesces stalled polls onto one probe rather than one query per poll (TRI-52)', async () => {
+  it('coalesces concurrent stalled polls onto one probe, not one query per poll (TRI-52)', async () => {
     vi.useFakeTimers();
     try {
       mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
-      // The dependency stays stalled across both polls.
+      // The dependency stays stalled; both polls arrive within one deadline window.
       mockProbeDatabase.mockReturnValue(new Promise<void>(() => {}));
 
       const first = GET(readyEvent(TOKEN));
-      await vi.advanceTimersByTimeAsync(4_001);
-      expect((await first).status).toBe(503);
-
       const second = GET(readyEvent(TOKEN));
       await vi.advanceTimersByTimeAsync(4_001);
-      expect((await second).status).toBe(503);
 
-      // The caller deadlines did not clear the in-flight probe, so the second poll
-      // coalesced onto the first's still-running query instead of starting another.
+      expect((await first).status).toBe(503);
+      expect((await second).status).toBe(503);
+      // Concurrent callers within the window shared one probe rather than each
+      // starting its own query.
       expect(mockProbeDatabase).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();

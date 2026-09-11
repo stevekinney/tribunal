@@ -12,14 +12,14 @@ import { gatherWebHealth, type WebHealthResult } from '../health-response';
 const READINESS_CACHE_TTL_MS = 5_000;
 
 /**
- * Per-caller deadline on a readiness read. A non-Neon Postgres driver sets no
- * query timeout, so a dependency can stall rather than reject (TRI-52). The
- * deadline bounds each caller's wait WITHOUT cancelling or clearing the shared
- * in-flight probe: a stalled probe is left running and coalesced onto, so a burst
- * of polls during an outage issues at most one dangling query rather than one per
- * poll, and callers still get a prompt 503 instead of hanging. The one query
- * clears the cache's in-flight entry when it finally settles, so recovery is
- * detected on the next poll.
+ * Deadline on an in-flight readiness probe (TRI-52). A non-Neon Postgres driver
+ * sets no query timeout, so a dependency can stall rather than reject; the cache's
+ * `inFlightTimeoutMs` bounds it. Concurrent polls within one window coalesce onto
+ * a single probe (so an outage issues at most one probe per window, not one per
+ * poll); at the deadline callers reject (the route reports 503) and the entry
+ * clears, so the next poll re-probes and can detect recovery. The stalled probe
+ * itself cannot be cancelled — probeDatabase exposes no driver-level deadline — so
+ * it runs to completion untracked.
  */
 const READINESS_PROBE_TIMEOUT_MS = 4_000;
 
@@ -40,25 +40,19 @@ function probeReadiness(): Promise<WebHealthResult> {
   );
 }
 
-const readinessCache = createCoalescedCache(probeReadiness, READINESS_CACHE_TTL_MS);
+const readinessCache = createCoalescedCache(probeReadiness, READINESS_CACHE_TTL_MS, {
+  inFlightTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+});
 
 /**
- * Returns the TTL-cached, coalesced readiness result, bounded by a per-caller
- * deadline (TRI-52). The deadline races the shared probe rather than wrapping it,
- * so a caller timing out never clears the in-flight probe — the stalled query
- * keeps running for later callers to coalesce onto instead of each starting a new
- * one.
+ * Returns the TTL-cached, coalesced readiness result (TRI-52). The cache's
+ * in-flight deadline bounds a stalled probe: concurrent polls within one deadline
+ * window coalesce onto a single probe (so an outage issues at most one probe per
+ * window, not one per poll), callers reject promptly rather than hang, and the
+ * entry clears at the deadline so the next poll re-probes and can detect recovery.
  */
 export function getWebReadiness(): Promise<WebHealthResult> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<WebHealthResult>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`readiness probe exceeded ${READINESS_PROBE_TIMEOUT_MS}ms`)),
-      READINESS_PROBE_TIMEOUT_MS,
-    );
-    timer.unref?.();
-  });
-  return Promise.race([readinessCache.get(), deadline]).finally(() => clearTimeout(timer));
+  return readinessCache.get();
 }
 
 /** Test-only: clears the readiness cache + in-flight probe between cases. */
