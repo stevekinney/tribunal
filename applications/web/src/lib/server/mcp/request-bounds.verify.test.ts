@@ -12,6 +12,7 @@ import { registerOAuthClient, mintAccessToken } from '$testing/mcp/oauth-token-m
 import { runWithDatabase } from '$lib/server/database';
 import { user } from '@tribunal/database/schema';
 import { mcpBaseUrl, mcpRuntimeLimits } from '$lib/server/oauth/configuration';
+import { MAX_PAYLOAD_SIZE } from '@tribunal/github/webhooks/types';
 import type { AuthenticatedApplicationUser } from '$lib/server/auth/neon-session';
 
 /**
@@ -152,10 +153,44 @@ afterAll(async () => {
   await fixture.dispose();
 });
 
-describe('TRI-48 AC1 — the adapter backstop is configured above the route limit', () => {
-  it('sets BODY_SIZE_LIMIT in web.toml above the largest per-route limit', () => {
-    expect(BACKSTOP.bytes).toBeGreaterThan(ROUTE_LIMIT);
-    expect(BACKSTOP.raw).toBe('2M');
+describe('TRI-48 AC1 — the adapter backstop is configured above the largest per-route limit', () => {
+  it("sets BODY_SIZE_LIMIT in web.toml above every route's own limit", () => {
+    // Both /mcp and the GitHub webhook route live under this one adapter, so the
+    // backstop must clear the LARGEST of their limits — the webhook route's
+    // MAX_PAYLOAD_SIZE (5 MiB), above /mcp's 1 MiB — for each route's own bound to
+    // be what rejects in normal operation.
+    expect(MAX_PAYLOAD_SIZE).toBeGreaterThan(ROUTE_LIMIT);
+    expect(BACKSTOP.bytes).toBeGreaterThan(MAX_PAYLOAD_SIZE);
+    expect(BACKSTOP.raw).toBe('6M');
+  });
+});
+
+describe('TRI-48 AC1 — the backstop clears the webhook route the earlier value would have dropped', () => {
+  it('admits a webhook-sized body under the committed backstop but rejects it under the old 2 MiB', async () => {
+    // The /api/webhooks/github route accepts up to MAX_PAYLOAD_SIZE (5 MiB) and
+    // enforces that itself. The committed backstop must let a body at that size
+    // reach the route; a 2 MiB backstop — the value before this finding — would
+    // have the adapter drop a 2–5 MiB delivery before the route's own bound ran.
+    const admitted = await convertRequestThroughAdapter({
+      base: BASE,
+      path: '/api/webhooks/github',
+      headers: { 'content-type': 'application/json', 'content-length': String(MAX_PAYLOAD_SIZE) },
+      body: bytes(MAX_PAYLOAD_SIZE),
+      bodySizeLimit: BACKSTOP.bytes,
+    });
+    const received = await admitted.arrayBuffer();
+    expect(received.byteLength).toBe(MAX_PAYLOAD_SIZE);
+
+    const rejectedUnderOldValue = await convertRequestThroughAdapter({
+      base: BASE,
+      path: '/api/webhooks/github',
+      headers: { 'content-type': 'application/json', 'content-length': String(MAX_PAYLOAD_SIZE) },
+      body: bytes(MAX_PAYLOAD_SIZE),
+      bodySizeLimit: parseByteSize('2M'),
+    });
+    const rejection = await readExpectingAdapterRejection(rejectedUnderOldValue);
+    expect(rejection.status).toBe(413);
+    expect(rejection.message).toContain('exceeds limit');
   });
 });
 

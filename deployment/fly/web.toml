@@ -8,17 +8,19 @@ primary_region = "dfw"
   NODE_ENV = "production"
   PORT = "3000"
   TRIBUNAL_ENGINE_URL = "http://tribunal-engine.flycast"
-  # adapter-node's global request-body backstop. Set to 2 MiB, deliberately
-  # ABOVE the largest per-route limit (/mcp's 1 MiB, mcpRuntimeLimits
-  # .maximumRequestBodyBytes) rather than at or below it, so the route-specific
-  # limit is always what rejects a request in normal operation and the backstop
-  # only catches a route added later and never bounded individually. This mirrors
-  # Protokit's deliberate x2 (server.ts S-05, defence in depth). adapter-node's
-  # inherited default is 512K -- half the /mcp limit -- which would fail closed,
-  # rejecting a legitimate tool-call payload between 512 KiB and 1 MiB before it
-  # ever reached the library. adapter-node parses K/M/G as 1024-based, so "2M" is
-  # 2,097,152 bytes. See TRI-48.
-  BODY_SIZE_LIMIT = "2M"
+  # adapter-node's global request-body backstop. Set to 6 MiB, deliberately
+  # ABOVE the largest per-route limit rather than at or below it, so the
+  # route-specific limit is always what rejects a request in normal operation and
+  # this backstop only catches a route added later and never bounded individually.
+  # The largest per-route limit is the GitHub webhook route's MAX_PAYLOAD_SIZE
+  # (5 MiB, packages/github webhooks/types.ts), not /mcp's 1 MiB
+  # (mcpRuntimeLimits.maximumRequestBodyBytes) -- both routes live under this one
+  # adapter. adapter-node's inherited default is 512K, well below both, so it
+  # would fail closed: dropping a legitimate 2-5 MiB webhook delivery, or a
+  # tool-call body between 512 KiB and 1 MiB, before the owning route's own bound
+  # ran. adapter-node parses K/M/G as 1024-based, so "6M" is 6,291,456 bytes. See
+  # TRI-48.
+  BODY_SIZE_LIMIT = "6M"
 
 [deploy]
   # bluegreen, not rolling: with a single web Machine, "rolling" takes the
