@@ -43,6 +43,7 @@ commit them to `.env`, TOML, or documentation.
 openssl rand -hex 32 # ENCRYPTION_KEY: 64 hex characters
 openssl rand -hex 32 # TRIBUNAL_ENGINE_CONTROL_TOKEN
 openssl rand -hex 32 # PROXY_SIGNING_KEY
+openssl rand -hex 32 # MCP_OPERATIONS_TOKEN: guards /health/ready and /metrics
 ```
 
 Use the same `ENCRYPTION_KEY` value for `tribunal-web`, `tribunal-engine`, and
@@ -199,7 +200,8 @@ flyctl secrets set -a tribunal-web \
   GITHUB_APP_ID="<github-app-id>" \
   GITHUB_APP_NAME="<github-app-name>" \
   GITHUB_APP_WEBHOOK_SECRET="<github-app-webhook-secret>" \
-  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>"
+  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>" \
+  MCP_OPERATIONS_TOKEN="<operations-endpoints-bearer-token>"
 
 flyctl secrets set -a tribunal-web \
   GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"
@@ -348,6 +350,15 @@ Before changing `REVIEWS_ENABLED` to `true`, all of these must be true:
 - `TRIBUNAL_SANDBOX_IMAGE` points at a released Tensorlake image identifier.
 
 Use `documentation/deployment/containers.md` for the exact health check commands.
+
+The public `/health` above stays the unauthenticated Fly liveness and
+bluegreen-promotion gate (it must keep probing the database — TRI-124). Two
+authenticated operational endpoints sit alongside it, both guarded by the
+`MCP_OPERATIONS_TOKEN` bearer secret (TRI-52): `/health/ready` for TTL-cached,
+coalesced readiness detail, and `/metrics` for per-instance OAuth/MCP counters
+and tool latencies. Set `MCP_OPERATIONS_TOKEN` to a high-entropy value in
+production; without it both return `503`. See the `tribunal-production-operations`
+skill's "Operational Endpoints" section.
 
 ## Do Not Set In Production
 

@@ -14,16 +14,30 @@ export type WebHealthProbe = {
   redis?: () => Promise<void>;
 };
 
-export async function createWebHealthResponse(
+export type WebHealthResult = { ok: boolean; dependencies: WebHealthDependency[] };
+
+/**
+ * Runs the database and Redis dependency probes and returns the raw result.
+ * Shared by the public `/health` Response builder below and the cached
+ * `/health/ready` readiness path (TRI-52), so both report dependencies
+ * identically rather than through two divergent probe implementations.
+ */
+export async function gatherWebHealth(
   environment: WebHealthEnvironment,
   probe: WebHealthProbe = {},
-): Promise<Response> {
+): Promise<WebHealthResult> {
   const dependencies: WebHealthDependency[] = [
     await checkDatabaseDependency(environment, probe),
     await checkRedisDependency(environment, probe),
   ];
-  const ok = dependencies.every((dependency) => dependency.ok);
+  return { ok: dependencies.every((dependency) => dependency.ok), dependencies };
+}
 
+export async function createWebHealthResponse(
+  environment: WebHealthEnvironment,
+  probe: WebHealthProbe = {},
+): Promise<Response> {
+  const { ok, dependencies } = await gatherWebHealth(environment, probe);
   return Response.json({ ok, dependencies }, { status: ok ? 200 : 503 });
 }
 

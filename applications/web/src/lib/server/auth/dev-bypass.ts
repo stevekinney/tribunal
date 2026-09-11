@@ -23,6 +23,7 @@ import { env } from '$env/dynamic/private';
 import { sql } from 'drizzle-orm';
 import { user as userTable } from '@tribunal/database/schema';
 import { db } from '$lib/server/database';
+import { isOperationalPath } from '$lib/server/operations/operational-paths';
 import {
   resetDevGitHubBypassCacheForTests,
   resolveDevGitHubBypassSession,
@@ -172,6 +173,14 @@ async function resolveBypassUser(username: string): Promise<AuthenticatedApplica
  * swaps never collide. Placed after `authHandle` in the sequence so it wins.
  */
 export const devAuthBypassHandle: Handle = async ({ event, resolve }) => {
+  // Operational endpoints dispatch ahead of identity population (TRI-52): even
+  // under DEV_AUTH_BYPASS the database-backed bypass upsert/lookup below must not
+  // run for /health, /health/ready, or /metrics, or a database outage would block
+  // the very endpoints meant to diagnose it.
+  if (isOperationalPath(event.url.pathname)) {
+    return resolve(event);
+  }
+
   // `isDevAuthBypassEnabled()` already returns false under E2E mode, so the
   // handle is inert there without a separate check.
   if (!isDevAuthBypassEnabled()) {

@@ -119,6 +119,7 @@ const APPS: App[] = [
       'GITHUB_APP_WEBHOOK_SECRET',
       'TRIBUNAL_ENGINE_CONTROL_TOKEN',
       'GITHUB_APP_PRIVATE_KEY',
+      'MCP_OPERATIONS_TOKEN',
     ],
   },
 ];
@@ -570,6 +571,10 @@ const FORMAT_VALIDATORS: Record<string, { test: (value: string) => boolean; expe
     test: (v) => /^[0-9a-f]{64}$/i.test(v),
     expected: '64 hex characters',
   },
+  // `openssl rand -hex 32` (DEPLOYMENT.md) -> 64 hex characters. Validated so a
+  // trivially-guessable value never guards the public /health/ready and /metrics
+  // routes (TRI-52).
+  MCP_OPERATIONS_TOKEN: { test: (v) => /^[0-9a-f]{64}$/i.test(v), expected: '64 hex characters' },
   // Dedicated proxy IPv4 with a /32 suffix, e.g. 203.0.113.5/32. Each octet is
   // bounded to 0-255 so a syntactically-shaped but invalid value (999.999...)
   // is rejected here rather than at allocation time.

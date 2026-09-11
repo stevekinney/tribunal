@@ -19,6 +19,7 @@ import {
   setNeonAuthTokenCookie,
 } from '$lib/server/auth/neon-session';
 import { runWithDatabase, type Database } from '$lib/server/database';
+import { isOperationalPath } from '$lib/server/operations/operational-paths';
 
 // ---------------------------------------------------------------------------
 // E2E database module (lazy-loaded to avoid pulling PGlite into production)
@@ -477,6 +478,15 @@ export const e2eHandle: Handle = async ({ event, resolve }) => {
     // Fast path: not E2E, just resolve immediately.
     // If someone hits /__e2e__/* in prod, the auth handle will 404 naturally
     // or they'll get a normal page render — no special treatment needed.
+    return resolve(event);
+  }
+
+  // Operational endpoints dispatch ahead of session hydration (TRI-52). In E2E
+  // mode that means skipping the E2E database module load and per-worker cookie
+  // validation below, so /health, /health/ready, and /metrics keep their
+  // pre-hydration contract here too — this is the earliest identity-populating
+  // handle in the sequence.
+  if (isOperationalPath(pathname)) {
     return resolve(event);
   }
 

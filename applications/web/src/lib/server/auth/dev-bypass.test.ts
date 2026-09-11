@@ -211,16 +211,32 @@ describe('devAuthBypassHandle', () => {
 
   it('logs in the bypass user when the resolved row is a genuine bypass user', async () => {
     mocks.selectedRow = { username: 'dev', neonAuthUserId: 'dev-bypass:dev' };
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
     expect(event.locals).toMatchObject({ user: { username: 'dev' } });
   });
 
+  it('skips operational paths without a database-backed bypass upsert (TRI-52)', async () => {
+    // Armed bypass, but an operational path must dispatch ahead of the identity
+    // handle: no synthetic user is populated, so a database outage cannot block
+    // /health/ready or /metrics.
+    mocks.selectedRow = { username: 'dev', neonAuthUserId: 'dev-bypass:dev' };
+    const event = {
+      locals: {} as Record<string, unknown>,
+      url: new URL('http://localhost/metrics'),
+    };
+
+    await devAuthBypassHandle({ event, resolve } as never);
+
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(event.locals.user).toBeUndefined();
+  });
+
   it('throws when the bypass user cannot be resolved or created after the insert', async () => {
     mocks.selectedRow = null;
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await expect(devAuthBypassHandle({ event, resolve } as never)).rejects.toThrow(
       /failed to resolve or create user "dev"/,
@@ -230,7 +246,7 @@ describe('devAuthBypassHandle', () => {
   it('refuses to log in as an existing account that merely shares the bypass username', async () => {
     // A real Neon Auth user happens to hold the "dev" handle.
     mocks.selectedRow = { username: 'dev', neonAuthUserId: 'neon-real-user-id' };
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await expect(devAuthBypassHandle({ event, resolve } as never)).rejects.toThrow(
       /already belongs to a real account/,
@@ -239,7 +255,7 @@ describe('devAuthBypassHandle', () => {
 
   it('is a pass-through when the bypass is not armed', async () => {
     mocks.env.DEV_AUTH_BYPASS = undefined;
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
@@ -252,7 +268,7 @@ describe('devAuthBypassHandle', () => {
     // also a pass-through, so no synthetic user reaches locals.
     mocks.env.DEV_AUTH_BYPASS = '1';
     mocks.environment.dev = false;
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
@@ -292,7 +308,7 @@ describe('devAuthBypassHandle', () => {
       email: null,
       isPlatformAdministrator: false,
     });
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
@@ -347,7 +363,7 @@ describe('devAuthBypassHandle', () => {
       email: null,
       isPlatformAdministrator: false,
     });
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
@@ -398,7 +414,7 @@ describe('devAuthBypassHandle', () => {
       email: 'hello@example.test',
       isPlatformAdministrator: false,
     });
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event, resolve } as never);
 
@@ -460,8 +476,8 @@ describe('devAuthBypassHandle', () => {
       email: null,
       isPlatformAdministrator: false,
     });
-    const firstEvent = { locals: {} };
-    const secondEvent = { locals: {} };
+    const firstEvent = { locals: {}, url: new URL('http://localhost/') };
+    const secondEvent = { locals: {}, url: new URL('http://localhost/') };
 
     await devAuthBypassHandle({ event: firstEvent, resolve } as never);
     mocks.updateReturnRows.length = 0;
@@ -483,7 +499,7 @@ describe('devAuthBypassHandle', () => {
 
   it('fails loudly in GitHub mode when no token source is configured', async () => {
     mocks.env.DEV_AUTH_BYPASS_MODE = 'github';
-    const event = { locals: {} };
+    const event = { locals: {}, url: new URL('http://localhost/') };
 
     await expect(devAuthBypassHandle({ event, resolve } as never)).rejects.toThrow(
       /DEV_AUTH_GITHUB_TOKEN/,

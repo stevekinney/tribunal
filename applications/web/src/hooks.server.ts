@@ -9,6 +9,7 @@ import {
   validateNeonSessionFromToken,
 } from '$lib/server/auth/neon-session';
 import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
+import { isOperationalPath } from '$lib/server/operations/operational-paths';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
@@ -134,6 +135,12 @@ const correlationHandle: Handle = async ({ event, resolve }) => {
  */
 export const authHandle: Handle = async ({ event, resolve }) => {
   if (env.E2E_TEST_MODE === '1') {
+    return resolve(event);
+  }
+
+  if (isOperationalPath(event.url.pathname)) {
+    event.locals.user = null;
+    event.locals.neonSession = null;
     return resolve(event);
   }
 
