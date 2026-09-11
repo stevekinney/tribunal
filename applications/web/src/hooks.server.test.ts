@@ -146,6 +146,7 @@ describe('hooks auth handle', () => {
   });
 
   it.each([
+    ['/health', 'http://localhost/health'],
     ['/health/ready', 'http://localhost/health/ready'],
     ['/metrics', 'http://localhost/metrics'],
   ])(
