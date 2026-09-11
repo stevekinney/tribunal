@@ -53,11 +53,20 @@ export function createCoalescedCache<T>(
   const inFlightTimeoutMs = options.inFlightTimeoutMs;
   let cached: { value: T; expiresAt: number } | null = null;
   let inFlight: Promise<T> | null = null;
+  // Monotonic id of the load that is currently authoritative. A load abandoned at
+  // its deadline is no longer current, so if it later resolves it must not write
+  // its now-stale result over a newer load's (generation guard).
+  let loadCounter = 0;
+  let currentLoadId = 0;
 
   function startLoad(): Promise<T> {
+    const loadId = ++loadCounter;
+    currentLoadId = loadId;
     let expiryTimer: ReturnType<typeof setTimeout> | undefined;
     const loaded = load().then((value) => {
-      cached = { value, expiresAt: clock() + ttlMs };
+      if (currentLoadId === loadId) {
+        cached = { value, expiresAt: clock() + ttlMs };
+      }
       return value;
     });
     const bounded =
@@ -76,6 +85,9 @@ export function createCoalescedCache<T>(
     const tracked = bounded.finally(() => {
       clearTimeout(expiryTimer);
       if (inFlight === tracked) inFlight = null;
+      // Once this load settles or is abandoned it is no longer current, so a
+      // later-resolving abandoned load cannot overwrite a newer result.
+      if (currentLoadId === loadId) currentLoadId = 0;
     });
     inFlight = tracked;
     // Each caller attaches its own `.then(clone)` branch that receives the result
@@ -96,6 +108,7 @@ export function createCoalescedCache<T>(
     reset() {
       cached = null;
       inFlight = null;
+      currentLoadId = 0;
     },
   };
 }

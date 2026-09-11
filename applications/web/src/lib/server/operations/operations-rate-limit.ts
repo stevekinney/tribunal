@@ -22,6 +22,24 @@ const operationsLimiter = new SlidingWindowRateLimiter();
  */
 const OPERATIONS_LIMITER_TIMEOUT_MS = 2_000;
 
+/** Distinguishes a deadline timeout from a store error thrown by `consume()`. */
+const LIMITER_TIMEOUT = Symbol('operations-limiter-timeout');
+
+/**
+ * Circuit breaker: while a prior `consume()` remains unresolved past its deadline,
+ * this holds that stalled promise. New requests fail open immediately without
+ * issuing another Redis command, so a partial Redis outage cannot let
+ * unauthenticated pre-auth traffic queue one uncancellable command per request and
+ * exhaust the connection queue or memory (TRI-52). It clears when the stalled
+ * command finally settles.
+ */
+let stalledConsume: Promise<unknown> | null = null;
+
+/** Test-only: resets the circuit breaker between cases. */
+export function resetOperationsRateLimiterForTests(): void {
+  stalledConsume = null;
+}
+
 /**
  * Consumes the operational budget for `clientAddress` and returns a `429` when it
  * is exhausted, or `null` to proceed.
@@ -39,24 +57,24 @@ const OPERATIONS_LIMITER_TIMEOUT_MS = 2_000;
  * lapse is a window in which Redis — hence the store — is already down.
  */
 export async function enforceOperationsRateLimit(clientAddress: string): Promise<Response | null> {
+  // Breaker open: a previous command is still stalled, so fail open without
+  // queueing another rather than piling up uncancellable commands.
+  if (stalledConsume) return null;
+
+  const consumePromise = operationsLimiter.consume({
+    key: `rate_limit:${mcpRateLimitKeyNamespace}:operations:${clientAddress}`,
+    maximumRequests: mcpHealthProbeRateLimit.maximumRequests,
+    windowSeconds: mcpHealthProbeRateLimit.windowSeconds,
+    atomicStore: mcpSlidingWindowStore,
+  });
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error('operations rate limiter timed out')),
-        OPERATIONS_LIMITER_TIMEOUT_MS,
-      );
+      timer = setTimeout(() => reject(LIMITER_TIMEOUT), OPERATIONS_LIMITER_TIMEOUT_MS);
       timer.unref?.();
     });
-    const result = await Promise.race([
-      operationsLimiter.consume({
-        key: `rate_limit:${mcpRateLimitKeyNamespace}:operations:${clientAddress}`,
-        maximumRequests: mcpHealthProbeRateLimit.maximumRequests,
-        windowSeconds: mcpHealthProbeRateLimit.windowSeconds,
-        atomicStore: mcpSlidingWindowStore,
-      }),
-      deadline,
-    ]);
+    const result = await Promise.race([consumePromise, deadline]);
     if (result.allowed) return null;
     return Response.json(
       { error: 'rate_limited', error_description: 'Too many operational requests' },
@@ -66,6 +84,16 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
       },
     );
   } catch (error) {
+    if (error === LIMITER_TIMEOUT) {
+      // Hold the breaker open until the stalled command settles, so concurrent and
+      // subsequent requests fail open immediately instead of each queueing one.
+      stalledConsume = consumePromise;
+      void consumePromise
+        .finally(() => {
+          if (stalledConsume === consumePromise) stalledConsume = null;
+        })
+        .catch(() => {});
+    }
     console.error('Operations rate limiter error (serving anyway):', error);
     return null;
   } finally {

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mcpHealthProbeRateLimit, mcpSlidingWindowStore } from '$lib/server/oauth/configuration';
-import { enforceOperationsRateLimit } from './operations-rate-limit';
+import {
+  enforceOperationsRateLimit,
+  resetOperationsRateLimiterForTests,
+} from './operations-rate-limit';
 
 /**
  * TRI-52: the authenticated operational endpoints are rate-limited on every
@@ -11,6 +14,7 @@ import { enforceOperationsRateLimit } from './operations-rate-limit';
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetOperationsRateLimiterForTests();
 });
 
 describe('enforceOperationsRateLimit', () => {
@@ -56,6 +60,55 @@ describe('enforceOperationsRateLimit', () => {
       expect(await resultPromise).toBeNull();
       expect(storeSpy).toHaveBeenCalled();
       expect(consoleSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens a breaker after a stall so later requests do not queue more commands (TRI-52)', async () => {
+    vi.useFakeTimers();
+    try {
+      const storeSpy = vi
+        .spyOn(mcpSlidingWindowStore, 'consume')
+        .mockReturnValue(new Promise(() => {})); // every command stalls
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const first = enforceOperationsRateLimit('203.0.113.5');
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(await first).toBeNull(); // timed out → breaker open
+      const callsSoFar = storeSpy.mock.calls.length;
+
+      // With the breaker open, the next request fails open immediately without
+      // issuing another (uncancellable) Redis command.
+      expect(await enforceOperationsRateLimit('203.0.113.5')).toBeNull();
+      expect(storeSpy.mock.calls.length).toBe(callsSoFar);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the breaker once the stalled command settles (TRI-52)', async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectStalled: (error: unknown) => void = () => {};
+      const storeSpy = vi
+        .spyOn(mcpSlidingWindowStore, 'consume')
+        .mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStalled = reject)))
+        .mockRejectedValue(new Error('redis down'));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const first = enforceOperationsRateLimit('203.0.113.6');
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(await first).toBeNull(); // breaker open
+      const callsWhileOpen = storeSpy.mock.calls.length;
+
+      // The stalled command finally settles → breaker closes.
+      rejectStalled(new Error('redis settled late'));
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Breaker closed: the next request consults the store again (fails open).
+      expect(await enforceOperationsRateLimit('203.0.113.6')).toBeNull();
+      expect(storeSpy.mock.calls.length).toBe(callsWhileOpen + 1);
     } finally {
       vi.useRealTimers();
     }

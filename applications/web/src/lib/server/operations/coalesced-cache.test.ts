@@ -123,4 +123,31 @@ describe('createCoalescedCache', () => {
       vi.useRealTimers();
     }
   });
+
+  it('does not let an abandoned load overwrite a newer result (generation guard)', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirst: (value: string) => void = () => {};
+      const load = vi
+        .fn<() => Promise<string>>()
+        .mockReturnValueOnce(new Promise<string>((resolve) => (resolveFirst = resolve)))
+        .mockResolvedValueOnce('fresh');
+      const cache = createCoalescedCache(load, 5_000, { inFlightTimeoutMs: 4_000 });
+
+      const first = cache.get();
+      const firstRejects = expect(first).rejects.toThrow(/deadline/);
+      await vi.advanceTimersByTimeAsync(4_001); // first load abandoned
+      await firstRejects;
+
+      expect(await cache.get()).toBe('fresh'); // a newer load caches 'fresh'
+
+      // The abandoned first load resolves late — it must not overwrite 'fresh'.
+      resolveFirst('stale');
+      await vi.advanceTimersByTimeAsync(1); // flush the late resolution
+      expect(await cache.get()).toBe('fresh');
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
