@@ -197,3 +197,23 @@ describe('web environment schema — derived required keys (AC10)', () => {
     ).toBe('https://tribunal.example.com');
   });
 });
+
+describe('parseWebEnvironment — REDIS_URL blank normalization (TRI-49)', () => {
+  it('is a known, optional field', () => {
+    expect(webEnvironmentKeys).toContain('REDIS_URL');
+    expect(webRequiredEnvironmentKeys).not.toContain('REDIS_URL');
+  });
+
+  it('normalizes a blank REDIS_URL to undefined so the no-Redis fallback runs', () => {
+    // REDIS_URL= in a dotenv file disables Redis; it must not fail .url() at boot.
+    expect(() => parseWebEnvironment({ ...DEV_ENV, REDIS_URL: '' })).not.toThrow();
+    expect(parseWebEnvironment({ ...DEV_ENV, REDIS_URL: '' }).REDIS_URL).toBeUndefined();
+  });
+
+  it('accepts a valid REDIS_URL and still rejects a non-empty invalid one', () => {
+    expect(parseWebEnvironment({ ...DEV_ENV, REDIS_URL: 'redis://localhost:6379' }).REDIS_URL).toBe(
+      'redis://localhost:6379',
+    );
+    expect(() => parseWebEnvironment({ ...DEV_ENV, REDIS_URL: 'not-a-url' })).toThrow();
+  });
+});
