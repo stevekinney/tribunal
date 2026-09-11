@@ -206,9 +206,11 @@ and whichever issue mounts Tribunal's MCP and OAuth handle):
   never built," which is the right posture for a security-relevant surface
   — do not confirm the surface exists to an unauthenticated prober. A `503`
   would be more honest operationally but confirms the surface is real. This
-  document recommends `404` for the same reason `/metrics` and
-  `/health/ready` return `404` rather than `401` when unconfigured in
-  Protokit's own RUNBOOK access-control section.
+  document recommends `404` for the disabled MCP surface on its own merits:
+  a bare `404` does not confirm the surface exists. (Tribunal's own operational
+  endpoints are a different case — `/health/ready` and `/metrics` are
+  always-present authenticated routes that return `401`/`503`, never `404`; see
+  TRI-52.)
 
   **Decided by the project owner on 2026-08-27, on the grounds of what is
   idiomatic.** This is no longer a recommendation awaiting sign-off. **TRI-41
@@ -450,12 +452,13 @@ five alert conditions is defined as "a query an operator wires into their
 own log aggregator or a threshold against `/metrics`," never a running
 alert in the donor codebase. Tribunal's own web application today logs
 with bare `console.log`/`console.error` (see
-`applications/web/src/routes/api/webhooks/github/+server.ts`) and has no
-`/metrics` endpoint or metrics sink. For `/mcp`, the installed
+`applications/web/src/routes/api/webhooks/github/+server.ts`). The installed
 `@lostgradient/mcp` package supplies the engine logger and metrics collector;
 Tribunal supplies the redacting host logger in
-`applications/web/src/lib/server/mcp-logger.ts` and still needs to wire the
-operational sink.
+`applications/web/src/lib/server/mcp-logger.ts` and now exposes the collector's
+snapshot at the authenticated `/metrics` endpoint (TRI-52, guarded by
+`MCP_OPERATIONS_TOKEN`). An external metrics sink/aggregator is still the
+operator's to wire.
 
 An earlier revision said the logger and collector "arrive with the port
 itself", which was true of a fork and is misleading as a dependency. They

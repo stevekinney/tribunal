@@ -26,9 +26,22 @@ export async function GET({ request, getClientAddress }: RequestEvent): Promise<
   const auth = authorizeOperationsRequest(request);
   if (!auth.authorized) return operationsUnauthorizedResponse(auth);
 
-  const { ok, dependencies } = await getWebReadiness();
-  return Response.json(
-    { ok, dependencies },
-    { status: ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } },
-  );
+  try {
+    const { ok, dependencies } = await getWebReadiness();
+    return Response.json(
+      { ok, dependencies },
+      { status: ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } },
+    );
+  } catch (error) {
+    // A stalled probe rejects past its deadline (see readiness.ts): report
+    // unhealthy rather than hang, and let the cleared cache retry next request.
+    return Response.json(
+      {
+        ok: false,
+        dependencies: [],
+        detail: error instanceof Error ? error.message : 'readiness probe failed',
+      },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
 }

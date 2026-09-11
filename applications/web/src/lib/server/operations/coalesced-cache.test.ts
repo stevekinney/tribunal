@@ -5,7 +5,7 @@ describe('createCoalescedCache', () => {
   it('returns a value younger than the TTL without calling load again', async () => {
     let now = 1_000;
     const load = vi.fn(async () => 'value');
-    const cache = createCoalescedCache(load, 5_000, () => now);
+    const cache = createCoalescedCache(load, 5_000, { clock: () => now });
 
     expect(await cache.get()).toBe('value');
     now = 4_999; // still within the 5s TTL
@@ -16,7 +16,7 @@ describe('createCoalescedCache', () => {
   it('reloads once the TTL has elapsed', async () => {
     let now = 1_000;
     const load = vi.fn(async () => `value@${now}`);
-    const cache = createCoalescedCache(load, 5_000, () => now);
+    const cache = createCoalescedCache(load, 5_000, { clock: () => now });
 
     expect(await cache.get()).toBe('value@1000');
     now = 6_001; // past expiry (1000 + 5000)
@@ -58,12 +58,24 @@ describe('createCoalescedCache', () => {
   it('reset() forces the next get to reload', async () => {
     let now = 1_000;
     const load = vi.fn(async () => 'value');
-    const cache = createCoalescedCache(load, 5_000, () => now);
+    const cache = createCoalescedCache(load, 5_000, { clock: () => now });
 
     await cache.get();
     cache.reset();
     now = 1_001; // still within TTL, but the cache was cleared
     await cache.get();
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates callers: mutating a returned value does not corrupt later reads', async () => {
+    const load = vi.fn(async () => ({ dependencies: ['database'] }));
+    const cache = createCoalescedCache(load, 5_000);
+
+    const first = await cache.get();
+    first.dependencies.push('mutated');
+    const second = await cache.get(); // cache hit, within TTL
+
+    expect(second.dependencies).toEqual(['database']);
+    expect(load).toHaveBeenCalledTimes(1); // still one probe; the hit was cloned
   });
 });

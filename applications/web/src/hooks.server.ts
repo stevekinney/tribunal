@@ -9,6 +9,7 @@ import {
   validateNeonSessionFromToken,
 } from '$lib/server/auth/neon-session';
 import { devAuthBypassHandle } from '$lib/server/auth/dev-bypass';
+import { isOperationalPath } from '$lib/server/operations/operational-paths';
 import { respondWithJsonForApiEndpoints } from '$lib/utilities/json-response';
 import { e2eHandle } from '$testing/end-to-end/handle';
 import { warnOnGitHubAppConfigurationDriftAtStartup } from '$lib/server/github/webhooks/subscription-drift';
@@ -132,17 +133,6 @@ const correlationHandle: Handle = async ({ event, resolve }) => {
  * per-worker databases, so this handle skips to avoid re-validating
  * against the production db proxy (which requires AsyncLocalStorage context).
  */
-/**
- * Operational endpoints that must dispatch before session hydration (TRI-52 AC5):
- * the public `/health` liveness gate, the authenticated `/health/ready`, and
- * `/metrics`. None reads `event.locals.user`, and skipping the Neon Auth cookie
- * validation here means a forged cookie on one of these paths triggers no session
- * lookup — the endpoints do their own bearer auth instead.
- */
-function isOperationalPath(pathname: string): boolean {
-  return pathname === '/health' || pathname === '/health/ready' || pathname === '/metrics';
-}
-
 export const authHandle: Handle = async ({ event, resolve }) => {
   if (env.E2E_TEST_MODE === '1') {
     return resolve(event);

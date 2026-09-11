@@ -51,6 +51,17 @@ describe('authorizeOperationsRequest', () => {
     mockEnv.MCP_OPERATIONS_TOKEN = 'aaaaaaaa';
     expect(authorizeOperationsRequest(requestWithBearer('bbbbbbbb')).authorized).toBe(false);
   });
+
+  it.each(['Bearer', 'bearer', 'BEARER', 'BeArEr'])(
+    'accepts the case-insensitive %s scheme with a correct token',
+    (scheme) => {
+      mockEnv.MCP_OPERATIONS_TOKEN = 'super-secret-token';
+      const request = new Request('http://localhost/metrics', {
+        headers: { authorization: `${scheme} super-secret-token` },
+      });
+      expect(authorizeOperationsRequest(request)).toEqual({ authorized: true });
+    },
+  );
 });
 
 describe('operationsUnauthorizedResponse', () => {
@@ -68,7 +79,16 @@ describe('operationsUnauthorizedResponse', () => {
     });
   });
 
-  it('maps a 503 (unconfigured) to the unavailable error code', async () => {
+  it('carries a WWW-Authenticate: Bearer challenge on the 401', () => {
+    const response = operationsUnauthorizedResponse({
+      authorized: false,
+      status: 401,
+      reason: 'invalid or missing operational bearer token',
+    });
+    expect(response.headers.get('WWW-Authenticate')).toBe('Bearer');
+  });
+
+  it('maps a 503 (unconfigured) to the unavailable error code, with no auth challenge', async () => {
     const response = operationsUnauthorizedResponse({
       authorized: false,
       status: 503,
@@ -76,5 +96,6 @@ describe('operationsUnauthorizedResponse', () => {
     });
     expect(response.status).toBe(503);
     expect((await response.json()).error).toBe('unavailable');
+    expect(response.headers.get('WWW-Authenticate')).toBeNull();
   });
 });

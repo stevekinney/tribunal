@@ -80,6 +80,26 @@ describe('createMcpHandle when the surface is disabled', () => {
   });
 });
 
+describe('createMcpHandle skips operational paths (TRI-52)', () => {
+  it.each(['/health', '/health/ready', '/metrics'])(
+    'serves %s without ever consulting the mount, so a pending/failed mount cannot hang it',
+    async (path) => {
+      const getMount = vi.fn(() => {
+        throw new Error('mount must not be consulted for operational paths');
+      });
+      const handle = createMcpHandle(getMount as never);
+      const resolve = vi.fn(respondWith(200));
+
+      const response = await handle({ event: fakeEvent(path), resolve } as never);
+
+      expect(response.status).toBe(200);
+      expect(resolve).toHaveBeenCalledOnce();
+      expect(getMount).not.toHaveBeenCalled();
+      expect(primeSvelteKitMcpIdentity).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('createMcpHandle identity priming and the dev auth bypass (TRI-45 AC2)', () => {
   beforeEach(() => {
     vi.mocked(primeSvelteKitMcpIdentity).mockClear();

@@ -11,6 +11,15 @@ import { gatherWebHealth, type WebHealthResult } from '../health-response';
  */
 const READINESS_CACHE_TTL_MS = 5_000;
 
+/**
+ * Hard ceiling on a single probe. A non-Neon Postgres driver sets no query
+ * timeout, so a dependency can stall rather than reject; without this bound the
+ * probe would hang forever and every coalesced `/health/ready` request with it
+ * (TRI-52). On timeout the probe rejects, which clears the cache's in-flight entry
+ * so the next request retries, and the route reports unhealthy.
+ */
+const READINESS_PROBE_TIMEOUT_MS = 4_000;
+
 /** Runs the same DB/Redis probes the public `/health` uses (via `gatherWebHealth`). */
 function probeReadiness(): Promise<WebHealthResult> {
   return gatherWebHealth(
@@ -28,7 +37,27 @@ function probeReadiness(): Promise<WebHealthResult> {
   );
 }
 
-const readinessCache = createCoalescedCache(probeReadiness, READINESS_CACHE_TTL_MS);
+/** Races the probe against a deadline so a stalled dependency cannot hang the endpoint. */
+function probeReadinessBounded(): Promise<WebHealthResult> {
+  return new Promise<WebHealthResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`readiness probe exceeded ${READINESS_PROBE_TIMEOUT_MS}ms`));
+    }, READINESS_PROBE_TIMEOUT_MS);
+    timer.unref?.();
+    probeReadiness().then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+const readinessCache = createCoalescedCache(probeReadinessBounded, READINESS_CACHE_TTL_MS);
 
 /** Returns the TTL-cached, coalesced readiness result (TRI-52 AC1). */
 export function getWebReadiness(): Promise<WebHealthResult> {

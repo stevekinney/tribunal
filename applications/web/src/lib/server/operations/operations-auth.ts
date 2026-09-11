@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { env } from '$env/dynamic/private';
 import { constantTimeStringEqual } from '@tribunal/review-core/constant-time-string-equal';
 
-const BEARER_PREFIX = 'Bearer ';
+// The HTTP authentication scheme name is case-insensitive (RFC 9110 §11.1), so
+// `Bearer`, `bearer`, and `BEARER` are all accepted; only the credential after it
+// is compared exactly (and in constant time).
+const BEARER_SCHEME = /^Bearer[ \t]+/i;
 
 /**
  * SHA-256 of a token, base64url-encoded. Comparing the digests rather than the
@@ -41,7 +44,7 @@ export function authorizeOperationsRequest(request: Request): OperationsAuthResu
   }
 
   const header = request.headers.get('authorization') ?? '';
-  const presented = header.startsWith(BEARER_PREFIX) ? header.slice(BEARER_PREFIX.length) : '';
+  const presented = BEARER_SCHEME.test(header) ? header.replace(BEARER_SCHEME, '') : '';
   if (constantTimeStringEqual(tokenDigest(presented), tokenDigest(configuredToken))) {
     return { authorized: true };
   }
@@ -52,15 +55,23 @@ export function authorizeOperationsRequest(request: Request): OperationsAuthResu
  * Builds the JSON denial response for an unauthorized operational request,
  * carrying `Cache-Control: no-store` (TRI-52 AC4) so a proxy never caches a
  * credentialed endpoint's response. Shared by `/health/ready` and `/metrics`.
+ *
+ * A `401` carries `WWW-Authenticate: Bearer` (RFC 9110 §11.6.1 requires a 401 to
+ * name the expected scheme); the `503` (token unconfigured) is not an
+ * authentication failure and carries no challenge.
  */
 export function operationsUnauthorizedResponse(
   result: Extract<OperationsAuthResult, { authorized: false }>,
 ): Response {
+  const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+  if (result.status === 401) {
+    headers['WWW-Authenticate'] = 'Bearer';
+  }
   return Response.json(
     {
       error: result.status === 503 ? 'unavailable' : 'unauthorized',
       error_description: result.reason,
     },
-    { status: result.status, headers: { 'Cache-Control': 'no-store' } },
+    { status: result.status, headers },
   );
 }

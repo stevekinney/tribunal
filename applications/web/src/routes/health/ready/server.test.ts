@@ -92,6 +92,23 @@ describe('GET /health/ready', () => {
     expect(mockProbeDatabase).toHaveBeenCalledTimes(1);
   });
 
+  it('returns 503 when the readiness probe stalls past its deadline (TRI-52)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
+      // A stalled dependency: the probe never settles.
+      mockProbeDatabase.mockReturnValueOnce(new Promise<void>(() => {}));
+      const responsePromise = GET(readyEvent(TOKEN));
+      await vi.advanceTimersByTimeAsync(4_001);
+      const response = await responsePromise;
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rate-limits on every request before auth, so wrong-bearer guesses are bounded (OPS-002)', async () => {
     const address = '10.9.9.9';
     const budget = mcpHealthProbeRateLimit.maximumRequests;

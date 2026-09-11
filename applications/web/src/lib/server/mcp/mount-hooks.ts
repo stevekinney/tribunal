@@ -5,6 +5,7 @@ import {
   type SvelteKitLikeRequestEvent,
 } from '@lostgradient/mcp/sveltekit';
 import { isDevAuthBypassEnabled } from '$lib/server/auth/dev-auth-bypass-flag';
+import { isOperationalPath } from '$lib/server/operations/operational-paths';
 import { identityFromUser } from '$lib/server/oauth/identity';
 import type { TribunalMcpMount } from './mount';
 
@@ -122,6 +123,13 @@ function mcpIdentityFor(event: RequestEvent) {
  */
 export function createMcpHandle(getMount: MountAccessor): Handle {
   return async ({ event, resolve }) => {
+    // Operational endpoints dispatch ahead of the MCP mount (TRI-52): awaiting the
+    // shared mount promise gates every pathname, so a mount that is still
+    // initializing or has failed would hang or fail /health, /health/ready, and
+    // /metrics — the endpoints meant to diagnose that very incident. They own no
+    // MCP surface, so skip the mount entirely for them.
+    if (isOperationalPath(event.url.pathname)) return resolve(event);
+
     const mountPromise = getMount();
     if (!mountPromise) return resolve(event);
 

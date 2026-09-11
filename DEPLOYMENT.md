@@ -43,6 +43,7 @@ commit them to `.env`, TOML, or documentation.
 openssl rand -hex 32 # ENCRYPTION_KEY: 64 hex characters
 openssl rand -hex 32 # TRIBUNAL_ENGINE_CONTROL_TOKEN
 openssl rand -hex 32 # PROXY_SIGNING_KEY
+openssl rand -hex 32 # MCP_OPERATIONS_TOKEN: guards /health/ready and /metrics
 ```
 
 Use the same `ENCRYPTION_KEY` value for `tribunal-web`, `tribunal-engine`, and
@@ -199,7 +200,8 @@ flyctl secrets set -a tribunal-web \
   GITHUB_APP_ID="<github-app-id>" \
   GITHUB_APP_NAME="<github-app-name>" \
   GITHUB_APP_WEBHOOK_SECRET="<github-app-webhook-secret>" \
-  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>"
+  TRIBUNAL_ENGINE_CONTROL_TOKEN="<shared-engine-control-token>" \
+  MCP_OPERATIONS_TOKEN="<operations-endpoints-bearer-token>"
 
 flyctl secrets set -a tribunal-web \
   GITHUB_APP_PRIVATE_KEY="$(cat /secure/path/github-app-private-key.pem)"
