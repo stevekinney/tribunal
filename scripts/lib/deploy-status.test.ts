@@ -47,6 +47,7 @@ const requiredSecrets = {
     'GITHUB_APP_WEBHOOK_SECRET',
     'TRIBUNAL_ENGINE_CONTROL_TOKEN',
     'GITHUB_APP_PRIVATE_KEY',
+    'MCP_OPERATIONS_TOKEN',
   ],
 } as const;
 

@@ -18,6 +18,23 @@ service-to-service calls.
 | `/api/webhooks/github`                 | GET    | List registered webhooks for the configured App   |
 | `/api/webhook-events/:eventId/payload` | GET    | Load one authorized stored webhook payload        |
 
+### Operational Endpoints
+
+| Endpoint        | Method | Description                                                    |
+| --------------- | ------ | -------------------------------------------------------------- |
+| `/health`       | GET    | Public, unauthenticated liveness + dependency probe (Fly gate) |
+| `/health/ready` | GET    | Authenticated readiness: TTL-cached, coalesced DB/Redis probe  |
+| `/metrics`      | GET    | Authenticated per-instance OAuth/MCP metrics snapshot          |
+
+`/health/ready` and `/metrics` require `Authorization: Bearer <MCP_OPERATIONS_TOKEN>`
+(see Authentication). They return `401 { error: "unauthorized" }` (with a
+`WWW-Authenticate: Bearer` challenge) for a missing or wrong token, `503
+{ error: "unavailable" }` when `MCP_OPERATIONS_TOKEN` is unconfigured, `429` when
+rate-limited, and `Cache-Control: no-store` on every response. `/health/ready`
+returns `200 { ok, dependencies }` when healthy and `503` when a dependency is
+down or the probe exceeds its deadline. Public `/health` is unchanged and takes
+no credential.
+
 ### Private Engine Control Endpoints
 
 | Endpoint                                      | Method | Description                                       |
@@ -41,6 +58,13 @@ Private engine control endpoints use bearer-token authentication. Requests must
 include `Authorization: Bearer <TRIBUNAL_ENGINE_CONTROL_TOKEN>`, and the token
 must match the engine process configuration. Unauthorized control requests
 return `401 { ok: false, error: "unauthorized" }`.
+
+The operational endpoints `/health/ready` and `/metrics` use bearer-token
+authentication against `MCP_OPERATIONS_TOKEN` (the scheme name is
+case-insensitive; the token is compared in constant time). When the token is not
+configured they fail closed with `503`, so a deployment that never provisioned it
+never serves readiness detail or metrics unauthenticated. Public `/health` takes
+no credential.
 
 ## POST `/api/webhooks/github`
 

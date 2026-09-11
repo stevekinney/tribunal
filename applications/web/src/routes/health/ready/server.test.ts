@@ -109,6 +109,29 @@ describe('GET /health/ready', () => {
     }
   });
 
+  it('coalesces stalled polls onto one probe rather than one query per poll (TRI-52)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockEnv.DATABASE_URL = 'postgres://localhost/tribunal';
+      // The dependency stays stalled across both polls.
+      mockProbeDatabase.mockReturnValue(new Promise<void>(() => {}));
+
+      const first = GET(readyEvent(TOKEN));
+      await vi.advanceTimersByTimeAsync(4_001);
+      expect((await first).status).toBe(503);
+
+      const second = GET(readyEvent(TOKEN));
+      await vi.advanceTimersByTimeAsync(4_001);
+      expect((await second).status).toBe(503);
+
+      // The caller deadlines did not clear the in-flight probe, so the second poll
+      // coalesced onto the first's still-running query instead of starting another.
+      expect(mockProbeDatabase).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rate-limits on every request before auth, so wrong-bearer guesses are bounded (OPS-002)', async () => {
     const address = '10.9.9.9';
     const budget = mcpHealthProbeRateLimit.maximumRequests;

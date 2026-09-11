@@ -40,4 +40,24 @@ describe('enforceOperationsRateLimit', () => {
     expect(storeSpy).toHaveBeenCalled();
     expect(consoleSpy).toHaveBeenCalled();
   });
+
+  it('fails open when the store stalls without rejecting (deadline, TRI-52)', async () => {
+    vi.useFakeTimers();
+    try {
+      const storeSpy = vi
+        .spyOn(mcpSlidingWindowStore, 'consume')
+        // An established-but-stalled Redis connection: the command never settles.
+        .mockReturnValueOnce(new Promise(() => {}));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const resultPromise = enforceOperationsRateLimit('203.0.113.4');
+      await vi.advanceTimersByTimeAsync(2_001);
+
+      expect(await resultPromise).toBeNull();
+      expect(storeSpy).toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
