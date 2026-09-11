@@ -40,25 +40,36 @@ function readValue(toml: string, key: string): string {
 describe('web.toml graceful-shutdown configuration (TRI-51 AC3)', () => {
   const toml = readFileSync(webTomlPath, 'utf8');
 
-  it('sets SHUTDOWN_TIMEOUT and a kill_timeout that covers it', () => {
+  /** Headroom, in seconds, kill_timeout must leave past SHUTDOWN_TIMEOUT for the async pool disposal. */
+  const DISPOSAL_HEADROOM_SECONDS = 2;
+
+  it('sets SHUTDOWN_TIMEOUT and a kill_timeout with headroom past it', () => {
     const shutdownTimeoutSeconds = parseDurationSeconds(readValue(toml, 'SHUTDOWN_TIMEOUT'));
     const killTimeoutSeconds = parseDurationSeconds(readValue(toml, 'kill_timeout'));
 
-    // A positive drain window, and Fly's SIGKILL deadline at or beyond it, so the
-    // drain, `sveltekit:shutdown` disposal, and exit all complete before the kill.
+    // A positive drain window, and Fly's SIGKILL deadline strictly *beyond* it
+    // with headroom — both timers start at the shutdown signal, so if kill_timeout
+    // merely equalled SHUTDOWN_TIMEOUT, Fly could SIGKILL at the same instant
+    // adapter-node force-closes stragglers and emits `sveltekit:shutdown`, leaving
+    // no time for the asynchronous OAuth pool disposal that begins from that event.
     expect(shutdownTimeoutSeconds).toBeGreaterThan(0);
-    expect(killTimeoutSeconds).toBeGreaterThanOrEqual(shutdownTimeoutSeconds);
+    expect(killTimeoutSeconds - shutdownTimeoutSeconds).toBeGreaterThanOrEqual(
+      DISPOSAL_HEADROOM_SECONDS,
+    );
 
     // Fly caps kill_timeout at 300s; a value above that is silently rejected.
     expect(killTimeoutSeconds).toBeLessThanOrEqual(300);
   });
 
-  it('keeps the transport-shutdown grace window well under SHUTDOWN_TIMEOUT', () => {
-    // The pre-drain grace (hooks.server.ts) must fire and the transport close
-    // must end the listen streams before adapter-node's force-close, so the
-    // grace has to be strictly less than the drain window it runs inside.
+  it('leaves a stream-close margin between the grace window and SHUTDOWN_TIMEOUT', () => {
+    // The transport close fires at the grace deadline and must end the listen
+    // streams before adapter-node's force-close, so the grace has to sit below
+    // SHUTDOWN_TIMEOUT by at least a stream-close margin.
+    const STREAM_CLOSE_MARGIN_MS = 1_000;
     const shutdownTimeoutMs = parseDurationSeconds(readValue(toml, 'SHUTDOWN_TIMEOUT')) * 1000;
     expect(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS).toBeGreaterThan(0);
-    expect(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS).toBeLessThan(shutdownTimeoutMs);
+    expect(shutdownTimeoutMs - GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS).toBeGreaterThanOrEqual(
+      STREAM_CLOSE_MARGIN_MS,
+    );
   });
 });

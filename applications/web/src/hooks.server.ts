@@ -35,15 +35,25 @@ import { parseWebEnvironment } from '$lib/server/environment';
  * How long, after the shutdown signal, to let adapter-node's concurrent HTTP
  * drain finish ordinary in-flight MCP requests before closing the transport
  * (TRI-51). Closing the transport aborts any request still in the handler's
- * `inflight` set — an ordinary tool call mid-exchange — so this bounded window
- * lets sub-second calls complete first. It must stay well under
- * `SHUTDOWN_TIMEOUT` (deployment/fly/web.toml) so the never-draining
+ * `inflight` set — an ordinary tool call mid-exchange — so this window lets those
+ * calls complete first. Tribunal's tools can take several seconds (a GitHub-
+ * backed tool call waits on the API), so the window sits just below
+ * `SHUTDOWN_TIMEOUT` (15s, deployment/fly/web.toml) to give ordinary calls almost
+ * the whole drain window, keeping a small margin so the never-draining
  * `subscriptions/listen` streams — which only this transport close ends — still
- * close gracefully within the deploy window rather than being force-closed. A
- * tool call still running after the grace is aborted; it would reach
- * adapter-node's `SHUTDOWN_TIMEOUT` force-close under any design.
+ * close gracefully before adapter-node's force-close rather than being severed.
+ *
+ * The timer is `unref`'d (see the call site), so this large value costs nothing
+ * in the common case: an `unref`'d timer only keeps firing while something else
+ * (an open listen stream, or a long call) keeps the event loop alive, which is
+ * exactly when the transport still needs closing. When ordinary requests drain
+ * and no stream is open, the loop exits as soon as the work is done and this
+ * timer never fires. Only a call still running within the last ~2s before
+ * `SHUTDOWN_TIMEOUT` is cut short — and it would reach adapter-node's force-close
+ * then anyway. Eliminating even that residual needs a listen-stream-specific
+ * close the library does not expose (tracked upstream); see `stream-lifecycle.ts`.
  */
-export const GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS = 2_000;
+export const GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS = 13_000;
 
 const mcpMount: Promise<TribunalMcpMount> | null =
   !building && isMcpEnabled() ? createTribunalMcpMount() : null;
@@ -90,12 +100,13 @@ if (mcpMount) {
       .catch((error) => {
         console.error('[hooks.server] MCP cleanup-sweep stop failed', error);
       });
-    // Wait a bounded grace window before closing the transport: closing it
-    // aborts any ordinary MCP request still in the handler's `inflight` set, so
-    // let adapter-node's concurrent drain finish the short ones first (see the
-    // constant's comment). The timer is intentionally not `unref`'d — during
-    // shutdown it must fire.
-    setTimeout(() => {
+    // Wait a grace window before closing the transport: closing it aborts any
+    // ordinary MCP request still in the handler's `inflight` set, so let
+    // adapter-node's concurrent drain finish them first (see the constant's
+    // comment). `unref` so this window never keeps the process alive on its own —
+    // it fires only while an open listen stream or long call keeps the loop
+    // alive, which is exactly when the transport still needs closing.
+    const graceTimer = setTimeout(() => {
       // Clear the publisher just before the transport goes so a notification
       // cannot race the teardown. (Listen streams stay served through the grace
       // window; this close is what ends them.)
@@ -106,6 +117,7 @@ if (mcpMount) {
           console.error('[hooks.server] MCP transport shutdown failed', error);
         });
     }, GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
+    graceTimer.unref?.();
   };
   process.once('SIGTERM', shutdownMcpTransport);
   process.once('SIGINT', shutdownMcpTransport);
