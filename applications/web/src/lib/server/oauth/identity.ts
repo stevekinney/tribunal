@@ -42,6 +42,30 @@ import {
 
 const CONSENT_BINDING_PREFIX = 'user:';
 
+/**
+ * Leeway granted to the Neon Auth JWT's `exp` when resolving the consent binding
+ * on an approve/deny POST — and only there (TRI-122).
+ *
+ * The Neon Auth JWT lives ~15 minutes and is refreshed by client JS the consent
+ * page deliberately does not ship (TRI-40 AC4). The authorization transaction
+ * lives 10 minutes (`authorizationLifetimeMilliseconds` in `@lostgradient/mcp`),
+ * so a JWT that was valid when `GET /oauth/authorize` rendered can lapse while
+ * the consent page sits open; the approve/deny POST then resolves no identity
+ * and the pending grant is lost to a `/login` bounce.
+ *
+ * Granting exactly the transaction's own lifetime as `exp` leeway closes that
+ * window without opening a new one: the library's `consume` independently
+ * rejects any transaction whose `expiresAt <= now`, so a JWT stale by more than
+ * the transaction TTL can only ever meet an already-expired transaction. The
+ * transaction-bound one-time CSRF token (a hidden field matched on consume)
+ * proves the POST came from the same browser that authenticated at render time.
+ * Signature, issuer, and audience are still verified in full — only `exp` gains
+ * leeway, only on the POST, and only for a transaction the user already began.
+ * The initiating `GET /oauth/authorize` gets no leeway: a session that lapsed
+ * before consent even started should sign in again.
+ */
+const CONSENT_JWT_EXPIRY_GRACE_SECONDS = 10 * 60;
+
 /** Maps an authenticated Tribunal user to the engine's `OAuthIdentity`. */
 export function identityFromUser(applicationUser: AuthenticatedApplicationUser): OAuthIdentity {
   return {
@@ -92,8 +116,15 @@ function readCookie(request: Request, name: string): string | null {
 export const resolveIdentityBinding: ResolveIdentityBinding = async (request) => {
   const token = readCookie(request, neonAuthTokenCookieName);
   if (!token) return null;
+  // The approve/deny consent POST tolerates a JWT that lapsed during the
+  // in-flight authorization transaction (TRI-122); the initiating GET does not.
+  // See CONSENT_JWT_EXPIRY_GRACE_SECONDS for why the leeway is bounded and safe.
+  const clockToleranceSeconds =
+    request.method === 'POST' ? CONSENT_JWT_EXPIRY_GRACE_SECONDS : undefined;
   try {
-    const { user: applicationUser } = await validateNeonSessionFromToken(token);
+    const { user: applicationUser } = await validateNeonSessionFromToken(token, {
+      clockToleranceSeconds,
+    });
     return identityFromUser(applicationUser);
   } catch {
     return null;

@@ -142,6 +142,45 @@ describe('verifyNeonAuthToken', () => {
     expect.assertions(5);
   });
 
+  // TRI-122: the OAuth consent POST verifies with bounded exp leeway so a JWT
+  // that lapsed during the in-flight authorization transaction still resolves.
+  // Signature/issuer/audience are still enforced; only exp gains leeway.
+  describe('clockToleranceSeconds (TRI-122)', () => {
+    it('accepts a token expired within the tolerance window', async () => {
+      const token = await createToken({ expiresAt: Math.floor(Date.now() / 1000) - 60 });
+
+      const verifiedToken = await verifyNeonAuthToken(token, {
+        ...tokenVerificationOptions(),
+        clockToleranceSeconds: 600,
+      });
+
+      expect(verifiedToken.neonAuthUserId).toBe('neon-user-1');
+      expect.assertions(1);
+    });
+
+    it('still rejects a token expired beyond the tolerance window', async () => {
+      const token = await createToken({ expiresAt: Math.floor(Date.now() / 1000) - 601 });
+
+      await expect(
+        verifyNeonAuthToken(token, { ...tokenVerificationOptions(), clockToleranceSeconds: 600 }),
+      ).rejects.toMatchObject({ status: 401 });
+      expect.assertions(1);
+    });
+
+    it('rejects a wrong signature even within the tolerance window', async () => {
+      const otherKeys = await generateKeyPair('RS256');
+      const token = await createToken({
+        expiresAt: Math.floor(Date.now() / 1000) - 60,
+        signingKey: otherKeys.privateKey,
+      });
+
+      await expect(
+        verifyNeonAuthToken(token, { ...tokenVerificationOptions(), clockToleranceSeconds: 600 }),
+      ).rejects.toMatchObject({ status: 401 });
+      expect.assertions(1);
+    });
+  });
+
   it('rejects tokens signed by an unknown key', async () => {
     const otherKeys = await generateKeyPair('RS256');
 

@@ -57,6 +57,17 @@ export interface NeonTokenVerificationOptions {
   issuer?: string;
   audience?: string;
   key?: VerificationKey;
+  /**
+   * Seconds of leeway granted to the token's `exp` (and `nbf`) claim, forwarded
+   * to jose's `clockTolerance`. Left undefined for every normal caller —
+   * `authHandle` and the session bridge verify strictly, so an expired JWT is
+   * rejected and its cookie cleared. The one caller that sets it is the OAuth
+   * consent POST (`resolveIdentityBinding`), which tolerates a JWT that lapsed
+   * during an in-flight authorization transaction; see the constant there for
+   * why that is bounded and safe. Signature, issuer, and audience are still
+   * enforced in full — only `exp`/`nbf` gain leeway.
+   */
+  clockToleranceSeconds?: number;
 }
 
 const remoteJwksCache = new Map<string, JWTVerifyGetKey>();
@@ -130,7 +141,13 @@ export async function verifyNeonAuthToken(
     audience = options.audience ?? issuerAndAudience;
     const key = options.key ?? getRemoteJwks(baseUrl);
 
-    const result = await jwtVerify(token, key, { issuer, audience });
+    const result = await jwtVerify(token, key, {
+      issuer,
+      audience,
+      ...(options.clockToleranceSeconds === undefined
+        ? {}
+        : { clockTolerance: options.clockToleranceSeconds }),
+    });
     payload = result.payload;
   } catch (verificationError) {
     if (isTransientJwksFailure(verificationError)) {
