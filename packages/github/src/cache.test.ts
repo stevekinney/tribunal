@@ -8,6 +8,8 @@ const mockDel = vi.fn();
 const mockOn = vi.fn();
 const mockConnect = vi.fn();
 const mockScanIterator = vi.fn();
+const mockEval = vi.fn();
+const mockZRem = vi.fn();
 
 vi.mock('redis', () => ({
   createClient: vi.fn(() => ({
@@ -17,6 +19,11 @@ vi.mock('redis', () => ({
     on: mockOn,
     connect: mockConnect,
     scanIterator: mockScanIterator,
+    eval: mockEval,
+    zRem: mockZRem,
+    // The lazy client reuses its connection only while open; the real node-redis
+    // client exposes this and it is true after a successful connect().
+    isOpen: true,
   })),
 }));
 
@@ -79,6 +86,105 @@ describe('createCache', () => {
     const cache = createCache(() => undefined);
 
     await expect(cache.getCached('key')).rejects.toThrow('REDIS_URL is not set');
+  });
+});
+
+describe('bounded reconnect (TRI-49 AC3)', () => {
+  it('configures a connect timeout and a reconnect strategy', async () => {
+    const { createClient } = await import('redis');
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    await cache.getCached('key');
+
+    const options = vi.mocked(createClient).mock.calls[0]![0]!;
+    expect(options.socket).toMatchObject({ connectTimeout: 3000 });
+    expect(typeof (options.socket as { reconnectStrategy: unknown }).reconnectStrategy).toBe(
+      'function',
+    );
+  });
+
+  it('backs off while under the attempt cap and gives up at it', async () => {
+    const { createClient } = await import('redis');
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    await cache.getCached('key');
+
+    const options = vi.mocked(createClient).mock.calls[0]![0]!;
+    const reconnectStrategy = (
+      options.socket as {
+        reconnectStrategy: (retries: number, cause: Error) => number | Error | false;
+      }
+    ).reconnectStrategy;
+
+    // Under the cap: a numeric backoff delay so node-redis retries.
+    expect(typeof reconnectStrategy(0, new Error('x'))).toBe('number');
+    expect(typeof reconnectStrategy(2, new Error('x'))).toBe('number');
+    // At the cap (3): an Error so connect() rejects and callers fail fast
+    // instead of the default forever-retry hanging startup.
+    expect(reconnectStrategy(3, new Error('x'))).toBeInstanceOf(Error);
+  });
+
+  it('recreates the client on the next call once the previous one has closed', async () => {
+    const { createClient } = await import('redis');
+    // First call gets a client that reports closed (its bounded reconnect gave
+    // up); the default mock client for the second call reports open.
+    vi.mocked(createClient).mockReturnValueOnce({
+      get: mockGet,
+      set: mockSet,
+      del: mockDel,
+      on: mockOn,
+      connect: mockConnect,
+      scanIterator: mockScanIterator,
+      eval: mockEval,
+      zRem: mockZRem,
+      isOpen: false,
+    } as never);
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    await cache.getCached('a'); // builds the closed client
+    await cache.getCached('b'); // isOpen is false, so a fresh client is built
+
+    expect(createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates a connect() rejection and does not cache the dead client', async () => {
+    const { createClient } = await import('redis');
+    mockConnect.mockRejectedValueOnce(
+      new Error('Unable to connect to Redis after repeated attempts'),
+    );
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    // connect() rejects (the strategy gave up); the caller sees the error rather
+    // than a hung promise.
+    await expect(cache.getCached('a')).rejects.toThrow('Unable to connect to Redis');
+
+    // `client` was never assigned (the throw is before the assignment), so the
+    // next call builds a fresh client instead of returning the dead one.
+    mockGet.mockResolvedValue(null);
+    await cache.getCached('b');
+    expect(createClient).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('getRateLimitClient (TRI-49 shared client)', () => {
+  it('returns the same connection the cache uses (one client per process)', async () => {
+    const { createClient } = await import('redis');
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    await cache.getCached('cache-key');
+    const rateLimitClient = await cache.getRateLimitClient();
+
+    // The limiter shares the cache's single connection, not a second one.
+    expect(createClient).toHaveBeenCalledOnce();
+    // Narrowed to the limiter's surface; the underlying client carries eval/zRem.
+    expect(typeof rateLimitClient.eval).toBe('function');
+    expect(typeof rateLimitClient.zRem).toBe('function');
+  });
+
+  it('throws when REDIS_URL is not set, so a host can fall back to in-memory (AC4)', async () => {
+    const cache = createCache(() => undefined);
+
+    await expect(cache.getRateLimitClient()).rejects.toThrow('REDIS_URL is not set');
   });
 });
 
@@ -245,6 +351,26 @@ describe('deleteCacheByPattern', () => {
 
     expect(count).toBe(3);
     expect(mockDel).toHaveBeenCalledWith(['batch:1', 'batch:2', 'batch:3']);
+  });
+
+  it('skips falsy keys yielded by scanIterator', async () => {
+    // scanIterator can yield empty/nullish values; the guard drops them so they
+    // are never passed to del. (Covers a pre-existing branch, closed while
+    // touching this file for TRI-49.)
+    mockScanIterator.mockReturnValue(
+      (async function* () {
+        yield 'real:1';
+        yield '';
+        yield null;
+      })(),
+    );
+    mockDel.mockResolvedValue(1);
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    const count = await cache.deleteCacheByPattern('mixed:*');
+
+    expect(count).toBe(1);
+    expect(mockDel).toHaveBeenCalledWith(['real:1']);
   });
 
   it('returns 0 on Redis error without throwing', async () => {

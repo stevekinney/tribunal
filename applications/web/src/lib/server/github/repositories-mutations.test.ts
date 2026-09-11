@@ -30,6 +30,7 @@ function createMockContext(overrides?: Partial<GithubServiceContext>): GithubSer
       deleteCache: vi.fn().mockResolvedValue(true),
       deleteCacheByPattern: vi.fn().mockResolvedValue(0),
       resetCacheClient: vi.fn(),
+      getRateLimitClient: vi.fn().mockResolvedValue({ eval: vi.fn(), zRem: vi.fn() }),
     },
     getInstallationOctokit: vi.fn().mockResolvedValue(null),
     getGithubApplication: vi.fn().mockReturnValue(null),

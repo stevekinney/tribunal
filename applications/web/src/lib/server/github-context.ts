@@ -17,6 +17,7 @@ import {
   deleteCache,
   deleteCacheByPattern,
   resetCacheClient,
+  getRateLimitClient,
 } from '$lib/server/redis';
 import {
   getInstallationOctokit,
@@ -41,6 +42,7 @@ export const githubContext: GithubServiceContext = {
     deleteCache,
     deleteCacheByPattern,
     resetCacheClient,
+    getRateLimitClient,
   },
   getInstallationOctokit,
   getGithubApplication,

@@ -51,6 +51,7 @@
     "test:mcp:redaction": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp-logger.test.ts src/lib/server/mcp-package-adoption.test.ts",
     "test:mcp:transport": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/transport.verify.test.ts",
     "test:mcp:request-bounds": "bun run --cwd applications/web test:unit:server -- src/lib/server/mcp/request-bounds.verify.test.ts",
+    "test:mcp:redis": "bun run --cwd packages/github test -- src/cache.test.ts",
     "audit:mcp-logs": "bun run scripts/audit-mcp-logs.ts",
     "verify": "bun run scripts/verify.ts",
     "deploy:status": "bun run scripts/deploy.ts",

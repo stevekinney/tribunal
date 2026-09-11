@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   deleteCache: vi.fn(),
   deleteCacheByPattern: vi.fn(),
   resetCacheClient: vi.fn(),
+  getRateLimitClient: vi.fn(),
   getInstallationOctokit: vi.fn(),
   getGithubApplication: vi.fn(),
   getWeftClient: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('$lib/server/redis', () => ({
   deleteCache: mocks.deleteCache,
   deleteCacheByPattern: mocks.deleteCacheByPattern,
   resetCacheClient: mocks.resetCacheClient,
+  getRateLimitClient: mocks.getRateLimitClient,
 }));
 
 vi.mock('$lib/server/github/github-application', () => ({
