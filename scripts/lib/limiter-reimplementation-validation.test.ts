@@ -35,12 +35,22 @@ describe('findLimiterReimplementation', () => {
     expect(findLimiterReimplementation(source, 'clean.ts')).toEqual([]);
   });
 
-  it('is case-sensitive and word-bounded (lower-case or embedded spellings are not flagged)', () => {
-    // Redis command mnemonics are upper-case in Lua; a lower-case identifier or a
-    // longer word that merely contains one must not trip the scan.
-    expect(findLimiterReimplementation('const zadd = 1; const myZADDHelper = 2;', 'x.ts')).toEqual(
-      [],
+  it('flags a lower-case Lua spelling (Redis command names are case-insensitive)', () => {
+    // `redis.call('zadd', ...)` runs identically to ZADD, so a case-sensitive scan
+    // would let a lower-case copy through — this is the blind spot the scan closes.
+    expect(findLimiterReimplementation("redis.call('zadd', k)", 'lower.ts')).toHaveLength(1);
+  });
+
+  it("flags node-redis's camelCase method spelling", () => {
+    expect(findLimiterReimplementation('await client.zAdd(key, member)', 'camel.ts')).toHaveLength(
+      1,
     );
+  });
+
+  it('stays word-bounded: a longer identifier merely containing a token is not flagged', () => {
+    expect(
+      findLimiterReimplementation('const myZaddHelper = 2; const zremover = 3;', 'x.ts'),
+    ).toEqual([]);
   });
 
   it('flags a RedisClientType reference outside the permitted adapter file', () => {

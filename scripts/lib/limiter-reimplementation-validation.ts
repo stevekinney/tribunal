@@ -11,21 +11,20 @@
  *
  * The tokens live inside string literals (they are Lua source), which is exactly
  * what we want to catch — so, unlike the NODE_ENV scanner, this does NOT blank
- * string contents. Matching is case-sensitive and word-bounded: these are Redis
- * command mnemonics, always upper-case in Lua, so a lower-case identifier or a
- * longer word that merely contains one is not flagged.
- *
- * Scope, intentional: this catches the common copy shape — inlined upper-case Lua
- * — and pairs with the `RedisClientType` ban (below) that stops a second raw Redis
- * client from existing at all. It does not attempt to detect a reimplementation
- * built entirely on node-redis's camelCase API (`zAdd`) or through a differently
- * typed abstraction; a general "is this a reimplementation" check is unfalsifiable
- * (TRI-56 AC1 chose these two mechanical proxies for exactly that reason).
+ * string contents. Matching is CASE-INSENSITIVE: Redis command names are
+ * case-insensitive, so a copy could spell `redis.call('zadd', ...)` in lowercase
+ * and still run — and the same matcher catches node-redis's camelCase method
+ * spelling (`zAdd`). It stays word-bounded, so a longer identifier that merely
+ * contains a token (`myZaddHelper`) is not flagged. `ZREM` is deliberately absent
+ * from the list because the shared-client proxy legitimately forwards `zRem`; the
+ * five below are used only by the library's Lua, so any spelling of them in
+ * Tribunal's source is a reimplementation. Pairs with the `RedisClientType` ban
+ * (below), which stops a second raw Redis client from existing at all.
  */
 const BANNED_LUA_TOKENS = ['ZREMRANGEBYSCORE', 'ZADD', 'ZCARD', 'ZSCORE', 'PEXPIRE'] as const;
 
 const TOKEN_MATCHERS = BANNED_LUA_TOKENS.map(
-  (token) => [token, new RegExp(`\\b${token}\\b`)] as const,
+  (token) => [token, new RegExp(`\\b${token}\\b`, 'i')] as const,
 );
 
 /**
