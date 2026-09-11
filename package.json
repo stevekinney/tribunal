@@ -33,6 +33,7 @@
     "validate:reviewer-workspaces": "bun run scripts/validate-reviewer-workspaces.ts",
     "validate:synchronous-subprocesses": "bun run scripts/validate-synchronous-subprocesses.ts",
     "validate:node-env-access": "bun run scripts/validate-node-env-access.ts",
+    "validate:limiter-reimplementation": "bun run scripts/validate-limiter-reimplementation.ts",
     "audit:workflows": "bun run .github/scripts/audit-workflows.ts",
     "test:workflow-authorization": "vitest run --config .github/tests/vitest.config.ts workflow-authorization",
     "test:workflow-prompt-injection": "vitest run --config .github/tests/vitest.config.ts workflow-prompt-injection",
