@@ -65,24 +65,19 @@ describe('enforceOperationsRateLimit', () => {
     }
   });
 
-  it('bounds a concurrent burst during a stall to one command (TRI-52)', async () => {
-    vi.useFakeTimers();
-    try {
-      const storeSpy = vi
-        .spyOn(mcpSlidingWindowStore, 'consume')
-        .mockReturnValue(new Promise(() => {})); // every command stalls
-      vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('counts every concurrent request under healthy Redis — no suppression (OPS-002)', async () => {
+    // The guard engages only after a command is classified stalled, never while
+    // one is merely in flight, so concurrent healthy requests each consume and are
+    // counted. Suppressing them would let a concurrent bearer-guess batch count as
+    // one.
+    const storeSpy = vi.spyOn(mcpSlidingWindowStore, 'consume'); // real in-memory store, resolves fast
 
-      // Ten concurrent requests arrive within the first (pre-timeout) window.
-      const inFlight = Array.from({ length: 10 }, () => enforceOperationsRateLimit('203.0.113.5'));
-      await vi.advanceTimersByTimeAsync(2_001);
-      for (const result of await Promise.all(inFlight)) expect(result).toBeNull();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => enforceOperationsRateLimit('203.0.113.7')),
+    );
 
-      // Only the first issued a command; the other nine failed open immediately.
-      expect(storeSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    for (const result of results) expect(result).toBeNull(); // all under budget
+    expect(storeSpy).toHaveBeenCalledTimes(5); // each request issued its own consume
   });
 
   it('keeps suppressing commands while one stays stalled, then re-engages once it settles (TRI-52)', async () => {
