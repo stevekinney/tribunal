@@ -41,11 +41,14 @@ describe('createTribunalMcpMount', () => {
     mockEnv.DATABASE_URL = CONNECTION_STRING;
     createOAuthStorageSeam.mockReturnValue({ stores, dispose: storageDispose });
 
-    const { mount, shutdownTransport, disposePool } = await createTribunalMcpMount();
+    const { mount, stopCleanupSweep, shutdownTransport, disposePool } =
+      await createTribunalMcpMount();
     expect(mount).toBeDefined();
     expect(createOAuthStorageSeam).toHaveBeenCalledWith(CONNECTION_STRING);
 
-    // Phase 1 closes the transport and stops the sweep; it does not touch the pool.
+    // On the signal: stop the sweep, then (after the grace) close the transport.
+    // Neither touches the pool.
+    stopCleanupSweep();
     await shutdownTransport();
     expect(storageDispose).not.toHaveBeenCalled();
 

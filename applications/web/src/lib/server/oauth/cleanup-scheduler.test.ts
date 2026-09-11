@@ -184,6 +184,42 @@ describe('startOauthCleanupSweep', () => {
     }
   });
 
+  it('waits for all purges to settle before rescheduling, even when one rejects early (Thread A)', async () => {
+    vi.useFakeTimers();
+    try {
+      const stores = createStores();
+      let releaseTokens: () => void = () => {};
+      // The transaction purge rejects immediately; the token purge stays pending
+      // past the interval. A fail-fast Promise.all would reschedule now.
+      stores.transactions.purgeExpired.mockRejectedValueOnce(new Error('txn purge failed'));
+      stores.tokens.purgeExpired.mockReturnValueOnce(
+        new Promise<number>((resolve) => {
+          releaseTokens = () => resolve(0);
+        }),
+      );
+      const onError = vi.fn();
+      const sweep = startOauthCleanupSweep({
+        stores: stores as never,
+        intervalMs: 60_000,
+        onError,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000); // first tick: txn rejected, tokens still pending
+      // No second sweep while the token purge is unsettled, despite the early rejection.
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(1);
+
+      releaseTokens();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(stores.transactions.purgeExpired).toHaveBeenCalledTimes(2);
+      expect(onError).toHaveBeenCalledTimes(1); // the early rejection was reported once
+
+      sweep.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stop() during an in-flight sweep prevents the next run (Thread 0)', async () => {
     vi.useFakeTimers();
     try {

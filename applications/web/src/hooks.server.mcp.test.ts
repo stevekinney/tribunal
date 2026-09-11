@@ -30,6 +30,7 @@ vi.mock('$lib/server/github/webhooks/subscription-drift', () => ({
 }));
 
 const mountDispose = vi.fn(() => Promise.resolve());
+const mountStopCleanupSweep = vi.fn();
 const mountShutdownTransport = vi.fn(() => Promise.resolve());
 const mountDisposePool = vi.fn(() => Promise.resolve());
 const mountHandle = vi.fn(() => Promise.resolve(new Response('ok', { status: 200 })));
@@ -38,6 +39,7 @@ const createTribunalMcpMount = vi.fn(() =>
   Promise.resolve({
     mount: { handle: mountHandle, dispose: mountDispose },
     publishUserResourceUpdate: mountPublish,
+    stopCleanupSweep: mountStopCleanupSweep,
     shutdownTransport: mountShutdownTransport,
     disposePool: mountDisposePool,
   }),
@@ -111,8 +113,13 @@ describe('hooks.server MCP wiring (enabled)', () => {
     // which closing the transport would otherwise abort.
     vi.useFakeTimers();
     mountShutdownTransport.mockClear();
+    mountStopCleanupSweep.mockClear();
     try {
       signalHandlers.get('SIGTERM')!();
+      // The sweep stops immediately (before the grace window) so no tick can
+      // outlive the pool if the drain completes fast; the transport waits.
+      await Promise.resolve(); // let the resolved mcpMount .then microtask run
+      expect(mountStopCleanupSweep).toHaveBeenCalled();
       expect(mountShutdownTransport).not.toHaveBeenCalled(); // grace protects in-flight calls
       await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
       expect(mountShutdownTransport).toHaveBeenCalled();
@@ -137,6 +144,27 @@ describe('hooks.server MCP wiring (enabled)', () => {
       await vi.advanceTimersByTimeAsync(GRACE_BEFORE_TRANSPORT_SHUTDOWN_MS);
       expect(consoleError).toHaveBeenCalledWith(
         '[hooks.server] MCP transport shutdown failed',
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs rather than throwing when the cleanup-sweep stop fails', async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountStopCleanupSweep.mockImplementationOnce(() => {
+      throw new Error('sweep stop boom');
+    });
+    try {
+      signalHandlers.get('SIGTERM')!();
+      // Flush the resolved-mcpMount .then/.catch microtasks without firing the
+      // pending 2s transport timer.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(consoleError).toHaveBeenCalledWith(
+        '[hooks.server] MCP cleanup-sweep stop failed',
         expect.any(Error),
       );
     } finally {

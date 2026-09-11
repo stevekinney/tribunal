@@ -30,8 +30,16 @@ export type AssembledMcpMount = {
 
 export type TribunalMcpMount = AssembledMcpMount & {
   /**
-   * Pre-drain (on the shutdown signal): stop the cleanup sweep and gracefully
-   * close the MCP transport. This ends the long-lived `subscriptions/listen`
+   * On the shutdown signal, immediately (not deferred by the transport grace
+   * window): stop the periodic cleanup sweep. If the HTTP drain — and therefore
+   * `disposePool` — completes inside the grace window (no long-lived streams to
+   * hold it open), a still-pending sweep tick would otherwise fire `purgeExpired`
+   * after the pool was ended (TRI-51). Stopping the sweep first closes that race.
+   */
+  stopCleanupSweep: () => void;
+  /**
+   * Pre-drain (on the shutdown signal, after the grace window): gracefully close
+   * the MCP transport. This ends the long-lived `subscriptions/listen`
    * streams through the library's sanctioned path (`mount.dispose` →
    * `runtime.shutdown` → `cache.closeAll`), not a forced connection close, so no
    * in-flight resource notifications are lost (the `stream-lifecycle.ts`
@@ -95,6 +103,7 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
     // close) and runs no cleanup sweep, so only the transport needs shutting down.
     return {
       ...assembled,
+      stopCleanupSweep: () => {},
       shutdownTransport: () => assembled.mount.dispose(),
       disposePool: async () => {},
     };
@@ -125,10 +134,8 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
 
     return {
       ...assembled,
-      shutdownTransport: async () => {
-        cleanupSweep.stop();
-        await assembled.mount.dispose();
-      },
+      stopCleanupSweep: () => cleanupSweep.stop(),
+      shutdownTransport: () => assembled.mount.dispose(),
       disposePool: () => storage.dispose(),
     };
   } catch (error) {

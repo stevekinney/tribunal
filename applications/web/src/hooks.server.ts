@@ -80,6 +80,16 @@ if (mcpMount) {
   // `close()` is async and simply waits, so ordering between the two handlers is
   // immaterial.
   const shutdownMcpTransport = (): void => {
+    // Stop the sweep immediately, not inside the deferred close: if the HTTP
+    // drain (and therefore `disposePool`) completes inside the grace window — no
+    // long-lived streams to hold it open — a still-pending sweep tick would
+    // otherwise fire `purgeExpired` after the pool is ended. `mcpMount` is
+    // already resolved, so this microtask runs before any macrotask sweep timer.
+    void mcpMount
+      .then((active) => active.stopCleanupSweep())
+      .catch((error) => {
+        console.error('[hooks.server] MCP cleanup-sweep stop failed', error);
+      });
     // Wait a bounded grace window before closing the transport: closing it
     // aborts any ordinary MCP request still in the handler's `inflight` set, so
     // let adapter-node's concurrent drain finish the short ones first (see the

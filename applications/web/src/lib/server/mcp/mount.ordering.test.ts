@@ -54,6 +54,7 @@ describe('MCP mount handle', () => {
     Promise.resolve({
       mount: fixture.mount,
       publishUserResourceUpdate: fixture.publishUserResourceUpdate,
+      stopCleanupSweep: () => {},
       shutdownTransport: fixture.dispose,
       disposePool: async () => {},
     });

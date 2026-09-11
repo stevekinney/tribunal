@@ -26,8 +26,9 @@ describe('createTribunalMcpMount (E2E mode)', () => {
     shutdownTransport = mount.shutdownTransport;
     expect(mount.mount).toBeDefined();
     expect(typeof mount.shutdownTransport).toBe('function');
-    // The E2E branch owns no pool, so pool disposal is a no-op that still
-    // resolves (exercised here so the post-drain phase is covered).
+    // The E2E branch runs no sweep and owns no pool, so both are no-ops that
+    // still resolve (exercised here so the shutdown phases are covered).
+    expect(mount.stopCleanupSweep()).toBeUndefined();
     await expect(mount.disposePool()).resolves.toBeUndefined();
   });
 });

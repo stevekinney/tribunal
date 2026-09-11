@@ -80,16 +80,18 @@ export function startOauthCleanupSweep(options: {
 
   async function runSweep(): Promise<void> {
     const when = now();
-    try {
-      await Promise.all([
-        options.stores.transactions.purgeExpired(when),
-        options.stores.codes.purgeExpired(when),
-        options.stores.tokens.purgeExpired(when),
-      ]);
-    } catch (error) {
-      // A sweep failure (e.g. a transient database error) must not crash the
-      // process or stop the loop; log and let the next scheduled run retry.
-      onError(error);
+    // `allSettled`, not `all`: a fail-fast `all` would return as soon as one
+    // purge rejects, letting the next tick be scheduled while a sibling purge is
+    // still running — re-creating the overlap this loop exists to prevent. Wait
+    // for all three to settle, then report any rejections. A sweep failure (e.g.
+    // a transient database error) must not crash the process or stop the loop.
+    const results = await Promise.allSettled([
+      options.stores.transactions.purgeExpired(when),
+      options.stores.codes.purgeExpired(when),
+      options.stores.tokens.purgeExpired(when),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') onError(result.reason);
     }
   }
 
