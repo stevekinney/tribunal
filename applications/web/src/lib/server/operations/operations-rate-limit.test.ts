@@ -65,7 +65,7 @@ describe('enforceOperationsRateLimit', () => {
     }
   });
 
-  it('opens a breaker after a stall so later requests do not queue more commands (TRI-52)', async () => {
+  it('bounds a concurrent burst during a stall to one command (TRI-52)', async () => {
     vi.useFakeTimers();
     try {
       const storeSpy = vi
@@ -73,42 +73,36 @@ describe('enforceOperationsRateLimit', () => {
         .mockReturnValue(new Promise(() => {})); // every command stalls
       vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      const first = enforceOperationsRateLimit('203.0.113.5');
+      // Ten concurrent requests arrive within the first (pre-timeout) window.
+      const inFlight = Array.from({ length: 10 }, () => enforceOperationsRateLimit('203.0.113.5'));
       await vi.advanceTimersByTimeAsync(2_001);
-      expect(await first).toBeNull(); // timed out → breaker open
-      const callsSoFar = storeSpy.mock.calls.length;
+      for (const result of await Promise.all(inFlight)) expect(result).toBeNull();
 
-      // With the breaker open, the next request fails open immediately without
-      // issuing another (uncancellable) Redis command.
-      expect(await enforceOperationsRateLimit('203.0.113.5')).toBeNull();
-      expect(storeSpy.mock.calls.length).toBe(callsSoFar);
+      // Only the first issued a command; the other nine failed open immediately.
+      expect(storeSpy).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('closes the breaker once the stalled command settles (TRI-52)', async () => {
+  it('re-engages after a stalled command is abandoned at its deadline (TRI-52)', async () => {
     vi.useFakeTimers();
     try {
-      let rejectStalled: (error: unknown) => void = () => {};
       const storeSpy = vi
         .spyOn(mcpSlidingWindowStore, 'consume')
-        .mockReturnValueOnce(new Promise((_resolve, reject) => (rejectStalled = reject)))
-        .mockRejectedValue(new Error('redis down'));
+        .mockReturnValue(new Promise(() => {})); // stays stalled
       vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const first = enforceOperationsRateLimit('203.0.113.6');
       await vi.advanceTimersByTimeAsync(2_001);
-      expect(await first).toBeNull(); // breaker open
-      const callsWhileOpen = storeSpy.mock.calls.length;
+      expect(await first).toBeNull(); // timed out → guard abandoned
 
-      // The stalled command finally settles → breaker closes.
-      rejectStalled(new Error('redis settled late'));
-      await vi.advanceTimersByTimeAsync(1);
-
-      // Breaker closed: the next request consults the store again (fails open).
-      expect(await enforceOperationsRateLimit('203.0.113.6')).toBeNull();
-      expect(storeSpy.mock.calls.length).toBe(callsWhileOpen + 1);
+      // The next window re-engages: one more command, not suppressed forever
+      // (bounding a sustained stall to one command per window, not one per request).
+      const second = enforceOperationsRateLimit('203.0.113.6');
+      await vi.advanceTimersByTimeAsync(2_001); // its own command also stalls out
+      expect(await second).toBeNull();
+      expect(storeSpy).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

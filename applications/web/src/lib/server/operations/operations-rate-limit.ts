@@ -26,18 +26,24 @@ const OPERATIONS_LIMITER_TIMEOUT_MS = 2_000;
 const LIMITER_TIMEOUT = Symbol('operations-limiter-timeout');
 
 /**
- * Circuit breaker: while a prior `consume()` remains unresolved past its deadline,
- * this holds that stalled promise. New requests fail open immediately without
- * issuing another Redis command, so a partial Redis outage cannot let
- * unauthenticated pre-auth traffic queue one uncancellable command per request and
- * exhaust the connection queue or memory (TRI-52). It clears when the stalled
- * command finally settles.
+ * The single store command allowed in flight at a time. While one is pending,
+ * every other request fails open without issuing its own — so neither a
+ * concurrent burst (before any timeout) nor a sustained stall can let
+ * unauthenticated pre-auth traffic queue one uncancellable Redis command per
+ * request and exhaust the connection queue or memory (TRI-52). Under healthy
+ * Redis commands resolve in well under a millisecond, so the guard is almost
+ * never contended and sequential requests each consume normally; it engages only
+ * when commands are slow — exactly when bounding them matters. A stalled command
+ * is abandoned at its deadline (the guard clears) so the limiter re-engages on
+ * recovery, bounding a sustained outage to one command per timeout window rather
+ * than one per request. The limiter is defense-in-depth — the bearer token is the
+ * guard — so occasionally skipping the limit under contention is acceptable.
  */
-let stalledConsume: Promise<unknown> | null = null;
+let inFlightConsume: Promise<unknown> | null = null;
 
-/** Test-only: resets the circuit breaker between cases. */
+/** Test-only: resets the in-flight guard between cases. */
 export function resetOperationsRateLimiterForTests(): void {
-  stalledConsume = null;
+  inFlightConsume = null;
 }
 
 /**
@@ -57,9 +63,9 @@ export function resetOperationsRateLimiterForTests(): void {
  * lapse is a window in which Redis — hence the store — is already down.
  */
 export async function enforceOperationsRateLimit(clientAddress: string): Promise<Response | null> {
-  // Breaker open: a previous command is still stalled, so fail open without
-  // queueing another rather than piling up uncancellable commands.
-  if (stalledConsume) return null;
+  // A store command is already in flight: fail open without issuing another, so a
+  // concurrent burst or a stall cannot pile up uncancellable commands.
+  if (inFlightConsume) return null;
 
   const consumePromise = operationsLimiter.consume({
     key: `rate_limit:${mcpRateLimitKeyNamespace}:operations:${clientAddress}`,
@@ -67,6 +73,14 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
     windowSeconds: mcpHealthProbeRateLimit.windowSeconds,
     atomicStore: mcpSlidingWindowStore,
   });
+  inFlightConsume = consumePromise;
+  // Clear the guard when the command settles. A no-op catch keeps a late
+  // rejection (e.g. after its deadline abandoned it) from surfacing as unhandled.
+  void consumePromise
+    .finally(() => {
+      if (inFlightConsume === consumePromise) inFlightConsume = null;
+    })
+    .catch(() => {});
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -85,14 +99,10 @@ export async function enforceOperationsRateLimit(clientAddress: string): Promise
     );
   } catch (error) {
     if (error === LIMITER_TIMEOUT) {
-      // Hold the breaker open until the stalled command settles, so concurrent and
-      // subsequent requests fail open immediately instead of each queueing one.
-      stalledConsume = consumePromise;
-      void consumePromise
-        .finally(() => {
-          if (stalledConsume === consumePromise) stalledConsume = null;
-        })
-        .catch(() => {});
+      // Abandon the stalled command so the limiter re-engages on recovery rather
+      // than staying pinned open; the late .finally above won't match once a newer
+      // command has claimed the guard, so it cannot clobber it.
+      if (inFlightConsume === consumePromise) inFlightConsume = null;
     }
     console.error('Operations rate limiter error (serving anyway):', error);
     return null;
