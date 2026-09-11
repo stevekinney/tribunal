@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createCache } from './cache';
+import { createCache, RedisNotConfiguredError } from './cache';
 
 // Mock the redis module so no real connections are made.
 const mockGet = vi.fn();
@@ -82,10 +82,11 @@ describe('createCache', () => {
     expect(createClient).toHaveBeenCalledOnce();
   });
 
-  it('throws when getRedisUrl returns undefined', async () => {
+  it('throws RedisNotConfiguredError when getRedisUrl returns undefined (misconfig stays loud)', async () => {
     const cache = createCache(() => undefined);
 
     await expect(cache.getCached('key')).rejects.toThrow('REDIS_URL is not set');
+    await expect(cache.getCached('key')).rejects.toBeInstanceOf(RedisNotConfiguredError);
   });
 });
 
@@ -147,22 +148,49 @@ describe('bounded reconnect (TRI-49 AC3)', () => {
     expect(createClient).toHaveBeenCalledTimes(2);
   });
 
-  it('propagates a connect() rejection and does not cache the dead client', async () => {
+  it('fails open (not throw) when connect() rejects on a Redis outage', async () => {
+    // The bounded reconnect makes connect() reject rather than hang. The fail-open
+    // cache operations must translate that to a miss so direct consumers
+    // (verifyGitHubRepositoryAccess) fall back to GitHub instead of throwing.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockConnect.mockRejectedValue(new Error('Unable to connect to Redis after repeated attempts'));
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    expect(await cache.getCached('a')).toBeNull();
+    expect(await cache.setCache('a', 'v')).toBe(false);
+    expect(await cache.setCacheIndefinitely('a', 'v')).toBe(false);
+    expect(await cache.deleteCache('a')).toBe(false);
+    expect(await cache.deleteCacheByPattern('a:*')).toBe(0);
+    consoleSpy.mockRestore();
+  });
+
+  it('keeps getRateLimitClient() rejecting on a connect() failure (limiter fallback signal)', async () => {
+    // The limiter must be able to tell Redis is down so it can fall back to
+    // in-memory; unlike the cache ops, this does not fail open.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockConnect.mockRejectedValue(new Error('Unable to connect to Redis after repeated attempts'));
+    const cache = createCache(() => 'redis://localhost:6379');
+
+    await expect(cache.getRateLimitClient()).rejects.toThrow('Unable to connect to Redis');
+    consoleSpy.mockRestore();
+  });
+
+  it('rebuilds after a connect() rejection rather than caching the dead client', async () => {
     const { createClient } = await import('redis');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // First connect rejects (outage) -> fail open to null, client never assigned.
     mockConnect.mockRejectedValueOnce(
       new Error('Unable to connect to Redis after repeated attempts'),
     );
     const cache = createCache(() => 'redis://localhost:6379');
 
-    // connect() rejects (the strategy gave up); the caller sees the error rather
-    // than a hung promise.
-    await expect(cache.getCached('a')).rejects.toThrow('Unable to connect to Redis');
+    expect(await cache.getCached('a')).toBeNull();
 
-    // `client` was never assigned (the throw is before the assignment), so the
-    // next call builds a fresh client instead of returning the dead one.
+    // The next call's connect succeeds, so a fresh client is built and used.
     mockGet.mockResolvedValue(null);
     await cache.getCached('b');
     expect(createClient).toHaveBeenCalledTimes(2);
+    consoleSpy.mockRestore();
   });
 });
 

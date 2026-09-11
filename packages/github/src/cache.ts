@@ -29,6 +29,16 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 const CONNECT_TIMEOUT_MILLISECONDS = 3000;
 
 /**
+ * Thrown when `REDIS_URL` is unset. This is misconfiguration, not an outage: it
+ * stays loud (the fail-open cache operations rethrow it) so a deploy that forgot
+ * Redis fails visibly rather than silently running uncached. A connection
+ * *failure* with a URL set is the opposite — an infrastructure outage the cache
+ * operations translate to a fail-open null/false so callers fall back instead of
+ * throwing. See documentation/decisions.md (2026-09-11).
+ */
+export class RedisNotConfiguredError extends Error {}
+
+/**
  * Creates an environment-agnostic Redis cache interface.
  *
  * Each call returns an independent singleton — the Redis client is created lazily
@@ -43,7 +53,7 @@ export function createCache(getRedisUrl: () => string | undefined) {
 
   async function getRedisClient(): Promise<RedisClient> {
     const url = getRedisUrl();
-    if (!url) throw new Error('REDIS_URL is not set');
+    if (!url) throw new RedisNotConfiguredError('REDIS_URL is not set');
     // Reuse the client only while it is open. When the bounded reconnect below
     // gives up — on the initial connect OR on a runtime disconnect of an
     // established connection — node-redis sets the socket's `isOpen` to false
@@ -77,8 +87,28 @@ export function createCache(getRedisUrl: () => string | undefined) {
     return client;
   }
 
+  /**
+   * The connected client for the fail-open cache operations, or null when Redis
+   * cannot be reached. A missing `REDIS_URL` (misconfiguration) still throws
+   * `RedisNotConfiguredError`; only a *connection* failure returns null, so a
+   * Redis outage degrades cache reads/writes to a miss (callers such as
+   * `verifyGitHubRepositoryAccess`, which await these directly rather than
+   * through `cachedRead`, fall back to GitHub) instead of throwing. The
+   * bounded reconnect above makes that failure fast rather than a hang.
+   */
+  async function getRedisClientOrNull(): Promise<RedisClient | null> {
+    try {
+      return await getRedisClient();
+    } catch (error) {
+      if (error instanceof RedisNotConfiguredError) throw error;
+      console.error('Redis connection error:', error);
+      return null;
+    }
+  }
+
   async function getCached<T>(key: string): Promise<T | null> {
-    const redis = await getRedisClient();
+    const redis = await getRedisClientOrNull();
+    if (!redis) return null;
 
     try {
       const cached = await redis.get(key);
@@ -94,7 +124,8 @@ export function createCache(getRedisUrl: () => string | undefined) {
   }
 
   async function setCache<T>(key: string, value: T, ttlSeconds: number = 3600): Promise<boolean> {
-    const redis = await getRedisClient();
+    const redis = await getRedisClientOrNull();
+    if (!redis) return false;
 
     try {
       await redis.set(key, JSON.stringify(value), { EX: ttlSeconds });
@@ -106,7 +137,8 @@ export function createCache(getRedisUrl: () => string | undefined) {
   }
 
   async function setCacheIndefinitely<T>(key: string, value: T): Promise<boolean> {
-    const redis = await getRedisClient();
+    const redis = await getRedisClientOrNull();
+    if (!redis) return false;
 
     try {
       await redis.set(key, JSON.stringify(value));
@@ -118,7 +150,8 @@ export function createCache(getRedisUrl: () => string | undefined) {
   }
 
   async function deleteCache(key: string): Promise<boolean> {
-    const redis = await getRedisClient();
+    const redis = await getRedisClientOrNull();
+    if (!redis) return false;
 
     try {
       await redis.del(key);
@@ -130,7 +163,8 @@ export function createCache(getRedisUrl: () => string | undefined) {
   }
 
   async function deleteCacheByPattern(pattern: string): Promise<number> {
-    const redis = await getRedisClient();
+    const redis = await getRedisClientOrNull();
+    if (!redis) return 0;
 
     try {
       const keys: string[] = [];
