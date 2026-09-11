@@ -7,6 +7,12 @@ import { tribunalMcpRegistry } from '$lib/server/mcp/registry';
 import { createTribunalMcpRuntime } from '$lib/server/mcp/runtime';
 import { tribunalOAuthDiscoveryConfiguration } from '$lib/server/oauth/configuration';
 import { createTribunalOAuthSeams } from '$lib/server/oauth/seams';
+import {
+  resolveInstanceId,
+  resolveSweepIntervalMs,
+  startOauthCleanupSweep,
+} from '$lib/server/oauth/cleanup-scheduler';
+import { mcpLogger } from '$lib/server/mcp-logger';
 
 /**
  * The name of the handle that primes identity for the mount. The library's
@@ -80,9 +86,25 @@ export async function createTribunalMcpMount(): Promise<TribunalMcpMount> {
   const storage = createOAuthStorageSeam(connectionString);
   try {
     const assembled = await assembleTribunalMcpMount(storage.stores);
+
+    // Own the periodic OAuth cleanup sweep here, on the production branch only
+    // (TRI-51). It purges expired transactions, codes, and tokens through the
+    // library primitives over this mount's dedicated pool — deliberately not on
+    // the E2E branch, whose request-scoped database proxy only resolves inside
+    // `runWithDatabase`, where a background timer has no context. The sweep
+    // shares the mount's lifecycle: it is stopped in `dispose` before the pool
+    // closes, so no tick can outlive the connection.
+    const intervalMs = resolveSweepIntervalMs(Number(env.OAUTH_CLEANUP_INTERVAL_SECONDS));
+    const cleanupSweep = startOauthCleanupSweep({ stores: storage.stores, intervalMs });
+    mcpLogger.info(
+      { instance: resolveInstanceId(process.env), intervalMs },
+      'oauth cleanup sweep started',
+    );
+
     return {
       ...assembled,
       dispose: async () => {
+        cleanupSweep.stop();
         await assembled.mount.dispose();
         await storage.dispose();
       },

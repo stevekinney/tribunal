@@ -1,6 +1,17 @@
 app = "tribunal-web"
 primary_region = "dfw"
 
+# Fly sends SIGINT on shutdown, waits this long, then SIGKILLs. It must cover
+# adapter-node's own drain window (SHUTDOWN_TIMEOUT below): on a signal
+# adapter-node stops accepting connections, waits for in-flight requests, and
+# only after SHUTDOWN_TIMEOUT force-closes stragglers -- and only then emits
+# `sveltekit:shutdown`, which is where the web process disposes the MCP mount,
+# its OAuth connection pool, and the periodic cleanup sweep (TRI-51). Fly's
+# default kill_timeout is 5s, which would SIGKILL mid-drain and skip that
+# disposal entirely; 20s leaves the 15s drain plus headroom for the close
+# callback, disposal, and exit to complete gracefully first.
+kill_timeout = "20s"
+
 [build]
   dockerfile = "../containers/web.Dockerfile"
 
@@ -21,6 +32,15 @@ primary_region = "dfw"
   # ran. adapter-node parses K/M/G as 1024-based, so "6M" is 6,291,456 bytes. See
   # TRI-48.
   BODY_SIZE_LIMIT = "6M"
+  # adapter-node's graceful-shutdown drain window, in seconds. On SIGINT/SIGTERM
+  # it stops accepting connections and waits for in-flight requests; any still
+  # running after this many seconds are force-closed, after which it emits
+  # `sveltekit:shutdown` and the web process disposes the MCP mount, OAuth pool,
+  # and cleanup sweep (TRI-51). Set explicitly (the adapter default is 30s) and
+  # kept below kill_timeout above so the drain, disposal, and exit all finish
+  # before Fly's SIGKILL. Web requests are short (long review work runs in the
+  # engine, not held open here), so 15s is generous.
+  SHUTDOWN_TIMEOUT = "15"
 
 [deploy]
   # bluegreen, not rolling: with a single web Machine, "rolling" takes the

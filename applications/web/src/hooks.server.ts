@@ -50,13 +50,16 @@ if (mcpMount) {
       console.error('[hooks.server] MCP resource-update publisher registration failed', error);
     });
 
-  // Wire dispose into process termination so the mount's cleanup timer,
-  // handler cache, and connection pool are released on shutdown. Nothing
-  // disposes it merely because the module was imported. This satisfies AC3
-  // (dispose is reached on SIGTERM); the full graceful-shutdown ordering —
-  // draining in-flight requests before disposal so none reach a disposed
-  // mount, and coordinating with adapter-node's own signal handling — is
-  // TRI-51's scope. adapter-node still owns process termination.
+  // Dispose the mount's cleanup sweep, handler cache, and connection pool on
+  // shutdown — after in-flight requests have drained, so none reaches a
+  // disposed mount (TRI-51 AC3). adapter-node owns process termination: on
+  // SIGINT/SIGTERM it stops accepting connections, waits for in-flight requests
+  // via `httpServer.close()` (forcing any stragglers after `SHUTDOWN_TIMEOUT`),
+  // and only then emits `sveltekit:shutdown`. Binding disposal to that event —
+  // rather than to the raw signals, which would fire concurrently with the
+  // drain and race it — is the ordering the earlier revision deferred here. In
+  // dev and under tests the event never fires; neither needs pool cleanup,
+  // since the process is torn down wholesale.
   const disposeMcpMount = (): void => {
     // Clear the publisher first so a notification that races shutdown cannot
     // reach the mount being torn down; then dispose the mount itself.
@@ -67,8 +70,7 @@ if (mcpMount) {
         console.error('[hooks.server] MCP mount dispose failed', error);
       });
   };
-  process.once('SIGTERM', disposeMcpMount);
-  process.once('SIGINT', disposeMcpMount);
+  process.once('sveltekit:shutdown', disposeMcpMount);
 }
 
 const mcpHandle = createMcpHandle(getMcpMount);

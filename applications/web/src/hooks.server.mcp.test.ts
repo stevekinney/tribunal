@@ -4,7 +4,8 @@ import type { Handle, RequestEvent } from '@sveltejs/kit';
 /**
  * Covers hooks.server.ts's enabled branch: constructing the single mount at
  * module scope, wiring the combined MCP handle after the identity handles, and
- * disposing on SIGTERM. The disabled branch is covered by hooks.server.test.ts.
+ * disposing on the post-drain `sveltekit:shutdown` event (TRI-51). The disabled
+ * branch is covered by hooks.server.test.ts.
  */
 
 const mockEnv: Record<string, string | undefined> = {
@@ -43,8 +44,9 @@ vi.mock('$lib/server/mcp/mount', async (importOriginal) => {
   return { ...actual, createTribunalMcpMount };
 });
 
-// Capture the process termination handlers rather than emitting real signals,
-// which would disturb other test files sharing this worker's process.
+// Capture the process lifecycle handlers rather than emitting real signals or
+// the `sveltekit:shutdown` event, either of which would disturb other test
+// files sharing this worker's process.
 const signalHandlers = new Map<string, () => void>();
 vi.spyOn(process, 'once').mockImplementation((event, handler) => {
   signalHandlers.set(String(event), handler as () => void);
@@ -98,15 +100,17 @@ describe('hooks.server MCP wiring (enabled)', () => {
     expect(mcpIndex).toBeGreaterThan(bypassIndex);
   });
 
-  it('disposes the mount on SIGTERM', async () => {
-    signalHandlers.get('SIGTERM')!();
+  it('disposes the mount on sveltekit:shutdown (after in-flight requests drain)', async () => {
+    // adapter-node emits this only after draining in-flight requests, so
+    // disposal never races a request still touching the mount (AC3).
+    signalHandlers.get('sveltekit:shutdown')!();
     await vi.waitFor(() => expect(mountDispose).toHaveBeenCalled());
   });
 
-  it('logs rather than throwing when disposal fails on SIGINT', async () => {
+  it('logs rather than throwing when disposal fails', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     mountDispose.mockRejectedValueOnce(new Error('dispose boom'));
-    signalHandlers.get('SIGINT')!();
+    signalHandlers.get('sveltekit:shutdown')!();
     await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
         '[hooks.server] MCP mount dispose failed',
@@ -129,9 +133,9 @@ describe('hooks.server MCP wiring (enabled)', () => {
     notifyReviewRunsChanged(42);
     expect(publish).toHaveBeenCalledWith('42', 'tribunal://review-runs');
 
-    // Dispose (via a termination signal) must clear the publisher so a
+    // Dispose (via the shutdown event) must clear the publisher so a
     // notification racing shutdown reaches nobody rather than a disposed mount.
-    signalHandlers.get('SIGINT')!();
+    signalHandlers.get('sveltekit:shutdown')!();
     publish.mockClear();
     notifyReviewRunsChanged(42);
     expect(publish).not.toHaveBeenCalled();
