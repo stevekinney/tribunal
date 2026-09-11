@@ -7,15 +7,17 @@ import { findLimiterReimplementation } from './lib/limiter-reimplementation-vali
  * source (TRI-56 AC1). The limiting logic is the library's; Tribunal supplies
  * only storage and configuration. See `lib/limiter-reimplementation-validation.ts`.
  *
- * Scans `applications/web/src` and `packages`, excluding test/spec files (a test
- * that references a token as a fixture is not a reimplementation) and this
- * scanner's own fixtures under `scripts/`, which `git ls-files` for these
- * directories does not enumerate. `node_modules` — where the library's Lua
+ * Scans every application and package (`applications`, `packages`), excluding
+ * test/spec files (a test that references a token as a fixture is not a
+ * reimplementation) and this scanner's own fixtures under `scripts/`, which
+ * `git ls-files` for these directories does not enumerate. The web surface hosts
+ * the limiter today, but a reimplementation could appear in any application, so
+ * the scan is not narrowed to one. `node_modules` — where the library's Lua
  * legitimately lives — is untracked and never scanned.
  */
 const repositoryRoot = join(import.meta.dirname, '..');
 const SCANNED_EXTENSIONS = ['.ts', '.tsx', '.svelte'];
-const SCANNED_DIRECTORIES = ['applications/web/src', 'packages'];
+const SCANNED_DIRECTORIES = ['applications', 'packages'];
 
 const trackedSourcesResult = Bun.spawnSync({
   cmd: ['git', 'ls-files', '--', ...SCANNED_DIRECTORIES],
