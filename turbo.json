@@ -18,6 +18,7 @@
   // names belong here rather than in `globalEnv` (TRI-55).
   "globalPassThroughEnv": [
     "BASE_URL",
+    "BODY_SIZE_LIMIT",
     "CI",
     "DATABASE_URL",
     "E2E_TEST_MODE",
