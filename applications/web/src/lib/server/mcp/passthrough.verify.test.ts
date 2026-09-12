@@ -89,6 +89,46 @@ function listen(token: string): Promise<Response> {
   );
 }
 
+type ListenResponse = { status: number; challenge: string | null };
+
+async function connectModernClient(
+  token: string,
+  listenResponses: ListenResponse[] = [],
+): Promise<Client> {
+  const client = new Client(
+    { name: 'tri-54-guards', version: '1.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${mcpBaseUrl.origin}/mcp`), {
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          request.headers.set('authorization', `Bearer ${token}`);
+          const message =
+            request.method === 'POST'
+              ? ((await request.clone().json()) as { method?: string })
+              : undefined;
+          const response = await runWithDatabase(fixture.database.db as never, () =>
+            fixture.handle(request),
+          );
+          if (message?.method === 'subscriptions/listen') {
+            listenResponses.push({
+              status: response.status,
+              challenge: response.headers.get('www-authenticate'),
+            });
+          }
+          return response;
+        },
+      }),
+    );
+    return client;
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+}
+
 describe('MCP credential and subscription guards through the mounted surface (TRI-54)', () => {
   it('exposes no token-shaped field in the context the real handler receives', async () => {
     // defineRegistry normalizes tool definitions. Observe the context inside
@@ -97,20 +137,9 @@ describe('MCP credential and subscription guards through the mounted surface (TR
     const reader = vi
       .spyOn(repositoryReader, 'listAccessibleRepositories')
       .mockResolvedValue({ ok: true, repositories: [] });
-    const client = new Client(
-      { name: 'tri-54-context', version: '1.0.0' },
-      { versionNegotiation: { mode: { pin: '2026-07-28' } } },
-    );
+    let client: Client | undefined;
     try {
-      await client.connect(
-        new StreamableHTTPClientTransport(new URL(`${mcpBaseUrl.origin}/mcp`), {
-          fetch: (input, init) => {
-            const request = new Request(input, init);
-            request.headers.set('authorization', `Bearer ${repositoriesToken}`);
-            return runWithDatabase(fixture.database.db as never, () => fixture.handle(request));
-          },
-        }),
-      );
+      client = await connectModernClient(repositoriesToken);
       const result = await client.callTool({ name: listRepositoriesTool.name, arguments: {} });
       expect(result.isError).not.toBe(true);
       expect(identity).toHaveBeenCalledOnce();
@@ -141,7 +170,7 @@ describe('MCP credential and subscription guards through the mounted surface (TR
       ]);
       assertNoCredentials(context);
     } finally {
-      await client.close();
+      await client?.close();
       identity.mockRestore();
       reader.mockRestore();
     }
@@ -167,6 +196,52 @@ describe('MCP credential and subscription guards through the mounted surface (TR
       expect(response.headers.get('content-type')).toContain('text/event-stream');
     } finally {
       await response.body?.cancel();
+    }
+  });
+
+  it('refuses modern Client.listen with the SDK envelope when reviews:read is absent', async () => {
+    const responses: ListenResponse[] = [];
+    const client = await connectModernClient(repositoriesToken, responses);
+    let subscription: Awaited<ReturnType<Client['listen']>> | undefined;
+    try {
+      expect(client.getProtocolEra()).toBe('modern');
+      const listening = client
+        .listen({ resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI] } as never)
+        .then((opened) => {
+          subscription = opened;
+          return opened;
+        });
+      await expect(listening).rejects.toThrow();
+      expect(responses).toEqual([
+        {
+          status: 403,
+          challenge: expect.stringContaining('error="insufficient_scope"'),
+        },
+      ]);
+    } finally {
+      // If enforcement regresses, listen succeeds. Close that stream even when
+      // the rejection assertion fails; a negative control must not hang.
+      await subscription?.close();
+      await client.close();
+    }
+  });
+
+  it('accepts modern Client.listen with the same SDK envelope and reviews:read', async () => {
+    const responses: ListenResponse[] = [];
+    const client = await connectModernClient(reviewsToken, responses);
+    let subscription: Awaited<ReturnType<Client['listen']>> | undefined;
+    try {
+      expect(client.getProtocolEra()).toBe('modern');
+      subscription = await client.listen({
+        resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI],
+      } as never);
+      expect(responses).toEqual([{ status: 200, challenge: null }]);
+      expect(subscription.honoredFilter).toMatchObject({
+        resourceSubscriptions: [REVIEW_RUNS_RESOURCE_URI],
+      });
+    } finally {
+      await subscription?.close();
+      await client.close();
     }
   });
 });

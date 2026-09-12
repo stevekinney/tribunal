@@ -38,6 +38,18 @@ Does the test use DOM/browser APIs?
 └─ No  → name it *.test.ts        (server project, Node)
 ```
 
+## MCP security guards
+
+Run `bun run test:mcp:passthrough` for handler credential exposure, outbound fetch, and mounted subscription authorization guards.
+
+- Install outbound-call interception before loading handler modules. A module can capture `fetch` during import and bypass a spy installed afterward.
+- Cover every registry category: production tools, conformance tools, resources, and prompts. Require input samples when an operation is added.
+- Pair behavioral samples with source checks for direct outbound calls. One successful input does not exercise every conditional branch.
+- Use the SDK's modern client for modern subscription authorization tests. A raw `subscriptions/listen` request without its negotiation envelope exercises a different path. Keep scoped success controls beside under-scoped denials.
+- Demonstrate each guard failing under a temporary violation, restore the mutation, and rerun the gate. Always close streams when an expected denial unexpectedly succeeds.
+
+The [TRI-54 review learnings](learnings/2026-09-12-mcp-handler-security-guards.md) explain the defects these checks prevent.
+
 ## Writing Your First Test
 
 ### Component (browser)

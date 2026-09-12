@@ -1,6 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, extname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { McpContext } from '@lostgradient/mcp';
 import { tribunalMcpOperations, tribunalMcpRegistry } from './registry';
+
+const fetchGuard = vi.hoisted(() => {
+  const guardedFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  vi.stubGlobal('fetch', guardedFetch);
+  return { guardedFetch };
+});
 
 const repository = {
   id: 9001,
@@ -128,6 +138,15 @@ vi.mock('./readers/cost-event-reader', () => ({
   })),
 }));
 
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const sourceRoots = ['registry.ts', 'tools', 'resources', 'conformance-fixture.ts'].map((path) =>
+  resolve(moduleDirectory, path),
+);
+const blockedFetchClientModules = ['axios', 'got', 'ky', 'node-fetch', 'undici'];
+const sourceModuleRoot = `${moduleDirectory}/`;
+const readerBoundaryRoot = resolve(moduleDirectory, 'readers') + '/';
+const librarySourceRoot = resolve(moduleDirectory, '../..');
+
 type ProductionToolName = keyof typeof tribunalMcpOperations;
 type RegisteredToolName = ProductionToolName | 'conformance_echo';
 
@@ -168,53 +187,305 @@ function sortedRegisteredTools() {
   );
 }
 
+function listTypeScriptSources(path: string): string[] {
+  if (extname(path) === '.ts') return [path];
+
+  return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = resolve(path, entry.name);
+    if (entry.isDirectory()) return listTypeScriptSources(entryPath);
+    if (!entry.isFile() || !entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) {
+      return [];
+    }
+    return [entryPath];
+  });
+}
+
+function parseSourceFile(sourcePath: string): ts.SourceFile {
+  return ts.createSourceFile(
+    sourcePath,
+    readFileSync(sourcePath, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
+
+function relativeSourcePath(sourcePath: string): string {
+  return sourcePath.slice(sourceModuleRoot.length);
+}
+
+function sourceLocation(sourceFile: ts.SourceFile, node: ts.Node): string {
+  const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+  return `${relativeSourcePath(sourceFile.fileName)}:${position.line + 1}:${position.character + 1}`;
+}
+
+function resolveLocalModule(
+  specifier: string,
+  sourcePath: string,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+): { modules: string[]; problems: string[] } {
+  const isRelativeSpecifier = specifier.startsWith('./') || specifier.startsWith('../');
+  const isLibrarySpecifier = specifier.startsWith('$lib/');
+
+  if (!isRelativeSpecifier && !isLibrarySpecifier) {
+    return { modules: [], problems: [] };
+  }
+
+  const importPath = isLibrarySpecifier
+    ? resolve(librarySourceRoot, specifier.slice('$lib/'.length))
+    : resolve(dirname(sourcePath), specifier);
+  const modules = [importPath, `${importPath}.ts`, resolve(importPath, 'index.ts')]
+    .filter((candidate) => extname(candidate) === '.ts')
+    .filter((candidate) => existsSync(candidate))
+    .filter((importPath) => !importPath.endsWith('.test.ts'));
+
+  if (modules.some((modulePath) => modulePath.startsWith(readerBoundaryRoot))) {
+    return { modules: [], problems: [] };
+  }
+
+  if (modules.length === 0) {
+    return {
+      modules: [],
+      problems: [`${sourceLocation(sourceFile, node)} unresolved local import: ${specifier}`],
+    };
+  }
+
+  const outsideBoundary = modules.filter((modulePath) => !modulePath.startsWith(sourceModuleRoot));
+  if (outsideBoundary.length > 0) {
+    return {
+      modules: [],
+      problems: [
+        `${sourceLocation(sourceFile, node)} local import leaves MCP boundary: ${specifier}`,
+      ],
+    };
+  }
+
+  return { modules, problems: [] };
+}
+
+function stringLiteralText(node: ts.Node | undefined): string | null {
+  return node && ts.isStringLiteralLike(node) ? node.text : null;
+}
+
+function isBlockedFetchClientSpecifier(specifier: string): boolean {
+  return blockedFetchClientModules.some((moduleName) => {
+    return specifier === moduleName || specifier.startsWith(`${moduleName}/`);
+  });
+}
+
+function hasRuntimeImportEdge(node: ts.ImportDeclaration): boolean {
+  const importClause = node.importClause;
+  if (!importClause) return true;
+  if (importClause.isTypeOnly) return false;
+
+  const namedBindings = importClause.namedBindings;
+  return (
+    Boolean(importClause.name) ||
+    !namedBindings ||
+    ts.isNamespaceImport(namedBindings) ||
+    namedBindings.elements.some((element) => !element.isTypeOnly)
+  );
+}
+
+function hasRuntimeExportEdge(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return false;
+  const exportClause = node.exportClause;
+  return (
+    !exportClause ||
+    !ts.isNamedExports(exportClause) ||
+    exportClause.elements.some((element) => !element.isTypeOnly)
+  );
+}
+
+function isModuleLoadingCall(node: ts.CallExpression): boolean {
+  const firstArgument = node.arguments[0];
+  if (!firstArgument) return false;
+  return (
+    node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+    (ts.isIdentifier(node.expression) && node.expression.text === 'require')
+  );
+}
+
+function moduleSpecifierFromCall(node: ts.CallExpression): string | null {
+  return isModuleLoadingCall(node) ? stringLiteralText(node.arguments[0]) : null;
+}
+
+function importedLocalModules(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+): { modules: string[]; problems: string[] } {
+  const modules: string[] = [];
+  const problems: string[] = [];
+
+  function visit(node: ts.Node) {
+    const isRuntimeImport = ts.isImportDeclaration(node) && hasRuntimeImportEdge(node);
+    const isRuntimeExport = ts.isExportDeclaration(node) && hasRuntimeExportEdge(node);
+    if (isRuntimeImport || isRuntimeExport) {
+      const specifier = stringLiteralText(node.moduleSpecifier);
+      if (specifier) {
+        const resolved = resolveLocalModule(specifier, sourcePath, sourceFile, node);
+        modules.push(...resolved.modules);
+        problems.push(...resolved.problems);
+      }
+    }
+
+    if (ts.isCallExpression(node) && isModuleLoadingCall(node)) {
+      const specifier = moduleSpecifierFromCall(node);
+      if (specifier) {
+        const resolved = resolveLocalModule(specifier, sourcePath, sourceFile, node);
+        modules.push(...resolved.modules);
+        problems.push(...resolved.problems);
+      } else {
+        problems.push(`${sourceLocation(sourceFile, node)} nonliteral dynamic module import`);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { modules, problems };
+}
+
+function collectGuardedSourceModules() {
+  const pending = sourceRoots.flatMap(listTypeScriptSources);
+  const visited = new Set<string>();
+  const problems: string[] = [];
+
+  for (const sourcePath of pending) {
+    if (visited.has(sourcePath)) continue;
+    visited.add(sourcePath);
+
+    const sourceFile = parseSourceFile(sourcePath);
+    const imported = importedLocalModules(sourceFile, sourcePath);
+    problems.push(...imported.problems);
+    for (const importedModulePath of imported.modules) {
+      if (!visited.has(importedModulePath)) pending.push(importedModulePath);
+    }
+  }
+
+  return {
+    modules: Array.from(visited).sort((left, right) => {
+      if (left === right) return 0;
+      return left < right ? -1 : 1;
+    }),
+    problems,
+  };
+}
+
+function findDirectFetchReferences() {
+  const guardedSources = collectGuardedSourceModules();
+  return guardedSources.modules
+    .flatMap((sourcePath) => {
+      const sourceFile = parseSourceFile(sourcePath);
+      const findings: string[] = [];
+
+      function rejectModuleSpecifier(specifier: string | null, node: ts.Node) {
+        if (specifier && isBlockedFetchClientSpecifier(specifier)) {
+          findings.push(`${sourceLocation(sourceFile, node)} fetch client import: ${specifier}`);
+        }
+      }
+
+      function visit(node: ts.Node) {
+        if (ts.isImportDeclaration(node) && !hasRuntimeImportEdge(node)) return;
+        if (ts.isExportDeclaration(node) && !hasRuntimeExportEdge(node)) return;
+        if ((ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) && node.isTypeOnly) {
+          return;
+        }
+
+        if (ts.isIdentifier(node) && node.text === 'fetch') {
+          findings.push(`${sourceLocation(sourceFile, node)} fetch identifier`);
+        }
+
+        if (ts.isPropertyAccessExpression(node) && node.name.text === 'fetch') {
+          findings.push(`${sourceLocation(sourceFile, node)} fetch property access`);
+        }
+
+        if (
+          ts.isElementAccessExpression(node) &&
+          stringLiteralText(node.argumentExpression) === 'fetch'
+        ) {
+          findings.push(`${sourceLocation(sourceFile, node)} computed fetch property access`);
+        }
+
+        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+          rejectModuleSpecifier(stringLiteralText(node.moduleSpecifier), node);
+        }
+
+        if (ts.isCallExpression(node) && isModuleLoadingCall(node)) {
+          const specifier = moduleSpecifierFromCall(node);
+          if (specifier) rejectModuleSpecifier(specifier, node);
+        }
+
+        ts.forEachChild(node, visit);
+      }
+
+      visit(sourceFile);
+      return findings;
+    })
+    .concat(guardedSources.problems);
+}
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('MCP registered handlers', () => {
+  it('keep registered handler sources free of direct fetch paths', () => {
+    expect(findDirectFetchReferences()).toEqual([]);
+  });
+
   it('runs every registered handler without direct outbound fetch', async () => {
     // Readers legitimately use the database and cached GitHub client. Mock
     // those boundaries, leaving every registered handler and its helpers real.
-    // Unlike a source-text scan, this also catches aliased or indirect fetches.
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+    // The fetch guard is installed before registry imports, so module-scope
+    // aliases capture the guarded function instead of the real network fetch.
+    expect(
+      fetchGuard.guardedFetch,
+      'MCP modules must not fetch during import-time evaluation',
+    ).not.toHaveBeenCalled();
 
-    try {
-      const tools = sortedRegisteredTools();
-      const registeredToolNames = tools.map((tool) => tool.name);
-      const sampleNames = Object.keys(toolSamples).sort();
+    const tools = sortedRegisteredTools();
+    const registeredToolNames = tools.map((tool) => tool.name);
+    const sampleNames = Object.keys(toolSamples).sort();
 
-      const missingSamples = registeredToolNames.filter((name) => !(name in toolSamples));
-      expect(missingSamples, 'Add sample input before registering a new MCP tool.').toEqual([]);
+    const missingSamples = registeredToolNames.filter((name) => !(name in toolSamples));
+    expect(missingSamples, 'Add sample input before registering a new MCP tool.').toEqual([]);
 
-      const staleSamples = sampleNames.filter((name) => !registeredToolNames.includes(name));
-      expect(staleSamples, 'Remove sample input for unregistered MCP tools.').toEqual([]);
+    const staleSamples = sampleNames.filter((name) => !registeredToolNames.includes(name));
+    expect(staleSamples, 'Remove sample input for unregistered MCP tools.').toEqual([]);
 
-      expect(registeredToolNames).toEqual(sampleNames);
+    expect(registeredToolNames).toEqual(sampleNames);
 
-      for (const tool of tools) {
-        const sample = toolSamples[tool.name as RegisteredToolName];
-        const input = tool.inputSchema.parse(sample);
-        const result = await tool.handler(input as never, context());
+    for (const tool of tools) {
+      const sample = toolSamples[tool.name as RegisteredToolName];
+      const input = tool.inputSchema.parse(sample);
+      const result = await tool.handler(input as never, context());
 
-        expect(result.isError, `${tool.name} should complete its success path`).toBeFalsy();
-        expect(fetchSpy, `${tool.name} must not fetch directly`).not.toHaveBeenCalled();
-      }
-
-      for (const resource of tribunalMcpRegistry.resources) {
-        const result = await resource.handler(new URL(resource.uri), context());
-        expect(
-          result.contents.length,
-          `${resource.name} should complete its success path`,
-        ).toBeGreaterThan(0);
-        expect(fetchSpy, `${resource.name} must not fetch directly`).not.toHaveBeenCalled();
-      }
-
+      expect(result.isError, `${tool.name} should complete its success path`).toBeFalsy();
       expect(
-        tribunalMcpRegistry.prompts,
-        'Add prompt argument samples and invoke their handlers when registering prompts.',
-      ).toEqual([]);
-      expect(fetchSpy).not.toHaveBeenCalled();
-    } finally {
-      fetchSpy.mockRestore();
+        fetchGuard.guardedFetch,
+        `${tool.name} must not fetch directly`,
+      ).not.toHaveBeenCalled();
     }
+
+    for (const resource of tribunalMcpRegistry.resources) {
+      const result = await resource.handler(new URL(resource.uri), context());
+      expect(
+        result.contents.length,
+        `${resource.name} should complete its success path`,
+      ).toBeGreaterThan(0);
+      expect(
+        fetchGuard.guardedFetch,
+        `${resource.name} must not fetch directly`,
+      ).not.toHaveBeenCalled();
+    }
+
+    expect(
+      tribunalMcpRegistry.prompts,
+      'Add prompt argument samples and invoke their handlers when registering prompts.',
+    ).toEqual([]);
+    expect(fetchGuard.guardedFetch).not.toHaveBeenCalled();
   });
 });
