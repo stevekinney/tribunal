@@ -47,6 +47,7 @@ Run `bun run test:mcp:passthrough` for handler credential exposure, outbound fet
 - Pair behavioral samples with source checks for direct outbound calls. One successful input does not exercise every conditional branch.
 - Allow only reviewed external runtime imports in the handler graph; a fetch-client blacklist misses new implementations. Keep authorized reader boundaries explicit.
 - Inspect callable capabilities' own properties when scanning context for credentials. Functions can carry caller metadata too.
+- Reject opaque context containers whose contents cannot be inspected through own properties, including maps, sets, and promises. Under `verbatimModuleSyntax`, empty named imports and re-exports—including lists containing only inline type specifiers—still count as runtime edges.
 - Inspect custom properties on platform objects such as `AbortSignal`; exclude only their native internal state. Pin the test environment when isolating Redis so production backstops cannot prevent fixture startup.
 - Use the SDK's modern client for modern subscription authorization tests. A raw `subscriptions/listen` request without its negotiation envelope exercises a different path. Keep scoped success controls beside under-scoped denials.
 - Demonstrate each guard failing under a temporary violation, restore the mutation, and rerun the gate. Always close streams when an expected denial unexpectedly succeeds.

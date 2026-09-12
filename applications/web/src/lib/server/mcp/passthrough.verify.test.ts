@@ -55,6 +55,14 @@ afterAll(async () => {
 const signalPlatformKeys = new Set(
   Reflect.ownKeys(new AbortController().signal).filter((key) => typeof key === 'symbol'),
 );
+const inspectablePrototypes = [
+  null,
+  Object.prototype,
+  Array.prototype,
+  Function.prototype,
+  Object.getPrototypeOf(async () => undefined),
+  AbortSignal.prototype,
+];
 
 /** Inspect values as well as keys: an opaque token in an innocently named field is still a leak. */
 function assertNoCredentials(value: unknown, visited = new Set<object>()): void {
@@ -68,6 +76,11 @@ function assertNoCredentials(value: unknown, visited = new Set<object>()): void 
     visited.has(value)
   )
     return;
+  // Unknown containers can hide credentials in internal slots or custom prototypes.
+  expect(
+    inspectablePrototypes.includes(Object.getPrototypeOf(value)),
+    `Opaque context container: ${Object.prototype.toString.call(value)}`,
+  ).toBe(true);
   visited.add(value);
   for (const key of Reflect.ownKeys(value)) {
     // Ignore only native signal internals; custom string and symbol properties remain visible.
@@ -140,6 +153,18 @@ async function connectModernClient(
 }
 
 describe('MCP credential and subscription guards through the mounted surface (TRI-54)', () => {
+  it.each(['Map', 'Set', 'Promise'])('rejects opaque %s metadata containers', (kind) => {
+    const metadata =
+      kind === 'Map'
+        ? new Map([['authorization', repositoriesToken]])
+        : kind === 'Set'
+          ? new Set([repositoriesToken])
+          : Promise.resolve(repositoriesToken);
+    expect(() =>
+      assertNoCredentials({ publishResourceUpdate: Object.assign(() => undefined, { metadata }) }),
+    ).toThrow();
+  });
+
   it.each(['authorization', 'metadata', Symbol('metadata')])(
     'detects credentials on signal %s properties',
     (key) => {

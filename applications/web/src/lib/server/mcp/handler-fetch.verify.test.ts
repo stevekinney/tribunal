@@ -275,28 +275,13 @@ function stringLiteralText(node: ts.Node | undefined): string | null {
   return node && ts.isStringLiteralLike(node) ? node.text : null;
 }
 
+// verbatimModuleSyntax preserves empty lists, including lists of inline type specifiers.
 function hasRuntimeImportEdge(node: ts.ImportDeclaration): boolean {
-  const importClause = node.importClause;
-  if (!importClause) return true;
-  if (importClause.isTypeOnly) return false;
-
-  const namedBindings = importClause.namedBindings;
-  return (
-    Boolean(importClause.name) ||
-    !namedBindings ||
-    ts.isNamespaceImport(namedBindings) ||
-    namedBindings.elements.some((element) => !element.isTypeOnly)
-  );
+  return node.importClause?.isTypeOnly !== true;
 }
 
 function hasRuntimeExportEdge(node: ts.ExportDeclaration): boolean {
-  if (node.isTypeOnly) return false;
-  const exportClause = node.exportClause;
-  return (
-    !exportClause ||
-    !ts.isNamedExports(exportClause) ||
-    exportClause.elements.some((element) => !element.isTypeOnly)
-  );
+  return !node.isTypeOnly;
 }
 
 function isModuleLoadingCall(node: ts.CallExpression): boolean {
@@ -418,6 +403,25 @@ afterAll(() => {
 });
 
 describe('MCP registered handlers', () => {
+  it('classifies empty named import and export lists as runtime edges', () => {
+    const statement = (source: string) => {
+      return ts.createSourceFile('edge.ts', source, ts.ScriptTarget.Latest, true).statements[0]!;
+    };
+
+    expect([
+      hasRuntimeImportEdge(statement("import {} from 'zod';") as ts.ImportDeclaration),
+      hasRuntimeImportEdge(statement("import { type z } from 'zod';") as ts.ImportDeclaration),
+      hasRuntimeImportEdge(statement("import type { z } from 'zod';") as ts.ImportDeclaration),
+      hasRuntimeImportEdge(
+        statement("import { type z, object } from 'zod';") as ts.ImportDeclaration,
+      ),
+      hasRuntimeExportEdge(statement("export {} from './x';") as ts.ExportDeclaration),
+      hasRuntimeExportEdge(statement("export { type x } from './x';") as ts.ExportDeclaration),
+      hasRuntimeExportEdge(statement("export type { x } from './x';") as ts.ExportDeclaration),
+      hasRuntimeExportEdge(statement("export { type x, y } from './x';") as ts.ExportDeclaration),
+    ]).toEqual([true, true, false, true, true, true, false, true]);
+  });
+
   it('keep registered handler sources free of direct fetch paths', () => {
     expect(findDirectFetchReferences()).toEqual([]);
   });
