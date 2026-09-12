@@ -142,7 +142,7 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceRoots = ['registry.ts', 'tools', 'resources', 'conformance-fixture.ts'].map((path) =>
   resolve(moduleDirectory, path),
 );
-const blockedFetchClientModules = ['axios', 'got', 'ky', 'node-fetch', 'undici'];
+const allowedExternalRuntimeImports = ['$env/dynamic/private', '@lostgradient/mcp', 'zod'];
 const sourceModuleRoot = `${moduleDirectory}/`;
 const readerBoundaryRoot = resolve(moduleDirectory, 'readers') + '/';
 const librarySourceRoot = resolve(moduleDirectory, '../..');
@@ -229,7 +229,14 @@ function resolveLocalModule(
   const isLibrarySpecifier = specifier.startsWith('$lib/');
 
   if (!isRelativeSpecifier && !isLibrarySpecifier) {
-    return { modules: [], problems: [] };
+    return allowedExternalRuntimeImports.includes(specifier)
+      ? { modules: [], problems: [] }
+      : {
+          modules: [],
+          problems: [
+            `${sourceLocation(sourceFile, node)} unknown external runtime import: ${specifier}`,
+          ],
+        };
   }
 
   const importPath = isLibrarySpecifier
@@ -266,12 +273,6 @@ function resolveLocalModule(
 
 function stringLiteralText(node: ts.Node | undefined): string | null {
   return node && ts.isStringLiteralLike(node) ? node.text : null;
-}
-
-function isBlockedFetchClientSpecifier(specifier: string): boolean {
-  return blockedFetchClientModules.some((moduleName) => {
-    return specifier === moduleName || specifier.startsWith(`${moduleName}/`);
-  });
 }
 
 function hasRuntimeImportEdge(node: ts.ImportDeclaration): boolean {
@@ -381,12 +382,6 @@ function findDirectFetchReferences() {
       const sourceFile = parseSourceFile(sourcePath);
       const findings: string[] = [];
 
-      function rejectModuleSpecifier(specifier: string | null, node: ts.Node) {
-        if (specifier && isBlockedFetchClientSpecifier(specifier)) {
-          findings.push(`${sourceLocation(sourceFile, node)} fetch client import: ${specifier}`);
-        }
-      }
-
       function visit(node: ts.Node) {
         if (ts.isImportDeclaration(node) && !hasRuntimeImportEdge(node)) return;
         if (ts.isExportDeclaration(node) && !hasRuntimeExportEdge(node)) return;
@@ -407,15 +402,6 @@ function findDirectFetchReferences() {
           stringLiteralText(node.argumentExpression) === 'fetch'
         ) {
           findings.push(`${sourceLocation(sourceFile, node)} computed fetch property access`);
-        }
-
-        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-          rejectModuleSpecifier(stringLiteralText(node.moduleSpecifier), node);
-        }
-
-        if (ts.isCallExpression(node) && isModuleLoadingCall(node)) {
-          const specifier = moduleSpecifierFromCall(node);
-          if (specifier) rejectModuleSpecifier(specifier, node);
         }
 
         ts.forEachChild(node, visit);

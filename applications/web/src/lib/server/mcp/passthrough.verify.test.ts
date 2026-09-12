@@ -58,8 +58,13 @@ function assertNoCredentials(value: unknown, visited = new Set<object>()): void 
     expect(value.includes(repositoriesToken) || value.includes(reviewsToken)).toBe(false);
     expect(/\bBearer\s|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./i.test(value)).toBe(false);
   }
-  if (value === null || typeof value !== 'object' || visited.has(value)) return;
-  // These are the two intentional capabilities, not bags of caller metadata.
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function') ||
+    visited.has(value)
+  )
+    return;
+  // AbortSignal holds platform state; callable capabilities still have own metadata to inspect.
   if (value instanceof AbortSignal) return;
   visited.add(value);
   for (const key of Reflect.ownKeys(value)) {
@@ -130,6 +135,14 @@ async function connectModernClient(
 }
 
 describe('MCP credential and subscription guards through the mounted surface (TRI-54)', () => {
+  it.each(['authorization', 'metadata'])(
+    'detects credentials on callable capability %s properties',
+    (key) => {
+      const publishResourceUpdate = Object.assign(() => undefined, { [key]: repositoriesToken });
+      expect(() => assertNoCredentials({ publishResourceUpdate })).toThrow();
+    },
+  );
+
   it('exposes no token-shaped field in the context the real handler receives', async () => {
     // defineRegistry normalizes tool definitions. Observe the context inside
     // the real handler at its identity boundary rather than spying on its copy.

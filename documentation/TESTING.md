@@ -45,6 +45,8 @@ Run `bun run test:mcp:passthrough` for handler credential exposure, outbound fet
 - Install outbound-call interception before loading handler modules. A module can capture `fetch` during import and bypass a spy installed afterward.
 - Cover every registry category: production tools, conformance tools, resources, and prompts. Require input samples when an operation is added.
 - Pair behavioral samples with source checks for direct outbound calls. One successful input does not exercise every conditional branch.
+- Allow only reviewed external runtime imports in the handler graph; a fetch-client blacklist misses new implementations. Keep authorized reader boundaries explicit.
+- Inspect callable capabilities' own properties when scanning context for credentials. Functions can carry caller metadata too.
 - Use the SDK's modern client for modern subscription authorization tests. A raw `subscriptions/listen` request without its negotiation envelope exercises a different path. Keep scoped success controls beside under-scoped denials.
 - Demonstrate each guard failing under a temporary violation, restore the mutation, and rerun the gate. Always close streams when an expected denial unexpectedly succeeds.
 
