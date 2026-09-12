@@ -7,6 +7,7 @@
 - A raw subscription request does not prove modern-client authorization. Drive both denial and scoped success through `Client.listen`, which supplies the modern negotiation envelope.
 - A fixed fetch-client blacklist misses other implementations. Allow only reviewed external runtime imports and fail when a new package enters the handler graph.
 - Callable context capabilities can carry credentials in their own properties. Traverse functions as well as objects, checking both property names and values.
+- Platform capabilities such as `AbortSignal` can also carry custom properties. Exclude only native internal symbols, and cover custom string and symbol keys. Pin the fixture to the test environment when disabling Redis so production backstops remain separate from these mounted tests.
 
 The registry also contains resource handlers. Include them alongside tools, and require explicit coverage before a prompt can be registered. For every refusal test, close an unexpectedly successful stream in `finally`; otherwise the negative control can hang instead of reporting its failed assertion.
 

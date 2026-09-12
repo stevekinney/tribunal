@@ -16,7 +16,7 @@ import * as userIdentity from './user-identity';
 // also be fixture-local, never the Redis instance in a developer's .env file.
 vi.mock('$env/dynamic/private', async (importOriginal) => {
   const original = await importOriginal<typeof import('$env/dynamic/private')>();
-  return { env: { ...original.env, DEV_AUTH_BYPASS: '0', REDIS_URL: '' } };
+  return { env: { ...original.env, NODE_ENV: 'test', DEV_AUTH_BYPASS: '0', REDIS_URL: '' } };
 });
 
 let fixture: McpMountFixture;
@@ -52,6 +52,10 @@ afterAll(async () => {
   }
 });
 
+const signalPlatformKeys = new Set(
+  Reflect.ownKeys(new AbortController().signal).filter((key) => typeof key === 'symbol'),
+);
+
 /** Inspect values as well as keys: an opaque token in an innocently named field is still a leak. */
 function assertNoCredentials(value: unknown, visited = new Set<object>()): void {
   if (typeof value === 'string') {
@@ -64,10 +68,11 @@ function assertNoCredentials(value: unknown, visited = new Set<object>()): void 
     visited.has(value)
   )
     return;
-  // AbortSignal holds platform state; callable capabilities still have own metadata to inspect.
-  if (value instanceof AbortSignal) return;
   visited.add(value);
   for (const key of Reflect.ownKeys(value)) {
+    // Ignore only native signal internals; custom string and symbol properties remain visible.
+    if (value instanceof AbortSignal && typeof key === 'symbol' && signalPlatformKeys.has(key))
+      continue;
     expect(String(key)).not.toMatch(/token|authorization|cookie|secret|credential/i);
     assertNoCredentials(Reflect.get(value, key), visited);
   }
@@ -135,6 +140,14 @@ async function connectModernClient(
 }
 
 describe('MCP credential and subscription guards through the mounted surface (TRI-54)', () => {
+  it.each(['authorization', 'metadata', Symbol('metadata')])(
+    'detects credentials on signal %s properties',
+    (key) => {
+      const signal = Object.assign(new AbortController().signal, { [key]: repositoriesToken });
+      expect(() => assertNoCredentials({ signal })).toThrow();
+    },
+  );
+
   it.each(['authorization', 'metadata'])(
     'detects credentials on callable capability %s properties',
     (key) => {
