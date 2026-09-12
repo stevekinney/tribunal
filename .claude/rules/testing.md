@@ -39,6 +39,13 @@ For code examples and environment tables, see `component-standards` references.
 - When deriving changed-only prefixes from `src/lib/components`, handle files directly in the folder separately from component subfolders.
 - Ensure tests can fail for the intended reason: avoid passing matcher objects (for example `expect.any(...)`) as runtime input data.
 
+## MCP handler security guards
+
+- Install outbound fetch interception before importing handlers, and keep the source import graph check alongside behavioral samples. Reject unreviewed external imports and ambient network-global access; exclude only the authorized reader boundary.
+- Cover every registered handler category, and inspect real mounted contexts and subscription authorization in both supported protocol eras.
+- Demonstrate temporary violations failing, restore them, and run `bun run test:mcp:passthrough`. Close unexpected successful streams in `finally` so negative controls cannot hang.
+- Follow `documentation/TESTING.md#mcp-security-guards` for credential scanning, runtime import classification, and environment isolation details. This rule is shared by Codex through `AGENTS.md` and by Claude through `CLAUDE.md`.
+
 ## Test database initialization order
 
 - Create the test database at module level before `vi.mock()` calls. Mocks evaluate at import time; variables referenced in mock factories must already exist.

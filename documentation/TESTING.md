@@ -44,12 +44,12 @@ Run `bun run test:mcp:passthrough` for handler credential exposure, outbound fet
 
 - Install outbound-call interception before loading handler modules. A module can capture `fetch` during import and bypass a spy installed afterward.
 - Cover every registry category: production tools, conformance tools, resources, and prompts. Require input samples when an operation is added.
-- Pair behavioral samples with source checks for direct outbound calls. One successful input does not exercise every conditional branch.
+- Pair behavioral samples with source checks for direct outbound calls and ambient network-global access. One successful input does not exercise every conditional branch.
 - Allow only reviewed external runtime imports in the handler graph; a fetch-client blacklist misses new implementations. Keep authorized reader boundaries explicit.
 - Inspect callable capabilities' own properties when scanning context for credentials. Functions can carry caller metadata too.
 - Reject opaque context containers whose contents cannot be inspected through own properties, including maps, sets, and promises. Under `verbatimModuleSyntax`, empty named imports and re-exports—including lists containing only inline type specifiers—still count as runtime edges.
 - Inspect custom properties on platform objects such as `AbortSignal`; exclude only their native internal state. Pin the test environment when isolating Redis so production backstops cannot prevent fixture startup.
-- Use the SDK's modern client for modern subscription authorization tests. A raw `subscriptions/listen` request without its negotiation envelope exercises a different path. Keep scoped success controls beside under-scoped denials.
+- Inspect actual handler contexts in both legacy and modern protocol eras. Use the SDK's modern client for modern subscription authorization tests. A raw `subscriptions/listen` request without its negotiation envelope exercises a different path. Keep scoped success controls beside under-scoped denials.
 - Demonstrate each guard failing under a temporary violation, restore the mutation, and rerun the gate. Always close streams when an expected denial unexpectedly succeeds.
 
 The [TRI-54 review learnings](learnings/2026-09-12-mcp-handler-security-guards.md) explain the defects these checks prevent.

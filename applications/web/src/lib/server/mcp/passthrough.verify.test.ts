@@ -114,13 +114,14 @@ function listen(token: string): Promise<Response> {
 
 type ListenResponse = { status: number; challenge: string | null };
 
-async function connectModernClient(
+async function connectClient(
   token: string,
   listenResponses: ListenResponse[] = [],
+  era: 'modern' | 'legacy' = 'modern',
 ): Promise<Client> {
   const client = new Client(
     { name: 'tri-54-guards', version: '1.0.0' },
-    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+    era === 'modern' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : undefined,
   );
   try {
     await client.connect(
@@ -181,51 +182,55 @@ describe('MCP credential and subscription guards through the mounted surface (TR
     },
   );
 
-  it('exposes no token-shaped field in the context the real handler receives', async () => {
-    // defineRegistry normalizes tool definitions. Observe the context inside
-    // the real handler at its identity boundary rather than spying on its copy.
-    const identity = vi.spyOn(userIdentity, 'resolveTribunalUserId');
-    const reader = vi
-      .spyOn(repositoryReader, 'listAccessibleRepositories')
-      .mockResolvedValue({ ok: true, repositories: [] });
-    let client: Client | undefined;
-    try {
-      client = await connectModernClient(repositoriesToken);
-      const result = await client.callTool({ name: listRepositoriesTool.name, arguments: {} });
-      expect(result.isError).not.toBe(true);
-      expect(identity).toHaveBeenCalledOnce();
-      expect(reader).toHaveBeenCalledWith(Number(userId));
-      const context = identity.mock.calls[0]![0] as McpContext;
-      // The library's runtime context includes server metadata beyond McpContext's
-      // declared fields. Pin that actual surface, rather than inspecting a type.
-      const allowedKeys = new Set([
-        'userId',
-        'user',
-        'requestId',
-        'signal',
-        'publishResourceUpdate',
-        'scopes',
-        'era',
-        'enableUiExtension',
-        'enableConformanceMode',
-      ]);
-      expect(Reflect.ownKeys(context).filter((key) => !allowedKeys.has(String(key)))).toEqual([]);
-      expect(context.userId).toBe(userId);
-      expect(context.signal).toBeInstanceOf(AbortSignal);
-      expect(Reflect.ownKeys(context.user).sort()).toEqual([
-        'email',
-        'id',
-        'image',
-        'name',
-        'role',
-      ]);
-      assertNoCredentials(context);
-    } finally {
-      await client?.close();
-      identity.mockRestore();
-      reader.mockRestore();
-    }
-  });
+  it.each(['modern', 'legacy'] as const)(
+    'exposes no token-shaped field in the %s handler context',
+    async (era) => {
+      // defineRegistry normalizes tool definitions. Observe the context inside
+      // the real handler at its identity boundary rather than spying on its copy.
+      const identity = vi.spyOn(userIdentity, 'resolveTribunalUserId');
+      const reader = vi
+        .spyOn(repositoryReader, 'listAccessibleRepositories')
+        .mockResolvedValue({ ok: true, repositories: [] });
+      let client: Client | undefined;
+      try {
+        client = await connectClient(repositoriesToken, [], era);
+        expect(client.getProtocolEra()).toBe(era);
+        const result = await client.callTool({ name: listRepositoriesTool.name, arguments: {} });
+        expect(result.isError).not.toBe(true);
+        expect(identity).toHaveBeenCalledOnce();
+        expect(reader).toHaveBeenCalledWith(Number(userId));
+        const context = identity.mock.calls[0]![0] as McpContext;
+        // The library's runtime context includes server metadata beyond McpContext's
+        // declared fields. Pin that actual surface, rather than inspecting a type.
+        const allowedKeys = new Set([
+          'userId',
+          'user',
+          'requestId',
+          'signal',
+          'publishResourceUpdate',
+          'scopes',
+          'era',
+          'enableUiExtension',
+          'enableConformanceMode',
+        ]);
+        expect(Reflect.ownKeys(context).filter((key) => !allowedKeys.has(String(key)))).toEqual([]);
+        expect(context.userId).toBe(userId);
+        expect(context.signal).toBeInstanceOf(AbortSignal);
+        expect(Reflect.ownKeys(context.user).sort()).toEqual([
+          'email',
+          'id',
+          'image',
+          'name',
+          'role',
+        ]);
+        assertNoCredentials(context);
+      } finally {
+        await client?.close();
+        identity.mockRestore();
+        reader.mockRestore();
+      }
+    },
+  );
 
   it('refuses subscriptions/listen for an authenticated token without reviews:read', async () => {
     const response = await listen(repositoriesToken);
@@ -252,7 +257,7 @@ describe('MCP credential and subscription guards through the mounted surface (TR
 
   it('refuses modern Client.listen with the SDK envelope when reviews:read is absent', async () => {
     const responses: ListenResponse[] = [];
-    const client = await connectModernClient(repositoriesToken, responses);
+    const client = await connectClient(repositoriesToken, responses);
     let subscription: Awaited<ReturnType<Client['listen']>> | undefined;
     try {
       expect(client.getProtocolEra()).toBe('modern');
@@ -279,7 +284,7 @@ describe('MCP credential and subscription guards through the mounted surface (TR
 
   it('accepts modern Client.listen with the same SDK envelope and reviews:read', async () => {
     const responses: ListenResponse[] = [];
-    const client = await connectModernClient(reviewsToken, responses);
+    const client = await connectClient(reviewsToken, responses);
     let subscription: Awaited<ReturnType<Client['listen']>> | undefined;
     try {
       expect(client.getProtocolEra()).toBe('modern');

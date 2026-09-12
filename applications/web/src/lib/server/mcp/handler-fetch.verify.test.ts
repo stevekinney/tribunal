@@ -146,6 +146,7 @@ const allowedExternalRuntimeImports = ['$env/dynamic/private', '@lostgradient/mc
 const sourceModuleRoot = `${moduleDirectory}/`;
 const readerBoundaryRoot = resolve(moduleDirectory, 'readers') + '/';
 const librarySourceRoot = resolve(moduleDirectory, '../..');
+const networkGlobalNames = new Set(['globalThis', 'global', 'window', 'self']);
 
 type ProductionToolName = keyof typeof tribunalMcpOperations;
 type RegisteredToolName = ProductionToolName | 'conformance_echo';
@@ -376,6 +377,10 @@ function findDirectFetchReferences() {
 
         if (ts.isIdentifier(node) && node.text === 'fetch') {
           findings.push(`${sourceLocation(sourceFile, node)} fetch identifier`);
+        }
+
+        if (ts.isIdentifier(node) && networkGlobalNames.has(node.text)) {
+          findings.push(`${sourceLocation(sourceFile, node)} network global: ${node.text}`);
         }
 
         if (ts.isPropertyAccessExpression(node) && node.name.text === 'fetch') {
